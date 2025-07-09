@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.3.0
+// @version      0.3.1
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -696,7 +696,7 @@ GM_addStyle ( `
 
                 try {
                     const data = new URLSearchParams();
-                    data.append('callback_id', serverId);
+                    data.append('callback_id', 'PlexMetaHelper');
                     data.append('target', scanPath);
                     data.append('apikey', PLEX_MATE_APIKEY);
                     data.append('mode', 'ADD');
