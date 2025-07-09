@@ -1,16 +1,17 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.2.3
+// @version      0.3.0
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
+// @supportURL   https://github.com/golmog/plex_meta_helper/issues
+// @updateURL    https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js
 // @match        https://app.plex.tv/*
 // @match        https://*.plex.tv/web/index.html*
 // @match        https://*.plex.direct/*
-// @match        https://*plex.golmog.net/*
 // @match        https://*/web/index.html*
 // @match        http://*:32400/*
-// @match        http://*:32402/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=plex.tv
 // @require      https://code.jquery.com/jquery-3.6.0.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/js/toastr.min.js
@@ -175,18 +176,22 @@ GM_addStyle ( `
     const DISPLAY_PATH_PREFIXES_TO_REMOVE = ['/mnt/gds', '/mnt/content'];
     const SERVER_TO_LOCAL_PATH_MAPPINGS = [
         { serverPrefix: '/mnt/gds/', localPrefix: 'Z:\\gds\\' },
-        { serverPrefix: '/mnt/content/', localPrefix: 'Z:\\home_mnt\\content\\' },
+        { serverPrefix: '/mnt/content/', localPrefix: 'Z:\\content\\' },
     ];
 
     const FF_URL_MAPPINGS = {
-        'ef2b0f4a5dddf8622790403f47858aa22b375690': 'https://ff.golmog.net',
-        'd4a701d454150867a64a042ec399cb3944bb6f26': 'https://xff.golmog.net',
+        'SERVER_1_MACHINE_IDENTIFIER_HERE': 'https://ff1.yourdomain.com',
+        'SERVER_2_MACHINE_IDENTIFIER_HERE': 'https://ff2.yourdomain.com'
+        // '서버ID': 'plex_mate 주소' 형식으로 계속 추가할 수 있습니다.
     };
 
     // --- PLEX_MATE API 설정 ---
-    const PLEX_MATE_APIKEY = "C2PD6W2D2V"; // plex_mate API 키는 공통으로 사용
+    const PLEX_MATE_APIKEY = "_YOUR_APIKEY_"; // plex_mate API 키는 공통으로 사용
     const PLEX_MATE_API_DO_SCAN = "/plex_mate/api/scan/do_scan";
     const PLEX_MATE_API_MANUAL_REFRESH = "/plex_mate/api/scan/manual_refresh";
+
+    // --- API 동시 요청 수 제한 상수 ---
+    const API_CONCURRENCY_LIMIT = 4; // plex api 동시 요청 수 제한
 
     // --- 전역 변수 및 상태 ---
     let currentUrl = '', currentGMXHR = null, currentController = null, currentServerId = null, currentItemId = null, currentDisplayedItemId = null, guidCacheObject = {};
@@ -212,9 +217,6 @@ GM_addStyle ( `
 
     // --- 아이콘 정의 ---
     const ICONS = { DOWNLOAD: '<i class="fas fa-download"></i>', PLAY: '<i class="fas fa-play"></i>', FOLDER: '<i class="fas fa-folder-open"></i>', REFRESH: '<i class="fas fa-sync-alt"></i>', CLOCK: '<i class="fas fa-clock"></i>', FILM: '<i class="fas fa-film"></i>', VIDEO: '<i class="fas fa-video"></i>', SPINNER: '<i class="fas fa-spinner fa-spin"></i>', CHECK: '<i class="fas fa-check"></i>', TIMES: '<i class="fas fa-times"></i>', PLEX_MATE: '<i class="fas fa-bolt"></i>' };
-
-    // --- API 동시 요청 수 제한 상수 ---
-    const API_CONCURRENCY_LIMIT = 5;
 
     // --- 로그 함수 ---
     function log(...args) { if(DEBUG) console.log(`[PMH Script][${new Date().toISOString()}]`, ...args); }
