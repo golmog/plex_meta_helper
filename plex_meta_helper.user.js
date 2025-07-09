@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.3.1
+// @version      0.3.2
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -24,6 +24,7 @@
 // @grant        GM_deleteValue
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
+// @grant        GM_registerMenuCommand
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -33,64 +34,23 @@ GM_addStyle ( `
     .toast-title{font-weight:700}.toast-message{word-wrap:break-word}.toast-message a,.toast-message label{color:#fff}.toast-message a:hover{color:#ccc;text-decoration:none}.toast-close-button{position:relative;right:-.3em;top:-.3em;float:right;font-size:20px;font-weight:700;color:#fff;text-shadow:#000 0 1px 0;opacity:.8}.toast-close-button:focus,.toast-close-button:hover{color:#000;text-decoration:none;cursor:pointer;opacity:.4}button.toast-close-button{padding:0;cursor:pointer;background:0 0;border:0;-webkit-appearance:none}.toast-top-center{top:0;right:0;width:100%}.toast-bottom-center{bottom:0;right:0;width:100%}.toast-top-full-width{top:0;right:0;width:100%}.toast-bottom-full-width{bottom:0;right:0;width:100%}.toast-top-left{top:12px;left:12px}.toast-top-right{top:12px;right:12px}.toast-bottom-right{right:12px;bottom:12px}.toast-bottom-left{bottom:12px;left:12px}#toast-container{position:fixed;z-index:999999;pointer-events:none}#toast-container *{box-sizing:border-box}#toast-container>div{position:relative;pointer-events:auto;overflow:hidden;margin:0 0 6px;padding:15px 15px 15px 50px;width:300px;border-radius:3px;background-position:15px center;background-repeat:no-repeat;box-shadow:#000 0 0 12px;color:#fff;opacity:.8}#toast-container>:focus{opacity:1;box-shadow:#000 0 0 12px}#toast-container>:hover{opacity:1;box-shadow:#000 0 0 12px;cursor:pointer}#toast-container>div.toast-error,#toast-container>div.toast-info,#toast-container>div.toast-success,#toast-container>div.toast-warning{background-size:20px 20px!important}.toast-error{background-image:url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIHZpZXdCb3g9IjAgMCAyNCAyNCI+CiAgICA8cGF0aCBmaWxsPSJ3aGl0ZSIgZD0iTTEzLDE0SDExVjExSDExLjAxTDExLDZIMTNWMTFNMTMsMThIMTFWMTZIMTNWMThaIiAvPgo8L3N2Zz4=")!important;background-color:#bd362f}.toast-success{background-image:url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIHZpZXdCb3g9IjAgMCAyNCAyNCI+CiAgICA8cGF0aCBmaWxsPSJ3aGl0ZSIgZD0iTTIxLDdMNSwxMUwxMSwxM0wxMyw5TDE5LDEzTDE0LDE3TDksMjdMMjEsN1oiIC8+Cjwvc3ZnPg==")!important;background-color:#51a351}.toast-info{background-image:url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIHZpZXdCb3g9IjAgMCAyNCAyNCI+CiAgICA8cGF0aCBmaWxsPSJ3aGl0ZSIgZD0iTTExLDE4SDEzVjE2SDExTTEyLDRBMTAsMTAsMCwwLDEsMjIsMTRBMTAsMTAsMCwwLDEsMTIsMjRBMTAsMTAsMCwwLDEsMiwxNEExMCwxMCwwLDAsMSwxMiw0TTEyLDZBMiwyLDAsMCwwLDEwLDhBMiwyLDAsMCwwLDEyLDEwQTIsMiwwLDAsMCwxNCw4QTIsMiwwLDAsMCwxMiw2TTEyLDEySDEwVjE0SDEyVjEyWiIgLz4KPC9zdmc+")!important;background-color:#2f96b4}.toast-warning{background-image:url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIHZpZXdCb3g9IjAgMCAyNCAyNCI+CiAgICA8cGF0aCBmaWxsPSJ3aGl0ZSIgZD0iTTEyLDE5QTEsMSwwLDAsMSwxMSwxOFYxNkExLDEsMCwwLDEsMTIsMTVBMQwxLDAsMCwxLDEzLDE2VjE4QTEsMSwwLDAsMSwxMiwxOU0xMSw3SDExLjAxTDExLDE0SDEzVjExTDEzLDdIMTFNMTIsMkwxLDIxSDIzTDEyLDJaIiAvPgo8L3N2Zz4=")!important;background-color:#f89406}#toast-container.toast-top-center>div,#toast-container.toast-bottom-center>div{width:300px;margin-left:auto;margin-right:auto}#toast-container.toast-top-full-width>div,#toast-container.toast-bottom-full-width>div{width:96%;margin-left:auto;margin-right:auto}.toast-progress{position:absolute;left:0;bottom:0;height:4px;background-color:#000;opacity:.4}.toast{background-color:#030303}.toast-success{background-color:#51a351}.toast-error{background-color:#bd362f}.toast-info{background-color:#2f96b4}.toast-warning{background-color:#f89406}
 
     /* GUID 링크 스타일 */
-    .plex-guid-link {
-        text-decoration: none !important;
-        color: inherit !important;
-        cursor: pointer;
-        transition: color 0.2s ease, text-decoration 0.2s ease;
-    }
-    .plex-guid-link:hover {
-        color: #f0ad4e !important;
-        text-decoration: underline !important;
-    }
+    .plex-guid-link { text-decoration: none !important; color: inherit !important; cursor: pointer; transition: color 0.2s ease, text-decoration 0.2s ease; }
+    .plex-guid-link:hover { color: #f0ad4e !important; text-decoration: underline !important; }
 
     /* 경로 스캔 링크 스타일 */
-    .plex-path-scan-link, #plex-guid-box .path-text-wrapper {
-        text-decoration: none !important;
-        cursor: pointer;
-        color: #f1f1f1 !important;
-        transition: color 0.2s ease, opacity 0.2s ease;
-    }
-    .plex-path-scan-link span[style*="color:#e5a00d"],
-    #plex-guid-box .path-text-wrapper span[style*="color:#e5a00d"] {
-        color: #e5a00d !important;
-    }
-    .plex-path-scan-link:hover {
-        color: #f0ad4e !important;
-        opacity: 0.9;
-    }
-    .plex-path-scan-link:hover, .plex-path-scan-link:hover span[style*="color:#e5a00d"] {
-        text-decoration: underline !important;
-    }
+    .plex-path-scan-link, #plex-guid-box .path-text-wrapper { text-decoration: none !important; cursor: pointer; color: #f1f1f1 !important; transition: color 0.2s ease, opacity 0.2s ease; }
+    .plex-path-scan-link span[style*="color:#e5a00d"], #plex-guid-box .path-text-wrapper span[style*="color:#e5a00d"] { color: #e5a00d !important; }
+    .plex-path-scan-link:hover { color: #f0ad4e !important; opacity: 0.9; }
+    .plex-path-scan-link:hover, .plex-path-scan-link:hover span[style*="color:#e5a00d"] { text-decoration: underline !important; }
 
     /* 상세 정보 내 버튼 스타일 */
     #plex-guid-box .plex-guid-action { font-size: 14px; margin-left: 16px; text-decoration: none; cursor: pointer; vertical-align: middle; opacity: 0.8; transition: opacity 0.2s ease, color 0.2s ease, transform 0.2s ease; }
     #plex-guid-box .plex-guid-action:hover { opacity: 1.0; transform: scale(1.05); }
 
     /* plex_mate 새로고침 버튼 스타일 */
-    #plex-mate-refresh-button {
-        display: inline-block;
-        padding: 4px 10px;
-        font-size: 13px;
-        font-weight: 700;
-        line-height: 1.4;
-        color: #1f1f1f !important;
-        background-color: #e5a00d;
-        border: 1px solid #c48b0b;
-        border-radius: 4px;
-        text-decoration: none !important;
-        vertical-align: middle;
-        cursor: pointer;
-        transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
-    }
-    #plex-mate-refresh-button:hover {
-        background-color: #d4910c;
-        border-color: #a9780a;
-    }
-    #plex-mate-refresh-button i {
-        margin-right: 5px;
-        font-size: 0.9em;
-    }
+    #plex-mate-refresh-button { display: inline-block; padding: 4px 10px; font-size: 13px; font-weight: 700; line-height: 1.4; color: #1f1f1f !important; background-color: #e5a00d; border: 1px solid #c48b0b; border-radius: 4px; text-decoration: none !important; vertical-align: middle; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease; }
+    #plex-mate-refresh-button:hover { background-color: #d4910c; border-color: #a9780a; }
+    #plex-mate-refresh-button i { margin-right: 5px; font-size: 0.9em; }
 
     /* 추가 정보 아이콘 */
     #plex-guid-box .fa-clock, #plex-guid-box .fa-film, #plex-guid-box .fa-video { color: #bdbdbd; opacity: 0.8; margin-right: 2px; }
@@ -98,15 +58,10 @@ GM_addStyle ( `
     /* 개별 아이콘 속성 */
     #plex-guid-box .plex-play-external { color: #4CAF50; }
     #plex-guid-box .plex-play-external:hover { color: #66bb6a; transform: scale(1.15); }
-
     #plex-guid-box .plex-open-folder { color: #FFC107; }
     #plex-guid-box .plex-open-folder:hover { color: #ffca28; transform: scale(1.15); }
-
-    #plex-guid-box .plex-download-link,
-    #plex-guid-box .plex-kor-subtitle-download { color: #adb5bd; margin-left: 6px; margin-right: 2px; }
-    #plex-guid-box .plex-download-link:hover,
-    #plex-guid-box .plex-kor-subtitle-download:hover { color: #ced4da; transform: scale(1.15); }
-
+    #plex-guid-box .plex-download-link, #plex-guid-box .plex-kor-subtitle-download { color: #adb5bd; margin-left: 6px; margin-right: 2px; }
+    #plex-guid-box .plex-download-link:hover, #plex-guid-box .plex-kor-subtitle-download:hover { color: #ced4da; transform: scale(1.15); }
     #plex-guid-box #refresh-guid-button { color: #adb5bd; margin-left: 8px; cursor: pointer; display: inline-block; transition: opacity 0.2s ease, color 0.2s ease, transform 0.2s ease; }
     #plex-guid-box #refresh-guid-button:hover { color: #ced4da; transform: scale(1.15); opacity: 1.0; }
 
@@ -118,41 +73,16 @@ GM_addStyle ( `
     #plex-guid-box #refresh-guid-button i { margin-right: 2px; }
 
     /* 목록 보기 외부 재생 아이콘 스타일 (호버 시 표시) */
-    div[data-testid^="cellItem"] div[class*="PosterCard-card-"] {
-        position: relative; overflow: hidden;
-    }
-    .plex-list-play-external {
-        position: absolute; top: 5px; right: 5px; z-index: 10;
-        background-color: rgba(30, 30, 30, 0.7); color: #adb5bd;
-        border-radius: 50%; width: 24px; height: 24px;
-        display: flex; align-items: center; justify-content: center;
-        cursor: pointer; text-decoration: none;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        opacity: 0; pointer-events: none; transform: scale(0.9);
-        transition: opacity 0.15s ease-in-out, transform 0.15s ease-in-out, background-color 0.2s ease, color 0.2s ease;
-    }
-    div[data-testid^="cellItem"] div[class*="PosterCard-card-"]:hover .plex-list-play-external {
-        opacity: 0.8; pointer-events: auto; transform: scale(1);
-    }
-    div[data-testid^="cellItem"] div[class*="PosterCard-card-"]:hover .plex-list-play-external:hover {
-        background-color: rgba(0, 0, 0, 0.85); color: #ffffff;
-        transform: scale(1.1); opacity: 1; border-color: rgba(255, 255, 255, 0.3);
-    }
-    .plex-list-play-external i {
-        font-size: 11px; vertical-align: middle; line-height: 1;
-    }
+    div[data-testid^="cellItem"] div[class*="PosterCard-card-"] { position: relative; overflow: hidden; }
+    .plex-list-play-external { position: absolute; top: 5px; right: 5px; z-index: 10; background-color: rgba(30, 30, 30, 0.7); color: #adb5bd; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; border: 1px solid rgba(255, 255, 255, 0.1); opacity: 0; pointer-events: none; transform: scale(0.9); transition: opacity 0.15s ease-in-out, transform 0.15s ease-in-out, background-color 0.2s ease, color 0.2s ease; }
+    div[data-testid^="cellItem"] div[class*="PosterCard-card-"]:hover .plex-list-play-external { opacity: 0.8; pointer-events: auto; transform: scale(1); }
+    div[data-testid^="cellItem"] div[class*="PosterCard-card-"]:hover .plex-list-play-external:hover { background-color: rgba(0, 0, 0, 0.85); color: #ffffff; transform: scale(1.1); opacity: 1; border-color: rgba(255, 255, 255, 0.3); }
+    .plex-list-play-external i { font-size: 11px; vertical-align: middle; line-height: 1; }
 
     /* 목록 GUID 뱃지 스타일 */
     .plex-guid-list-box { display: inline; margin-left: 5px; color: #e5a00d; font-size: 11px; font-weight: 500; line-height: inherit; vertical-align: baseline; cursor: pointer; text-decoration: none; font-family: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; transition: color 0.2s ease, opacity 0.2s ease, text-decoration 0.2s ease; }
-    .plex-guid-list-box:hover {
-        text-decoration: underline !important;
-        opacity: 0.85;
-    }
-    .plex-guid-list-box[data-refreshing="true"] {
-        cursor: default !important;
-        opacity: 0.7 !important;
-        text-decoration: none !important;
-    }
+    .plex-guid-list-box:hover { text-decoration: underline !important; opacity: 0.85; }
+    .plex-guid-list-box[data-refreshing="true"] { cursor: default !important; opacity: 0.7 !important; text-decoration: none !important; }
 
     /* 컨트롤 UI 버튼 스타일 */
     #pmdv-controls { margin-right: 10px; order: -1; display: flex; align-items: center; gap: 5px;}
@@ -170,29 +100,93 @@ GM_addStyle ( `
 (function() {
     'use strict';
 
+    // --- 설정 관리 ---
+    const SETTINGS_KEY = 'plexMetaHelper_Settings';
+
+    function getSettings() {
+        const defaultSettings = {
+            "INFO": "아래 설정을 JSON 형식에 맞게 수정하세요.",
+            "DISPLAY_PATH_PREFIXES_TO_REMOVE": [
+                "/mnt/gds",
+                "/mnt/content"
+            ],
+            "SERVER_TO_LOCAL_PATH_MAPPINGS": [
+                { "serverPrefix": "/mnt/gds/", "localPrefix": "Z:\\gds\\" },
+                { "serverPrefix": "/mnt/content/", "localPrefix": "Z:\\content\\" }
+            ],
+            "FF_URL_MAPPINGS": {
+                "SERVER_1_MACHINE_IDENTIFIER_HERE": "https://ff1.yourdomain.com",
+                "SERVER_2_MACHINE_IDENTIFIER_HERE": "https://ff2.yourdomain.com"
+            },
+            "PLEX_MATE_APIKEY": "_YOUR_APIKEY_",
+            "PLEX_MATE_CALLBACK_ID": "PlexMetaHelper",
+            "PLEX_MATE_API_DO_SCAN": "/plex_mate/api/scan/do_scan",
+            "PLEX_MATE_API_MANUAL_REFRESH": "/plex_mate/api/scan/manual_refresh"
+        };
+
+        let savedSettings = GM_getValue(SETTINGS_KEY, null);
+        if (savedSettings === null) {
+            GM_setValue(SETTINGS_KEY, defaultSettings);
+            return defaultSettings;
+        }
+        const finalSettings = { ...defaultSettings, ...savedSettings };
+        return finalSettings;
+    }
+
+    function showSettingsModal() {
+        if (document.getElementById('pmh-settings-modal')) return;
+
+        const currentSettings = GM_getValue(SETTINGS_KEY, {});
+        const settingsJsonString = JSON.stringify(currentSettings, null, 4);
+
+        const modalHtml = `
+            <div id="pmh-settings-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); z-index: 10000; display: flex; justify-content: center; align-items: center;">
+                <div style="background-color: #282c34; color: #abb2bf; padding: 20px; border-radius: 8px; width: 80%; max-width: 700px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
+                    <h2 style="margin-top: 0; border-bottom: 1px solid #444; padding-bottom: 10px;">Plex Meta Helper 설정 (JSON)</h2>
+                    <p style="font-size: 13px; margin-top: 0;">아래 텍스트를 JSON 형식에 맞게 수정한 후 저장하세요.</p>
+                    <textarea id="pmh-settings-textarea" style="width: 98%; flex-grow: 1; min-height: 430px; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 10px; font-family: monospace; font-size: 14px; resize: vertical;"></textarea>
+                    <div style="margin-top: 15px; text-align: right;">
+                        <button id="pmh-settings-save" style="padding: 8px 15px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px;">저장</button>
+                        <button id="pmh-settings-cancel" style="padding: 8px 15px; background-color: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer;">취소</button>
+                        <button id="pmh-settings-reset" style="padding: 8px 15px; background-color: #666; color: white; border: none; border-radius: 4px; cursor: pointer; float: left;">기본값으로 초기화</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        const textarea = document.getElementById('pmh-settings-textarea');
+        textarea.value = settingsJsonString;
+        textarea.focus();
+
+        const modal = document.getElementById('pmh-settings-modal');
+
+        document.getElementById('pmh-settings-save').addEventListener('click', () => {
+            try {
+                const newSettings = JSON.parse(textarea.value);
+                GM_setValue(SETTINGS_KEY, newSettings);
+                toastr.success("설정이 저장되었습니다. 페이지를 새로고침하면 적용됩니다.");
+                modal.remove();
+            } catch (e) {
+                alert("JSON 형식이 올바르지 않습니다. 수정 후 다시 시도해주세요.\n\n에러: " + e.message);
+            }
+        });
+
+        document.getElementById('pmh-settings-cancel').addEventListener('click', () => { modal.remove(); });
+        document.getElementById('pmh-settings-reset').addEventListener('click', () => {
+            if (confirm("정말로 모든 설정을 기본값으로 되돌리시겠습니까?")) {
+                GM_deleteValue(SETTINGS_KEY);
+                toastr.info("설정이 초기화되었습니다. 페이지를 새로고침하면 기본값으로 복원됩니다.");
+                modal.remove();
+            }
+        });
+    }
+
+    // --- 스크립트 실행 ---
+    GM_registerMenuCommand('PMH 설정 (JSON)', showSettingsModal);
+    const AppSettings = getSettings();
+
     const DEBUG = true;
-
-    // --- 사용자 설정 상수 ---
-    const DISPLAY_PATH_PREFIXES_TO_REMOVE = ['/mnt/gds', '/mnt/content'];
-    const SERVER_TO_LOCAL_PATH_MAPPINGS = [
-        { serverPrefix: '/mnt/gds/', localPrefix: 'Z:\\gds\\' },
-        { serverPrefix: '/mnt/content/', localPrefix: 'Z:\\content\\' },
-    ];
-
-    const FF_URL_MAPPINGS = {
-        'SERVER_1_MACHINE_IDENTIFIER_HERE': 'https://ff1.yourdomain.com',
-        'SERVER_2_MACHINE_IDENTIFIER_HERE': 'https://ff2.yourdomain.com'
-        // '서버ID': 'plex_mate 주소' 형식으로 계속 추가할 수 있습니다.
-    };
-
-    // --- PLEX_MATE API 설정 ---
-    const PLEX_MATE_APIKEY = "_YOUR_APIKEY_"; // plex_mate API 키는 공통으로 사용
-
-    const PLEX_MATE_API_DO_SCAN = "/plex_mate/api/scan/do_scan";
-    const PLEX_MATE_API_MANUAL_REFRESH = "/plex_mate/api/scan/manual_refresh";
-
-    // --- API 동시 요청 수 제한 상수 ---
-    const API_CONCURRENCY_LIMIT = 4; // plex api 동시 요청 수 제한
 
     // --- 전역 변수 및 상태 ---
     let currentUrl = '', currentGMXHR = null, currentController = null, currentServerId = null, currentItemId = null, currentDisplayedItemId = null, guidCacheObject = {};
@@ -218,6 +212,9 @@ GM_addStyle ( `
 
     // --- 아이콘 정의 ---
     const ICONS = { DOWNLOAD: '<i class="fas fa-download"></i>', PLAY: '<i class="fas fa-play"></i>', FOLDER: '<i class="fas fa-folder-open"></i>', REFRESH: '<i class="fas fa-sync-alt"></i>', CLOCK: '<i class="fas fa-clock"></i>', FILM: '<i class="fas fa-film"></i>', VIDEO: '<i class="fas fa-video"></i>', SPINNER: '<i class="fas fa-spinner fa-spin"></i>', CHECK: '<i class="fas fa-check"></i>', TIMES: '<i class="fas fa-times"></i>', PLEX_MATE: '<i class="fas fa-bolt"></i>' };
+
+    // --- API 동시 요청 수 제한 상수 ---
+    const API_CONCURRENCY_LIMIT = 4;
 
     // --- 로그 함수 ---
     function log(...args) { if(DEBUG) console.log(`[PMH Script][${new Date().toISOString()}]`, ...args); }
@@ -248,11 +245,11 @@ GM_addStyle ( `
     function removeAllGuidBadges() { document.querySelectorAll('.plex-guid-list-box, .plex-guid-wrapper, .plex-list-play-external').forEach(el => el.remove()); }
     function formatBytes(bytes) { if (bytes === null || bytes === undefined || isNaN(bytes) || bytes <= 0) return '-'; const k = 1024; const s = ['Bytes', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(bytes) / Math.log(k)); const d = i >= 2 ? 2 : 0; return parseFloat((bytes / Math.pow(k, i)).toFixed(d)) + ' ' + s[i]; }
     function cleanGuid(guid) { if (!guid || typeof guid !== 'string') return '-'; let cleanedGuid = guid.replace(/^com\.plexapp\.agents\.|^tv\.plex\.agents\./, '').replace(/\?lang.*$/, ''); return cleanedGuid || '-'; }
-    function getDisplayPath(originalPath) { if (!originalPath) return '-'; for (const prefix of DISPLAY_PATH_PREFIXES_TO_REMOVE) { if (originalPath.startsWith(prefix)) { return originalPath.substring(prefix.length); } } return originalPath; }
+    function getDisplayPath(originalPath) { if (!originalPath) return '-'; for (const prefix of AppSettings.DISPLAY_PATH_PREFIXES_TO_REMOVE) { if (originalPath.startsWith(prefix)) { return originalPath.substring(prefix.length); } } return originalPath; }
 
     function getLocalPath(originalPath) {
         if (!originalPath) return null;
-        for (const mapping of SERVER_TO_LOCAL_PATH_MAPPINGS) {
+        for (const mapping of AppSettings.SERVER_TO_LOCAL_PATH_MAPPINGS) {
             if (originalPath.startsWith(mapping.serverPrefix)) {
                 const remainingPath = originalPath.substring(mapping.serverPrefix.length).replace(/\//g, '\\');
                 return mapping.localPrefix + remainingPath;
@@ -311,33 +308,15 @@ GM_addStyle ( `
         return new Promise((resolve, reject) => {
             const sig = options.signal;
             if (sig?.aborted) return reject(new DOMException('Aborted', 'AbortError'));
-
             const xd = {
-                method: options.method || "GET",
-                url: options.url,
-                headers: options.headers || {},
-                responseType: options.responseType || undefined,
-                data: options.data || undefined,
-                timeout: options.timeout || undefined,
-                onload: r => {
-                    currentGMXHR = null;
-                    if (r.status >= 200 && r.status < 300) {
-                        resolve(r);
-                    } else {
-                        reject({ status: r.status, statusText: r.statusText, response: r.responseText });
-                    }
-                },
+                method: options.method || "GET", url: options.url, headers: options.headers || {}, responseType: options.responseType || undefined, data: options.data || undefined, timeout: options.timeout || undefined,
+                onload: r => { currentGMXHR = null; if (r.status >= 200 && r.status < 300) { resolve(r); } else { reject({ status: r.status, statusText: r.statusText, response: r.responseText }); } },
                 onerror: e => { currentGMXHR = null; reject({ error: 'Network error', details: e }); },
                 ontimeout: () => { currentGMXHR = null; reject({ error: 'Timeout' }); },
                 onabort: () => { currentGMXHR = null; reject(new DOMException('Aborted', 'AbortError')); }
             };
-
             currentGMXHR = GM_xmlhttpRequest(xd);
-
-            if (sig) {
-                const ah = () => { if (currentGMXHR) try { currentGMXHR.abort(); } catch (e) {} };
-                sig.addEventListener('abort', ah, { once: true });
-            }
+            if (sig) { const ah = () => { if (currentGMXHR) try { currentGMXHR.abort(); } catch (e) {} }; sig.addEventListener('abort', ah, { once: true }); }
         });
     }
 
@@ -349,14 +328,11 @@ GM_addStyle ( `
             const url = `${serverUrl}/library/metadata/${itemId}?${p.toString()}`;
             const r = await makeRequest({ url: url, method: "GET", signal: signal });
             if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
             const x = r.responseText;
             const d = new DOMParser().parseFromString(x, 'text/xml');
             if (d.querySelector('parsererror')) throw new Error('XML parse error');
-
             const v = d.querySelector('Video');
             const dir = d.querySelector('Directory');
-
             if (v) {
                 const rk = v.getAttribute('ratingKey'); log(`[fetchGuid] Found Video: ${rk}`);
                 const mv = [];
@@ -367,16 +343,11 @@ GM_addStyle ( `
                     if (cv.parts.length > 0 || cv.subtitles.length > 0) mv.push(cv);
                 });
                 return { type: 'video', guid: v.getAttribute('guid'), title: v.getAttribute('title'), year: v.getAttribute('year'), duration: msToHMS(v.getAttribute('duration')), mediaVersions: mv, markers: extractMarkers(v), itemId: rk, librarySectionID: v.getAttribute('librarySectionID') };
-
             } else if (dir) {
                 const ratingKey = dir.getAttribute('ratingKey'); log(`[fetchGuid] Found Directory: ${ratingKey}`);
                 const mv = []; let representativePath = null;
-
                 const locationTag = dir.querySelector('Location');
-                if (locationTag) {
-                    representativePath = locationTag.getAttribute('path');
-                }
-
+                if (locationTag) { representativePath = locationTag.getAttribute('path'); }
                 if (representativePath) {
                     log(`[fetchGuid] Found representative path from <Location> tag: ${representativePath}`);
                     mv.push({ mediaId: null, parts: [{ id: null, path: representativePath, size: null }], subtitles: [] });
@@ -415,16 +386,12 @@ GM_addStyle ( `
         const localPath = getLocalPath(originalPath);
         if (!localPath) { if(typeof toastr !== 'undefined') toastr.error('로컬 경로 변환 실패'); return; }
         let targetPath = localPath;
-
         if (openFolder) {
             if (itemType === 'video') {
                 const idx = Math.max(targetPath.lastIndexOf('/'), targetPath.lastIndexOf('\\'));
-                if (idx > -1) {
-                    targetPath = targetPath.substring(0, idx);
-                }
+                if (idx > -1) { targetPath = targetPath.substring(0, idx); }
             }
         }
-
         const displayPath = targetPath.substring(targetPath.lastIndexOf('\\') + 1); log(`Calling external player agent for: ${targetPath} (Folder: ${openFolder}, Type: ${itemType})`);
         if (typeof toastr !== 'undefined') toastr.info(`${openFolder ? '폴더 여는 중' : '외부 플레이어 실행 중'}: ${displayPath}`);
         const encodedPath = encodeURIComponent(targetPath.replace(/\+/g, '[PLEXEXTPLUS]')); const agentUrl = `http://localhost:7251/?protocol=2&item=${encodedPath}`;
@@ -443,7 +410,6 @@ GM_addStyle ( `
             if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
             document.getElementById('plex-guid-box')?.remove(); if (!container || !container.isConnected) return false;
             let fileInfoHtml = ''; let isFirstPathOverall = true; const serverId = currentServerId; const itemId = data.itemId;
-
             const createPathHtml = (originalPath) => {
                 const isScannable = data.librarySectionID && originalPath;
                 if (isScannable) {
@@ -451,7 +417,6 @@ GM_addStyle ( `
                 }
                 return `<span class="path-text-wrapper">${emphasizeFileName(originalPath)}</span>`;
             };
-
             if (data.type === 'directory' && data.mediaVersions?.[0]?.parts?.[0]?.path) {
                 const representativePart = data.mediaVersions[0].parts[0];
                 const originalPath = representativePart.path;
@@ -484,7 +449,6 @@ GM_addStyle ( `
                     return partsHtml;
                 }).join('');
             }
-
             const displayGuid = data.guid ? cleanGuid(data.guid) : '-';
             let guidHtml;
             if (data.guid && data.guid.startsWith('plex://')) {
@@ -492,12 +456,10 @@ GM_addStyle ( `
             } else {
                 guidHtml = `<span>${displayGuid}</span>`;
             }
-
-            const ffUrlForServer = FF_URL_MAPPINGS[serverId];
-            const showPlexMateButton = ffUrlForServer && PLEX_MATE_APIKEY;
+            const ffUrlForServer = AppSettings.FF_URL_MAPPINGS[serverId];
+            const showPlexMateButton = ffUrlForServer && AppSettings.PLEX_MATE_APIKEY;
             const plexMateHtml = showPlexMateButton ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">PLEX MATE</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><a href="#" id="plex-mate-refresh-button" class="plex-guid-action" title="PLEX MATE로 YAML/TMDB 반영 실행">${ICONS.PLEX_MATE} YAML/TMDB 반영</a></span></div>` : '';
             const html = `<div id="plex-guid-box" style="margin-top: 15px; margin-bottom: 10px; clear: both; width: 100%;"><div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold;">추가 메타 정보</div><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq3g _1v25wbq28">${plexMateHtml}${ displayGuid !== '-' ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">GUID</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="word-break: break-all;">${guidHtml} <span id="refresh-guid-button" title="새로고침(캐시 갱신)" style="cursor: pointer;">${ICONS.REFRESH}</span></span></div>` : ''}${fileInfoHtml}${data.duration ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">재생 시간</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><span>${ICONS.CLOCK} ${data.duration} ${data.markers?.intro ? `<span style="margin-left:10px;">${ICONS.FILM} Intro: ${data.markers.intro.start} ~ ${data.markers.intro.end}</span>` : ''} ${data.markers?.credits ? `<span style="margin-left:10px;"> ${ICONS.VIDEO} Credit: ${data.markers.credits.start} ~ ${data.markers.credits.end}</span>` : ''}</span></span></div>` : ''}</div></div>`;
-
             let insertTarget = null; let insertPosition = 'afterend';
             const ratingEl = container.querySelector('div[data-testid="metadata-starRatings"], div[data-testid="metadata-ratings"]'); const ratingCont = ratingEl?.parentElement;
             if (ratingCont?.isConnected) { const actionCont = container.querySelector('button[data-testid="preplay-play"]')?.parentElement; if (actionCont && ratingCont.nextElementSibling === actionCont) insertTarget = ratingCont; else insertTarget = ratingCont; }
@@ -511,113 +473,55 @@ GM_addStyle ( `
     function createGuidBadge(machineIdentifier, itemId, guid) {
         const displayGuidKey = extractGuidKey(guid);
         if (!displayGuidKey || displayGuidKey === '-') return null;
-
         let fullGuidKey = '-';
         if (guid && typeof guid === 'string') {
             const si = guid.indexOf('://');
-            if (si === -1) {
-                fullGuidKey = guid;
-            } else {
-                fullGuidKey = guid.substring(si + 3);
-                const qi = fullGuidKey.indexOf('?');
-                if (qi !== -1) {
-                    fullGuidKey = fullGuidKey.substring(0, qi);
-                }
-            }
+            if (si === -1) { fullGuidKey = guid; } else { fullGuidKey = guid.substring(si + 3); const qi = fullGuidKey.indexOf('?'); if (qi !== -1) { fullGuidKey = fullGuidKey.substring(0, qi); } }
             if (!fullGuidKey) fullGuidKey = '-';
         }
-
         const tooltipText = `${fullGuidKey}: 클릭시 갱신`;
-
         const badgeElement = document.createElement('span');
         badgeElement.className = 'plex-guid-list-box';
         badgeElement.textContent = displayGuidKey;
         badgeElement.title = tooltipText;
-
         badgeElement.addEventListener('click', async (event) => {
-            event.preventDefault();
-            event.stopPropagation();
+            event.preventDefault(); event.stopPropagation();
             if (badgeElement.dataset.refreshing === 'true') return;
-
             const cacheKey = `${machineIdentifier}_${itemId}`;
             log(`List GUID clicked: Refresh for ${cacheKey}`);
             const originalText = badgeElement.textContent;
             const originalTooltip = tooltipText;
-
             badgeElement.dataset.refreshing = 'true';
             badgeElement.textContent = '갱신중...';
             badgeElement.title = 'GUID 갱신 중...';
             const abortController = new AbortController();
-
             try {
-                if (hasCache(cacheKey)) {
-                    delete guidCacheObject[cacheKey];
-                    scheduleSaveCache();
-                }
+                if (hasCache(cacheKey)) { delete guidCacheObject[cacheKey]; scheduleSaveCache(); }
                 const serverInfo = extractServerInfo(machineIdentifier);
                 if (!serverInfo) throw new Error(`No server info for ${machineIdentifier}`);
-
                 const newData = await fetchGuid(serverInfo.serverUrl, itemId, serverInfo.accessToken, abortController.signal);
                 if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
                 if (newData?.guid) {
                     updateCache(cacheKey, newData);
                     const newDisplayGuidKey = extractGuidKey(newData.guid);
-
                     let newFullGuidKey = '-';
                     if (newData.guid && typeof newData.guid === 'string') {
                         const si = newData.guid.indexOf('://');
-                        if (si === -1) {
-                            newFullGuidKey = newData.guid;
-                        } else {
-                            newFullGuidKey = newData.guid.substring(si + 3);
-                            const qi = newFullGuidKey.indexOf('?');
-                            if (qi !== -1) {
-                                newFullGuidKey = newFullGuidKey.substring(0, qi);
-                            }
-                        }
+                        if (si === -1) { newFullGuidKey = newData.guid; } else { newFullGuidKey = newData.guid.substring(si + 3); const qi = newFullGuidKey.indexOf('?'); if (qi !== -1) { newFullGuidKey = newFullGuidKey.substring(0, qi); } }
                         if (!newFullGuidKey) newFullGuidKey = '-';
                     }
                     const newTooltipText = `${newFullGuidKey}: 클릭시 갱신`;
-
-                    if (document.body.contains(badgeElement)) {
-                        badgeElement.textContent = newDisplayGuidKey;
-                        badgeElement.title = newTooltipText;
-                    }
-                } else {
-                    throw new Error(`Failed to fetch valid GUID`);
-                }
+                    if (document.body.contains(badgeElement)) { badgeElement.textContent = newDisplayGuidKey; badgeElement.title = newTooltipText; }
+                } else { throw new Error(`Failed to fetch valid GUID`); }
             } catch (error) {
                 if (error.name !== 'AbortError') {
                     log(`Error refreshing GUID for ${itemId}:`, error);
                     if (document.body.contains(badgeElement)) {
-                        badgeElement.textContent = '[실패]';
-                        badgeElement.title = `오류: ${error.message || '알 수 없는 오류'}`;
-                        badgeElement.style.color = 'red';
-                        setTimeout(() => {
-                            if (document.body.contains(badgeElement) && badgeElement.dataset.refreshing === 'true') {
-                                badgeElement.textContent = originalText;
-                                badgeElement.title = originalTooltip;
-                                badgeElement.style.color = '#e5a00d';
-                            }
-                        }, 2000);
+                        badgeElement.textContent = '[실패]'; badgeElement.title = `오류: ${error.message || '알 수 없는 오류'}`; badgeElement.style.color = 'red';
+                        setTimeout(() => { if (document.body.contains(badgeElement) && badgeElement.dataset.refreshing === 'true') { badgeElement.textContent = originalText; badgeElement.title = originalTooltip; badgeElement.style.color = '#e5a00d'; } }, 2000);
                     }
-                } else {
-                    log(`Refresh aborted for ${itemId}.`);
-                    if (document.body.contains(badgeElement)) {
-                        badgeElement.textContent = originalText;
-                        badgeElement.title = originalTooltip;
-                    }
-                }
-            }
-            finally {
-                if (document.body.contains(badgeElement)) {
-                    delete badgeElement.dataset.refreshing;
-                    if (badgeElement.textContent !== '[실패]') {
-                        badgeElement.style.color = '#e5a00d';
-                    }
-                }
-            }
+                } else { log(`Refresh aborted for ${itemId}.`); if (document.body.contains(badgeElement)) { badgeElement.textContent = originalText; badgeElement.title = originalTooltip; } }
+            } finally { if (document.body.contains(badgeElement)) { delete badgeElement.dataset.refreshing; if (badgeElement.textContent !== '[실패]') { badgeElement.style.color = '#e5a00d'; } } }
         });
         return badgeElement;
     }
@@ -632,7 +536,6 @@ GM_addStyle ( `
     // --- 리스너 부착 함수들 ---
     function attachRefreshListener(cacheKey) { const rb = document.getElementById('refresh-guid-button'); if (rb) { const originalIconHTML = rb.innerHTML; const nrb = rb.cloneNode(true); rb.parentNode.replaceChild(nrb, rb); nrb.addEventListener('click', async () => { log(`Manual refresh for: ${cacheKey}`); if (hasCache(cacheKey)) { delete guidCacheObject[cacheKey]; scheduleSaveCache(); document.getElementById('plex-guid-box')?.remove(); currentDisplayedItemId = null; } nrb.innerHTML = ICONS.SPINNER; nrb.style.cursor = 'default'; try { await DetailProcess(1); } catch (error) { if (document.body.contains(nrb)) { nrb.innerHTML = originalIconHTML; nrb.style.cursor = 'pointer';}} }); } }
     function attachDownloadListeners(serverInfo) { if (!serverInfo?.serverUrl || !serverInfo.accessToken) return; document.querySelectorAll('#plex-guid-box .plex-download-link').forEach(l => { if (l.getAttribute('data-listener-attached') === 'true') return; l.setAttribute('data-listener-attached', 'true'); const originalIconHTML = l.innerHTML; l.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); const pid = l.dataset.partId; const fp = l.dataset.filePath; if (!pid) return; const fn = fp ? fp.substring(fp.lastIndexOf('/') + 1) : `part_${pid}`; const url = `${serverInfo.serverUrl}/library/parts/${pid}/0/file?download=1&X-Plex-Token=${serverInfo.accessToken}`; try { const tl = document.createElement('a'); tl.href = url; tl.download = fn; tl.style.display='none'; document.body.appendChild(tl); tl.click(); document.body.removeChild(tl); l.innerHTML = ICONS.CHECK; setTimeout(()=>{if(document.body.contains(l)) l.innerHTML = originalIconHTML;},3000); } catch(err){ l.innerHTML = ICONS.TIMES; setTimeout(()=>{if(document.body.contains(l)) l.innerHTML = originalIconHTML;},3000); } }); }); document.querySelectorAll('#plex-guid-box .plex-kor-subtitle-download').forEach(l => { if (l.getAttribute('data-listener-attached') === 'true') return; l.setAttribute('data-listener-attached', 'true'); const originalIconHTML = l.innerHTML; const originalTitle = l.title; l.addEventListener('click', async (e) => { e.preventDefault(); e.stopPropagation(); const sid = l.dataset.streamId; const sk = l.dataset.streamKey; const fmt = l.dataset.subtitleFormat || 'srt'; let lc = l.dataset.subtitleLanguage || 'kor'; const vfn = l.dataset.videoFilename || `subtitle_${lc}`; if (lc.toLowerCase() === 'kor') lc = 'ko'; if (!sid) return; let apiUrl = sk && sk.startsWith('/library/streams/') ? `${serverInfo.serverUrl}${sk}?X-Plex-Token=${serverInfo.accessToken}` : `${serverInfo.serverUrl}/library/streams/${sid}?X-Plex-Token=${serverInfo.accessToken}`; const fn = `${vfn}.${lc}.${fmt}`; log(`Subtitle download: ${apiUrl}`); l.innerHTML = ICONS.SPINNER; l.style.cursor='default'; l.title = '다운로드 중...'; const ac = new AbortController(); const sig = ac.signal; try { const rsp = await makeRequest({ url: apiUrl, method: 'GET', headers:{'Accept':'text/plain, */*'}, responseType:'blob', signal: sig }); if (sig.aborted) throw new DOMException('Aborted','AbortError'); const blob = rsp.response; if(!blob) throw new Error('No blob'); const burl = URL.createObjectURL(blob); const tl=document.createElement('a'); tl.href=burl; tl.download=fn; tl.style.display='none'; document.body.appendChild(tl); tl.click(); document.body.removeChild(tl); URL.revokeObjectURL(burl); l.innerHTML = ICONS.CHECK; l.title='다운로드 완료'; setTimeout(()=>{if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;}},3000); } catch (err) { if(err.name!=='AbortError'){ log('Subtitle error:', err); l.innerHTML = ICONS.TIMES; l.title=`실패: ${err.message||err.error||'?'}`; setTimeout(()=>{if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;}},3000); } else { if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;} } } finally { if(document.body.contains(l)) l.style.cursor='pointer'; } }); }); }
-
     function attachPlaybackListeners(serverId, itemId) {
         const btns = document.querySelectorAll('#plex-guid-box .plex-play-external, #plex-guid-box .plex-open-folder');
         log(`[attachPlaybackListeners] Attaching ${btns.length} buttons for ${serverId}/${itemId}`);
@@ -640,137 +543,69 @@ GM_addStyle ( `
             if (b.getAttribute('data-listener-attached') === 'true') return;
             b.setAttribute('data-listener-attached', 'true');
             b.addEventListener('click', async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const originalPath = b.dataset.filePath;
-                const of = b.dataset.openFolder === 'true';
-                const bsid = b.dataset.serverId;
-                const biid = b.dataset.itemId;
-                const itemType = b.dataset.itemType || 'video';
-
-                if (!originalPath || !bsid || !biid) {
-                    if(typeof toastr!=='undefined') toastr.error('재생 정보 부족');
-                    return;
-                }
-                const oo = b.style.opacity;
-                b.style.opacity='0.5';
-                try {
-                    await openItemOnAgent(originalPath, biid, of, bsid, itemType);
-                } catch (err) {}
+                e.preventDefault(); e.stopPropagation();
+                const originalPath = b.dataset.filePath; const of = b.dataset.openFolder === 'true'; const bsid = b.dataset.serverId; const biid = b.dataset.itemId; const itemType = b.dataset.itemType || 'video';
+                if (!originalPath || !bsid || !biid) { if(typeof toastr!=='undefined') toastr.error('재생 정보 부족'); return; }
+                const oo = b.style.opacity; b.style.opacity='0.5';
+                try { await openItemOnAgent(originalPath, biid, of, bsid, itemType); } catch (err) {}
                 finally { if(document.body.contains(b)) b.style.opacity = oo || ''; }
             });
         });
     }
-
-    // --- 경로 스캔 리스너 부착 (Plex Mate API, 동적 URL) ---
     function attachPlexMateScanListeners(serverId) {
         document.querySelectorAll('.plex-path-scan-link').forEach(link => {
             if (link.getAttribute('data-listener-attached') === 'true') return;
             link.setAttribute('data-listener-attached', 'true');
-
             link.addEventListener('click', async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-
-                const originalPath = link.dataset.originalPath;
-                const itemType = link.dataset.itemType;
-
-                const mateBaseUrl = FF_URL_MAPPINGS[serverId];
-                if (!mateBaseUrl) {
-                    toastr.warning(`이 서버(${serverId})에 대한 Plex Mate URL이 설정되지 않았습니다.`);
-                    return;
-                }
-                const fullApiUrl = mateBaseUrl + PLEX_MATE_API_DO_SCAN;
-
-                if (!originalPath || !fullApiUrl || !PLEX_MATE_APIKEY) {
-                    toastr.warning('Plex Mate 스캔에 필요한 정보(URL, API키)가 부족합니다.');
-                    return;
-                }
-
+                e.preventDefault(); e.stopPropagation();
+                const originalPath = link.dataset.originalPath; const itemType = link.dataset.itemType; const mateBaseUrl = AppSettings.FF_URL_MAPPINGS[serverId];
+                if (!mateBaseUrl) { toastr.warning(`이 서버(${serverId})에 대한 Plex Mate URL이 설정되지 않았습니다.`); return; }
+                const fullApiUrl = mateBaseUrl + AppSettings.PLEX_MATE_API_DO_SCAN;
+                if (!originalPath || !fullApiUrl || !AppSettings.PLEX_MATE_APIKEY) { toastr.warning('Plex Mate 스캔에 필요한 정보(URL, API키)가 부족합니다.'); return; }
                 let scanPath = originalPath;
-                if (itemType === 'video' && originalPath.includes('/')) {
-                    scanPath = originalPath.substring(0, originalPath.lastIndexOf('/'));
-                }
-
+                if (itemType === 'video' && originalPath.includes('/')) { scanPath = originalPath.substring(0, originalPath.lastIndexOf('/')); }
                 toastr.info(`Plex Mate에 '${getDisplayPath(scanPath)}' 경로 스캔을 요청합니다...`);
-
                 try {
                     const data = new URLSearchParams();
-                    data.append('callback_id', 'PlexMetaHelper');
-                    data.append('target', scanPath);
-                    data.append('apikey', PLEX_MATE_APIKEY);
-                    data.append('mode', 'ADD');
-
+                    data.append('callback_id', AppSettings.PLEX_MATE_CALLBACK_ID); data.append('target', scanPath); data.append('apikey', AppSettings.PLEX_MATE_APIKEY); data.append('mode', 'ADD');
                     log('[PlexMateScan] Sending request. URL:', fullApiUrl, 'Data:', data.toString());
-
-                    await makeRequest({
-                        method: 'POST',
-                        url: fullApiUrl,
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        data: data.toString(),
-                        timeout: 30000
-                    });
+                    await makeRequest({ method: 'POST', url: fullApiUrl, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: data.toString(), timeout: 30000 });
                     toastr.success('Plex Mate 스캔 요청에 성공했습니다.');
                 } catch (error) {
                     log('Plex Mate path scan error:', error);
                     let errorMsg = '알 수 없는 오류';
-                    if (error.error === 'Timeout') {
-                        errorMsg = '요청 시간이 초과되었습니다. Plex Mate 서버가 응답하지 않을 수 있습니다.';
-                    } else if (error.error === 'Network error') {
-                        errorMsg = 'Plex Mate 서버에 연결할 수 없습니다.';
-                    } else if (error.statusText) {
-                        errorMsg = `서버 응답 오류 (${error.status || ''} ${error.statusText})`;
-                    }
+                    if (error.error === 'Timeout') errorMsg = '요청 시간이 초과되었습니다. Plex Mate 서버가 응답하지 않을 수 있습니다.';
+                    else if (error.error === 'Network error') errorMsg = 'Plex Mate 서버에 연결할 수 없습니다.';
+                    else if (error.statusText) errorMsg = `서버 응답 오류 (${error.status || ''} ${error.statusText})`;
                     toastr.error(`스캔 요청 실패: ${errorMsg}`, '오류', {timeOut: 7000});
                 }
             });
         });
     }
-
-    // --- plex_mate 새로고침 리스너 부착 ---
     function attachPlexMateRefreshListener(itemId, serverId) {
         const button = document.getElementById('plex-mate-refresh-button');
         if (!button) return;
-
-        const mateBaseUrl = FF_URL_MAPPINGS[serverId];
+        const mateBaseUrl = AppSettings.FF_URL_MAPPINGS[serverId];
         const originalHtml = button.innerHTML;
         button.addEventListener('click', async (e) => {
             e.preventDefault(); e.stopPropagation();
-
-            if (!mateBaseUrl || !PLEX_MATE_APIKEY) {
-                toastr.warning('이 서버에 대한 plex_mate URL 또는 API 키가 설정되지 않았습니다.');
-                return;
-            }
-
+            if (!mateBaseUrl || !AppSettings.PLEX_MATE_APIKEY) { toastr.warning('이 서버에 대한 plex_mate URL 또는 API 키가 설정되지 않았습니다.'); return; }
             toastr.info('plex_mate에 새로고침을 요청합니다...');
             button.style.pointerEvents = 'none'; button.innerHTML = `${ICONS.SPINNER} 요청 중...`;
-
             try {
-                const url = mateBaseUrl + PLEX_MATE_API_MANUAL_REFRESH;
-                const data = `apikey=${encodeURIComponent(PLEX_MATE_APIKEY)}&metadata_item_id=${encodeURIComponent(itemId)}`;
-                await makeRequest({
-                    method: 'POST',
-                    url: url,
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    data: data,
-                    timeout: 30000 // 30초 타임아웃 (단위: ms)
-                });
+                const url = mateBaseUrl + AppSettings.PLEX_MATE_API_MANUAL_REFRESH;
+                const data = `apikey=${encodeURIComponent(AppSettings.PLEX_MATE_APIKEY)}&metadata_item_id=${encodeURIComponent(itemId)}`;
+                await makeRequest({ method: 'POST', url: url, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: data, timeout: 30000 });
                 toastr.success('새로고침 요청 성공! 잠시 후 캐시 갱신(🔄)을 눌러주세요.');
             } catch (error) {
                 log('plex_mate refresh error:', error);
                 let errorMsg = '알 수 없는 오류';
-                if (error.error === 'Timeout') {
-                    errorMsg = '요청 시간이 초과되었습니다. 서버가 느리거나 응답이 없을 수 있습니다.';
-                } else if (error.error === 'Network error') {
-                    errorMsg = '네트워크 오류가 발생했습니다. 서버에 연결할 수 없습니다.';
-                } else if (error.statusText) {
-                    errorMsg = `서버 응답 오류 (${error.status || ''} ${error.statusText})`;
-                }
+                if (error.error === 'Timeout') errorMsg = '요청 시간이 초과되었습니다. 서버가 느리거나 응답이 없을 수 있습니다.';
+                else if (error.error === 'Network error') errorMsg = '네트워크 오류가 발생했습니다. 서버에 연결할 수 없습니다.';
+                else if (error.statusText) errorMsg = `서버 응답 오류 (${error.status || ''} ${error.statusText})`;
                 toastr.error(`새로고침 요청 실패: ${errorMsg}`, '오류', {timeOut: 7000});
             } finally {
-                if(document.body.contains(button)) {
-                    button.style.pointerEvents = 'auto'; button.innerHTML = originalHtml;
-                }
+                if(document.body.contains(button)) { button.style.pointerEvents = 'auto'; button.innerHTML = originalHtml; }
             }
         });
     }
@@ -800,7 +635,6 @@ GM_addStyle ( `
                 if (!serverInfo) serverInfo = extractServerInfo(serverId);
                 if (!serverInfo) throw new Error('Server info not found');
                 displayed = await displayGuidDetail(dataToDisplay, signal, mainContainer);
-
                 if (displayed) {
                     log(`DetailProcess: Display SUCCESS for ${cacheKey}.`);
                     currentDisplayedItemId = cacheKey;
@@ -808,10 +642,8 @@ GM_addStyle ( `
                     attachRefreshListener(cacheKey);
                     attachDownloadListeners(serverInfo);
                     if(isExternalPlayVisible) attachPlaybackListeners(serverId, dataToDisplay.itemId);
-                    attachPlexMateScanListeners(serverId); // plex_mate 스캔 리스너로 교체
-                } else if (signal.aborted) {
-                    log('DetailProcess: Aborted during display.');
-                }
+                    attachPlexMateScanListeners(serverId);
+                } else if (signal.aborted) { log('DetailProcess: Aborted during display.'); }
             } else { log(`DetailProcess: No data to display for ${cacheKey}.`); document.getElementById('plex-guid-box')?.remove(); currentDisplayedItemId = null; }
         } catch (error) { if (error.name !== 'AbortError') log(`DetailProcess Error (Attempt ${retryAttempt})`, cacheKey, error); else log(`DetailProcess Aborted (Attempt ${retryAttempt}).`); displayed = false; if (currentDisplayedItemId === cacheKey) currentDisplayedItemId = null; }
         finally { if (!signal?.aborted && !displayed && retryAttempt < MAX_RETRIES) { isDetailProcessRunning = false; setTimeout(() => DetailProcess(retryAttempt + 1), RETRY_DELAY); } else { if (!displayed && retryAttempt >= MAX_RETRIES) { document.getElementById('plex-guid-box')?.remove(); if (currentDisplayedItemId === cacheKey) currentDisplayedItemId = null; } isDetailProcessRunning = false; } }
@@ -830,12 +662,9 @@ GM_addStyle ( `
             const candidateContainers = Array.from(document.querySelectorAll('div[data-testid^="cellItem"]:not([data-pmdv-processed])'));
             if (signal?.aborted || !candidateContainers || candidateContainers.length === 0) { log("ListProcess: No new items or aborted."); return; }
             log(`ListProcess: Found ${candidateContainers.length} candidate containers.`); const fetchQueue = []; const itemsToProcess = [];
-            // 1. 정보 수집 및 처리 대상 선정
             for (const container of candidateContainers) { if (signal?.aborted) break; const itemElement = container.querySelector('a[data-testid="metadataTitleLink"]'); if (!itemElement) continue; container.setAttribute('data-pmdv-processed', 'true'); const href = itemElement.getAttribute('href') || ''; const keyParam = new URLSearchParams(href.split('?')[1]).get('key'); if (!keyParam) { container.removeAttribute('data-pmdv-processed'); continue; } const dk = decodeURIComponent(keyParam); const sm = href.match(/\/server\/([a-f0-9]+)\//); const mid = sm ? sm[1] : null; const iidPart = dk.split('/metadata/')[1]; const iid = iidPart?.split(/[\/?]/)[0]; if (!mid || !iid || !/^\d+$/.test(iid)) { container.removeAttribute('data-pmdv-processed'); continue; } const cacheKey = `${mid}_${iid}`; const cachedData = getCache(cacheKey); itemsToProcess.push({ container, secondaryLinkElement: itemElement, machineIdentifier: mid, itemId: iid, cacheKey, cachedData }); if (!cachedData && (isListGuidVisible || isExternalPlayVisible)) { const serverInfo = extractServerInfo(mid); if (serverInfo) fetchQueue.push({ cacheKey, serverInfo, itemId: iid, container }); else container.removeAttribute('data-pmdv-processed'); } else if (!cachedData) container.removeAttribute('data-pmdv-processed'); }
             if (signal?.aborted) { itemsToProcess.forEach(item => item.container.removeAttribute('data-pmdv-processed')); throw new DOMException('Aborted', 'AbortError'); }
-            // 2. API 호출
             if (fetchQueue.length > 0) { log(`ListProcess: Fetching data for ${fetchQueue.length} items...`); const apiFetchFunction = async (job) => { try { return await fetchGuid(job.serverInfo.serverUrl, job.itemId, job.serverInfo.accessToken, signal); } catch(error) { if (error.name !== 'AbortError') log(`API fetch error for ${job.itemId}: ${error.message}`); return null; } }; const completedJobs = await processQueueWithConcurrency(fetchQueue, API_CONCURRENCY_LIMIT, apiFetchFunction); if (signal?.aborted) { itemsToProcess.forEach(item => item.container.removeAttribute('data-pmdv-processed')); throw new DOMException('Aborted', 'AbortError'); } completedJobs.forEach(({ item: job, result: data, error }) => { const itemToUpdate = itemsToProcess.find(p => p.cacheKey === job.cacheKey); if (error || !data) { if (itemToUpdate) itemToUpdate.container.removeAttribute('data-pmdv-processed'); } else { updateCache(job.cacheKey, data); if (itemToUpdate) itemToUpdate.fetchedData = data; } }); log(`ListProcess: Finished fetching API requests.`); }
-            // 3. 아이콘/뱃지 표시
             log(`ListProcess: Processing ${itemsToProcess.length} items for final display.`);
             for (const item of itemsToProcess) { if (signal?.aborted) break; const data = item.fetchedData || item.cachedData; if (!data) { item.container.removeAttribute('data-pmdv-processed'); continue; } const existingBadge = item.container.querySelector('.plex-guid-list-box'); const existingPlayIcon = item.container.querySelector('.plex-list-play-external'); if (existingBadge && existingBadge.dataset.refreshing !== 'true') { const newGuidKey = data.guid ? extractGuidKey(data.guid) : null; if (!isListGuidVisible || !newGuidKey || existingBadge.textContent !== newGuidKey) existingBadge.remove(); } if (existingPlayIcon && !isExternalPlayVisible) existingPlayIcon.remove(); if (isExternalPlayVisible && !item.container.querySelector('.plex-list-play-external')) { const firstPartPath = data.mediaVersions?.[0]?.parts?.[0]?.path; if (data.type === 'video' && firstPartPath) { try { const playIcon = createListPlayIcon(item.machineIdentifier, item.itemId, firstPartPath, item.container); if (playIcon) { const pc = item.container.querySelector('div[class*="PosterCard-card-"]'); if (pc) pc.appendChild(playIcon); else item.container.appendChild(playIcon); } } catch (e) {} } } if (isListGuidVisible && data.guid) { const currentBadge = item.container.querySelector('.plex-guid-list-box'); if (!currentBadge) { try { const badge = createGuidBadge(item.machineIdentifier, item.itemId, data.guid); if (badge) { const targetElement = item.container.querySelector('div[class*="PosterCard-card-"]')?.nextElementSibling; if (targetElement && targetElement.tagName === 'A') targetElement.insertAdjacentElement('afterend', badge); else { if(item.secondaryLinkElement?.parentNode) item.secondaryLinkElement.insertAdjacentElement('afterend', badge); else item.container.appendChild(badge); } } } catch (e) {} } } }
             if (signal?.aborted) { itemsToProcess.forEach(item => item.container.removeAttribute('data-pmdv-processed')); throw new DOMException('Aborted', 'AbortError'); }
