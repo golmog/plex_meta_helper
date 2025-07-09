@@ -187,6 +187,7 @@ GM_addStyle ( `
 
     // --- PLEX_MATE API 설정 ---
     const PLEX_MATE_APIKEY = "_YOUR_APIKEY_"; // plex_mate API 키는 공통으로 사용
+
     const PLEX_MATE_API_DO_SCAN = "/plex_mate/api/scan/do_scan";
     const PLEX_MATE_API_MANUAL_REFRESH = "/plex_mate/api/scan/manual_refresh";
 
