@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.3.3
+// @version      0.3.4
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -220,11 +220,14 @@ GM_addStyle ( `
         MANUAL_REFRESH: "/plex_mate/api/scan/manual_refresh"
     };
 
+    // toastr 알림 시간 상수 (단위: ms)
+    const TOASTR_TIMEOUT = 5000;
+
     // --- 로그 함수 ---
     function log(...args) { if(DEBUG) console.log(`[PMH Script][${new Date().toISOString()}]`, ...args); }
 
     // --- toastr 옵션 ---
-    if (typeof toastr !== 'undefined') { toastr.options = { "closeButton": true, "debug": false, "newestOnTop": true, "progressBar": true, "positionClass": "toast-bottom-right", "preventDuplicates": false, "onclick": null, "showDuration": "300", "hideDuration": "1000", "timeOut": "3000", "extendedTimeOut": "1000", "showEasing": "swing", "hideEasing": "linear", "showMethod": "fadeIn", "hideMethod": "fadeOut" }; log("Toastr options configured."); } else { log("Toastr library not loaded."); }
+    if (typeof toastr !== 'undefined') { toastr.options = { "closeButton": true, "debug": false, "newestOnTop": true, "progressBar": true, "positionClass": "toast-bottom-right", "preventDuplicates": false, "onclick": null, "showDuration": "300", "hideDuration": "1000", "timeOut": TOASTR_TIMEOUT, "extendedTimeOut": "1000", "showEasing": "swing", "hideEasing": "linear", "showMethod": "fadeIn", "hideMethod": "fadeOut" }; log("Toastr options configured."); } else { log("Toastr library not loaded."); }
 
     // --- 스토리지 함수 ---
     function storageGet(key, defaultValue) { try { return GM_getValue(key, defaultValue); } catch (e) { log(`Error getting value for key ${key}:`, e); return defaultValue; } }
@@ -400,7 +403,7 @@ GM_addStyle ( `
         if (typeof toastr !== 'undefined') toastr.info(`${openFolder ? '폴더 여는 중' : '외부 플레이어 실행 중'}: ${displayPath}`);
         const encodedPath = encodeURIComponent(targetPath.replace(/\+/g, '[PLEXEXTPLUS]')); const agentUrl = `http://localhost:7251/?protocol=2&item=${encodedPath}`;
         try { await makeRequest({ url: agentUrl, method: "GET" }); log("Agent request sent."); }
-        catch (error) { log("Failed to connect to agent:", error); if (typeof toastr !== 'undefined') toastr.error('에이전트 연결 실패. 실행 확인.', '실행 오류', { timeOut: 5000 }); throw error; }
+        catch (error) { log("Failed to connect to agent:", error); if (typeof toastr !== 'undefined') toastr.error('에이전트 연결 실패. 실행 확인.', '실행 오류'); throw error; }
     }
 
     // --- DOM 요소 대기 ---
@@ -577,15 +580,14 @@ GM_addStyle ( `
                     scanPath = originalPath.substring(0, originalPath.lastIndexOf('/'));
                 }
 
-                // 사용자가 설정한 스캔 타입을 확인
                 const scanType = AppSettings.PLEX_MATE_SCAN_TYPE?.toLowerCase().trim();
                 log(`[PlexMateScan] Starting scan process with type: ${scanType || 'default (plex_mate)'}`);
 
                 try {
-                    // scanType이 'web'일 때만 vfs/refresh를 먼저 실행
                     if (scanType === 'web') {
                         // --- 1단계: VFS Refresh 요청 (Web 스캔 시에만) ---
-                        toastr.info(`[1/2] Plex Mate에 VFS 새로고침 요청 중... (경로: ${getDisplayPath(scanPath)})`, "Web 스캔 시작", {timeOut: 10000});
+                        toastr.info(`[1/2] Plex Mate에 VFS 새로고침 요청 중...`, "Web 스캔 시작");
+
                         const vfsRefreshUrl = mateBaseUrl + PLEX_MATE_API_ENDPOINTS.VFS_REFRESH;
                         const vfsData = new URLSearchParams();
                         vfsData.append('apikey', AppSettings.PLEX_MATE_APIKEY);
@@ -594,17 +596,33 @@ GM_addStyle ( `
                         vfsData.append('async', 'false');
 
                         log('[PlexMateScan] 1. Sending VFS refresh request for "web" scan. URL:', vfsRefreshUrl, 'Data:', vfsData.toString());
-                        await makeRequest({
+                        const vfsResponse = await makeRequest({
                             method: 'POST',
                             url: vfsRefreshUrl,
                             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                             data: vfsData.toString(),
                             timeout: 90000
                         });
-                        log('[PlexMateScan] 1. VFS refresh request successful.');
-                        toastr.info(`[2/2] VFS 새로고침 완료. Plex 라이브러리 스캔을 요청합니다...`, "VFS 완료", {timeOut: 5000});
+                        
+                        let vfsResult;
+                        try {
+                            vfsResult = JSON.parse(vfsResponse.responseText);
+                            log('[PlexMateScan] VFS refresh response received:', vfsResult);
+                        } catch (jsonError) {
+                            throw new Error('VFS 새로고침 응답을 파싱할 수 없습니다.');
+                        }
+
+                        if (vfsResult.ret === 'success') {
+                            log('[PlexMateScan] 1. VFS refresh response validated as SUCCESS.');
+                            toastr.info(`[2/2] VFS 새로고침 완료. 라이브러리 스캔 요청 중...`, "VFS 완료");
+                        } else {
+                            const failReason = vfsResult.msg || '알 수 없는 이유';
+                            log(`[PlexMateScan] 1. VFS refresh response validated as FAILURE. Reason: ${failReason}`);
+                            throw new Error(`VFS 새로고침 실패: ${failReason}`);
+                        }
+
                     } else {
-                        toastr.info(`Plex Mate 스캔을 요청합니다... (경로: ${getDisplayPath(scanPath)})`, "Plex Mate 스캔 시작", {timeOut: 5000});
+                        toastr.info(`Plex Mate 스캔을 요청합니다...`, "Plex Mate 스캔 시작");
                     }
 
                     // --- 최종 단계: 라이브러리 스캔 요청 ---
@@ -628,15 +646,15 @@ GM_addStyle ( `
                     });
                     log('[PlexMateScan] Final library scan request successful.');
 
-                    toastr.success('Plex Mate 스캔 요청에 성공했습니다. 잠시 후 라이브러리가 갱신됩니다.', '요청 완료', {timeOut: 7000});
+                    toastr.success('Plex Mate 스캔 요청에 성공했습니다.', '요청 완료');
 
                 } catch (error) {
                     log('Plex Mate path scan error:', error);
-                    let errorMsg = '알 수 없는 오류';
+                    let errorMsg = error.message || '알 수 없는 오류';
                     if (error.error === 'Timeout') errorMsg = '요청 시간이 초과되었습니다. Plex Mate 서버가 응답하지 않을 수 있습니다.';
                     else if (error.error === 'Network error') errorMsg = 'Plex Mate 서버에 연결할 수 없습니다.';
                     else if (error.statusText) errorMsg = `서버 응답 오류 (${error.status || ''} ${error.statusText})`;
-                    toastr.error(`스캔 요청 실패: ${errorMsg}`, '오류', {timeOut: 7000});
+                    toastr.error(`스캔 요청 실패: ${errorMsg}`, '오류');
                 }
             });
         });
@@ -662,7 +680,7 @@ GM_addStyle ( `
                 if (error.error === 'Timeout') errorMsg = '요청 시간이 초과되었습니다. 서버가 느리거나 응답이 없을 수 있습니다.';
                 else if (error.error === 'Network error') errorMsg = '네트워크 오류가 발생했습니다. 서버에 연결할 수 없습니다.';
                 else if (error.statusText) errorMsg = `서버 응답 오류 (${error.status || ''} ${error.statusText})`;
-                toastr.error(`새로고침 요청 실패: ${errorMsg}`, '오류', {timeOut: 7000});
+                toastr.error(`새로고침 요청 실패: ${errorMsg}`, '오류');
             } finally {
                 if(document.body.contains(button)) { button.style.pointerEvents = 'auto'; button.innerHTML = originalHtml; }
             }
