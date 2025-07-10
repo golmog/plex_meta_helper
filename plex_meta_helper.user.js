@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.3.2
+// @version      0.3.3
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -119,9 +119,8 @@ GM_addStyle ( `
                 "SERVER_2_MACHINE_IDENTIFIER_HERE": "https://ff2.yourdomain.com"
             },
             "PLEX_MATE_APIKEY": "_YOUR_APIKEY_",
-            "PLEX_MATE_CALLBACK_ID": "PlexMetaHelper",
-            "PLEX_MATE_API_DO_SCAN": "/plex_mate/api/scan/do_scan",
-            "PLEX_MATE_API_MANUAL_REFRESH": "/plex_mate/api/scan/manual_refresh"
+            "PLEX_MATE_SCAN_TYPE": "web",
+            "PLEX_MATE_CALLBACK_ID": "PlexMetaHelper"
         };
 
         let savedSettings = GM_getValue(SETTINGS_KEY, null);
@@ -136,7 +135,7 @@ GM_addStyle ( `
     function showSettingsModal() {
         if (document.getElementById('pmh-settings-modal')) return;
 
-        const currentSettings = GM_getValue(SETTINGS_KEY, {});
+        const currentSettings = getSettings();
         const settingsJsonString = JSON.stringify(currentSettings, null, 4);
 
         const modalHtml = `
@@ -213,8 +212,13 @@ GM_addStyle ( `
     // --- 아이콘 정의 ---
     const ICONS = { DOWNLOAD: '<i class="fas fa-download"></i>', PLAY: '<i class="fas fa-play"></i>', FOLDER: '<i class="fas fa-folder-open"></i>', REFRESH: '<i class="fas fa-sync-alt"></i>', CLOCK: '<i class="fas fa-clock"></i>', FILM: '<i class="fas fa-film"></i>', VIDEO: '<i class="fas fa-video"></i>', SPINNER: '<i class="fas fa-spinner fa-spin"></i>', CHECK: '<i class="fas fa-check"></i>', TIMES: '<i class="fas fa-times"></i>', PLEX_MATE: '<i class="fas fa-bolt"></i>' };
 
-    // --- API 동시 요청 수 제한 상수 ---
+    // --- API 상수 ---
     const API_CONCURRENCY_LIMIT = 4;
+    const PLEX_MATE_API_ENDPOINTS = {
+        DO_SCAN: "/plex_mate/api/scan/do_scan",
+        VFS_REFRESH: "/plex_mate/api/scan/vfs_refresh",
+        MANUAL_REFRESH: "/plex_mate/api/scan/manual_refresh"
+    };
 
     // --- 로그 함수 ---
     function log(...args) { if(DEBUG) console.log(`[PMH Script][${new Date().toISOString()}]`, ...args); }
@@ -309,7 +313,7 @@ GM_addStyle ( `
             const sig = options.signal;
             if (sig?.aborted) return reject(new DOMException('Aborted', 'AbortError'));
             const xd = {
-                method: options.method || "GET", url: options.url, headers: options.headers || {}, responseType: options.responseType || undefined, data: options.data || undefined, timeout: options.timeout || undefined,
+                method: options.method || "GET", url: options.url, headers: options.headers || {}, responseType: options.responseType || undefined, data: options.data || undefined, timeout: options.timeout || 30000, // 기본 타임아웃 30초
                 onload: r => { currentGMXHR = null; if (r.status >= 200 && r.status < 300) { resolve(r); } else { reject({ status: r.status, statusText: r.statusText, response: r.responseText }); } },
                 onerror: e => { currentGMXHR = null; reject({ error: 'Network error', details: e }); },
                 ontimeout: () => { currentGMXHR = null; reject({ error: 'Timeout' }); },
@@ -413,7 +417,7 @@ GM_addStyle ( `
             const createPathHtml = (originalPath) => {
                 const isScannable = data.librarySectionID && originalPath;
                 if (isScannable) {
-                    return `<a href="#" class="plex-path-scan-link" title="클릭하여 Plex Mate로 스캔" data-original-path="${originalPath}" data-section-id="${data.librarySectionID}" data-item-type="${data.type}">${emphasizeFileName(originalPath)}</a>`;
+                    return `<a href="#" class="plex-path-scan-link" title="클릭하여 Plex Mate로 VFS 새로고침 및 라이브러리 스캔 실행" data-original-path="${originalPath}" data-section-id="${data.librarySectionID}" data-item-type="${data.type}">${emphasizeFileName(originalPath)}</a>`;
                 }
                 return `<span class="path-text-wrapper">${emphasizeFileName(originalPath)}</span>`;
             };
@@ -558,19 +562,74 @@ GM_addStyle ( `
             link.setAttribute('data-listener-attached', 'true');
             link.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
-                const originalPath = link.dataset.originalPath; const itemType = link.dataset.itemType; const mateBaseUrl = AppSettings.FF_URL_MAPPINGS[serverId];
+                const originalPath = link.dataset.originalPath;
+                const sectionId = link.dataset.sectionId;
+                const itemType = link.dataset.itemType;
+                const mateBaseUrl = AppSettings.FF_URL_MAPPINGS[serverId];
+
                 if (!mateBaseUrl) { toastr.warning(`이 서버(${serverId})에 대한 Plex Mate URL이 설정되지 않았습니다.`); return; }
-                const fullApiUrl = mateBaseUrl + AppSettings.PLEX_MATE_API_DO_SCAN;
-                if (!originalPath || !fullApiUrl || !AppSettings.PLEX_MATE_APIKEY) { toastr.warning('Plex Mate 스캔에 필요한 정보(URL, API키)가 부족합니다.'); return; }
+                if (!originalPath || !sectionId || !AppSettings.PLEX_MATE_APIKEY) {
+                    toastr.warning('Plex Mate 스캔에 필요한 정보(경로, 섹션ID, API키 등)가 부족합니다.'); return;
+                }
+
                 let scanPath = originalPath;
-                if (itemType === 'video' && originalPath.includes('/')) { scanPath = originalPath.substring(0, originalPath.lastIndexOf('/')); }
-                toastr.info(`Plex Mate에 '${getDisplayPath(scanPath)}' 경로 스캔을 요청합니다...`);
+                if (itemType === 'video' && originalPath.includes('/')) {
+                    scanPath = originalPath.substring(0, originalPath.lastIndexOf('/'));
+                }
+
+                // 사용자가 설정한 스캔 타입을 확인
+                const scanType = AppSettings.PLEX_MATE_SCAN_TYPE?.toLowerCase().trim();
+                log(`[PlexMateScan] Starting scan process with type: ${scanType || 'default (plex_mate)'}`);
+
                 try {
-                    const data = new URLSearchParams();
-                    data.append('callback_id', AppSettings.PLEX_MATE_CALLBACK_ID); data.append('target', scanPath); data.append('apikey', AppSettings.PLEX_MATE_APIKEY); data.append('mode', 'ADD');
-                    log('[PlexMateScan] Sending request. URL:', fullApiUrl, 'Data:', data.toString());
-                    await makeRequest({ method: 'POST', url: fullApiUrl, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: data.toString(), timeout: 30000 });
-                    toastr.success('Plex Mate 스캔 요청에 성공했습니다.');
+                    // scanType이 'web'일 때만 vfs/refresh를 먼저 실행
+                    if (scanType === 'web') {
+                        // --- 1단계: VFS Refresh 요청 (Web 스캔 시에만) ---
+                        toastr.info(`[1/2] Plex Mate에 VFS 새로고침 요청 중... (경로: ${getDisplayPath(scanPath)})`, "Web 스캔 시작", {timeOut: 10000});
+                        const vfsRefreshUrl = mateBaseUrl + PLEX_MATE_API_ENDPOINTS.VFS_REFRESH;
+                        const vfsData = new URLSearchParams();
+                        vfsData.append('apikey', AppSettings.PLEX_MATE_APIKEY);
+                        vfsData.append('target', scanPath);
+                        vfsData.append('recursive', 'true');
+                        vfsData.append('async', 'false');
+
+                        log('[PlexMateScan] 1. Sending VFS refresh request for "web" scan. URL:', vfsRefreshUrl, 'Data:', vfsData.toString());
+                        await makeRequest({
+                            method: 'POST',
+                            url: vfsRefreshUrl,
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            data: vfsData.toString(),
+                            timeout: 90000
+                        });
+                        log('[PlexMateScan] 1. VFS refresh request successful.');
+                        toastr.info(`[2/2] VFS 새로고침 완료. Plex 라이브러리 스캔을 요청합니다...`, "VFS 완료", {timeOut: 5000});
+                    } else {
+                        toastr.info(`Plex Mate 스캔을 요청합니다... (경로: ${getDisplayPath(scanPath)})`, "Plex Mate 스캔 시작", {timeOut: 5000});
+                    }
+
+                    // --- 최종 단계: 라이브러리 스캔 요청 ---
+                    const doScanUrl = mateBaseUrl + PLEX_MATE_API_ENDPOINTS.DO_SCAN;
+                    const scanData = new URLSearchParams();
+                    scanData.append('apikey', AppSettings.PLEX_MATE_APIKEY);
+                    scanData.append('target', scanPath);
+                    scanData.append('target_section_id', sectionId);
+
+                    if (scanType === 'web') {
+                        scanData.append('scanner', 'web');
+                    }
+                    
+                    log('[PlexMateScan] Final step. Sending library scan request. URL:', doScanUrl, 'Data:', scanData.toString());
+                    await makeRequest({
+                        method: 'POST',
+                        url: doScanUrl,
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        data: scanData.toString(),
+                        timeout: 30000
+                    });
+                    log('[PlexMateScan] Final library scan request successful.');
+
+                    toastr.success('Plex Mate 스캔 요청에 성공했습니다. 잠시 후 라이브러리가 갱신됩니다.', '요청 완료', {timeOut: 7000});
+
                 } catch (error) {
                     log('Plex Mate path scan error:', error);
                     let errorMsg = '알 수 없는 오류';
@@ -593,7 +652,7 @@ GM_addStyle ( `
             toastr.info('plex_mate에 새로고침을 요청합니다...');
             button.style.pointerEvents = 'none'; button.innerHTML = `${ICONS.SPINNER} 요청 중...`;
             try {
-                const url = mateBaseUrl + AppSettings.PLEX_MATE_API_MANUAL_REFRESH;
+                const url = mateBaseUrl + PLEX_MATE_API_ENDPOINTS.MANUAL_REFRESH;
                 const data = `apikey=${encodeURIComponent(AppSettings.PLEX_MATE_APIKEY)}&metadata_item_id=${encodeURIComponent(itemId)}`;
                 await makeRequest({ method: 'POST', url: url, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: data, timeout: 30000 });
                 toastr.success('새로고침 요청 성공! 잠시 후 캐시 갱신(🔄)을 눌러주세요.');
