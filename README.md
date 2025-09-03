@@ -4,6 +4,12 @@ Plex Web UI를 강화하는 Tampermonkey 유저스크립트입니다. Plex 컨�
 
 특히 `plex_mate`와의 연동을 통해 VFS 새로고침 및 라이브러리 스캔을 웹 UI에서 직접 실행할 수 있습니다.
 
+## 업데이트
+
+0.3.5 (2025-09-04)
+- 외부재생을 목록재생/상세재생으로 나눔
+- 로그레벨을 설정 JSON 내에서 지정(INFO/DEBUG/NONE)
+
 ## 사전 요구사항
 
 이 스크립트의 모든 기능을 사용하려면 다음이 필요합니다.
@@ -62,7 +68,8 @@ Plex 웹 UI에서 Tampermonkey 아이콘을 클릭한 후, `PMH 설정 (JSON)` �
     },
     "PLEX_MATE_APIKEY": "_YOUR_APIKEY_",
     "PLEX_MATE_CALLBACK_ID": "PlexMetaHelper",
-    "PLEX_MATE_SCAN_TYPE": "web"
+    "PLEX_MATE_SCAN_TYPE": "web",
+    "LOG_LEVEL": "INFO"
 }
 ```
 
