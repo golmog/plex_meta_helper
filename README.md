@@ -55,11 +55,11 @@ Plex 웹 UI에서 Tampermonkey 아이콘을 클릭한 후, `PMH 설정 (JSON)` �
     "SERVER_TO_LOCAL_PATH_MAPPINGS": [
         {
             "serverPrefix": "/mnt/gds/",
-            "localPrefix": "Z:\\gds\\"
+            "localPrefix": "Z:/gds/"
         },
         {
             "serverPrefix": "/mnt/content/",
-            "localPrefix": "Z:\\content\\"
+            "localPrefix": "Z:/content/"
         }
     ],
     "FF_URL_MAPPINGS": {
@@ -82,4 +82,4 @@ Plex 웹 UI에서 Tampermonkey 아이콘을 클릭한 후, `PMH 설정 (JSON)` �
 | `FF_URL_MAPPINGS`                      | **`plex_mate` 연동을 위해 필수적입니다.** Plex 서버의 `machineIdentifier`와 `plex_mate`의 접속 주소를 연결합니다. 서버의 `machineIdentifier`는 Plex 상세 페이지 URL에서 `.../server/여기에있는값/details...` 부분을 복사하여 사용하면 됩니다. |
 | `PLEX_MATE_APIKEY`                     | `plex_mate` API를 사용하기 위한 API 키를 입력합니다.                                                                                                                                                                                  |
 | `PLEX_MATE_CALLBACK_ID`                | `plex_mate` 로그에 표시될 작업 요청자 ID입니다. 기본값을 유지하는 것을 권장합니다.                                                                                                                                                    |
-| `PLEX_MATE_SCAN_TYPE`                  | 경로 스캔 시 사용할 스캐너 모드를 선택합니다. (`"web"` 또는 `"plex_mate"`)<br>• **`"web"`**: 스크립트가 먼저 `vfs/refresh`를 호출하여 파일 시스템을 갱신한 후, Plex 라이브러리 스캔을 요청합니다.<br>• **`"plex_mate"`**: 스크립트는 `vfs/refresh`를 호출하지 않고, `plex_mate` 서버의 자체 설정에 따라 스캔이 진행됩니다. |
+| `PLEX_MATE_SCAN_TYPE`                  | 경로 스캔 시 사용할 스캔 방식을 선택합니다. `"web"`으로 지정시 Plex web 방식 스캔으로 요청합니다. |
