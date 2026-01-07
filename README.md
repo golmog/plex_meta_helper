@@ -75,11 +75,11 @@ Plex 웹 UI에서 Tampermonkey 아이콘을 클릭한 후, `PMH 설정 (JSON)` �
 
 ### 설정 항목 설명
 
-| 키                                     | 설명                                                                                                                                                                                                                               |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DISPLAY_PATH_PREFIXES_TO_REMOVE`      | UI에 표시될 파일 경로에서 제거할 앞부분을 지정합니다. 경로가 너무 길 경우 간결하게 표시하기 위해 사용합니다. (예: `/mnt/gds/Movies/Avatar (2009)/...` -> `Movies/Avatar (2009)/...`)                                                      |
-| `SERVER_TO_LOCAL_PATH_MAPPINGS`        | 서버의 파일 경로를 로컬 PC의 경로로 변환하는 규칙입니다. **외부 플레이어/폴더 열기 기능을 사용하려면 PlexExternalPlayer 에이전트 실행과 함께 이 설정이 필수적입니다.** `serverPrefix`는 Plex 서버가 인식하는 경로, `localPrefix`는 로컬 PC에서 접근 가능한 경로(네트워크 드라이브 등)를 입력합니다. 슬래시(`/`)와 역슬래시(`\`) 사용에 주의하세요. |
-| `FF_URL_MAPPINGS`                      | **`plex_mate` 연동을 위해 필수적입니다.** Plex 서버의 `machineIdentifier`와 `plex_mate`의 접속 주소를 연결합니다. 서버의 `machineIdentifier`는 Plex 상세 페이지 URL에서 `.../server/여기에있는값/details...` 부분을 복사하여 사용하면 됩니다. |
-| `PLEX_MATE_APIKEY`                     | `plex_mate` API를 사용하기 위한 API 키를 입력합니다.                                                                                                                                                                                  |
-| `PLEX_MATE_CALLBACK_ID`                | `plex_mate` 로그에 표시될 작업 요청자 ID입니다. 기본값을 유지하는 것을 권장합니다.                                                                                                                                                    |
+| 키 | 설명 |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `DISPLAY_PATH_PREFIXES_TO_REMOVE`      | UI에 표시될 파일 경로에서 제거할 앞부분을 지정합니다. 경로가 너무 길 경우 간결하게 표시하기 위해 사용합니다. (예: `/mnt/gds/Movies/Avatar (2009)/...` -> `Movies/Avatar (2009)/...`) |
+| `SERVER_TO_LOCAL_PATH_MAPPINGS`        | 서버의 파일 경로를 로컬 PC의 경로로 변환하는 규칙입니다. **외부 플레이어/폴더 열기 기능을 사용하려면 PlexExternalPlayer 에이전트 실행과 함께 이 설정이 필수적입니다.** `serverPrefix`는 Plex 서버가 인식하는 경로, `localPrefix`는 로컬 PC에서 접근 가능한 경로(네트워크 드라이브 등)를 입력합니다. |
+| `FF_URL_MAPPINGS`                      | **`plex_mate` 연동을 위해 필수적입니다.** Plex 서버의 `machineIdentifier`와 `plex_mate`의 접속 주소를 각각 입력하여 연결합니다. 서버의 `machineIdentifier`는 Plex 상세 페이지 URL에서 `.../server/여기에있는값/details...` 부분을 복사하여 사용하면 됩니다. |
+| `PLEX_MATE_APIKEY`                     | `plex_mate` API를 사용하기 위한 API 키를 입력합니다. |
+| `PLEX_MATE_CALLBACK_ID`                | `plex_mate` 로그에 표시될 작업 요청자 ID입니다. |
 | `PLEX_MATE_SCAN_TYPE`                  | 경로 스캔 시 사용할 스캔 방식을 선택합니다. `"web"`으로 지정시 Plex web 방식 스캔으로 요청합니다. |
