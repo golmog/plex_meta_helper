@@ -1,0 +1,24 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\Classes\plexplay]
+@="URL:Plex Play Protocol"
+"URL Protocol"=""
+
+[HKEY_CURRENT_USER\Software\Classes\plexplay\shell]
+
+[HKEY_CURRENT_USER\Software\Classes\plexplay\shell\open]
+
+[HKEY_CURRENT_USER\Software\Classes\plexplay\shell\open\command]
+@="\"C:\\path\\to\\plexhelper.bat\" \"%1\""
+
+
+[HKEY_CURRENT_USER\Software\Classes\plexfolder]
+@="URL:Plex Folder Protocol"
+"URL Protocol"=""
+
+[HKEY_CURRENT_USER\Software\Classes\plexfolder\shell]
+
+[HKEY_CURRENT_USER\Software\Classes\plexfolder\shell\open]
+
+[HKEY_CURRENT_USER\Software\Classes\plexfolder\shell\open\command]
+@="\"C:\\path\\to\\plexhelper.bat\" \"%1\""

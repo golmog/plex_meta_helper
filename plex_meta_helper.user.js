@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.3.5
+// @version      0.4.6
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -12,6 +12,8 @@
 // @match        https://*.plex.direct/*
 // @match        https://*/web/index.html*
 // @match        http://*:32400/*
+// @match        https://plex.*
+// @match        https://plex-*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=plex.tv
 // @require      https://code.jquery.com/jquery-3.6.0.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/js/toastr.min.js
@@ -95,6 +97,86 @@ GM_addStyle ( `
     #pmdv-controls input[type=number]::-webkit-inner-spin-button, #pmdv-controls input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
     #pmdv-controls #pmdv-status { color: #aaa; font-style: italic; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; margin-right: 8px; min-width: 80px; text-align: left; order: -1; }
     #pmdv-controls #pmdv-apply-length:hover, #pmdv-controls #pmdv-clear-current:hover, #pmdv-controls #pmdv-clear-all:hover { background-color: rgba(80, 80, 80, 0.5) !important; color: #fff !important; }
+
+    /* 미디어 정보 아이콘 버튼 스타일 */
+    .media-info-line .plex-guid-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2px 6px;
+        margin: 0 !important;
+        border-radius: 4px;
+        background-color: rgba(255, 255, 255, 0.1);
+        font-size: 13px;
+        vertical-align: middle;
+        line-height: 1;
+        transition: background-color 0.2s ease, transform 0.2s ease;
+        text-decoration: none !important;
+        color: #E0E0E0 !important;
+    }
+    .media-info-line .plex-guid-action:hover {
+        background-color: rgba(255, 255, 255, 0.2);
+        transform: translateY(-1px);
+    }
+    .media-info-line .plex-guid-action.disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+        pointer-events: none;
+    }
+    .media-info-line .plex-guid-action i {
+        vertical-align: middle;
+    }
+
+    /* 미디어 정보 정렬 스타일 (Grid 레이아웃) */
+    .media-info-line {
+        display: grid;
+        /* 외부재생(0.3) / 폴더열기(0.3) / 해상도(0.5) / 비디오(2.2) / 오디오(2.2) / 자막(1.0) */
+        grid-template-columns: 0.3fr 0.3fr 0.5fr 2.2fr 2.2fr 1.0fr;
+        align-items: center; /* 세로 중앙 정렬 */
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 4px;
+        background-color: rgba(0, 0, 0, 0.2);
+        margin-bottom: 4px;
+    }
+    .media-info-line .info-block {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        text-align: center;
+    }
+    .media-info-line .info-label {
+        color: #9E9E9E;
+        font-size: 10px;
+        margin-bottom: 2px;
+        white-space: nowrap;
+    }
+    .media-info-line .info-value {
+        font-size: 12.5px;
+        color: #E0E0E0;
+        line-height: 1.3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        white-space: normal;
+        word-break: break-word;
+        overflow: visible;
+        text-overflow: clip;
+    }
+    .media-info-line .info-value .plex-kor-subtitle-download {
+        background-color: transparent;
+        margin: 0;
+        padding: 0 4px 0 0;
+    }
+
+    /* 버전 구분선 */
+    .media-version-block:not(:last-child) {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+        padding-bottom: 4px;
+        margin-bottom: 4px;
+    }
+
 ` );
 
 (function() {
@@ -192,20 +274,18 @@ GM_addStyle ( `
     const LIST_GUID_VISIBILITY_KEY = 'plexListGuidVisibility';
     const DETAIL_INFO_VISIBILITY_KEY = 'plexDetailInfoVisibility';
     const GUID_LENGTH_KEY = 'plexGuidLength';
-    const DETAIL_PLAY_ICON_VISIBILITY_KEY = 'plexDetailPlayIconVisibility';
     const LIST_PLAY_ICON_VISIBILITY_KEY = 'plexListPlayIconVisibility';
     let saveTimeout = null, statusTimeout = null;
 
     // --- 상태 변수 ---
     let isListGuidVisible = GM_getValue(LIST_GUID_VISIBILITY_KEY, false);
     let isDetailInfoVisible = GM_getValue(DETAIL_INFO_VISIBILITY_KEY, false);
-    let isDetailExternalPlayVisible = GM_getValue(DETAIL_PLAY_ICON_VISIBILITY_KEY, false);
     let isListExternalPlayVisible = GM_getValue(LIST_PLAY_ICON_VISIBILITY_KEY, false);
     let guidMaxLength = GM_getValue(GUID_LENGTH_KEY, 20);
     if (isNaN(parseInt(guidMaxLength)) || parseInt(guidMaxLength) < 5 || parseInt(guidMaxLength) > 50) { guidMaxLength = 20; } else { guidMaxLength = parseInt(guidMaxLength); }
 
     // --- UI 요소 참조 ---
-    let controlContainer, toggleListGuidButton, toggleDetailInfoButton, toggleDetailPlayButton, toggleListPlayButton, guidLengthInput, applyGuidLengthButton, clearCurrentButton, clearAllButton, statusMessageElement;
+    let controlContainer, toggleListGuidButton, toggleDetailInfoButton, toggleListPlayButton, guidLengthInput, applyGuidLengthButton, clearCurrentButton, clearAllButton, statusMessageElement;
 
     // --- URL 변경 및 Observer 관련 상태 ---
     let isProcessingUrlChange = false; let detailObserverDebounceTimer = null; let detailProcessTriggeredByObserver = false; let forceRetryTimeoutId = null; let detailCheckIntervalId = null; let isDetailProcessRunning = false;
@@ -248,11 +328,10 @@ GM_addStyle ( `
     function loadSettingsAndUpdateUI() {
         isListGuidVisible = storageGet(LIST_GUID_VISIBILITY_KEY, false);
         isDetailInfoVisible = storageGet(DETAIL_INFO_VISIBILITY_KEY, false);
-        isDetailExternalPlayVisible = storageGet(DETAIL_PLAY_ICON_VISIBILITY_KEY, false);
         isListExternalPlayVisible = storageGet(LIST_PLAY_ICON_VISIBILITY_KEY, false);
         let savedLength = storageGet(GUID_LENGTH_KEY, 20);
         guidMaxLength = (savedLength !== undefined && !isNaN(parseInt(savedLength)) && parseInt(savedLength) >= 5 && parseInt(savedLength) <= 50) ? parseInt(savedLength) : 20;
-        infoLog(`Settings loaded: ListGUID=${isListGuidVisible}, DetailInfo=${isDetailInfoVisible}, DetailPlay=${isDetailExternalPlayVisible}, ListPlay=${isListExternalPlayVisible}, Length=${guidMaxLength}`);
+        infoLog(`Settings loaded: ListGUID=${isListGuidVisible}, DetailInfo=${isDetailInfoVisible}, ListPlay=${isListExternalPlayVisible}, Length=${guidMaxLength}`);
         updateToggleButtonUI(); if (guidLengthInput) guidLengthInput.value = guidMaxLength;
     }
 
@@ -264,6 +343,33 @@ GM_addStyle ( `
     function hasCache(key) { return key in guidCacheObject; }
 
     // --- 헬퍼 함수들 ---
+    function getTwoLetterLanguageCode(code) {
+        if (!code || typeof code !== 'string') return 'und';
+        
+        const lowerCode = code.toLowerCase();
+        if (lowerCode.length === 2) return lowerCode;
+
+        const langMap = {
+            'kor': 'ko',
+            'eng': 'en',
+            'jpn': 'ja',
+            'chi': 'zh',
+            'fre': 'fr',
+            'ger': 'de',
+            'spa': 'es',
+            'ita': 'it',
+            'rus': 'ru',
+            'por': 'pt',
+            'tha': 'th',
+            'vie': 'vi',
+            'ind': 'id'
+            // 필요한 다른 언어 코드 추가
+        };
+        
+        const threeLetterCode = lowerCode.substring(0, 3);
+        return langMap[threeLetterCode] || threeLetterCode;
+    }
+
     function removeAllGuidBadges() { document.querySelectorAll('.plex-guid-list-box, .plex-guid-wrapper, .plex-list-play-external').forEach(el => el.remove()); }
     function formatBytes(bytes) { if (bytes === null || bytes === undefined || isNaN(bytes) || bytes <= 0) return '-'; const k = 1024; const s = ['Bytes', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(bytes) / Math.log(k)); const d = i >= 2 ? 2 : 0; return parseFloat((bytes / Math.pow(k, i)).toFixed(d)) + ' ' + s[i]; }
     function cleanGuid(guid) { if (!guid || typeof guid !== 'string') return '-'; let cleanedGuid = guid.replace(/^com\.plexapp\.agents\.|^tv\.plex\.agents\./, '').replace(/\?lang.*$/, ''); return cleanedGuid || '-'; }
@@ -271,10 +377,13 @@ GM_addStyle ( `
 
     function getLocalPath(originalPath) {
         if (!originalPath) return null;
+
         for (const mapping of AppSettings.SERVER_TO_LOCAL_PATH_MAPPINGS) {
+            const cleanLocalPrefix = mapping.localPrefix.replace(/\\/g, '/');
+            
             if (originalPath.startsWith(mapping.serverPrefix)) {
-                const remainingPath = originalPath.substring(mapping.serverPrefix.length).replace(/\//g, '\\');
-                return mapping.localPrefix + remainingPath;
+                const remainingPath = originalPath.substring(mapping.serverPrefix.length);
+                return cleanLocalPrefix + remainingPath;
             }
         }
         log(`[getLocalPath] No mapping found for: ${originalPath}`);
@@ -359,9 +468,50 @@ GM_addStyle ( `
                 const rk = v.getAttribute('ratingKey'); log(`[fetchGuid] Found Video: ${rk}`);
                 const mv = [];
                 v.querySelectorAll('Media').forEach(m => {
-                    const cv = { mediaId: m.getAttribute('id'), parts: [], subtitles: [] };
+                    // [추가] 상세 정보를 위해 Stream 태그 확인
+                    const videoStream = m.querySelector('Stream[streamType="1"]');
+                    const audioStream = m.querySelector('Stream[streamType="2"]');
+
+                    const cv = {
+                        mediaId: m.getAttribute('id'),
+                        videoResolution: m.getAttribute('videoResolution'),
+                        width: m.getAttribute('width'),
+                        height: m.getAttribute('height'),
+                        bitrate: m.getAttribute('bitrate'),
+                        videoCodec: m.getAttribute('videoCodec'),
+                        audioCodec: m.getAttribute('audioCodec'),
+                        audioBitrate: audioStream?.getAttribute('bitrate'),
+                        doviProfile: videoStream?.getAttribute('DOVIProfile'),
+                        bitDepth: videoStream?.getAttribute('bitDepth'),
+                        colorSpace: videoStream?.getAttribute('colorSpace'),
+                        audioChannels: audioStream?.getAttribute('channels'),
+                        parts: [],
+                        subtitles: []
+                    };
                     m.querySelectorAll('Part').forEach(p => { const pa = p.getAttribute('file'); const sz = p.getAttribute('size'); const pid = p.getAttribute('id'); let size = null; if (sz) { const ps = parseInt(sz); if (!isNaN(ps)) size = ps; } if (pa) cv.parts.push({ id: pid, path: pa, size: size }); });
-                    m.querySelectorAll('Stream[streamType="3"]').forEach(s => { const sid = s.getAttribute('id'); const sk = s.getAttribute('key'); const f = s.getAttribute('format'); const c = s.getAttribute('codec'); const l = s.getAttribute('language'); const lc = s.getAttribute('languageCode'); const ie = s.getAttribute('external') === '1'; const isl = sk || ie || ['srt','ass','smi','vtt','ssa'].includes(f?.toLowerCase()) || ['srt','ass','smi','vtt','ssa'].includes(c?.toLowerCase()); if (isl && sid && (sk || f || c)) cv.subtitles.push({ id: sid, key: sk, format: f || c?.toLowerCase() || 'sub', language: l || lc || '?', languageCode: lc || 'und' }); });
+                    m.querySelectorAll('Stream[streamType="3"]').forEach(s => { 
+                        const sid = s.getAttribute('id'); 
+                        const sk = s.getAttribute('key'); 
+                        const f = s.getAttribute('format'); 
+                        const c = s.getAttribute('codec'); 
+                        const l = s.getAttribute('language');
+                        const lc = s.getAttribute('languageCode');
+                        const ie = s.getAttribute('external') === '1'; 
+                        const isl = sk || ie || ['srt','ass','smi','vtt','ssa'].includes(f?.toLowerCase()) || ['srt','ass','smi','vtt','ssa'].includes(c?.toLowerCase()); 
+                        
+                        if (isl && sid && (sk || f || c)) {
+                            const codeToConvert = lc || (l ? l.substring(0, 3) : null);
+                            const twoLetterCode = getTwoLetterLanguageCode(codeToConvert);
+
+                            cv.subtitles.push({ 
+                                id: sid, 
+                                key: sk, 
+                                format: f || c?.toLowerCase() || 'sub', 
+                                language: l || lc || '?', 
+                                languageCode: twoLetterCode
+                            });
+                        }
+                    });
                     if (cv.parts.length > 0 || cv.subtitles.length > 0) mv.push(cv);
                 });
                 return { type: 'video', guid: v.getAttribute('guid'), title: v.getAttribute('title'), year: v.getAttribute('year'), duration: msToHMS(v.getAttribute('duration')), mediaVersions: mv, markers: extractMarkers(v), itemId: rk, librarySectionID: v.getAttribute('librarySectionID') };
@@ -403,24 +553,6 @@ GM_addStyle ( `
         } catch (error) { if (error.name === 'AbortError') throw error; infoLog('[fetchGuid] Error:', itemId, error); return null; }
     }
 
-    // --- 외부 플레이어 에이전트 호출 ---
-    async function openItemOnAgent(originalPath, itemId, openFolder, serverId, itemType = 'video') {
-        const localPath = getLocalPath(originalPath);
-        if (!localPath) { if(typeof toastr !== 'undefined') toastr.error('로컬 경로 변환 실패'); return; }
-        let targetPath = localPath;
-        if (openFolder) {
-            if (itemType === 'video') {
-                const idx = Math.max(targetPath.lastIndexOf('/'), targetPath.lastIndexOf('\\'));
-                if (idx > -1) { targetPath = targetPath.substring(0, idx); }
-            }
-        }
-        const displayPath = targetPath.substring(targetPath.lastIndexOf('\\') + 1); log(`Calling external player agent for: ${targetPath} (Folder: ${openFolder}, Type: ${itemType})`);
-        if (typeof toastr !== 'undefined') toastr.info(`${openFolder ? '폴더 여는 중' : '외부 플레이어 실행 중'}: ${displayPath}`);
-        const encodedPath = encodeURIComponent(targetPath.replace(/\+/g, '[PLEXEXTPLUS]')); const agentUrl = `http://localhost:7251/?protocol=2&item=${encodedPath}`;
-        try { await makeRequest({ url: agentUrl, method: "GET" }); log("Agent request sent."); }
-        catch (error) { infoLog("Failed to connect to agent:", error); if (typeof toastr !== 'undefined') toastr.error('에이전트 연결 실패. 실행 확인.', '실행 오류'); throw error; }
-    }
-
     // --- DOM 요소 대기 ---
     async function waitForElement(selector, timeout = 5000, signal) { const st = Date.now(); while (Date.now() - st < timeout) { if (signal?.aborted) throw new DOMException('Aborted', 'AbortError'); const el = document.querySelector(selector); if (el && el.isConnected) return el; await new Promise(r => { const t = setTimeout(r, 100); signal?.addEventListener('abort', () => { clearTimeout(t); r(); }, { once: true }); }); } if (signal?.aborted) throw new DOMException('Aborted', 'AbortError'); throw new Error(`Element "${selector}" not found within ${timeout}ms`); }
     async function waitForMetadataContainer(signal) { return waitForElement('div[data-testid="metadata-top-level-items"]', 5000, signal); }
@@ -431,46 +563,154 @@ GM_addStyle ( `
         try {
             if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
             document.getElementById('plex-guid-box')?.remove(); if (!container || !container.isConnected) return false;
-            let fileInfoHtml = ''; let isFirstPathOverall = true; const serverId = currentServerId; const itemId = data.itemId;
+
+            let fileInfoHtml = '';
+            const serverId = currentServerId;
+            const itemId = data.itemId;
+
             const createPathHtml = (originalPath) => {
                 const isScannable = data.librarySectionID && originalPath;
                 if (isScannable) {
-                    return `<a href="#" class="plex-path-scan-link" title="클릭하여 Plex Mate로 VFS 새로고침 및 라이브러리 스캔 실행" data-original-path="${originalPath}" data-section-id="${data.librarySectionID}" data-item-type="${data.type}">${emphasizeFileName(originalPath)}</a>`;
+                    return `<a href="#" class="plex-path-scan-link" title="클릭하여 Plex Mate로 스캔" data-original-path="${originalPath}" data-section-id="${data.librarySectionID}" data-item-type="${data.type}">${emphasizeFileName(originalPath)}</a>`;
                 }
                 return `<span class="path-text-wrapper">${emphasizeFileName(originalPath)}</span>`;
             };
-            if (data.type === 'directory' && data.mediaVersions?.[0]?.parts?.[0]?.path) {
-                const representativePart = data.mediaVersions[0].parts[0];
-                const originalPath = representativePart.path;
-                const openFolderIconHtml = isDetailExternalPlayVisible ? `<a href="#" class="plex-guid-action plex-open-folder" title="폴더 열기" data-file-path="${originalPath}" data-item-id="${itemId}" data-server-id="${serverId}" data-open-folder="true" data-item-type="directory">${ICONS.FOLDER}</a>` : '';
-                fileInfoHtml = `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px; display: flex;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">대표 경로</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="word-break: break-all; flex-grow: 1;">${createPathHtml(originalPath)}${openFolderIconHtml}</span></div>`;
-            } else if (data.type === 'video' && data.mediaVersions && Array.isArray(data.mediaVersions) && data.mediaVersions.length > 0) {
-                fileInfoHtml = data.mediaVersions.map((version) => {
-                    const korSubs = version.subtitles?.filter(s => s.languageCode === 'kor' || s.languageCode === 'ko') || [];
-                    const hasKorSub = korSubs.length > 0;
-                    const korSub = hasKorSub ? korSubs[0] : null;
-                    let partsHtml = '';
-                    if (version.parts && version.parts.length > 0) {
-                        partsHtml = version.parts.map((part) => {
-                            const hasSize = part.size !== null && typeof part.size === 'number';
-                            const hasPartId = !!part.id;
-                            const originalPath = part.path;
-                            let videoFn = `part_${part.id || 'no_id'}`;
-                            if (originalPath) {
-                                const fn = originalPath.substring(originalPath.lastIndexOf('/') + 1);
-                                const ldi = fn.lastIndexOf('.');
-                                videoFn = ldi > 0 ? fn.substring(0, ldi) : fn;
-                                videoFn = videoFn.replace(/[\\/:*?"<>|]/g, '_');
-                            }
-                            const extPlayIconsHtml = isDetailExternalPlayVisible ? `<a href="#" class="plex-guid-action plex-play-external" title="외부 플레이어 재생" data-file-path="${originalPath}" data-item-id="${itemId}" data-server-id="${serverId}" data-open-folder="false" data-item-type="video">${ICONS.PLAY}</a><a href="#" class="plex-guid-action plex-open-folder" title="폴더 열기" data-file-path="${originalPath}" data-item-id="${itemId}" data-server-id="${serverId}" data-open-folder="true" data-item-type="video">${ICONS.FOLDER}</a>` : '';
-                            const partHtml = `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px; display: flex;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;">${isFirstPathOverall ? '<span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">경로</span>' : '<span> </span>'}</div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="word-break: break-all; flex-grow: 1;">${createPathHtml(originalPath)}${hasSize ? `<span style="margin-left: 5px; font-size: 13px; color: #adb5bd;"> ${hasPartId ? `<a href="#" class="plex-guid-action plex-download-link" title="파일 다운로드" data-part-id="${part.id}" data-file-path="${originalPath}">${ICONS.DOWNLOAD}</a>` : `<span title="ID 없음">${ICONS.DOWNLOAD}</span>`} (${formatBytes(part.size)})</span>` : ''}${hasKorSub ? `<span style="margin-left: 4px; font-size: 13px; color: #adb5bd;"> / 자막: <a href="#" class="plex-guid-action plex-kor-subtitle-download" title="한국어 자막 다운로드" data-stream-id="${korSub.id}" data-stream-key="${korSub.key || ''}" data-subtitle-format="${korSub.format}" data-subtitle-language="ko" data-video-filename="${videoFn}">${ICONS.DOWNLOAD}</a> Kor(${korSub.format})</span>` : ''}${extPlayIconsHtml}</span></div>`;
-                            isFirstPathOverall = false;
-                            return partHtml;
-                        }).join('');
+
+            const createExternalLinkHtml = (originalPath, itemType, isFolder) => {
+                const localPath = getLocalPath(originalPath);
+                if (!localPath) return '';
+                let targetPath = localPath;
+                if (isFolder) {
+                    if (itemType === 'video' || itemType === 'directory') {
+                        const idx = Math.max(targetPath.lastIndexOf('/'), targetPath.lastIndexOf('\\'));
+                        if (idx > -1) targetPath = targetPath.substring(0, idx);
                     }
-                    return partsHtml;
+                }
+                const unifiedPath = targetPath.replace(/\\/g, '/');
+                const encodedPath = encodeURIComponent(unifiedPath);
+                const protocol = isFolder ? 'plexfolder://' : 'plexplay://';
+                const protocolUrl = `${protocol}${encodedPath}`;
+                
+                const title = isFolder ? '폴더 열기' : '외부 재생';
+                const icon = isFolder ? ICONS.FOLDER : ICONS.PLAY;
+                const className = isFolder ? 'plex-open-folder' : 'plex-play-external';
+                
+                return `<a href="${protocolUrl}" class="plex-guid-action ${className}" title="${title}" target="_blank">${icon}</a>`;
+            };
+
+            const getResolutionCategory = (res, width) => {
+                if (!res && !width) return 'SD';
+                const resolution = res ? res.toLowerCase() : '';
+                const w = parseInt(width, 10);
+                if (resolution === '4k' || w >= 3800) return '4K';
+                if (resolution === '1080p' || (w >= 1900 && w < 3800)) return 'FHD';
+                if (resolution === '720p' || (w >= 1200 && w < 1900)) return 'HD';
+                return 'SD';
+            };
+
+            const formatBitrate = (bitrate) => {
+                if (!bitrate) return '';
+                const bps = parseInt(bitrate, 10) * 1000;
+                if (bps >= 1000000) return `${(bps / 1000000).toFixed(1)} Mbps`;
+                return `${Math.round(bps / 1000)} Kbps`;
+            };
+
+            const formatChannels = (ch) => {
+                if (!ch) return '';
+                const c = parseInt(ch);
+                if (c === 6) return '5.1';
+                if (c === 8) return '7.1';
+                if (c === 2) return '2.0';
+                if (c === 1) return '1.0';
+                return c + 'ch';
+            };
+
+            const getVideoFeatures = (v) => {
+                let feats = [];
+                if (v.doviProfile) {
+                    feats.push('DV');
+                }
+                if (v.bitDepth == 10 || v.colorSpace === 'bt2020') {
+                    feats.push('HDR10');
+                }
+                return feats.length > 0 ? ` ${feats.join('/')}` : '';
+            };
+
+        if (data.type === 'directory' && data.mediaVersions?.[0]?.parts?.[0]?.path) {
+            const representativePart = data.mediaVersions[0].parts[0];
+            const originalPath = representativePart.path;
+            
+            const iconHtml = createExternalLinkHtml(originalPath, 'directory', true);
+            const pathLinkHtml = createPathHtml(originalPath);
+
+            fileInfoHtml = `
+            <div class="media-version-block" style="border: 0;">
+                <div class="media-info-line" style="display: flex; align-items: center; grid-template-columns: none; gap: 10px;">
+                    <div style="flex-shrink: 0;">${iconHtml}</div>
+                    <div style="flex-grow: 1; min-width: 0; font-size: 12px; color: #ccc; word-break: break-all; line-height: 1.3;">
+                        ${pathLinkHtml}
+                    </div>
+                </div>
+            </div>`;
+
+            } else if (data.type === 'video' && Array.isArray(data.mediaVersions) && data.mediaVersions.length > 0) {
+                
+                fileInfoHtml = data.mediaVersions.map((version) => {
+                    if (!version.parts || version.parts.length === 0) return '';
+                    const part = version.parts[0];
+                    const originalPath = part.path;
+
+                    let videoFilename = 'video';
+                    if (originalPath) {
+                        const filenameWithExt = originalPath.substring(originalPath.lastIndexOf('/') + 1);
+                        const lastDotIndex = filenameWithExt.lastIndexOf('.');
+                        if (lastDotIndex > 0) {
+                            videoFilename = filenameWithExt.substring(0, lastDotIndex);
+                        } else {
+                            videoFilename = filenameWithExt;
+                        }
+                    }
+
+                    const playIconHtml = `<div class="info-block"><span class="info-label">외부재생</span><span class="info-value">${createExternalLinkHtml(originalPath, 'video', false)}</span></div>`;
+
+                    const folderIconHtml = `<div class="info-block"><span class="info-label">폴더열기</span><span class="info-value">${createExternalLinkHtml(originalPath, 'video', true)}</span></div>`;
+
+                    const resolution = `<div class="info-block"><span class="info-label">해상도</span><span class="info-value">${getResolutionCategory(version.videoResolution, version.width)}</span></div>`;
+
+                    const videoExtra = getVideoFeatures(version);
+                    const vBitrate = formatBitrate(version.bitrate);
+                    const videoText = `${version.videoCodec?.toUpperCase() || '?'}${videoExtra}${vBitrate ? ` (${vBitrate})` : ''}`;
+                    const videoCodec = `<div class="info-block"><span class="info-label">비디오</span><span class="info-value" title="${videoText}">${videoText}</span></div>`;
+
+                    const channelText = formatChannels(version.audioChannels);
+                    const aBitrate = formatBitrate(version.audioBitrate);
+                    const audioText = `${version.audioCodec?.toUpperCase() || '?'}${channelText ? ' ' + channelText : ''}${aBitrate ? ` (${aBitrate})` : ''}`;
+                    const audioCodec = `<div class="info-block"><span class="info-label">오디오</span><span class="info-value" title="${audioText}">${audioText}</span></div>`;
+
+                    const korSub = version.subtitles?.find(s => s.languageCode === 'kor' || s.languageCode === 'ko');
+                    let subInfo = '없음';
+                    if (korSub) {
+                        subInfo = `<a href="#" class="plex-guid-action plex-kor-subtitle-download" title="한국어 자막 다운로드" 
+                                    data-stream-id="${korSub.id}" 
+                                    data-stream-key="${korSub.key || ''}" 
+                                    data-subtitle-format="${korSub.format || 'srt'}" 
+                                    data-subtitle-language-code="${korSub.languageCode || 'ko'}" 
+                                    data-video-filename="${videoFilename}">
+                                    ${ICONS.DOWNLOAD}
+                                    </a> Kor (${korSub.format})`;
+                    } else if (version.subtitles && version.subtitles.length > 0) {
+                        subInfo = `${version.subtitles.length}개`;
+                    }
+                    const subtitles = `<div class="info-block"><span class="info-label">자막</span><span class="info-value">${subInfo}</span></div>`;
+                    
+                    const infoLine = `<div class="media-info-line">${playIconHtml}${folderIconHtml}${resolution}${videoCodec}${audioCodec}${subtitles}</div>`;
+                    const pathLine = `<div style="font-size: 12px; color: #9E9E9E; word-break: break-all; margin-top: 4px; padding-left: 8px;">${createPathHtml(originalPath)}</div>`;
+
+                    return `<div class="media-version-block">${infoLine}${pathLine}</div>`;
+
                 }).join('');
             }
+
             const displayGuid = data.guid ? cleanGuid(data.guid) : '-';
             let guidHtml;
             if (data.guid && data.guid.startsWith('plex://')) {
@@ -478,10 +718,13 @@ GM_addStyle ( `
             } else {
                 guidHtml = `<span>${displayGuid}</span>`;
             }
+
             const ffUrlForServer = AppSettings.FF_URL_MAPPINGS[serverId];
             const showPlexMateButton = ffUrlForServer && AppSettings.PLEX_MATE_APIKEY;
             const plexMateHtml = showPlexMateButton ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">PLEX MATE</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><a href="#" id="plex-mate-refresh-button" class="plex-guid-action" title="PLEX MATE로 YAML/TMDB 반영 실행">${ICONS.PLEX_MATE} YAML/TMDB 반영</a></span></div>` : '';
-            const html = `<div id="plex-guid-box" style="margin-top: 15px; margin-bottom: 10px; clear: both; width: 100%;"><div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold;">추가 메타 정보</div><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq3g _1v25wbq28">${plexMateHtml}${ displayGuid !== '-' ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">GUID</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="word-break: break-all;">${guidHtml} <span id="refresh-guid-button" title="새로고침(캐시 갱신)" style="cursor: pointer;">${ICONS.REFRESH}</span></span></div>` : ''}${fileInfoHtml}${data.duration ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">재생 시간</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><span>${ICONS.CLOCK} ${data.duration} ${data.markers?.intro ? `<span style="margin-left:10px;">${ICONS.FILM} Intro: ${data.markers.intro.start} ~ ${data.markers.intro.end}</span>` : ''} ${data.markers?.credits ? `<span style="margin-left:10px;"> ${ICONS.VIDEO} Credit: ${data.markers.credits.start} ~ ${data.markers.credits.end}</span>` : ''}</span></span></div>` : ''}</div></div>`;
+            
+            const html = `<div id="plex-guid-box" style="margin-top: 15px; margin-bottom: 10px; clear: both; width: 100%;"><div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold;">미디어 정보</div><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq3g _1v25wbq28">${fileInfoHtml}${plexMateHtml}${ displayGuid !== '-' ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">GUID</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="word-break: break-all;">${guidHtml} <span id="refresh-guid-button" title="새로고침(캐시 갱신)" style="cursor: pointer;">${ICONS.REFRESH}</span></span></div>` : ''}${data.duration ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">재생 시간</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><span>${ICONS.CLOCK} ${data.duration} ${data.markers?.intro ? `<span style="margin-left:10px;">${ICONS.FILM} Intro: ${data.markers.intro.start} ~ ${data.markers.intro.end}</span>` : ''} ${data.markers?.credits ? `<span style="margin-left:10px;"> ${ICONS.VIDEO} Credit: ${data.markers.credits.start} ~ ${data.markers.credits.end}</span>` : ''}</span></span></div>` : ''}</div></div>`;
+            
             let insertTarget = null; let insertPosition = 'afterend';
             const ratingEl = container.querySelector('div[data-testid="metadata-starRatings"], div[data-testid="metadata-ratings"]'); const ratingCont = ratingEl?.parentElement;
             if (ratingCont?.isConnected) { const actionCont = container.querySelector('button[data-testid="preplay-play"]')?.parentElement; if (actionCont && ratingCont.nextElementSibling === actionCont) insertTarget = ratingCont; else insertTarget = ratingCont; }
@@ -550,30 +793,123 @@ GM_addStyle ( `
 
     // --- 목록 재생 아이콘 생성 ---
     function createListPlayIcon(machineIdentifier, itemId, filePath, container) {
-        const playIconEl = document.createElement('a'); playIconEl.href = '#'; playIconEl.className = 'plex-list-play-external'; playIconEl.title = '외부 플레이어 재생'; playIconEl.innerHTML = ICONS.PLAY; playIconEl.dataset.filePath = filePath; playIconEl.dataset.itemId = itemId; playIconEl.dataset.serverId = machineIdentifier; playIconEl.dataset.openFolder = 'false';
-        playIconEl.addEventListener('click', async (e) => { e.preventDefault(); e.stopPropagation(); const path = playIconEl.dataset.filePath; const item = playIconEl.dataset.itemId; const server = playIconEl.dataset.serverId; playIconEl.style.opacity = '0.5'; try { await openItemOnAgent(path, item, false, server); } catch (err) { log("List play icon click error:", err); } finally { setTimeout(() => { if(document.body.contains(playIconEl)) playIconEl.style.opacity = ''; }, 500); } });
+        const localPath = getLocalPath(filePath);
+        if (!localPath) return null;
+
+        const unifiedPath = localPath.replace(/\\/g, '/');
+
+        const encodedPath = encodeURIComponent(unifiedPath);
+        const protocolUrl = `plexplay://${encodedPath}`;
+
+        const playIconEl = document.createElement('a');
+        playIconEl.href = protocolUrl;
+        playIconEl.className = 'plex-list-play-external';
+        playIconEl.title = '외부 플레이어 재생';
+        playIconEl.innerHTML = ICONS.PLAY;
+
         return playIconEl;
     }
 
     // --- 리스너 부착 함수들 ---
     function attachRefreshListener(cacheKey) { const rb = document.getElementById('refresh-guid-button'); if (rb) { const originalIconHTML = rb.innerHTML; const nrb = rb.cloneNode(true); rb.parentNode.replaceChild(nrb, rb); nrb.addEventListener('click', async () => { log(`Manual refresh for: ${cacheKey}`); if (hasCache(cacheKey)) { delete guidCacheObject[cacheKey]; scheduleSaveCache(); document.getElementById('plex-guid-box')?.remove(); currentDisplayedItemId = null; } nrb.innerHTML = ICONS.SPINNER; nrb.style.cursor = 'default'; try { await DetailProcess(1); } catch (error) { if (document.body.contains(nrb)) { nrb.innerHTML = originalIconHTML; nrb.style.cursor = 'pointer';}} }); } }
-    function attachDownloadListeners(serverInfo) { if (!serverInfo?.serverUrl || !serverInfo.accessToken) return; document.querySelectorAll('#plex-guid-box .plex-download-link').forEach(l => { if (l.getAttribute('data-listener-attached') === 'true') return; l.setAttribute('data-listener-attached', 'true'); const originalIconHTML = l.innerHTML; l.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); const pid = l.dataset.partId; const fp = l.dataset.filePath; if (!pid) return; const fn = fp ? fp.substring(fp.lastIndexOf('/') + 1) : `part_${pid}`; const url = `${serverInfo.serverUrl}/library/parts/${pid}/0/file?download=1&X-Plex-Token=${serverInfo.accessToken}`; try { const tl = document.createElement('a'); tl.href = url; tl.download = fn; tl.style.display='none'; document.body.appendChild(tl); tl.click(); document.body.removeChild(tl); l.innerHTML = ICONS.CHECK; setTimeout(()=>{if(document.body.contains(l)) l.innerHTML = originalIconHTML;},3000); } catch(err){ l.innerHTML = ICONS.TIMES; setTimeout(()=>{if(document.body.contains(l)) l.innerHTML = originalIconHTML;},3000); } }); }); document.querySelectorAll('#plex-guid-box .plex-kor-subtitle-download').forEach(l => { if (l.getAttribute('data-listener-attached') === 'true') return; l.setAttribute('data-listener-attached', 'true'); const originalIconHTML = l.innerHTML; const originalTitle = l.title; l.addEventListener('click', async (e) => { e.preventDefault(); e.stopPropagation(); const sid = l.dataset.streamId; const sk = l.dataset.streamKey; const fmt = l.dataset.subtitleFormat || 'srt'; let lc = l.dataset.subtitleLanguage || 'kor'; const vfn = l.dataset.videoFilename || `subtitle_${lc}`; if (lc.toLowerCase() === 'kor') lc = 'ko'; if (!sid) return; let apiUrl = sk && sk.startsWith('/library/streams/') ? `${serverInfo.serverUrl}${sk}?X-Plex-Token=${serverInfo.accessToken}` : `${serverInfo.serverUrl}/library/streams/${sid}?X-Plex-Token=${serverInfo.accessToken}`; const fn = `${vfn}.${lc}.${fmt}`; log(`Subtitle download: ${apiUrl}`); l.innerHTML = ICONS.SPINNER; l.style.cursor='default'; l.title = '다운로드 중...'; const ac = new AbortController(); const sig = ac.signal; try { const rsp = await makeRequest({ url: apiUrl, method: 'GET', headers:{'Accept':'text/plain, */*'}, responseType:'blob', signal: sig }); if (sig.aborted) throw new DOMException('Aborted','AbortError'); const blob = rsp.response; if(!blob) throw new Error('No blob'); const burl = URL.createObjectURL(blob); const tl=document.createElement('a'); tl.href=burl; tl.download=fn; tl.style.display='none'; document.body.appendChild(tl); tl.click(); document.body.removeChild(tl); URL.revokeObjectURL(burl); l.innerHTML = ICONS.CHECK; l.title='다운로드 완료'; setTimeout(()=>{if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;}},3000); } catch (err) { if(err.name!=='AbortError'){ infoLog('Subtitle error:', err); l.innerHTML = ICONS.TIMES; l.title=`실패: ${err.message||err.error||'?'}`; setTimeout(()=>{if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;}},3000); } else { if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;} } } finally { if(document.body.contains(l)) l.style.cursor='pointer'; } }); }); }
-    function attachPlaybackListeners(serverId, itemId) {
-        const btns = document.querySelectorAll('#plex-guid-box .plex-play-external, #plex-guid-box .plex-open-folder');
-        log(`[attachPlaybackListeners] Attaching ${btns.length} buttons for ${serverId}/${itemId}`);
-        btns.forEach(b => {
-            if (b.getAttribute('data-listener-attached') === 'true') return;
-            b.setAttribute('data-listener-attached', 'true');
-            b.addEventListener('click', async (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const originalPath = b.dataset.filePath; const of = b.dataset.openFolder === 'true'; const bsid = b.dataset.serverId; const biid = b.dataset.itemId; const itemType = b.dataset.itemType || 'video';
-                if (!originalPath || !bsid || !biid) { if(typeof toastr!=='undefined') toastr.error('재생 정보 부족'); return; }
-                const oo = b.style.opacity; b.style.opacity='0.5';
-                try { await openItemOnAgent(originalPath, biid, of, bsid, itemType); } catch (err) {}
-                finally { if(document.body.contains(b)) b.style.opacity = oo || ''; }
+
+    function attachDownloadListeners(serverInfo) {
+        if (!serverInfo?.serverUrl || !serverInfo.accessToken) return;
+
+        // --- 비디오 파일 다운로드 리스너 ---
+        document.querySelectorAll('#plex-guid-box .plex-download-link').forEach(l => {
+            if (l.getAttribute('data-listener-attached') === 'true') return;
+            l.setAttribute('data-listener-attached', 'true');
+            const originalIconHTML = l.innerHTML;
+            l.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const pid = l.dataset.partId;
+                const fp = l.dataset.filePath;
+                if (!pid) return;
+                const fn = fp ? fp.substring(fp.lastIndexOf('/') + 1) : `part_${pid}`;
+                const url = `${serverInfo.serverUrl}/library/parts/${pid}/0/file?download=1&X-Plex-Token=${serverInfo.accessToken}`;
+                try {
+                    const tl = document.createElement('a');
+                    tl.href = url;
+                    tl.download = fn;
+                    tl.style.display='none';
+                    document.body.appendChild(tl);
+                    tl.click();
+                    document.body.removeChild(tl);
+                    l.innerHTML = ICONS.CHECK;
+                    setTimeout(()=>{if(document.body.contains(l)) l.innerHTML = originalIconHTML;},3000);
+                } catch(err){
+                    l.innerHTML = ICONS.TIMES;
+                    setTimeout(()=>{if(document.body.contains(l)) l.innerHTML = originalIconHTML;},3000);
+                }
+            });
+        });
+
+        // --- 자막 파일 다운로드 리스너 ---
+        document.querySelectorAll('#plex-guid-box .plex-kor-subtitle-download').forEach(l => {
+            if (l.getAttribute('data-listener-attached') === 'true') return;
+            l.setAttribute('data-listener-attached', 'true');
+            const originalIconHTML = l.innerHTML;
+            const originalTitle = l.title;
+            l.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const sid = l.dataset.streamId;
+                const sk = l.dataset.streamKey;
+                const fmt = l.dataset.subtitleFormat || 'srt';
+                
+                let rawLanguageCode = l.dataset.subtitleLanguageCode || 'ko';
+                const lc = getTwoLetterLanguageCode(rawLanguageCode);
+                
+                const videoFn = l.dataset.videoFilename || 'subtitle';
+
+                if (!sid) return;
+
+                let apiUrl = sk && sk.startsWith('/library/streams/') ? `${serverInfo.serverUrl}${sk}?X-Plex-Token=${serverInfo.accessToken}` : `${serverInfo.serverUrl}/library/streams/${sid}?X-Plex-Token=${serverInfo.accessToken}`;
+                
+                const finalFilename = `${videoFn}.${lc}.${fmt}`;
+
+                log(`Subtitle download: ${apiUrl}, Filename: ${finalFilename}`);
+                l.innerHTML = ICONS.SPINNER;
+                l.style.cursor='default';
+                l.title = '다운로드 중...';
+                const ac = new AbortController();
+                const sig = ac.signal;
+                try {
+                    const rsp = await makeRequest({ url: apiUrl, method: 'GET', headers:{'Accept':'text/plain, */*'}, responseType:'blob', signal: sig });
+                    if (sig.aborted) throw new DOMException('Aborted','AbortError');
+                    const blob = rsp.response;
+                    if(!blob) throw new Error('No blob');
+                    const burl = URL.createObjectURL(blob);
+                    const tl=document.createElement('a');
+                    tl.href=burl;
+                    tl.download=finalFilename;
+                    tl.style.display='none';
+                    document.body.appendChild(tl);
+                    tl.click();
+                    document.body.removeChild(tl);
+                    URL.revokeObjectURL(burl);
+                    l.innerHTML = ICONS.CHECK;
+                    l.title='다운로드 완료';
+                    setTimeout(()=>{if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;}},3000);
+                } catch (err) {
+                    if(err.name!=='AbortError'){
+                        infoLog('Subtitle error:', err);
+                        l.innerHTML = ICONS.TIMES;
+                        l.title=`실패: ${err.message||err.error||'?'}`;
+                        setTimeout(()=>{if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;}},3000);
+                    } else {
+                        if(document.body.contains(l)){l.innerHTML = originalIconHTML; l.title=originalTitle;}
+                    }
+                } finally {
+                    if(document.body.contains(l)) l.style.cursor='pointer';
+                }
             });
         });
     }
+
     function attachPlexMateScanListeners(serverId) {
         document.querySelectorAll('.plex-path-scan-link').forEach(link => {
             if (link.getAttribute('data-listener-attached') === 'true') return;
@@ -731,7 +1067,6 @@ GM_addStyle ( `
                     attachPlexMateRefreshListener(dataToDisplay.itemId, serverId);
                     attachRefreshListener(cacheKey);
                     attachDownloadListeners(serverInfo);
-                    if(isDetailExternalPlayVisible) attachPlaybackListeners(serverId, dataToDisplay.itemId);
                     attachPlexMateScanListeners(serverId);
                 } else if (signal.aborted) { log('DetailProcess: Aborted during display.'); }
             } else { log(`DetailProcess: No data to display for ${cacheKey}.`); document.getElementById('plex-guid-box')?.remove(); currentDisplayedItemId = null; }
@@ -767,7 +1102,44 @@ GM_addStyle ( `
     }
 
     // --- DOM 변경 감지 ---
-    function setupMediaListObserver() { let uiInjected = false; const observer = new MutationObserver(mutations => { if (!uiInjected && !document.getElementById('pmdv-controls')) { const ab = document.querySelector('button[data-testid="navbarAccountMenuTrigger"]'); if (ab) { try { injectControlUI(); } catch(e) {} } } if (document.getElementById('pmdv-controls')) uiInjected = true; if (isMediaListPage()) { let listNeedsProcessing = false; for (const m of mutations) { if (m.type === 'childList' && m.addedNodes.length > 0) { for (const n of m.addedNodes) { if (n.nodeType !== 1) continue; const isScriptEl = n.matches?.('.plex-guid-list-box, .plex-list-play-external, #pmdv-controls') || n.closest?.('.plex-guid-list-box, .plex-list-play-external, #pmdv-controls'); if (!isScriptEl) { const container = n.matches?.('div[data-testid^="cellItem"]') ? n : n.closest?.('div[data-testid^="cellItem"]'); if (container && !container.hasAttribute('data-pmdv-processed') && container.querySelector('a[data-testid="metadataTitleLink"]')) { listNeedsProcessing = true; break; } } } } if (listNeedsProcessing) break; } if (listNeedsProcessing) { if (observer.debounceTimer) clearTimeout(observer.debounceTimer); observer.debounceTimer = setTimeout(() => { if (isListGuidVisible || isListExternalPlayVisible) ListProcess(); }, 300); } } }); observer.debounceTimer = null; observer.observe(document.body, { childList: true, subtree: true }); infoLog('MutationObserver setup complete.'); }
+    function setupMediaListObserver() { 
+        let uiInjected = false; 
+        const observer = new MutationObserver(mutations => { 
+            try {
+                if (!uiInjected && !document.getElementById('pmdv-controls')) { 
+                    const ab = document.querySelector('button[data-testid="navbarAccountMenuTrigger"]'); 
+                    if (ab) { try { injectControlUI(); } catch(e) {} } 
+                } 
+                if (document.getElementById('pmdv-controls')) uiInjected = true; 
+                
+                if (isMediaListPage()) { 
+                    let listNeedsProcessing = false; 
+                    for (const m of mutations) { 
+                        if (m.type === 'childList' && m.addedNodes.length > 0) { 
+                            for (const n of m.addedNodes) { 
+                                if (n.nodeType !== 1) continue; 
+                                const isScriptEl = n.matches?.('.plex-guid-list-box, .plex-list-play-external, #pmdv-controls') || n.closest?.('.plex-guid-list-box, .plex-list-play-external, #pmdv-controls'); 
+                                if (!isScriptEl) { 
+                                    const container = n.matches?.('div[data-testid^="cellItem"]') ? n : n.closest?.('div[data-testid^="cellItem"]'); 
+                                    if (container && !container.hasAttribute('data-pmdv-processed') && container.querySelector('a[data-testid="metadataTitleLink"]')) { 
+                                        listNeedsProcessing = true; break; 
+                                    } 
+                                } 
+                            } 
+                        } 
+                        if (listNeedsProcessing) break; 
+                    } 
+                    if (listNeedsProcessing) { 
+                        if (observer.debounceTimer) clearTimeout(observer.debounceTimer); 
+                        observer.debounceTimer = setTimeout(() => { if (isListGuidVisible || isListExternalPlayVisible) ListProcess(); }, 300); 
+                    } 
+                } 
+            } catch (err) { /* Observer 내부 에러 무시 */ }
+        }); 
+        observer.debounceTimer = null; 
+        observer.observe(document.body, { childList: true, subtree: true }); 
+        infoLog('MutationObserver setup complete.'); 
+    }
 
     // --- 페이지 내 컨트롤 UI 생성 ---
     function injectControlUI() {
@@ -793,21 +1165,6 @@ GM_addStyle ( `
 
             toggleDetailInfoButton = document.createElement('button'); toggleDetailInfoButton.id = 'pmdv-toggle-detail'; toggleDetailInfoButton.addEventListener('click', () => { isDetailInfoVisible = !isDetailInfoVisible; storageSet(DETAIL_INFO_VISIBILITY_KEY, isDetailInfoVisible); updateToggleButtonUI(); if (!isDetailInfoVisible) { document.getElementById('plex-guid-box')?.remove(); currentDisplayedItemId = null; stopDetailCheckInterval(); } else { if (isDetailPage()) { DetailProcess(1); startDetailCheckInterval(); } } showStatusMessage(`추가 정보 ${isDetailInfoVisible ? 'ON' : 'OFF'}`); }); controlContainer.appendChild(toggleDetailInfoButton);
 
-            toggleDetailPlayButton = document.createElement('button');
-            toggleDetailPlayButton.id = 'pmdv-toggle-detail-play';
-            toggleDetailPlayButton.addEventListener('click', () => {
-                isDetailExternalPlayVisible = !isDetailExternalPlayVisible;
-                storageSet(DETAIL_PLAY_ICON_VISIBILITY_KEY, isDetailExternalPlayVisible);
-                updateToggleButtonUI();
-                if (isDetailPage()) {
-                    document.getElementById('plex-guid-box')?.remove();
-                    currentDisplayedItemId = null;
-                    if(isDetailInfoVisible) DetailProcess(1);
-                }
-                showStatusMessage(`상세 재생 ${isDetailExternalPlayVisible ? 'ON' : 'OFF'}`);
-            });
-            controlContainer.appendChild(toggleDetailPlayButton);
-
             const lengthLabel = document.createElement('label'); lengthLabel.textContent = '길이:'; lengthLabel.htmlFor = 'pmdv-guid-length'; guidLengthInput = document.createElement('input'); guidLengthInput.type = 'number'; guidLengthInput.id = 'pmdv-guid-length'; guidLengthInput.min = '5'; guidLengthInput.max = '50'; applyGuidLengthButton = document.createElement('button'); applyGuidLengthButton.id = 'pmdv-apply-length'; applyGuidLengthButton.textContent = '적용'; applyGuidLengthButton.addEventListener('click', () => { const nl = parseInt(guidLengthInput.value); if (!isNaN(nl) && nl >= 5 && nl <= 50) { if (nl !== guidMaxLength) { guidMaxLength = nl; storageSet(GUID_LENGTH_KEY, guidMaxLength); document.querySelectorAll('div[data-testid^="cellItem"][data-pmdv-processed]').forEach(el => el.removeAttribute('data-pmdv-processed')); removeAllGuidBadges(); if (isListGuidVisible || isListExternalPlayVisible) ListProcess(); showStatusMessage(`길이 ${guidMaxLength} 적용`); } else showStatusMessage('이미 적용된 값'); } else { showStatusMessage('5~50 사이 입력'); guidLengthInput.value = guidMaxLength; } }); controlContainer.appendChild(lengthLabel); controlContainer.appendChild(guidLengthInput); controlContainer.appendChild(applyGuidLengthButton);
             clearCurrentButton = document.createElement('button'); clearCurrentButton.id = 'pmdv-clear-current'; clearCurrentButton.textContent = '현재 캐시'; clearCurrentButton.title = '현재 페이지 항목 캐시 지우기'; clearCurrentButton.addEventListener('click', () => { let cl=0; let nl=false; let nd=false; const cpd=isDetailPage(); const cpl=isMediaListPage(); if(cpd){const {serverId:sid,itemId:iid}=extractIds();if(sid&&iid){const ck=`${sid}_${iid}`;if(hasCache(ck)){delete guidCacheObject[ck];cl++;nd=true;document.getElementById('plex-guid-box')?.remove();currentDisplayedItemId=null;}}}else if(cpl){document.querySelectorAll('div[data-testid^="cellItem"]').forEach(cont => { const link = cont.querySelector('a[data-testid="metadataTitleLink"]'); if(!link) return; const h=link.getAttribute('href')||'';const kp=new URLSearchParams(h.split('?')[1]).get('key');if(!kp)return;const dk=decodeURIComponent(kp);const sm=h.match(/\/server\/([a-f0-9]+)\//);const mid=sm?sm[1]:null;const iid=dk.split('/metadata/')[1]?.split(/[\/?]/)[0];if(mid&&iid&&/^\d+$/.test(iid)){const ck=`${mid}_${iid}`;if(hasCache(ck)){delete guidCacheObject[ck];cl++;nl=true; cont.querySelectorAll('.plex-guid-list-box:not([data-refreshing="true"]), .plex-list-play-external').forEach(el => el.remove()); cont.removeAttribute('data-pmdv-processed');}}});} if(cl>0){scheduleSaveCache();showStatusMessage(`${cl}개 캐시 삭제`);if(nd && isDetailInfoVisible)DetailProcess(1);if(nl && (isListGuidVisible || isListExternalPlayVisible))ListProcess();}else showStatusMessage('삭제할 캐시 없음');}); controlContainer.appendChild(clearCurrentButton);
             clearAllButton = document.createElement('button'); clearAllButton.id = 'pmdv-clear-all'; clearAllButton.textContent = '전체 캐시'; clearAllButton.title = '모든 캐시 지우기'; clearAllButton.addEventListener('click', () => { if (confirm("정말로 모든 캐시를 지우시겠습니까?")) { guidCacheObject = {}; storageSet(CACHE_STORAGE_KEY, {}); document.getElementById('plex-guid-box')?.remove(); currentDisplayedItemId = null; removeAllGuidBadges(); document.querySelectorAll('div[data-testid^="cellItem"][data-pmdv-processed]').forEach(el => el.removeAttribute('data-pmdv-processed')); showStatusMessage('전체 캐시 삭제됨'); if (isDetailPage() && isDetailInfoVisible) DetailProcess(1); if (isMediaListPage() && (isListGuidVisible || isListExternalPlayVisible)) ListProcess(); } }); controlContainer.appendChild(clearAllButton);
@@ -821,7 +1178,6 @@ GM_addStyle ( `
         if (toggleListGuidButton) { toggleListGuidButton.textContent = `목록GUID: ${isListGuidVisible ? 'ON' : 'OFF'}`; isListGuidVisible ? toggleListGuidButton.classList.add('on') : toggleListGuidButton.classList.remove('on'); }
         if (toggleListPlayButton) { toggleListPlayButton.textContent = `목록재생: ${isListExternalPlayVisible ? 'ON' : 'OFF'}`; isListExternalPlayVisible ? toggleListPlayButton.classList.add('on') : toggleListPlayButton.classList.remove('on'); }
         if (toggleDetailInfoButton) { toggleDetailInfoButton.textContent = `추가정보: ${isDetailInfoVisible ? 'ON' : 'OFF'}`; isDetailInfoVisible ? toggleDetailInfoButton.classList.add('on') : toggleDetailInfoButton.classList.remove('on'); }
-        if (toggleDetailPlayButton) { toggleDetailPlayButton.textContent = `상세재생: ${isDetailExternalPlayVisible ? 'ON' : 'OFF'}`; isDetailExternalPlayVisible ? toggleDetailPlayButton.classList.add('on') : toggleDetailPlayButton.classList.remove('on'); }
     }
 
     // --- 상태 메시지 표시 ---

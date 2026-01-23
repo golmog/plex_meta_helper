@@ -1,0 +1,9 @@
+# ~/.local/share/applications/plexhelper-handler.desktop
+
+[Desktop Entry]
+Name=Plex Play Handler
+Exec=/PATH/TO/plexhelper.sh %u
+Type=Application
+Terminal=false
+MimeType=x-scheme-handler/plexplay;x-scheme-handler/plexfolder;
+NoDisplay=true
