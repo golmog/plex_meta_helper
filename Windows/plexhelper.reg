@@ -1,4 +1,4 @@
-Windows Registry Editor Version 5.00
+﻿Windows Registry Editor Version 5.00
 
 [HKEY_CURRENT_USER\Software\Classes\plexplay]
 @="URL:Plex Play Protocol"
@@ -9,7 +9,7 @@ Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\Classes\plexplay\shell\open]
 
 [HKEY_CURRENT_USER\Software\Classes\plexplay\shell\open\command]
-@="\"C:\\path\\to\\plexhelper.bat\" \"%1\""
+@="wscript.exe \"C:\\plexhelper\\plexhelper.vbs\" \"%1\""
 
 
 [HKEY_CURRENT_USER\Software\Classes\plexfolder]
@@ -21,4 +21,4 @@ Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\Classes\plexfolder\shell\open]
 
 [HKEY_CURRENT_USER\Software\Classes\plexfolder\shell\open\command]
-@="\"C:\\path\\to\\plexhelper.bat\" \"%1\""
+@="wscript.exe \"C:\\plexhelper\\plexhelper.vbs\" \"%1\""

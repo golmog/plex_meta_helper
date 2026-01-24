@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.4.6
+// @version      0.4.7
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -587,7 +587,10 @@ GM_addStyle ( `
                     }
                 }
                 const unifiedPath = targetPath.replace(/\\/g, '/');
-                const encodedPath = encodeURIComponent(unifiedPath);
+                const encodedPath = encodeURIComponent(unifiedPath)
+                    .replace(/\(/g, '%28')
+                    .replace(/\)/g, '%29')
+                    .replace(/'/g, '%27'); 
                 const protocol = isFolder ? 'plexfolder://' : 'plexplay://';
                 const protocolUrl = `${protocol}${encodedPath}`;
                 
@@ -797,8 +800,12 @@ GM_addStyle ( `
         if (!localPath) return null;
 
         const unifiedPath = localPath.replace(/\\/g, '/');
+        
+        const encodedPath = encodeURIComponent(unifiedPath)
+            .replace(/\(/g, '%28')
+            .replace(/\)/g, '%29')
+            .replace(/'/g, '%27');
 
-        const encodedPath = encodeURIComponent(unifiedPath);
         const protocolUrl = `plexplay://${encodedPath}`;
 
         const playIconEl = document.createElement('a');
@@ -806,6 +813,10 @@ GM_addStyle ( `
         playIconEl.className = 'plex-list-play-external';
         playIconEl.title = '외부 플레이어 재생';
         playIconEl.innerHTML = ICONS.PLAY;
+
+        playIconEl.addEventListener('click', () => {
+            toastr.info('외부 플레이어로 재생합니다.', '실행 중');
+        });
 
         return playIconEl;
     }
@@ -906,6 +917,19 @@ GM_addStyle ( `
                 } finally {
                     if(document.body.contains(l)) l.style.cursor='pointer';
                 }
+            });
+        });
+    }
+
+    function attachExternalActionListeners() {
+        document.querySelectorAll('.plex-play-external, .plex-open-folder').forEach(el => {
+            if (el.getAttribute('data-listener-attached') === 'true') return;
+            el.setAttribute('data-listener-attached', 'true');
+            
+            el.addEventListener('click', () => {
+                const isFolder = el.classList.contains('plex-open-folder');
+                const msg = isFolder ? '폴더를 엽니다.' : '외부 플레이어로 재생합니다.';
+                toastr.info(msg, '실행 중');
             });
         });
     }
@@ -1068,6 +1092,7 @@ GM_addStyle ( `
                     attachRefreshListener(cacheKey);
                     attachDownloadListeners(serverInfo);
                     attachPlexMateScanListeners(serverId);
+                    attachExternalActionListeners();
                 } else if (signal.aborted) { log('DetailProcess: Aborted during display.'); }
             } else { log(`DetailProcess: No data to display for ${cacheKey}.`); document.getElementById('plex-guid-box')?.remove(); currentDisplayedItemId = null; }
         } catch (error) { if (error.name !== 'AbortError') infoLog(`DetailProcess Error (Attempt ${retryAttempt})`, cacheKey, error); else log(`DetailProcess Aborted (Attempt ${retryAttempt}).`); displayed = false; if (currentDisplayedItemId === cacheKey) currentDisplayedItemId = null; }

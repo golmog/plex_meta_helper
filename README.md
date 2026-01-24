@@ -6,6 +6,9 @@ Plex Web UI를 강화하는 Tampermonkey 유저스크립트입니다. Plex 컨�
 
 ## 업데이트
 
+0.4.7 (2026-01-24)
+- 윈도우 실행방법 변경(VBS/PowerShell)
+
 0.4.6 (2026-01-24)
 - 상세재생 ON/OFF 제거(상시 표시)
 - 미디어 정보 UI 개선
@@ -49,8 +52,8 @@ Plex Web UI를 강화하는 Tampermonkey 유저스크립트입니다. Plex 컨�
 
 ### Windows
 
-1. `plexhelper.bat`: 동영상 재생기를 실행하는 배치 스크립트입니다.
-2. `plexhelper.reg`: 메모장 등으로 열어서 plexhelper.bat 경로를 본인 환경에 맞게 수정한 뒤에 더블 클릭으로 레지스트리에 추가해 줍니다. 레지스트리 등록 후 바로 재생/폴더 열기가 안될 때는 로그아웃 또는 재부팅을 해주세요.
+1. `plexhelper.vbs`: PowerShell을 통해 재생기/탐색기를 실행하는 스크립트입니다.
+2. `plexhelper.reg`: 텍스트 편집기로 열어서 plexhelper.vbs 경로를 본인 환경에 맞게 수정한 뒤에 더블 클릭으로 레지스트리에 추가해 줍니다.
 
 ### Ubuntu
 
