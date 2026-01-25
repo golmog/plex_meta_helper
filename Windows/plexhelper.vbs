@@ -1,35 +1,35 @@
-ï»¿Option Explicit
+Option Explicit
 Dim WshShell, strArg, psCommand
 
-' 1. URL ì¸ì ë°›ê¸°
+' 1. URL ÀÎÀÚ ¹Ş±â
 If WScript.Arguments.Count = 0 Then WScript.Quit
 strArg = WScript.Arguments(0)
 
-' 2. PowerShell ëª…ë ¹ì–´ ì¡°ë¦½
+' 2. PowerShell ¸í·É¾î Á¶¸³
 psCommand = ""
 psCommand = psCommand & "$u='" & strArg & "';"
 
-' í”„ë¡œí† ì½œê³¼ ì¸ì½”ë”©ëœ ê²½ë¡œ ë¶„ë¦¬
+' ÇÁ·ÎÅäÄİ°ú ÀÎÄÚµùµÈ °æ·Î ºĞ¸®
 psCommand = psCommand & "if($u -match '^(plexplay|plexfolder)://(.*)'){$p=$matches[1];$e=$matches[2]}else{exit};"
 
-' URL ë””ì½”ë”© (3ì¤‘ ì•ˆì „ì¥ì¹˜)
+' URL µğÄÚµù (3Áß ¾ÈÀüÀåÄ¡)
 psCommand = psCommand & "try{$d=[System.Uri]::UnescapeDataString($e)}catch{try{$d=[System.Net.WebUtility]::UrlDecode($e)}catch{$d=$e}};"
 
-' ê²½ë¡œ ë‹¤ë“¬ê¸° (ìŠ¬ë˜ì‹œ ë³€í™˜ ë° ê³µë°± ì œê±°)
+' °æ·Î ´Ùµë±â (½½·¡½Ã º¯È¯ ¹× °ø¹é Á¦°Å)
 psCommand = psCommand & "$path=$d.Replace('/','\').Trim().TrimEnd('\');"
 
-' ì‹¤í–‰ ë¡œì§
+' ½ÇÇà ·ÎÁ÷
 psCommand = psCommand & "if(Test-Path -LiteralPath $path){"
-' [ì¬ìƒ] Invoke-Itemìœ¼ë¡œ ì‹¤í–‰
+' [Àç»ı] Invoke-ItemÀ¸·Î ½ÇÇà
 psCommand = psCommand & "  if($p -eq 'plexplay'){Invoke-Item -LiteralPath $path}"
-' [í´ë”] íŒŒì¼ì´ë©´ ì„ íƒí•´ì„œ ì—´ê¸°, í´ë”ë©´ ê·¸ëƒ¥ ì—´ê¸°
+' [Æú´õ] ÆÄÀÏÀÌ¸é ¼±ÅÃÇØ¼­ ¿­±â, Æú´õ¸é ±×³É ¿­±â
 psCommand = psCommand & "  elseif($p -eq 'plexfolder'){$i=Get-Item -LiteralPath $path; if($i -is [System.IO.DirectoryInfo]){Invoke-Item -LiteralPath $path}else{$a='/select,""'+$path+'""';Start-Process explorer.exe -ArgumentList $a}}"
 psCommand = psCommand & "}else{"
-' [ì—ëŸ¬] ë©”ì‹œì§€ ë°•ìŠ¤ ì¶œë ¥
-psCommand = psCommand & "  Add-Type -AssemblyName System.Windows.Forms;[System.Windows.Forms.MessageBox]::Show('íŒŒì¼ì„ ì°¾ì„ ìˆ˜ ì—†ìŠµë‹ˆë‹¤.'+[Environment]::NewLine+'ê²½ë¡œ: '+$path,'Plex Helper Error',0,16)"
+' [¿¡·¯] ¸Ş½ÃÁö ¹Ú½º Ãâ·Â
+psCommand = psCommand & "  Add-Type -AssemblyName System.Windows.Forms;[System.Windows.Forms.MessageBox]::Show('ÆÄÀÏÀ» Ã£À» ¼ö ¾ø½À´Ï´Ù.'+[Environment]::NewLine+'°æ·Î: '+$path,'Plex Helper Error',0,16)"
 psCommand = psCommand & "}"
 
-' 3. PowerShell ëª°ë˜ ì‹¤í–‰ (WindowStyle Hidden)
+' 3. PowerShell ¸ô·¡ ½ÇÇà (WindowStyle Hidden)
 Set WshShell = CreateObject("WScript.Shell")
-' 0 = ì°½ ìˆ¨ê¹€, False = ì¢…ë£Œ ê¸°ë‹¤ë¦¬ì§€ ì•ŠìŒ
+' 0 = Ã¢ ¼û±è, False = Á¾·á ±â´Ù¸®Áö ¾ÊÀ½
 WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command """ & psCommand & """", 0, False
