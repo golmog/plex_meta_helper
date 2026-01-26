@@ -605,6 +605,8 @@ GM_addStyle ( `
                 if (!res && !width) return 'SD';
                 const resolution = res ? res.toLowerCase() : '';
                 const w = parseInt(width, 10);
+                if (resolution === '8k' || w >= 7000) return '8K';
+                if (resolution === '6k' || w >= 5000) return '6K';
                 if (resolution === '4k' || w >= 3800) return '4K';
                 if (resolution === '1080p' || (w >= 1900 && w < 3800)) return 'FHD';
                 if (resolution === '720p' || (w >= 1200 && w < 1900)) return 'HD';
