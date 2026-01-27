@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.4.7
+// @version      0.4.9
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -478,8 +478,8 @@ GM_addStyle ( `
                         width: m.getAttribute('width'),
                         height: m.getAttribute('height'),
                         bitrate: m.getAttribute('bitrate'),
-                        videoCodec: m.getAttribute('videoCodec'),
-                        audioCodec: m.getAttribute('audioCodec'),
+                        videoCodec: m.getAttribute('videoCodec') || videoStream?.getAttribute('codec'),
+                        audioCodec: m.getAttribute('audioCodec') || audioStream?.getAttribute('codec'),
                         audioBitrate: audioStream?.getAttribute('bitrate'),
                         doviProfile: videoStream?.getAttribute('DOVIProfile'),
                         bitDepth: videoStream?.getAttribute('bitDepth'),
