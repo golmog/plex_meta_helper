@@ -1,40 +1,41 @@
--- 이 핸들러는 "plexplay://..." 또는 "plexfolder://..." 형태의 URL을 처리합니다.
-on open location this_URL
-
-    -- URL에서 "plexplay://" 또는 "plexfolder://" 부분을 제거합니다.
-    if this_URL starts with "plexplay://" then
-        set processed_URL to text 9 thru -1 of this_URL
-        set isFolder to false
-    else if this_URL starts with "plexfolder://" then
-        set processed_URL to text 12 thru -1 of this_URL
-        set isFolder to true
-    else
-        display dialog "알 수 없는 URL 스킴입니다." with icon stop
-        return
-    end if
-
-    -- URL 디코딩을 위한 셸 스크립트 호출
-    set decoded_path to do shell script "python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' " & quoted form of processed_URL
-
-    -- macOS는 경로를 POSIX 형식(슬래시 사용)으로 처리하므로, Finder에 전달
-    try
-        -- POSIX 경로를 Finder가 이해할 수 있는 형태로 변환
-        set theItem to POSIX file decoded_path as alias
-
-        -- 파일/폴더 존재 여부 확인
-        tell application "Finder"
-            if not (exists theItem) then
-                error "경로를 찾을 수 없습니다."
-            end if
-        end tell
-        
-        -- 기본 앱으로 열기
-        tell application "Finder"
-            open theItem
-        end tell
-
-    on error
-        display dialog "파일 또는 폴더를 열 수 없습니다:\n" & decoded_path with icon stop
-    end try
-
+-- 이 핸들러는 "plexplay://...", "plexstream://..." 또는 "plexfolder://..." 형태의 URL을 처리합니다.
+on open location this_url
+	-- URL 파싱 (프로토콜 분리)
+	set AppleScript's text item delimiters to "://"
+	set url_parts to text items of this_url
+	set protocol to item 1 of url_parts
+	set raw_data to item 2 of url_parts
+	set AppleScript's text item delimiters to ""
+	
+	-- URL 디코딩 (Python3 이용)
+	set decode_script to "python3 -c \"import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1]))\" " & quoted form of raw_data
+	set decoded_data to do shell script decode_script
+	
+	if protocol is "plexplay" then
+		-- [로컬 재생] 기본 플레이어로 열기
+		do shell script "open " & quoted form of decoded_data
+		
+	else if protocol is "plexfolder" then
+		-- [폴더 열기] Finder에서 파일 선택
+		do shell script "open -R " & quoted form of decoded_data
+		
+	else if protocol is "plexstream" then
+		-- [스트리밍] IINA 플레이어로 열기 (자막 처리 포함)
+		set AppleScript's text item delimiters to "|"
+		set stream_parts to text items of decoded_data
+		set vid_url to item 1 of stream_parts
+		set sub_url to ""
+		if (count of stream_parts) > 1 then
+			set sub_url to item 2 of stream_parts
+		end if
+		set AppleScript's text item delimiters to ""
+		
+		-- IINA 실행 (mpv 기반이라 명령줄 지원)
+		if sub_url is not "" then
+			-- IINA는 URL 스킴(iina://)을 지원하지만 자막 동시 로드는 터미널 명령이 확실함
+			do shell script "/Applications/IINA.app/Contents/MacOS/iina --mpv-sub-file=" & quoted form of sub_url & " " & quoted form of vid_url & " > /dev/null 2>&1 &"
+		else
+			do shell script "open -a IINA " & quoted form of vid_url
+		end if
+	end if
 end open location

@@ -5,5 +5,5 @@ Name=Plex Play Handler
 Exec=/PATH/TO/plexhelper.sh %u
 Type=Application
 Terminal=false
-MimeType=x-scheme-handler/plexplay;x-scheme-handler/plexfolder;
+MimeType=x-scheme-handler/plexplay;x-scheme-handler/plexfolder;x-scheme-handler/plexstream;
 NoDisplay=true

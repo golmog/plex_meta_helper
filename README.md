@@ -6,6 +6,9 @@ Plex Web UI를 강화하는 Tampermonkey 유저스크립트입니다. Plex 컨�
 
 ## 업데이트
 
+0.5.10 (2026-01-29)
+- 스트리밍 외부재생 추가
+
 0.4.9 (2026-01-27)
 - 구형 코덱 대응
 
@@ -52,19 +55,19 @@ Plex Web UI를 강화하는 Tampermonkey 유저스크립트입니다. Plex 컨�
 ## 설치 방법
 
 1.  [Tampermonkey](https://www.tampermonkey.net/) 설치: https://www.tampermonkey.net/ (베타버전 추천)
-2.  이 스크립트의 **[설치 링크](https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js)**를 클릭하여 Tampermonkey에 설치합니다.
+2.  이 스크립트의 **[설치 링크](https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js)**를 클릭하여 Tampermonkey에 설치합니다.(설치 후 확장프로그램 관리에서 실행 권한 체크 필요)
 3.  운영체제에 맞는 실행 스크립트를 다운로드 받고 본인 환경에 맞게 수정합니다.
-4.  헬퍼가 반환하는 URL 형식(외부재생: `plexplay://` / 폴더열기: `plexfolder://`)을 열 수 있도록 환경 설정 작업을 해야 합니다.
+4.  헬퍼가 반환하는 URL 형식(외부재생: `plexplay://` / 스트림재생: `plexstream://` / 폴더열기: `plexfolder://`)을 열 수 있도록 환경 설정 작업을 해야 합니다.
 
 ### Windows
 
-1. `plexhelper.vbs`: PowerShell을 통해 재생기/탐색기를 실행하는 스크립트입니다.
+1. `plexhelper.vbs`: PowerShell을 통해 재생기/탐색기를 실행하는 스크립트입니다. 스트림 재생은 팟플레이어 기준으로 작성되었습니다. 팟플레이어의 경로를 확인/수정해주세요.
 2. `plexhelper.reg`: 텍스트 편집기로 열어서 plexhelper.vbs 경로를 본인 환경에 맞게 수정한 뒤에 더블 클릭으로 레지스트리에 추가해 줍니다.
 
 ### Ubuntu
 
-1. `plexhelper.sh`: 우분투 데스크탑 환경에서 동영상 재생기를 실행하는 쉘 스크립트입니다. 다운로드 받은 스크립트에 `chmod +x plexhelper.sh`로 실행 권한을 줍니다.
-2. `plexhelper-handler.desktop`: 파일을 텍스트 편집기에서 열고 plexhelper.sh 경로를 수정한 뒤 `~/.local/share/applications/` 경로에 넣어줍니다. 아래 명령어를 실행해서 프로토콜을 등록하면 즉시 기본 플레이어로 동영상을 열거나 폴더 열기가 가능합니다.
+1. `plexhelper.sh`: 우분투 데스크탑 환경에서 동영상 재생기를 실행하는 쉘 스크립트입니다. 다운로드 받은 스크립트에 `chmod +x plexhelper.sh`로 실행 권한을 줍니다. mpv/smplayer 기준 샘플이 작성돼있으며, 자막의 경우 mpv는 스트리밍, smplayer는 임시경로 다운로드 방식입니다.
+2. `plexhelper-handler.desktop`: 파일을 텍스트 편집기에서 열고 plexhelper.sh 경로를 수정한 뒤 `~/.local/share/applications/`에 넣어줍니다. 아래 명령어를 실행해서 프로토콜을 등록하면 즉시 기본 플레이어로 동영상을 열거나 폴더 열기가 가능합니다.
 ```bash
 update-desktop-database ~/.local/share/applications/
 ```
@@ -72,7 +75,7 @@ update-desktop-database ~/.local/share/applications/
 ### macOS
 
 1. macOS에 기본으로 설치된 **스크립트 편집기(Script Editor)**를 엽니다.
-2. 새로운 문서를 열고 AppleScript 파일의 내용을 붙여 넣고, 스크립트를 **응용프로그램(Application)**으로 저장(ex. PlexHelper.app)합니다.
+2. 새로운 문서를 열고 AppleScript 파일의 내용을 붙여 넣고, 스크립트를 **응용프로그램(Application)**으로 저장(ex. PlexHelper.app)합니다. 미디어 플레이어는 IINA를 기준으로 작성되었습니다.
 3. 저장된 앱을 마우스 오른쪽 클릭하고 **패키지 내용 보기(Show Package Contents)**를 선택합니다.
 4. Contents 폴더로 들어가 Info.plist 파일을 텍스트 편집기로 엽니다.
 5. 파일의 맨 아래, `</dict>` 태그 바로 위에 아래 내용을 추가합니다.
@@ -86,6 +89,7 @@ update-desktop-database ~/.local/share/applications/
             <array>
                 <string>plexplay</string>
                 <string>plexfolder</string>
+                <string>plexstream</string>
             </array>
         </dict>
     </array>
@@ -103,6 +107,7 @@ update-desktop-database ~/.local/share/applications/
             <array>
                 <string>plexplay</string>
                 <string>plexfolder</string>
+                <string>plexstream</string>
             </array>
         </dict>
     </array>
@@ -112,7 +117,7 @@ update-desktop-database ~/.local/share/applications/
 ```bash
 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f /Applications/PlexHelper.app
 ```
-**시스템에 Python 3 필요**
+macOS는 시스템에 **Python 3 필요**하고, 현재 테스트가 충분하지 않습니다.
 
 ## 설정 방법
 

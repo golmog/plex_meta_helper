@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.4.9
+// @version      0.5.10
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
-// @author       saibi (외부 플레이어 기능: https://github.com/Kayomani/PlexExternalPlayer)
+// @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
 // @updateURL    https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js
 // @downloadURL  https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js
@@ -130,9 +130,9 @@ GM_addStyle ( `
     /* 미디어 정보 정렬 스타일 (Grid 레이아웃) */
     .media-info-line {
         display: grid;
-        /* 외부재생(0.3) / 폴더열기(0.3) / 해상도(0.5) / 비디오(2.2) / 오디오(2.2) / 자막(1.0) */
-        grid-template-columns: 0.3fr 0.3fr 0.5fr 2.2fr 2.2fr 1.0fr;
-        align-items: center; /* 세로 중앙 정렬 */
+        /* 외부재생 / 스트리밍 / 폴더열기 / 해상도 / 비디오 / 오디오 / 자막 */
+        grid-template-columns: 35px 35px 35px 0.5fr 2.2fr 2.2fr 1.0fr;
+        align-items: center;
         gap: 8px;
         padding: 8px 10px;
         border-radius: 4px;
@@ -567,6 +567,11 @@ GM_addStyle ( `
             let fileInfoHtml = '';
             const serverId = currentServerId;
             const itemId = data.itemId;
+            const serverInfo = extractServerInfo(serverId);
+
+            const launchCustomProtocol = (url) => {
+                window.location.assign(url);
+            };
 
             const createPathHtml = (originalPath) => {
                 const isScannable = data.librarySectionID && originalPath;
@@ -576,29 +581,20 @@ GM_addStyle ( `
                 return `<span class="path-text-wrapper">${emphasizeFileName(originalPath)}</span>`;
             };
 
-            const createExternalLinkHtml = (originalPath, itemType, isFolder) => {
-                const localPath = getLocalPath(originalPath);
-                if (!localPath) return '';
-                let targetPath = localPath;
-                if (isFolder) {
-                    if (itemType === 'video' || itemType === 'directory') {
-                        const idx = Math.max(targetPath.lastIndexOf('/'), targetPath.lastIndexOf('\\'));
-                        if (idx > -1) targetPath = targetPath.substring(0, idx);
-                    }
-                }
-                const unifiedPath = targetPath.replace(/\\/g, '/');
-                const encodedPath = encodeURIComponent(unifiedPath)
-                    .replace(/\(/g, '%28')
-                    .replace(/\)/g, '%29')
-                    .replace(/'/g, '%27'); 
-                const protocol = isFolder ? 'plexfolder://' : 'plexplay://';
-                const protocolUrl = `${protocol}${encodedPath}`;
+            const createExternalLinkHtml = (originalPath, itemType, isFolder) => { 
+                const localPath = getLocalPath(originalPath); 
+                if (!localPath) return ''; 
                 
-                const title = isFolder ? '폴더 열기' : '외부 재생';
-                const icon = isFolder ? ICONS.FOLDER : ICONS.PLAY;
-                const className = isFolder ? 'plex-open-folder' : 'plex-play-external';
+                const unifiedPath = localPath.replace(/\\/g, '/'); 
+                const encodedPath = encodeURIComponent(unifiedPath).replace(/\(/g, '%28').replace(/\)/g, '%29').replace(/'/g, '%27'); 
                 
-                return `<a href="${protocolUrl}" class="plex-guid-action ${className}" title="${title}" target="_blank">${icon}</a>`;
+                const protocol = isFolder ? 'plexfolder://' : 'plexplay://'; 
+                const protocolUrl = `${protocol}${encodedPath}`; 
+                const title = isFolder ? '폴더 열기' : '외부 재생'; 
+                const icon = isFolder ? ICONS.FOLDER : ICONS.PLAY; 
+                const className = isFolder ? 'plex-open-folder' : 'plex-play-external'; 
+                
+                return `<a href="${protocolUrl}" class="plex-guid-action ${className}" title="${title}" data-protocol-url="${protocolUrl}">${icon}</a>`; 
             };
 
             const getResolutionCategory = (res, width) => {
@@ -608,8 +604,8 @@ GM_addStyle ( `
                 if (resolution === '8k' || w >= 7000) return '8K';
                 if (resolution === '6k' || w >= 5000) return '6K';
                 if (resolution === '4k' || w >= 3800) return '4K';
-                if (resolution === '1080p' || (w >= 1900 && w < 3800)) return 'FHD';
-                if (resolution === '720p' || (w >= 1200 && w < 1900)) return 'HD';
+                if (resolution === '1080p' || (w >= 1900)) return 'FHD';
+                if (resolution === '720p' || (w >= 1200)) return 'HD';
                 return 'SD';
             };
 
@@ -632,31 +628,68 @@ GM_addStyle ( `
 
             const getVideoFeatures = (v) => {
                 let feats = [];
-                if (v.doviProfile) {
-                    feats.push('DV');
-                }
-                if (v.bitDepth == 10 || v.colorSpace === 'bt2020') {
-                    feats.push('HDR10');
-                }
+                if (v.doviProfile) feats.push('DV');
+                if (v.bitDepth == 10 || v.colorSpace === 'bt2020') feats.push('HDR10');
                 return feats.length > 0 ? ` ${feats.join('/')}` : '';
             };
 
-        if (data.type === 'directory' && data.mediaVersions?.[0]?.parts?.[0]?.path) {
-            const representativePart = data.mediaVersions[0].parts[0];
-            const originalPath = representativePart.path;
-            
-            const iconHtml = createExternalLinkHtml(originalPath, 'directory', true);
-            const pathLinkHtml = createPathHtml(originalPath);
+            const createStreamLinkHtml = (partId, subtitles) => {
+                if (!serverInfo || !partId) return '';
+                const videoUrl = `${serverInfo.serverUrl}/library/parts/${partId}/0/file?X-Plex-Token=${serverInfo.accessToken}`;
+                let subUrl = '';
+                if (subtitles && subtitles.length > 0) {
+                    const korSub = subtitles.find(s => s.languageCode === 'kor' || s.languageCode === 'ko');
+                    const targetSub = korSub || subtitles[0];
+                    if (targetSub && targetSub.key) {
+                        subUrl = `${serverInfo.serverUrl}${targetSub.key}?X-Plex-Token=${serverInfo.accessToken}`;
+                    }
+                }
+                
+                const payload = encodeURIComponent(videoUrl) + '%7C' + encodeURIComponent(subUrl);
+                const protocolUrl = `plexstream://${payload}`;
 
-            fileInfoHtml = `
-            <div class="media-version-block" style="border: 0;">
-                <div class="media-info-line" style="display: flex; align-items: center; grid-template-columns: none; gap: 10px;">
-                    <div style="flex-shrink: 0;">${iconHtml}</div>
-                    <div style="flex-grow: 1; min-width: 0; font-size: 12px; color: #ccc; word-break: break-all; line-height: 1.3;">
-                        ${pathLinkHtml}
+                return `<a href="${protocolUrl}" class="plex-guid-action plex-play-stream" title="스트리밍 재생(외부)" data-protocol-url="${protocolUrl}"><i class="fas fa-wifi"></i></a>`;
+            };
+
+            const attachActionListeners = () => {
+                const selectors = '.plex-play-external, .plex-open-folder, .plex-play-stream';
+                container.querySelectorAll(selectors).forEach(el => {
+                    if (el.getAttribute('data-listener-attached') === 'true') return;
+                    el.setAttribute('data-listener-attached', 'true');
+
+                    el.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+
+                        let msg = '명령을 실행합니다.';
+                        if (el.classList.contains('plex-open-folder')) msg = '폴더를 엽니다.';
+                        else if (el.classList.contains('plex-play-stream')) msg = '외부 플레이어로 스트리밍 재생합니다.';
+                        else msg = '외부 플레이어로 로컬 재생합니다.';
+                        
+                        toastr.info(msg, '실행 중');
+
+                        const url = el.getAttribute('data-protocol-url');
+                        if (url) launchCustomProtocol(url);
+                    });
+                });
+            };
+
+            if (data.type === 'directory' && data.mediaVersions?.[0]?.parts?.[0]?.path) {
+                const representativePart = data.mediaVersions[0].parts[0];
+                const originalPath = representativePart.path;
+                
+                const iconHtml = createExternalLinkHtml(originalPath, 'directory', true);
+                const pathLinkHtml = createPathHtml(originalPath);
+
+                fileInfoHtml = `
+                <div class="media-version-block" style="border: 0;">
+                    <div class="media-info-line" style="display: flex; align-items: center; grid-template-columns: none; gap: 10px;">
+                        <div style="flex-shrink: 0;">${iconHtml}</div>
+                        <div style="flex-grow: 1; min-width: 0; font-size: 12px; color: #ccc; word-break: break-all; line-height: 1.3;">
+                            ${pathLinkHtml}
+                        </div>
                     </div>
-                </div>
-            </div>`;
+                </div>`;
 
             } else if (data.type === 'video' && Array.isArray(data.mediaVersions) && data.mediaVersions.length > 0) {
                 
@@ -664,22 +697,19 @@ GM_addStyle ( `
                     if (!version.parts || version.parts.length === 0) return '';
                     const part = version.parts[0];
                     const originalPath = part.path;
+                    const partId = part.id;
 
                     let videoFilename = 'video';
                     if (originalPath) {
                         const filenameWithExt = originalPath.substring(originalPath.lastIndexOf('/') + 1);
                         const lastDotIndex = filenameWithExt.lastIndexOf('.');
-                        if (lastDotIndex > 0) {
-                            videoFilename = filenameWithExt.substring(0, lastDotIndex);
-                        } else {
-                            videoFilename = filenameWithExt;
-                        }
+                        if (lastDotIndex > 0) videoFilename = filenameWithExt.substring(0, lastDotIndex);
+                        else videoFilename = filenameWithExt;
                     }
 
                     const playIconHtml = `<div class="info-block"><span class="info-label">외부재생</span><span class="info-value">${createExternalLinkHtml(originalPath, 'video', false)}</span></div>`;
-
+                    const streamIconHtml = `<div class="info-block"><span class="info-label">스트리밍</span><span class="info-value">${createStreamLinkHtml(partId, version.subtitles)}</span></div>`;
                     const folderIconHtml = `<div class="info-block"><span class="info-label">폴더열기</span><span class="info-value">${createExternalLinkHtml(originalPath, 'video', true)}</span></div>`;
-
                     const resolution = `<div class="info-block"><span class="info-label">해상도</span><span class="info-value">${getResolutionCategory(version.videoResolution, version.width)}</span></div>`;
 
                     const videoExtra = getVideoFeatures(version);
@@ -708,7 +738,7 @@ GM_addStyle ( `
                     }
                     const subtitles = `<div class="info-block"><span class="info-label">자막</span><span class="info-value">${subInfo}</span></div>`;
                     
-                    const infoLine = `<div class="media-info-line">${playIconHtml}${folderIconHtml}${resolution}${videoCodec}${audioCodec}${subtitles}</div>`;
+                    const infoLine = `<div class="media-info-line">${playIconHtml}${streamIconHtml}${folderIconHtml}${resolution}${videoCodec}${audioCodec}${subtitles}</div>`;
                     const pathLine = `<div style="font-size: 12px; color: #9E9E9E; word-break: break-all; margin-top: 4px; padding-left: 8px;">${createPathHtml(originalPath)}</div>`;
 
                     return `<div class="media-version-block">${infoLine}${pathLine}</div>`;
@@ -718,24 +748,26 @@ GM_addStyle ( `
 
             const displayGuid = data.guid ? cleanGuid(data.guid) : '-';
             let guidHtml;
-            if (data.guid && data.guid.startsWith('plex://')) {
-                guidHtml = `<a href="${data.guid}" class="plex-guid-link" title="Plex 앱에서 열기">${displayGuid}</a>`;
-            } else {
-                guidHtml = `<span>${displayGuid}</span>`;
-            }
-
+            if (data.guid && data.guid.startsWith('plex://')) { guidHtml = `<a href="${data.guid}" class="plex-guid-link" title="Plex 앱에서 열기">${displayGuid}</a>`; } else { guidHtml = `<span>${displayGuid}</span>`; }
             const ffUrlForServer = AppSettings.FF_URL_MAPPINGS[serverId];
             const showPlexMateButton = ffUrlForServer && AppSettings.PLEX_MATE_APIKEY;
-            const plexMateHtml = showPlexMateButton ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">PLEX MATE</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><a href="#" id="plex-mate-refresh-button" class="plex-guid-action" title="PLEX MATE로 YAML/TMDB 반영 실행">${ICONS.PLEX_MATE} YAML/TMDB 반영</a></span></div>` : '';
-            
+            const plexMateHtml = showPlexMateButton ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">PLEX MATE</span></div><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><a href="#" id="plex-mate-refresh-button" class="plex-guid-action" title="PLEX MATE로 YAML/TMDB 반영 실행">${ICONS.PLEX_MATE} YAML/TMDB 반영</a></span></div>` : '';
+
             const html = `<div id="plex-guid-box" style="margin-top: 15px; margin-bottom: 10px; clear: both; width: 100%;"><div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold;">미디어 정보</div><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq3g _1v25wbq28">${fileInfoHtml}${plexMateHtml}${ displayGuid !== '-' ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">GUID</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="word-break: break-all;">${guidHtml} <span id="refresh-guid-button" title="새로고침(캐시 갱신)" style="cursor: pointer;">${ICONS.REFRESH}</span></span></div>` : ''}${data.duration ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">재생 시간</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><span>${ICONS.CLOCK} ${data.duration} ${data.markers?.intro ? `<span style="margin-left:10px;">${ICONS.FILM} Intro: ${data.markers.intro.start} ~ ${data.markers.intro.end}</span>` : ''} ${data.markers?.credits ? `<span style="margin-left:10px;"> ${ICONS.VIDEO} Credit: ${data.markers.credits.start} ~ ${data.markers.credits.end}</span>` : ''}</span></span></div>` : ''}</div></div>`;
-            
+
             let insertTarget = null; let insertPosition = 'afterend';
             const ratingEl = container.querySelector('div[data-testid="metadata-starRatings"], div[data-testid="metadata-ratings"]'); const ratingCont = ratingEl?.parentElement;
             if (ratingCont?.isConnected) { const actionCont = container.querySelector('button[data-testid="preplay-play"]')?.parentElement; if (actionCont && ratingCont.nextElementSibling === actionCont) insertTarget = ratingCont; else insertTarget = ratingCont; }
             if (!insertTarget) { const line2El = container.querySelector('span[data-testid="metadata-line2"]'); const line2P = line2El?.closest('div[style*="min-height: 24px;"]'); if (line2P?.isConnected) insertTarget = line2P; }
             if (!insertTarget) insertTarget = container;
-            if (insertTarget?.isConnected) { insertTarget.insertAdjacentHTML(insertPosition, html); document.querySelectorAll('.plex-guid-list-box, .plex-guid-wrapper').forEach(el => el.remove()); return true; } else return false;
+            if (insertTarget?.isConnected) { 
+                insertTarget.insertAdjacentHTML(insertPosition, html); 
+                document.querySelectorAll('.plex-guid-list-box, .plex-guid-wrapper').forEach(el => el.remove()); 
+                
+                attachActionListeners();
+
+                return true; 
+            } else return false;
         } catch (error) { if (error.name === 'AbortError') log('[displayGuidDetail] Aborted.'); else infoLog('[displayGuidDetail] Error:', error); document.getElementById('plex-guid-box')?.remove(); return false; }
     }
 
