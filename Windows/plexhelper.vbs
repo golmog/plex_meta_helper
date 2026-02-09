@@ -1,9 +1,9 @@
-' plexhelper.vbs - Windows¿ë Plex Helper ½ºÅ©¸³Æ®
+' plexhelper.vbs - Windowsìš© Plex Helper ìŠ¤í¬ë¦½íŠ¸
 Option Explicit
 Dim WshShell, strArg, psCommand, potPath
 
 ' =========================================================
-' [¼³Á¤] ÆÌÇÃ·¹ÀÌ¾î °æ·Î
+' [ì„¤ì •] íŒŸí”Œë ˆì´ì–´ ê²½ë¡œ
 potPath = "C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe"
 ' =========================================================
 
@@ -14,32 +14,32 @@ psCommand = ""
 psCommand = psCommand & "$u='" & strArg & "';"
 psCommand = psCommand & "$pot='" & potPath & "';"
 
-' ÇÁ·ÎÅäÄİ ºĞ¸®
+' í”„ë¡œí† ì½œ ë¶„ë¦¬
 psCommand = psCommand & "if($u -match '^(plexplay|plexfolder|plexstream)://(.*)'){$p=$matches[1];$e=$matches[2]}else{exit};"
 
 ' ---------------------------------------------------------
-' [1] ½ºÆ®¸®¹Ö (plexstream)
+' [1] ìŠ¤íŠ¸ë¦¬ë° (plexstream)
 ' ---------------------------------------------------------
 psCommand = psCommand & "if($p -eq 'plexstream'){"
 psCommand = psCommand & "  try{$decoded=[System.Uri]::UnescapeDataString($e)}catch{$decoded=$e};"
-'  # ÆÄÀÌÇÁ(|)·Î ºĞ¸® ÈÄ ¾ÕµÚ °ø¹é ¹× ³¡ ½½·¡½Ã Á¦°Å
+'  # íŒŒì´í”„(|)ë¡œ ë¶„ë¦¬ í›„ ì•ë’¤ ê³µë°± ë° ë ìŠ¬ë˜ì‹œ ì œê±°
 psCommand = psCommand & "  $parts=$decoded -split '\|';"
 psCommand = psCommand & "  $vid=$parts[0].Trim().TrimEnd('/');"
 psCommand = psCommand & "  $sub=if($parts.Count -gt 1){$parts[1].Trim().TrimEnd('/')}else{''};"
 
-'  # ½ÇÇà ÀÎÀÚ Á¶¸³ (Àß µÇ´Â ½ºÅ©¸³Æ® ¹æ½Ä)
+'  # ì‹¤í–‰ ì¸ì ì¡°ë¦½
 psCommand = psCommand & "  if(Test-Path $pot){"
 psCommand = psCommand & "    $a='""'+$vid+'""';"
 psCommand = psCommand & "    if($sub){$a+=' /sub=""'+$sub+'""'};"
 psCommand = psCommand & "    Start-Process -FilePath $pot -ArgumentList $a;"
 psCommand = psCommand & "  }else{"
-psCommand = psCommand & "    Add-Type -AssemblyName System.Windows.Forms;[System.Windows.Forms.MessageBox]::Show('ÆÌÇÃ·¹ÀÌ¾î¸¦ Ã£À» ¼ö ¾ø½À´Ï´Ù.');"
+psCommand = psCommand & "    Add-Type -AssemblyName System.Windows.Forms;[System.Windows.Forms.MessageBox]::Show('íŒŸí”Œë ˆì´ì–´ë¥¼ ì°¾ì„ ìˆ˜ ì—†ìŠµë‹ˆë‹¤.');"
 psCommand = psCommand & "  }"
 psCommand = psCommand & "  exit;"
 psCommand = psCommand & "}"
 
 ' ---------------------------------------------------------
-' [2] ·ÎÄÃ Àç»ı/Æú´õ (±âÁ¸ ·ÎÁ÷ À¯Áö)
+' [2] ë¡œì»¬ ì¬ìƒ/í´ë”
 ' ---------------------------------------------------------
 psCommand = psCommand & "try{$d=[System.Uri]::UnescapeDataString($e)}catch{try{$d=[System.Net.WebUtility]::UrlDecode($e)}catch{$d=$e}};"
 psCommand = psCommand & "$path=$d.Replace('/','\').Trim().TrimEnd('\');"
@@ -47,8 +47,9 @@ psCommand = psCommand & "if(Test-Path -LiteralPath $path){"
 psCommand = psCommand & "  if($p -eq 'plexplay'){Invoke-Item -LiteralPath $path}"
 psCommand = psCommand & "  elseif($p -eq 'plexfolder'){$i=Get-Item -LiteralPath $path; if($i -is [System.IO.DirectoryInfo]){Invoke-Item -LiteralPath $path}else{$a='/select,""'+$path+'""';Start-Process explorer.exe -ArgumentList $a}}"
 psCommand = psCommand & "}else{"
-psCommand = psCommand & "  Add-Type -AssemblyName System.Windows.Forms;[System.Windows.Forms.MessageBox]::Show('ÆÄÀÏÀ» Ã£À» ¼ö ¾ø½À´Ï´Ù.'+[Environment]::NewLine+'°æ·Î: '+$path,'Plex Helper Error',0,16)"
+psCommand = psCommand & "  Add-Type -AssemblyName System.Windows.Forms;[System.Windows.Forms.MessageBox]::Show('íŒŒì¼ì„ ì°¾ì„ ìˆ˜ ì—†ìŠµë‹ˆë‹¤.'+[Environment]::NewLine+'ê²½ë¡œ: '+$path,'Plex Helper Error',0,16)"
 psCommand = psCommand & "}"
 
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command """ & psCommand & """", 0, False
+
