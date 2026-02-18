@@ -14,8 +14,12 @@ if [ "$PROTOCOL" = "plexplay" ]; then
 
 elif [ "$PROTOCOL" = "plexfolder" ]; then
     # [폴더 열기] 해당 경로의 폴더 열기
-    DIR=$(dirname "$DECODED_DATA")
-    xdg-open "$DIR"
+    if [ -d "$DECODED_DATA" ]; then
+        xdg-open "$DECODED_DATA"
+    else
+        DIR=$(dirname "$DECODED_DATA")
+        xdg-open "$DIR"
+    fi
 
 elif [ "$PROTOCOL" = "plexstream" ]; then
     # [스트리밍] | 로 분리
