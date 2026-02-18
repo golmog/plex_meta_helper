@@ -27,7 +27,7 @@ psCommand = psCommand & "  $parts=$decoded -split '\|';"
 psCommand = psCommand & "  $vid=$parts[0].Trim().TrimEnd('/');"
 psCommand = psCommand & "  $sub=if($parts.Count -gt 1){$parts[1].Trim().TrimEnd('/')}else{''};"
 
-'  # ???? ???? ???? (?? ??? ?????? ???)
+'  # 실행 인자 조립
 psCommand = psCommand & "  if(Test-Path $pot){"
 psCommand = psCommand & "    $a='""'+$vid+'""';"
 psCommand = psCommand & "    if($sub){$a+=' /sub=""'+$sub+'""'};"
@@ -39,7 +39,7 @@ psCommand = psCommand & "  exit;"
 psCommand = psCommand & "}"
 
 ' ---------------------------------------------------------
-' [2] ???? ???/???? (???? ???? ????)
+' [2] 로컬 재생/폴더
 ' ---------------------------------------------------------
 psCommand = psCommand & "try{$d=[System.Uri]::UnescapeDataString($e)}catch{try{$d=[System.Net.WebUtility]::UrlDecode($e)}catch{$d=$e}};"
 psCommand = psCommand & "$path=$d.Replace('/','\').Trim().TrimEnd('\');"
@@ -52,4 +52,3 @@ psCommand = psCommand & "}"
 
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command """ & psCommand & """", 0, False
-
