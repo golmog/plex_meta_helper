@@ -1075,30 +1075,58 @@ GM_addStyle ( `
             });
         });
     }
+
     function attachPlexMateRefreshListener(itemId, serverId) {
         const button = document.getElementById('plex-mate-refresh-button');
         if (!button) return;
+        
         const mateBaseUrl = AppSettings.FF_URL_MAPPINGS[serverId];
         const originalHtml = button.innerHTML;
+
         button.addEventListener('click', async (e) => {
             e.preventDefault(); e.stopPropagation();
-            if (!mateBaseUrl || !AppSettings.PLEX_MATE_APIKEY) { toastr.warning('이 서버에 대한 plex_mate URL 또는 API 키가 설정되지 않았습니다.'); return; }
-            toastr.info('plex_mate에 새로고침을 요청합니다...');
-            button.style.pointerEvents = 'none'; button.innerHTML = `${ICONS.SPINNER} 요청 중...`;
+            
+            if (!mateBaseUrl || !AppSettings.PLEX_MATE_APIKEY) { 
+                toastr.warning('이 서버에 대한 plex_mate URL 또는 API 키가 설정되지 않았습니다.'); 
+                return; 
+            }
+
+            toastr.info('plex_mate에 YAML/TMDB 반영을 요청합니다...');
+            button.style.pointerEvents = 'none'; 
+            button.innerHTML = `${ICONS.SPINNER} 요청 중...`;
+
             try {
                 const url = mateBaseUrl + PLEX_MATE_API_ENDPOINTS.MANUAL_REFRESH;
                 const data = `apikey=${encodeURIComponent(AppSettings.PLEX_MATE_APIKEY)}&metadata_item_id=${encodeURIComponent(itemId)}`;
-                await makeRequest({ method: 'POST', url: url, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: data, timeout: 30000 });
-                toastr.success('새로고침 요청 성공! 잠시 후 캐시 갱신(🔄)을 눌러주세요.');
+                
+                const response = await makeRequest({ 
+                    method: 'POST', 
+                    url: url, 
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, 
+                    data: data, 
+                    timeout: 30000 
+                });
+
+                let result = {};
+                try { result = JSON.parse(response.responseText); } catch(e) {}
+
+                if (result.ret === 'success') {
+                    toastr.success('YAML/TMDB 반영 성공!<br>변경 사항을 즉시 확인하려면 <b>페이지를 새로고침(F5)</b>하세요.', '', {timeOut: 30000});
+                } else {
+                    throw new Error(result.msg || 'plex_mate 반환 오류');
+                }
+
             } catch (error) {
                 infoLog('plex_mate refresh error:', error);
-                let errorMsg = '알 수 없는 오류';
-                if (error.error === 'Timeout') errorMsg = '요청 시간이 초과되었습니다. 서버가 느리거나 응답이 없을 수 있습니다.';
-                else if (error.error === 'Network error') errorMsg = '네트워크 오류가 발생했습니다. 서버에 연결할 수 없습니다.';
-                else if (error.statusText) errorMsg = `서버 응답 오류 (${error.status || ''} ${error.statusText})`;
-                toastr.error(`새로고침 요청 실패: ${errorMsg}`, '오류');
+                let errorMsg = error.message || '알 수 없는 오류';
+                if (error.error === 'Timeout') errorMsg = '요청 시간 초과';
+                
+                toastr.error(`반영 실패: ${errorMsg}`, '오류');
             } finally {
-                if(document.body.contains(button)) { button.style.pointerEvents = 'auto'; button.innerHTML = originalHtml; }
+                if(document.body.contains(button)) { 
+                    button.style.pointerEvents = 'auto'; 
+                    button.innerHTML = originalHtml; 
+                }
             }
         });
     }
