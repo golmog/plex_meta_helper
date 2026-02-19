@@ -22,7 +22,6 @@ psCommand = psCommand & "if($u -match '^(plexplay|plexfolder|plexstream)://(.*)'
 ' ---------------------------------------------------------
 psCommand = psCommand & "if($p -eq 'plexstream'){"
 psCommand = psCommand & "  try{$decoded=[System.Uri]::UnescapeDataString($e)}catch{$decoded=$e};"
-'  # 파이프(|)로 분리 후 앞뒤 공백 및 끝 슬래시 제거
 psCommand = psCommand & "  $parts=$decoded -split '\|';"
 psCommand = psCommand & "  $vid=$parts[0].Trim().TrimEnd('/');"
 psCommand = psCommand & "  $sub=if($parts.Count -gt 1){$parts[1].Trim().TrimEnd('/')}else{''};"

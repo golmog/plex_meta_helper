@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.5.10
+// @version      0.5.11
 // @description  Plex 컨텐츠의 메타 상세정보 표시, 캐시 관리, 외부 플레이어 재생/폴더 열기 (경로 설정 포함) + plex_mate 연동
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -644,11 +644,10 @@ GM_addStyle ( `
                         subUrl = `${serverInfo.serverUrl}${targetSub.key}?X-Plex-Token=${serverInfo.accessToken}`;
                     }
                 }
-                
                 const payload = encodeURIComponent(videoUrl) + '%7C' + encodeURIComponent(subUrl);
                 const protocolUrl = `plexstream://${payload}`;
 
-                return `<a href="${protocolUrl}" class="plex-guid-action plex-play-stream" title="스트리밍 재생(외부)" data-protocol-url="${protocolUrl}"><i class="fas fa-wifi"></i></a>`;
+                return `<a href="${protocolUrl}" class="plex-guid-action plex-play-stream" title="팟플레이어 스트리밍 (자막 포함)" data-protocol-url="${protocolUrl}"><i class="fas fa-wifi"></i></a>`;
             };
 
             const attachActionListeners = () => {
@@ -663,8 +662,8 @@ GM_addStyle ( `
 
                         let msg = '명령을 실행합니다.';
                         if (el.classList.contains('plex-open-folder')) msg = '폴더를 엽니다.';
-                        else if (el.classList.contains('plex-play-stream')) msg = '외부 플레이어로 스트리밍 재생합니다.';
-                        else msg = '외부 플레이어로 로컬 재생합니다.';
+                        else if (el.classList.contains('plex-play-stream')) msg = '팟플레이어로 스트리밍을 시작합니다.';
+                        else msg = '외부 플레이어로 재생합니다.';
                         
                         toastr.info(msg, '실행 중');
 
@@ -753,7 +752,16 @@ GM_addStyle ( `
             const showPlexMateButton = ffUrlForServer && AppSettings.PLEX_MATE_APIKEY;
             const plexMateHtml = showPlexMateButton ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">PLEX MATE</span></div><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><a href="#" id="plex-mate-refresh-button" class="plex-guid-action" title="PLEX MATE로 YAML/TMDB 반영 실행">${ICONS.PLEX_MATE} YAML/TMDB 반영</a></span></div>` : '';
 
-            const html = `<div id="plex-guid-box" style="margin-top: 15px; margin-bottom: 10px; clear: both; width: 100%;"><div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold;">미디어 정보</div><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq3g _1v25wbq28">${fileInfoHtml}${plexMateHtml}${ displayGuid !== '-' ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">GUID</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="word-break: break-all;">${guidHtml} <span id="refresh-guid-button" title="새로고침(캐시 갱신)" style="cursor: pointer;">${ICONS.REFRESH}</span></span></div>` : ''}${data.duration ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">재생 시간</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><span>${ICONS.CLOCK} ${data.duration} ${data.markers?.intro ? `<span style="margin-left:10px;">${ICONS.FILM} Intro: ${data.markers.intro.start} ~ ${data.markers.intro.end}</span>` : ''} ${data.markers?.credits ? `<span style="margin-left:10px;"> ${ICONS.VIDEO} Credit: ${data.markers.credits.start} ~ ${data.markers.credits.end}</span>` : ''}</span></span></div>` : ''}</div></div>`;
+            const html = `<div id="plex-guid-box" style="margin-top: 15px; margin-bottom: 10px; clear: both; width: 100%;">
+                <div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold;">
+                    미디어 정보 <span id="refresh-guid-button" title="새로고침(캐시 갱신)" style="cursor: pointer; font-size: 14px; margin-left: 5px; vertical-align: middle; color: #adb5bd;">${ICONS.REFRESH}</span>
+                </div>
+                <div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq3g _1v25wbq28">
+                    ${fileInfoHtml}${plexMateHtml}
+                    ${ displayGuid !== '-' ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">GUID</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="word-break: break-all;">${guidHtml}</span></div>` : ''}
+                    ${data.duration ? `<div class="_1h4p3k00 _1v25wbq8 _1v25wbq1s _1v25wbqg _1v25wbq1g _1v25wbq1c _1v25wbq14 _1v25wbq34 _1v25wbq28" style="margin-bottom: 4px;"><div class="_1h4p3k00 _1v25wbq8 _1v25wbq1o _1v25wbqk _1v25wbq1g _1v25wbq18 _1v25wbq14 _1v25wbq28" style="width: 95px; flex-shrink: 0;"><span class="ineka90 ineka9k ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk" style="color: #bababa;">재생 시간</span></div><span class="ineka90 ineka9j ineka9b ineka9n _1v25wbq1g _1v25wbq1c _1v25wbqlk"><span>${ICONS.CLOCK} ${data.duration} ${data.markers?.intro ? `<span style="margin-left:10px;">${ICONS.FILM} Intro: ${data.markers.intro.start} ~ ${data.markers.intro.end}</span>` : ''} ${data.markers?.credits ? `<span style="margin-left:10px;"> ${ICONS.VIDEO} Credit: ${data.markers.credits.start} ~ ${data.markers.credits.end}</span>` : ''}</span></span></div>` : ''}
+                </div>
+            </div>`;
 
             let insertTarget = null; let insertPosition = 'afterend';
             const ratingEl = container.querySelector('div[data-testid="metadata-starRatings"], div[data-testid="metadata-ratings"]'); const ratingCont = ratingEl?.parentElement;
@@ -763,8 +771,9 @@ GM_addStyle ( `
             if (insertTarget?.isConnected) { 
                 insertTarget.insertAdjacentHTML(insertPosition, html); 
                 document.querySelectorAll('.plex-guid-list-box, .plex-guid-wrapper').forEach(el => el.remove()); 
-                
                 attachActionListeners();
+                
+                attachRefreshListener(data.itemId + '_' + serverId);
 
                 return true; 
             } else return false;
