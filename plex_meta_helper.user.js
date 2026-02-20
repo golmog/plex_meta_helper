@@ -1104,7 +1104,7 @@ GM_addStyle ( `
                     url: url, 
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, 
                     data: data, 
-                    timeout: 30000 
+                    timeout: 60000 
                 });
 
                 let result = {};
