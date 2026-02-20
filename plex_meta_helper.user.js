@@ -1111,7 +1111,7 @@ GM_addStyle ( `
                 try { result = JSON.parse(response.responseText); } catch(e) {}
 
                 if (result.ret === 'success') {
-                    toastr.success('YAML/TMDB 반영 성공!<br>변경 사항을 즉시 확인하려면 <b>페이지를 새로고침(F5)</b>하세요.', '', {timeOut: 30000});
+                    toastr.success('YAML/TMDB 반영 성공!<br>변경 사항을 즉시 확인하려면 <b>페이지를 새로고침(F5)</b>하세요.', '', {timeOut: 8000});
                 } else {
                     throw new Error(result.msg || 'plex_mate 반환 오류');
                 }
