@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.14
+// @version      0.6.15
 // @description  Plex API + Flask server + FF(Plex Mate) 연동 헬퍼/추가 정보 표시 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -304,7 +304,7 @@ GM_addStyle(`
                 method: method, url: url, timeout: 5000,
                 headers: headers,
                 data: data ? JSON.stringify(data) : undefined,
-                onload: r => { 
+                onload: r => {
                     activeRequests.delete(req);
                     if (r.status === 401) {
                         errorLog(`[API Err] Unauthorized! Check your plexMateApiKey in settings for: ${url}`);
@@ -312,10 +312,10 @@ GM_addStyle(`
                         return;
                     }
                     if (r.status >= 200 && r.status < 300) {
-                        try { 
+                        try {
                             const parsed = JSON.parse(r.responseText);
                             log(`[API Res] Success [${method}] ${url}`);
-                            resolve(parsed); 
+                            resolve(parsed);
                         } catch(e) { reject(`JSON Parse Error`); }
                     } else { reject(`HTTP ${r.status}`); }
                 },
@@ -327,13 +327,13 @@ GM_addStyle(`
         });
     }
 
-    function fetchPlexMetaFallback(itemId, plexSrv) {
+function fetchPlexMetaFallback(itemId, plexSrv) {
         return new Promise((resolve) => {
             if (!plexSrv) return resolve(null);
             log(`[Fallback API] Fetching Plex Meta for Item: ${itemId}`);
             const req = GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${plexSrv.url}/library/metadata/${itemId}?X-Plex-Token=${plexSrv.token}`,
+                url: `${plexSrv.url}/library/metadata/${itemId}?includeMarkers=1&X-Plex-Token=${plexSrv.token}`,
                 headers: { 'Accept': 'application/json' },
                 onload: r => {
                     activeRequests.delete(req);
@@ -476,6 +476,15 @@ GM_addStyle(`
             });
         }
 
+        let markers = {};
+        if (meta.Marker) {
+            meta.Marker.forEach(mk => {
+                if (mk.type === 'intro' || mk.type === 'credits') {
+                    markers[mk.type] = { start: mk.startTimeOffset, end: mk.endTimeOffset };
+                }
+            });
+        }
+
         const guid = meta.guid || "";
         return {
             type: (meta.type === 'movie' || meta.type === 'episode') ? 'video' : 'directory',
@@ -483,6 +492,7 @@ GM_addStyle(`
             guid: guid,
             duration: meta.duration || 0,
             versions: versions,
+            markers: markers,
             g: guid.split('://')[1]?.split('?')[0] || guid,
             raw_g: guid,
             p: p,
@@ -1195,6 +1205,14 @@ GM_addStyle(`
                 if (meta && data.versions) {
                     if (meta.guid) data.guid = meta.guid;
                     if (meta.duration) data.duration = meta.duration;
+                    if (meta.Marker) {
+                        data.markers = {};
+                        meta.Marker.forEach(mk => {
+                            if (mk.type === 'intro' || mk.type === 'credits') {
+                                data.markers[mk.type] = { start: mk.startTimeOffset, end: mk.endTimeOffset };
+                            }
+                        });
+                    }
 
                     if (meta.Media && meta.Media.length > 0) {
                         data.versions.forEach((v, index) => {
@@ -1436,6 +1454,16 @@ GM_addStyle(`
             }
         }
 
+        let markersHtml = '';
+        if (data.markers) {
+            if (data.markers.intro) {
+                markersHtml += `<span style="margin-left:12px; color:#a3a3a3;" title="인트로"><i class="fas fa-film" style="margin-right:4px;"></i>Intro: ${formatDuration(data.markers.intro.start)} ~ ${formatDuration(data.markers.intro.end)}</span>`;
+            }
+            if (data.markers.credits) {
+                markersHtml += `<span style="margin-left:12px; color:#a3a3a3;" title="크레딧"><i class="fas fa-video" style="margin-right:4px;"></i>Credit: ${formatDuration(data.markers.credits.start)} ~ ${formatDuration(data.markers.credits.end)}</span>`;
+            }
+        }
+
         const boxHtml = `
         <div id="plex-guid-box" style="margin-top: 15px; margin-bottom: 10px; width: 100%; position: relative;">
             <div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold; display:flex; align-items:center;">
@@ -1453,6 +1481,7 @@ GM_addStyle(`
                 <div style="display:flex; align-items:center;">
                     <div style="width: 95px; flex-shrink: 0; color: #bababa; font-size:13px; font-weight:500;">재생 시간</div>
                     <span style="font-size:13px; color:#E0E0E0;"><i class="fas fa-clock" style="color:#bdbdbd; margin-right:4px;"></i>${formatDuration(data.duration)}</span>
+                    ${markersHtml}
                 </div>` : ''}
             </div>
         </div>`;

@@ -219,9 +219,8 @@ def api_media_detail(rating_key):
                             folder_paths.add(os.path.dirname(row[0]))
 
                 versions = [{"file": path, "parts": [{"path": path}]} for path in sorted(list(folder_paths))]
-
                 exec_time = time.time() - start_time
-                print(f"[DETAIL] Directory {rating_key} parsed in {exec_time:.3f}s. Found {len(versions)} paths.")
+                print(f"[DETAIL] Directory {rating_key} parsed in {exec_time:.3f}s.")
                 return jsonify({ "type": "directory", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions })
                 
             query_media = """
@@ -267,10 +266,20 @@ def api_media_detail(rating_key):
                     "video_extra": video_extra, "v_codec": v_codec or "", "a_codec": a_codec or "",
                     "a_ch": a_ch or "", "a_bitrate": a_bitrate or 0, "subs": subs, "parts": [{"id": part_id, "path": file_path}]
                 })
+            
+            cursor.execute("SELECT text, time_offset, end_time_offset FROM taggings WHERE metadata_item_id = ? AND text IN ('intro', 'credits')", (rating_key,))
+            markers = {}
+            for tag_text, start_offset, end_offset in cursor.fetchall():
+                if tag_text and start_offset is not None and end_offset is not None:
+                    markers[tag_text] = {"start": start_offset, "end": end_offset}
                 
         exec_time = time.time() - start_time
         print(f"[DETAIL] Video {rating_key} parsed in {exec_time:.3f}s. Found {len(versions)} versions.")
-        return jsonify({ "type": "video", "itemId": rating_key, "guid": guid, "duration": duration, "librarySectionID": lib_section_id, "versions": versions })
+        return jsonify({ 
+            "type": "video", "itemId": rating_key, "guid": guid, 
+            "duration": duration, "librarySectionID": lib_section_id, 
+            "versions": versions, "markers": markers 
+        })
 
     except Exception as e:
         print(f"[DETAIL ERROR] Failed processing item {rating_key}: {str(e)}")
