@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.15
+// @version      0.6.16
 // @description  Plex API + Flask server + FF(Plex Mate) 연동 헬퍼/추가 정보 표시 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -385,7 +385,8 @@ function fetchPlexMetaFallback(itemId, plexSrv) {
     function parsePlexFallbackTags(meta) {
         let tags = [];
         if (!meta || !meta.Media || !meta.Media[0]) return tags;
-        const media = meta.Media[0];
+        const sortedMedia = [...meta.Media].sort((a, b) => (b.width || 0) - (a.width || 0) || (b.bitrate || 0) - (a.bitrate || 0));
+        const media = sortedMedia[0];
 
         const w = media.width || 0;
         const vRes = (media.videoResolution || "").toString().toLowerCase();
@@ -435,7 +436,11 @@ function fetchPlexMetaFallback(itemId, plexSrv) {
 
     function convertPlexMetaToLocalData(meta, itemId) {
         if (!meta) return null;
-        const tags = parsePlexFallbackTags({ Media: [meta.Media?.[0]] });
+        if (meta.Media && meta.Media.length > 0) {
+            meta.Media.sort((a, b) => (b.width || 0) - (a.width || 0) || (b.bitrate || 0) - (a.bitrate || 0));
+        }
+
+        const tags = parsePlexFallbackTags(meta);
 
         let p = "";
         if (meta.Media && meta.Media[0] && meta.Media[0].Part && meta.Media[0].Part[0]) {
@@ -1215,6 +1220,7 @@ function fetchPlexMetaFallback(itemId, plexSrv) {
                     }
 
                     if (meta.Media && meta.Media.length > 0) {
+                        meta.Media.sort((a, b) => (b.width || 0) - (a.width || 0) || (b.bitrate || 0) - (a.bitrate || 0));
                         data.versions.forEach((v, index) => {
                             const m = meta.Media[index];
                             if (!m) return;

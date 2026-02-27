@@ -102,8 +102,9 @@ def api_library_batch():
             LEFT JOIN media_items m ON m.metadata_item_id = mi.id
             LEFT JOIN media_parts mp ON mp.media_item_id = m.id
             WHERE mi.id IN ({placeholders})
+            ORDER BY m.width DESC, m.bitrate DESC
             """
-            
+
             cursor.execute(query, ids)
             rows = cursor.fetchall()
             
@@ -131,10 +132,8 @@ def api_library_batch():
                     hdr_badges = set()
                     if raw_data:
                         raw_upper = raw_data.upper()
-                        if 'DOVI' in raw_upper or 'DOLBY' in raw_upper:
-                            hdr_badges.add('DV')
-                        if 'BT2020' in raw_upper or 'SMPTE2084' in raw_upper or 'HLG' in raw_upper or 'HDR10' in raw_upper:
-                            hdr_badges.add('HDR')
+                        if 'DOVI' in raw_upper or 'DOLBY' in raw_upper: hdr_badges.add('DV')
+                        if 'BT2020' in raw_upper or 'SMPTE2084' in raw_upper or 'HLG' in raw_upper or 'HDR10' in raw_upper: hdr_badges.add('HDR')
 
                     video_badge = res_tag if res_tag else ""
                     if hdr_badges:
@@ -186,7 +185,9 @@ def api_media_detail(rating_key):
             m_type, guid, lib_section_id = meta_row
             
             if m_type in (2, 3):
-                folder_paths = set()
+                folder_paths = []
+                seen_paths = set()
+                
                 if m_type == 2:
                     query = """
                         SELECT mp.file FROM metadata_items ep
@@ -194,6 +195,7 @@ def api_media_detail(rating_key):
                         JOIN media_items m ON m.metadata_item_id = ep.id
                         JOIN media_parts mp ON mp.media_item_id = m.id
                         WHERE sea.parent_id = ? AND ep.metadata_type = 4
+                        ORDER BY m.width DESC, m.bitrate DESC
                     """
                     cursor.execute(query, (rating_key,))
                     for row in cursor.fetchall():
@@ -201,10 +203,11 @@ def api_media_detail(rating_key):
                             episode_file = row[0]
                             dir_path = os.path.dirname(episode_file)
                             folder_name = os.path.basename(dir_path)
-                            if is_season_folder(folder_name):
-                                folder_paths.add(os.path.dirname(dir_path))
-                            else:
-                                folder_paths.add(dir_path)
+                            
+                            target_path = os.path.dirname(dir_path) if is_season_folder(folder_name) else dir_path
+                            if target_path not in seen_paths:
+                                seen_paths.add(target_path)
+                                folder_paths.append(target_path)
 
                 elif m_type == 3:
                     query = """
@@ -212,15 +215,20 @@ def api_media_detail(rating_key):
                         JOIN media_items m ON m.metadata_item_id = ep.id
                         JOIN media_parts mp ON mp.media_item_id = m.id
                         WHERE ep.parent_id = ? AND ep.metadata_type = 4
+                        ORDER BY m.width DESC, m.bitrate DESC
                     """
                     cursor.execute(query, (rating_key,))
                     for row in cursor.fetchall():
                         if row and row[0]:
-                            folder_paths.add(os.path.dirname(row[0]))
+                            target_path = os.path.dirname(row[0])
+                            if target_path not in seen_paths:
+                                seen_paths.add(target_path)
+                                folder_paths.append(target_path)
 
-                versions = [{"file": path, "parts": [{"path": path}]} for path in sorted(list(folder_paths))]
+                versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
+
                 exec_time = time.time() - start_time
-                print(f"[DETAIL] Directory {rating_key} parsed in {exec_time:.3f}s.")
+                print(f"[DETAIL] Directory {rating_key} parsed in {exec_time:.3f}s. Found {len(versions)} paths.")
                 return jsonify({ "type": "directory", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions })
                 
             query_media = """
@@ -236,6 +244,7 @@ def api_media_detail(rating_key):
             FROM media_items m
             LEFT JOIN media_parts mp ON mp.media_item_id = m.id
             WHERE m.metadata_item_id = ?
+            ORDER BY m.width DESC, m.bitrate DESC
             """
             cursor.execute(query_media, (rating_key,))
             rows = cursor.fetchall()
