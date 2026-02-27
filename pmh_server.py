@@ -15,6 +15,7 @@ from flask_cors import CORS
 PLEX_DB_PATH = r'/path/to/your/com.plexapp.plugins.library.db'
 SERVER_PORT = 8899
 MAX_BATCH_SIZE = 1000
+API_KEY = "YOUR_PLEX_MATE_API_KEY_HERE"
 # ==============================================================================
 
 app = Flask(__name__)
@@ -33,7 +34,7 @@ def get_db_connection():
         conn = sqlite3.connect(f'file:{PLEX_DB_PATH}?mode=ro', uri=True, timeout=10.0)
         yield conn
     except sqlite3.OperationalError as e:
-        print(f"[DB ERROR] SQLite Operational Error (Locked or Unreachable): {str(e)}")
+        print(f"[DB ERROR] SQLite Operational Error: {str(e)}")
         raise
     except Exception as e:
         print(f"[DB ERROR] Connection failed: {str(e)}")
@@ -44,17 +45,24 @@ def get_db_connection():
 
 def is_season_folder(folder_name):
     name_lower = folder_name.lower().strip()
-    if re.match(r'^(season|시즌|series)\s*\d+', name_lower):
-        return True
-    if re.match(r'^(specials?|스페셜)$', name_lower):
-        return True
-    if name_lower.isdigit():
-        return True
+    if re.match(r'^(season|시즌|series)\s*\d+', name_lower): return True
+    if re.match(r'^(specials?|스페셜)$', name_lower): return True
+    if name_lower.isdigit(): return True
     return False
+
+@app.before_request
+def check_api_key():
+    if request.method == "OPTIONS":
+        return
+    
+    provided_key = request.headers.get("X-API-Key")
+    if not provided_key or provided_key != API_KEY:
+        print(f"[SECURITY] Unauthorized access attempt blocked. IP: {request.remote_addr}")
+        return jsonify({"error": "Unauthorized. Invalid API Key."}), 401
 
 @app.route('/api/ping', methods=['GET'])
 def api_ping():
-    print("[PING] Ping request received.")
+    print("[PING] Ping request received and authorized.")
     try:
         with get_db_connection() as conn:
             pass
@@ -72,10 +80,9 @@ def api_library_batch():
         return jsonify({"error": "Invalid request"}), 400
         
     raw_ids = [str(i) for i in data['ids'] if str(i).isdigit()]
-    ids = list(set(raw_ids))[:MAX_BATCH_SIZE]
+    ids = list(set(raw_ids))[:MAX_BATCH_SIZE] 
     
-    if not ids: 
-        return jsonify({})
+    if not ids: return jsonify({})
     
     print(f"[BATCH] Requested {len(ids)} items.")
     placeholders = ','.join('?' for _ in ids)
@@ -134,8 +141,7 @@ def api_library_batch():
                         sorted_badges = sorted(list(hdr_badges), key=lambda x: 0 if x=='DV' else 1)
                         video_badge = video_badge + " " + "/".join(sorted_badges) if video_badge else "/".join(sorted_badges)
                     
-                    if video_badge:
-                        tags.append(video_badge)
+                    if video_badge: tags.append(video_badge)
                     
                     has_sub = False
                     if sub_langs:
@@ -143,10 +149,8 @@ def api_library_batch():
                         if any(l.startswith('kor') or l.startswith('ko') for l in langs if l):
                             has_sub = True
                             
-                    if has_sub:
-                        tags.append("SUB")
-                    elif filepath and re.search(r'(?i)(kor-?sub|자체자막)', filepath):
-                        tags.append("SUBBED")
+                    if has_sub: tags.append("SUB")
+                    elif filepath and re.search(r'(?i)(kor-?sub|자체자막)', filepath): tags.append("SUBBED")
                         
                     result_map[rk] = { "tags": tags, "g": clean_guid, "raw_g": guid or "", "p": filepath }
 
@@ -197,7 +201,6 @@ def api_media_detail(rating_key):
                             episode_file = row[0]
                             dir_path = os.path.dirname(episode_file)
                             folder_name = os.path.basename(dir_path)
-                            
                             if is_season_folder(folder_name):
                                 folder_paths.add(os.path.dirname(dir_path))
                             else:
@@ -219,15 +222,7 @@ def api_media_detail(rating_key):
 
                 exec_time = time.time() - start_time
                 print(f"[DETAIL] Directory {rating_key} parsed in {exec_time:.3f}s. Found {len(versions)} paths.")
-                
-                return jsonify({
-                    "type": "directory",
-                    "itemId": rating_key,
-                    "guid": guid,
-                    "duration": None,
-                    "librarySectionID": lib_section_id,
-                    "versions": versions
-                })
+                return jsonify({ "type": "directory", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions })
                 
             query_media = """
             SELECT 
@@ -265,39 +260,17 @@ def api_media_detail(rating_key):
                 for s in cursor.fetchall():
                     lang_code = (s[1] or "und").lower()[:3]
                     sub_codec = s[2] or "unknown"
-                    subs.append({
-                        "id": s[0], 
-                        "languageCode": lang_code, 
-                        "codec": sub_codec, 
-                        "key": s[3], 
-                        "format": sub_codec
-                    })
+                    subs.append({"id": s[0], "languageCode": lang_code, "codec": sub_codec, "key": s[3], "format": sub_codec})
 
                 versions.append({
-                    "part_id": part_id,
-                    "file": file_path,
-                    "width": width or 0,
-                    "v_bitrate": v_bitrate or 0,
-                    "video_extra": video_extra,
-                    "v_codec": v_codec or "",
-                    "a_codec": a_codec or "",
-                    "a_ch": a_ch or "",
-                    "a_bitrate": a_bitrate or 0,
-                    "subs": subs,
-                    "parts": [{"id": part_id, "path": file_path}]
+                    "part_id": part_id, "file": file_path, "width": width or 0, "v_bitrate": v_bitrate or 0,
+                    "video_extra": video_extra, "v_codec": v_codec or "", "a_codec": a_codec or "",
+                    "a_ch": a_ch or "", "a_bitrate": a_bitrate or 0, "subs": subs, "parts": [{"id": part_id, "path": file_path}]
                 })
                 
         exec_time = time.time() - start_time
         print(f"[DETAIL] Video {rating_key} parsed in {exec_time:.3f}s. Found {len(versions)} versions.")
-        
-        return jsonify({
-            "type": "video",
-            "itemId": rating_key,
-            "guid": guid,
-            "duration": duration,
-            "librarySectionID": lib_section_id,
-            "versions": versions
-        })
+        return jsonify({ "type": "video", "itemId": rating_key, "guid": guid, "duration": duration, "librarySectionID": lib_section_id, "versions": versions })
 
     except Exception as e:
         print(f"[DETAIL ERROR] Failed processing item {rating_key}: {str(e)}")

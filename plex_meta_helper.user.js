@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.13
+// @version      0.6.14
 // @description  Plex API + Flask server + FF(Plex Mate) 연동 헬퍼/추가 정보 표시 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -293,20 +293,29 @@ GM_addStyle(`
         return null;
     }
 
-    function makeRequest(url, method = "GET", data = null) {
+    function makeRequest(url, method = "GET", data = null, apiKey = null) {
         log(`[API Req] [${method}] ${url}`);
         return new Promise((resolve, reject) => {
+            const headers = {};
+            if (data) headers["Content-Type"] = "application/json";
+            if (apiKey) headers["X-API-Key"] = apiKey;
+
             const req = GM_xmlhttpRequest({
                 method: method, url: url, timeout: 5000,
-                headers: data ? { "Content-Type": "application/json" } : {},
+                headers: headers,
                 data: data ? JSON.stringify(data) : undefined,
-                onload: r => {
+                onload: r => { 
                     activeRequests.delete(req);
+                    if (r.status === 401) {
+                        errorLog(`[API Err] Unauthorized! Check your plexMateApiKey in settings for: ${url}`);
+                        reject(`Unauthorized (401)`);
+                        return;
+                    }
                     if (r.status >= 200 && r.status < 300) {
-                        try {
+                        try { 
                             const parsed = JSON.parse(r.responseText);
                             log(`[API Res] Success [${method}] ${url}`);
-                            resolve(parsed);
+                            resolve(parsed); 
                         } catch(e) { reject(`JSON Parse Error`); }
                     } else { reject(`HTTP ${r.status}`); }
                 },
@@ -981,7 +990,7 @@ GM_addStyle(`
                 let fallbackQueueCount = 0;
 
                 try {
-                    const dbData = await makeRequest(`${srvConfig.pmhServerUrl}/api/library/batch`, 'POST', { ids: idsToFetch });
+                    const dbData = await makeRequest(`${srvConfig.pmhServerUrl}/api/library/batch`, 'POST', { ids: idsToFetch }, srvConfig.plexMateApiKey);
 
                     for (const [id, info] of Object.entries(dbData)) {
                         const cKey = `L_${serverId}_${id}`;
@@ -991,7 +1000,7 @@ GM_addStyle(`
                         if (isDataChanged) {
                             setMemoryCache(cKey, info);
                             swrUpdateCount++;
-                            log(`[SWR] Data changed for ID: ${id}. Silently updating UI.`);
+                            log(`[SWR] Data changed for ID: ${id}. Updating UI.`);
 
                             let displayData = { ...info, tags: applyUserTags(info.p, info.tags) };
 
@@ -1082,7 +1091,7 @@ GM_addStyle(`
                         }
                     }
 
-                    if (swrUpdateCount > 0) infoLog(`[SWR] Silently updated ${swrUpdateCount} items with fresh DB data.`);
+                    if (swrUpdateCount > 0) infoLog(`[SWR] Updated ${swrUpdateCount} items with fresh DB data.`);
                     if (fallbackQueueCount > 0) infoLog(`[Queue] Added ${fallbackQueueCount} un-analyzed items to fallback queue.`);
 
                 } catch (e) { errorLog(`[List SWR] DB Fetch failed for server ${serverId}`, e); }
@@ -1160,7 +1169,7 @@ GM_addStyle(`
             }
 
             infoLog(`[Detail] Fetching latest DB data for Item: ${itemId}`);
-            let data = await makeRequest(`${srvConfig.pmhServerUrl}/api/media/${itemId}`);
+            let data = await makeRequest(`${srvConfig.pmhServerUrl}/api/media/${itemId}`, "GET", null, srvConfig.plexMateApiKey);
             if (session !== currentRenderSession) return;
 
             let hasMissingData = false;
