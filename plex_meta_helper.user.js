@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.18
+// @version      0.6.19
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -127,7 +127,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.18";
+    const CURRENT_VERSION = "0.6.19";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -274,12 +274,13 @@ GM_addStyle(`
     // ==========================================
     // 3. 상태 변수 및 글로벌 큐 (Nuke & Rebuild)
     // ==========================================
-    const STATE_KEYS = { GUID: 'pmh_s_guid', TAG: 'pmh_s_tag', PLAY: 'pmh_s_play', LEN: 'pmh_s_len' };
+    const STATE_KEYS = { GUID: 'pmh_s_guid', TAG: 'pmh_s_tag', PLAY: 'pmh_s_play', LEN: 'pmh_s_len', DETAIL: 'pmh_s_detail' };
     let state = {
         listGuid: GM_getValue(STATE_KEYS.GUID, false),
         listTag: GM_getValue(STATE_KEYS.TAG, true),
         listPlay: GM_getValue(STATE_KEYS.PLAY, false),
-        guidLen: GM_getValue(STATE_KEYS.LEN, 20)
+        guidLen: GM_getValue(STATE_KEYS.LEN, 20),
+        detail: GM_getValue(STATE_KEYS.DETAIL, true)
     };
 
     let isFetchingDetail = false;
@@ -683,12 +684,27 @@ GM_addStyle(`
             processList();
         };
 
+        const toggleDetailView = () => {
+            if (state.detailInfo) {
+                processDetail();
+            } else {
+                document.getElementById('plex-guid-box')?.remove();
+                currentDisplayedItemId = null;
+            }
+        };
+
+        // --- 목록 컨트롤 부분 ---
         ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label">목록:</span>`);
         ctrl.appendChild(createBtn('GUID', 'listGuid', STATE_KEYS.GUID, forceReRenderAll));
         ctrl.appendChild(createBtn('태그', 'listTag', STATE_KEYS.TAG, forceReRenderAll));
         ctrl.appendChild(createBtn('재생', 'listPlay', STATE_KEYS.PLAY, forceReRenderAll));
 
-        ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label">GUID길이:</span>`);
+        // --- 컨트롤 부분 ---
+        ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;">| 상세:</span>`);
+        ctrl.appendChild(createBtn('정보', 'detailInfo', STATE_KEYS.DETAIL, toggleDetailView));
+
+        // --- 기타 옵션 부분 ---
+        ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;">| GUID길이:</span>`);
         const lenInp = document.createElement('input');
         lenInp.type = 'number'; lenInp.min = '5'; lenInp.max = '50'; lenInp.value = state.guidLen;
 
@@ -1264,6 +1280,11 @@ GM_addStyle(`
     }
 
     async function processDetail(isManualRefresh = false) {
+        if (!state.detailInfo) {
+            document.getElementById('plex-guid-box')?.remove();
+            return;
+        }
+
         const { serverId, itemId } = extractIds();
         if (isIgnoredItem(null, itemId)) return; // VOD 필터
         if (!serverId || !itemId) return;
