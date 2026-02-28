@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.20
+// @version      0.6.21
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -127,7 +127,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.20";
+    const CURRENT_VERSION = "0.6.21";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -147,41 +147,45 @@ GM_addStyle(`
     }
 
     async function pingLocalServer() {
-        if (!AppSettings.SERVERS || AppSettings.SERVERS.length === 0) return null;
-        const srv = AppSettings.SERVERS[0];
-        if (!srv.pmhServerUrl || !srv.plexMateApiKey) return null;
+        if (!AppSettings.SERVERS || AppSettings.SERVERS.length === 0) return {};
+        log("[Ping] Checking versions for all registered local python servers...");
 
-        return new Promise((resolve) => {
-            log("[Ping] Checking local python server version...");
-            GM_xmlhttpRequest({
-                method: "GET", url: `${srv.pmhServerUrl}/api/ping`,
-                headers: { "X-API-Key": srv.plexMateApiKey },
-                timeout: 2000,
-                onload: (res) => {
-                    if (res.status === 200) {
-                        try {
-                            const ver = JSON.parse(res.responseText).version || "0.0.0";
-                            log(`[Ping] Server responded successfully. Version: ${ver}`);
-                            resolve(ver);
-                            return;
-                        } catch(e) {
-                            errorLog("[Ping] Parse error.", e);
+        const results = {};
+        const promises = AppSettings.SERVERS.map(srv => {
+            if (!srv.pmhServerUrl || !srv.plexMateApiKey) return Promise.resolve();
+            return new Promise((resolve) => {
+                GM_xmlhttpRequest({
+                    method: "GET", url: `${srv.pmhServerUrl}/api/ping`,
+                    headers: { "X-API-Key": srv.plexMateApiKey },
+                    timeout: 2000,
+                    onload: (res) => {
+                        if (res.status === 200) {
+                            try {
+                                const ver = JSON.parse(res.responseText).version || "0.0.0";
+                                results[srv.machineIdentifier] = ver;
+                                log(`[Ping] Server (${srv.name}) responded successfully. Version: ${ver}`);
+                            } catch(e) {
+                                errorLog(`[Ping] Parse error for ${srv.name}.`, e);
+                            }
+                        } else {
+                            errorLog(`[Ping] Server (${srv.name}) responded with error status: ${res.status}`);
                         }
-                    } else {
-                        errorLog(`[Ping] Server responded with error status: ${res.status}`);
+                        resolve();
+                    },
+                    onerror: () => {
+                        errorLog(`[Ping] Server (${srv.name}) is offline or unreachable.`);
+                        resolve();
+                    },
+                    ontimeout: () => {
+                        errorLog(`[Ping] Request timed out for ${srv.name}.`);
+                        resolve();
                     }
-                    resolve(null);
-                },
-                onerror: () => {
-                    errorLog("[Ping] Server is offline or unreachable.");
-                    resolve(null);
-                },
-                ontimeout: () => {
-                    errorLog("[Ping] Request timed out.");
-                    resolve(null);
-                }
+                });
             });
         });
+
+        await Promise.all(promises);
+        return results;
     }
 
     function fetchLatestVersion() {
@@ -189,7 +193,7 @@ GM_addStyle(`
             log("[Update] Fetching latest version from info.yaml...");
             const noCacheUrl = `${INFO_YAML_URL}?t=${Date.now()}`;
 
-            const localServerVer = await pingLocalServer();
+            const localServerVersions = await pingLocalServer();
 
             GM_xmlhttpRequest({
                 method: "GET", url: noCacheUrl,
@@ -208,7 +212,7 @@ GM_addStyle(`
                             GM_setValue('pmh_last_update_check', Date.now());
 
                             resolve({
-                                jsVer: latestJsVer, pyVer: latestPyVer, localPyVer: localServerVer,
+                                jsVer: latestJsVer, pyVer: latestPyVer, localPyVers: localServerVersions,
                                 msg: "성공", error: false
                             });
                         } else {
@@ -241,49 +245,70 @@ GM_addStyle(`
         }
     }
 
-    async function triggerServerUpdate(showStatusMsg) {
-        const srv = AppSettings.SERVERS[0];
-        log("[Server Update] Sending update POST request to local python server...");
+    async function triggerServerUpdate(showStatusMsg, targetServers) {
+        if (!targetServers || targetServers.length === 0) return true;
+
+        log(`[Server Update] Triggering updates for ${targetServers.length} server(s)...`);
         showStatusMsg('서버 업데이트 요청 중...', '#ccc', 0);
 
-        return new Promise((resolve) => {
-            GM_xmlhttpRequest({
-                method: "POST", url: `${srv.pmhServerUrl}/api/admin/update`,
-                headers: { "X-API-Key": srv.plexMateApiKey },
-                onload: (res) => {
-                    if (res.status === 200) {
-                        infoLog("[Server Update] Update triggered successfully. Waiting for server to restart...");
-                        showStatusMsg('서버 재시작 대기 중...', '#e5a00d', 0);
+        let triggerCount = 0;
+        for (const srv of targetServers) {
+            log(`[Server Update] Sending update POST request to: ${srv.name}`);
+            try {
+                await new Promise((resolve) => {
+                    GM_xmlhttpRequest({
+                        method: "POST", url: `${srv.pmhServerUrl}/api/admin/update`,
+                        headers: { "X-API-Key": srv.plexMateApiKey },
+                        timeout: 5000,
+                        onload: (res) => {
+                            if (res.status === 200) triggerCount++;
+                            else errorLog(`[Server Update] Failed for ${srv.name}. HTTP ${res.status}`);
+                            resolve();
+                        },
+                        onerror: () => {
+                            errorLog(`[Server Update] Network error for ${srv.name}.`);
+                            resolve();
+                        }
+                    });
+                });
+            } catch(e) {}
+        }
 
-                        let attempts = 0;
-                        const poll = setInterval(async () => {
-                            attempts++;
-                            log(`[Server Update] Polling server status... (Attempt ${attempts}/10)`);
-                            const ver = await pingLocalServer();
-                            if (ver) {
-                                infoLog(`[Server Update] Server is back online with version ${ver}!`);
-                                clearInterval(poll);
-                                showStatusMsg('서버 업데이트 완료!', '#51a351', 3000);
-                                resolve(true);
-                            } else if (attempts >= 10) {
-                                errorLog("[Server Update] Polling timeout. Server did not come back online.");
-                                clearInterval(poll);
-                                showStatusMsg('서버 응답 없음. 콘솔을 확인하세요.', '#bd362f', 5000);
-                                resolve(false);
-                            }
-                        }, 2000);
-                    } else {
-                        errorLog(`[Server Update] Failed to trigger update. HTTP ${res.status}`);
-                        showStatusMsg(`서버 오류 (${res.status})`, '#bd362f', 4000);
-                        resolve(false);
+        if (triggerCount === 0) {
+            showStatusMsg('서버 업데이트 요청 실패', '#bd362f', 4000);
+            return false;
+        }
+
+        infoLog("[Server Update] Update triggered successfully. Waiting for servers to restart...");
+        showStatusMsg('서버 재시작 대기 중...', '#e5a00d', 0);
+
+        return new Promise((resolve) => {
+            let attempts = 0;
+            const poll = setInterval(async () => {
+                attempts++;
+                log(`[Server Update] Polling server status... (Attempt ${attempts}/15)`);
+                const currentVers = await pingLocalServer();
+
+                let allUpdated = true;
+                for (const srv of targetServers) {
+                    if (!currentVers[srv.machineIdentifier] || isNewerVersion(currentVers[srv.machineIdentifier], srv.targetVer)) {
+                        allUpdated = false;
+                        break;
                     }
-                },
-                onerror: (err) => {
-                    errorLog("[Server Update] Network error when trying to reach local server.", err);
-                    showStatusMsg('서버 연결 실패', '#bd362f', 4000);
+                }
+
+                if (allUpdated) {
+                    infoLog(`[Server Update] All servers are back online with updated versions!`);
+                    clearInterval(poll);
+                    showStatusMsg('서버 업데이트 완료!', '#51a351', 3000);
+                    resolve(true);
+                } else if (attempts >= 15) {
+                    errorLog("[Server Update] Polling timeout. Some servers did not come back online or update failed.");
+                    clearInterval(poll);
+                    showStatusMsg('서버 갱신 시간 초과', '#bd362f', 5000);
                     resolve(false);
                 }
-            });
+            }, 2000);
         });
     }
 
@@ -731,10 +756,11 @@ GM_addStyle(`
         let defaultMsg = '';
         let defaultColor = '#aaa';
         let msgTimeout = null;
+        let serversToUpdate = [];
 
         const latestJsVer = GM_getValue('pmh_latest_version', CURRENT_VERSION);
         if (isNewerVersion(CURRENT_VERSION, latestJsVer)) {
-            defaultMsg = `JS업데이트(v${latestJsVer})`;
+            defaultMsg = `업데이트: <a href="https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js" target="_blank" style="color:#e5a00d; text-decoration:none;" title="스크립트 업데이트">스크립트(v${latestJsVer})</a>`;
             defaultColor = '#e5a00d';
         }
 
@@ -743,27 +769,20 @@ GM_addStyle(`
             if (!msgBox) return;
             if (msgTimeout) clearTimeout(msgTimeout);
 
-            msgBox.textContent = text;
+            msgBox.innerHTML = text;
             msgBox.style.color = color;
 
             if (duration > 0) {
                 msgTimeout = setTimeout(() => {
-                    msgBox.textContent = defaultMsg;
+                    msgBox.innerHTML = defaultMsg;
                     msgBox.style.color = defaultColor;
                 }, duration);
             }
         };
 
-        let updateBadgeHtml = '';
-        if (isNewerVersion(CURRENT_VERSION, latestJsVer)) {
-            updateBadgeHtml += `<a href="https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js" target="_blank" style="color:#e5a00d; font-size:11px; font-weight:bold; text-decoration:none; margin-right:6px;" title="스크립트 업데이트">JS(v${latestJsVer})</a>`;
-        }
-
         ctrl.insertAdjacentHTML('afterbegin', `
             <div id="pmh-status-message" style="margin-right: 5px; font-size: 11px; font-weight: bold; white-space: nowrap; transition: color 0.3s;"></div>
-
             <div style="display:flex; align-items:center; margin-right: 8px;">
-                <span id="pmh-update-container" style="display:inline-block; margin-right:2px;">${updateBadgeHtml}</span>
                 <a href="#" id="pmh-manual-update-btn" style="color:#adb5bd; font-size:12px; margin-right:12px; transition:0.2s;" title="업데이트 확인" onmouseover="this.style.color='white'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-sync-alt pmh-sync-icon"></i></a>
                 <a href="https://github.com/golmog/plex_meta_helper" target="_blank" style="color:white; font-size:16px; transition:0.2s;" title="PMH GitHub 페이지" onmouseover="this.style.color='#e5a00d'" onmouseout="this.style.color='white'"><i class="fab fa-github"></i></a>
             </div>
@@ -845,26 +864,32 @@ GM_addStyle(`
         target.insertBefore(ctrl, target.firstChild);
         showStatusMsg(defaultMsg, defaultColor, 0);
 
-        // --- 3. DOM 이벤트 위임 ---
+        // --- DOM 이벤트 위임 ---
         ctrl.addEventListener('click', async (e) => {
-            // 서버 업데이트 링크 클릭 시
+
             const serverUpdateBtn = e.target.closest('#pmh-server-update-link');
             if (serverUpdateBtn) {
                 e.preventDefault(); e.stopPropagation();
-                if (serverUpdateBtn.dataset.updating) return; // 중복 클릭 방지
+                if (serverUpdateBtn.dataset.updating) return;
 
                 log("[UI] Server update link clicked.");
                 serverUpdateBtn.dataset.updating = "true";
-                serverUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 서버(v${serverUpdateBtn.dataset.ver})`;
+                const originalHtml = serverUpdateBtn.innerHTML;
+                serverUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${originalHtml}`;
 
-                const success = await triggerServerUpdate(showStatusMsg);
+                const success = await triggerServerUpdate(showStatusMsg, serversToUpdate);
                 if (success) {
-                    log("[UI] Server updated successfully. Removing update link.");
-                    serverUpdateBtn.remove();
+                    log("[UI] Server updated successfully.");
+                    if (isNewerVersion(CURRENT_VERSION, latestJsVer)) {
+                        defaultMsg = `업데이트: <a href="https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js" target="_blank" style="color:#e5a00d; text-decoration:none;" title="스크립트 업데이트">스크립트(v${latestJsVer})</a>`;
+                    } else {
+                        defaultMsg = '';
+                        defaultColor = '#aaa';
+                    }
                 } else {
                     log("[UI] Server update failed or timed out.");
                     delete serverUpdateBtn.dataset.updating;
-                    serverUpdateBtn.innerHTML = `서버(v${serverUpdateBtn.dataset.ver})`;
+                    serverUpdateBtn.innerHTML = originalHtml;
                 }
                 return;
             }
@@ -884,33 +909,42 @@ GM_addStyle(`
                 icon = updateBtn.querySelector('.pmh-sync-icon');
                 if (icon) icon.classList.remove('fa-spin');
 
-                const updateContainer = document.getElementById('pmh-update-container');
-                let newBadges = '';
-
                 if (result.error) {
                     showStatusMsg(result.msg, '#bd362f', 4000);
                 } else {
-                    let hasUpdate = false;
+                    let hasJsUpdate = isNewerVersion(CURRENT_VERSION, result.jsVer);
+                    serversToUpdate = [];
 
-                    if (isNewerVersion(CURRENT_VERSION, result.jsVer)) {
-                        hasUpdate = true;
-                        newBadges += `<a href="https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js" target="_blank" style="color:#e5a00d; font-size:11px; font-weight:bold; text-decoration:none; margin-right:6px;" title="스크립트 업데이트">JS(v${result.jsVer})</a>`;
+                    if (result.pyVer && AppSettings.SERVERS) {
+                        for (const srv of AppSettings.SERVERS) {
+                            const curVer = result.localPyVers[srv.machineIdentifier];
+                            if (curVer && isNewerVersion(curVer, result.pyVer)) {
+                                serversToUpdate.push({...srv, targetVer: result.pyVer});
+                            }
+                        }
                     }
 
-                    if (result.pyVer && result.localPyVer && isNewerVersion(result.localPyVer, result.pyVer)) {
-                        hasUpdate = true;
-                        newBadges += `<a href="#" id="pmh-server-update-link" data-ver="${result.pyVer}" style="color:#e5a00d; font-size:11px; font-weight:bold; text-decoration:none; margin-right:6px;" title="클릭 시 서버 자동 업데이트">서버(v${result.pyVer})</a>`;
-                    }
+                    let hasPyUpdate = serversToUpdate.length > 0;
 
-                    if (hasUpdate) {
-                        defaultMsg = '업데이트 발견!';
+                    if (hasJsUpdate || hasPyUpdate) {
+                        let combinedMsg = "업데이트: ";
+                        let parts = [];
+
+                        if (hasJsUpdate) {
+                            parts.push(`<a href="https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js" target="_blank" style="color:#e5a00d; text-decoration:none;" title="스크립트 업데이트">스크립트(v${result.jsVer})</a>`);
+                        }
+                        if (hasPyUpdate) {
+                            let label = serversToUpdate.length > 1 ? `${serversToUpdate.length}개 서버` : `서버(v${result.pyVer})`;
+                            parts.push(`<a href="#" id="pmh-server-update-link" style="color:#e5a00d; text-decoration:none;" title="클릭 시 서버 자동 업데이트">${label}</a>`);
+                        }
+
+                        defaultMsg = combinedMsg + parts.join(" / ");
                         defaultColor = '#e5a00d';
-                        if (updateContainer) updateContainer.innerHTML = newBadges;
-                        showStatusMsg(defaultMsg, defaultColor, 0);
+
+                        showStatusMsg(`업데이트 발견!`, '#e5a00d', 3000);
                     } else {
                         defaultMsg = '';
                         defaultColor = '#aaa';
-                        if (updateContainer) updateContainer.innerHTML = '';
                         showStatusMsg(`최신 버전입니다`, '#51a351', 3000);
                     }
                 }

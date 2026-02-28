@@ -7,6 +7,7 @@ import time
 import logging
 import re
 import threading
+import subprocess
 import urllib.request
 from contextlib import contextmanager
 from flask import Flask, jsonify, request
@@ -22,9 +23,19 @@ except ImportError:
 # ==============================================================================
 # [버전 및 설정 관리]
 # ==============================================================================
-__version__ = "0.2.0"
+__version__ = "0.2.1"
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "pmh_config.yaml")
+
+UPDATE_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_server.py"
+
+DEFAULT_CONFIG = {
+    "PLEX_DB_PATH": "/path/to/your/com.plexapp.plugins.library.db",
+    "SERVER_PORT": 8899,
+    "MAX_BATCH_SIZE": 1000,
+    "API_KEY": "YOUR_PLEX_MATE_API_KEY_HERE"
+}
 
 UPDATE_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_server.py"
 
@@ -102,11 +113,25 @@ def api_ping():
     print("[API] GET /api/ping - Responding with version info.")
     return jsonify({"status": "ok", "version": __version__})
 
+
 def restart_server():
-    """1초 대기 후 파이썬 프로세스 자체를 재실행합니다."""
+    """
+    현재 프로세스를 강제 종료하고 포트를 반환한 뒤, 
+    새로운 독립된 파이썬 프로세스를 실행하여 스크립트를 재구동합니다.
+    """
     time.sleep(1)
-    print("[UPDATE] Restarting server process now...")
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    print("[UPDATE] Shutting down current server to release port...")
+    
+    current_script = os.path.abspath(__file__)
+    
+    if sys.platform == "win32":
+        subprocess.Popen(['start', 'cmd', '/c', sys.executable, current_script], shell=True)
+    else:
+        subprocess.Popen(['nohup', sys.executable, current_script], preexec_fn=os.setsid, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    print("[UPDATE] New process launched. Terminating old process...")
+    os._exit(0)
+
 
 @app.route('/api/admin/update', methods=['POST'])
 def api_admin_update():
