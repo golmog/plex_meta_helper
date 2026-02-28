@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.22
+// @version      0.6.23
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -127,7 +127,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.22";
+    const CURRENT_VERSION = "0.6.23";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -281,14 +281,14 @@ GM_addStyle(`
 
         infoLog("[Server Update] Update triggered successfully. Waiting for servers to restart...");
         showStatusMsg('서버 재시작 대기 중...', '#e5a00d', 0);
-        
+
         return new Promise((resolve) => {
             let attempts = 0;
             const poll = setInterval(async () => {
                 attempts++;
                 log(`[Server Update] Polling server status... (Attempt ${attempts}/15)`);
                 const currentVers = await pingLocalServer();
-                
+
                 let allUpdated = true;
                 for (const srv of targetServers) {
                     if (!currentVers[srv.machineIdentifier] || isNewerVersion(currentVers[srv.machineIdentifier], srv.targetVer)) {
@@ -297,12 +297,12 @@ GM_addStyle(`
                     }
                 }
 
-                if (allUpdated) { 
+                if (allUpdated) {
                     infoLog(`[Server Update] All servers are back online with updated versions!`);
                     clearInterval(poll);
-                    
+
                     GM_setValue('pmh_last_update_check', 0);
-                    
+
                     showStatusMsg('서버 업데이트 완료!', '#51a351', 3000);
                     resolve(true);
                 } else if (attempts >= 15) {
@@ -759,7 +759,7 @@ GM_addStyle(`
         let defaultMsg = '';
         let defaultColor = '#aaa';
         let msgTimeout = null;
-        let serversToUpdate = []; 
+        let serversToUpdate = [];
         let pendingJsVer = null;
 
         const latestJsVer = GM_getValue('pmh_latest_version', CURRENT_VERSION);
@@ -773,10 +773,10 @@ GM_addStyle(`
             const msgBox = document.getElementById('pmh-status-message');
             if (!msgBox) return;
             if (msgTimeout) clearTimeout(msgTimeout);
-            
-            msgBox.innerHTML = text; 
+
+            msgBox.innerHTML = text;
             msgBox.style.color = color;
-            
+
             if (duration > 0) {
                 msgTimeout = setTimeout(() => {
                     msgBox.innerHTML = defaultMsg;
@@ -818,9 +818,9 @@ GM_addStyle(`
             log(`[UI] Toggling Detail View. State is now: ${state.detailInfo}`);
             if (state.detailInfo) {
                 processDetail();
-            } else { 
-                document.getElementById('plex-guid-box')?.remove(); 
-                currentDisplayedItemId = null; 
+            } else {
+                document.getElementById('plex-guid-box')?.remove();
+                currentDisplayedItemId = null;
             }
         };
 
@@ -841,9 +841,9 @@ GM_addStyle(`
             const nl = parseInt(lenInp.value);
             if (!isNaN(nl) && nl >= 5 && nl <= 50) {
                 log(`[UI] Changing GUID length to: ${nl}`);
-                state.guidLen = nl; 
+                state.guidLen = nl;
                 GM_setValue(STATE_KEYS.LEN, state.guidLen);
-                forceReRenderAll(); 
+                forceReRenderAll();
                 showStatusMsg(`GUID 길이 ${nl} 적용 완료`, '#51a351');
             }
         });
@@ -853,12 +853,12 @@ GM_addStyle(`
         clearCacheBtn.style.marginLeft = '10px';
         clearCacheBtn.addEventListener('click', () => {
             log("[UI] Clearing memory cache...");
-            clearMemoryCache(); 
+            clearMemoryCache();
             showStatusMsg("캐시 초기화 완료", "#51a351");
             forceReRenderAll();
-            if(document.getElementById('plex-guid-box')) { 
-                currentDisplayedItemId = null; 
-                processDetail(true); 
+            if(document.getElementById('plex-guid-box')) {
+                currentDisplayedItemId = null;
+                processDetail(true);
             }
         });
 
@@ -871,7 +871,7 @@ GM_addStyle(`
 
         // --- DOM 이벤트 위임 ---
         ctrl.addEventListener('click', async (e) => {
-            
+
             // [1] 스크립트 단독 업데이트 링크 클릭 시 (서버 업데이트는 없을 때)
             const jsUpdateBtn = e.target.closest('#pmh-js-update-link');
             if (jsUpdateBtn) {
@@ -886,13 +886,13 @@ GM_addStyle(`
             const serverUpdateBtn = e.target.closest('#pmh-server-update-link');
             if (serverUpdateBtn) {
                 e.preventDefault(); e.stopPropagation();
-                if (serverUpdateBtn.dataset.updating) return; 
-                
+                if (serverUpdateBtn.dataset.updating) return;
+
                 log("[UI] Server update link clicked.");
                 serverUpdateBtn.dataset.updating = "true";
                 const originalHtml = serverUpdateBtn.innerHTML;
                 serverUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${originalHtml}`;
-                
+
                 const success = await triggerServerUpdate(showStatusMsg, serversToUpdate);
                 if (success) {
                     log("[UI] Server updated successfully.");
@@ -919,23 +919,23 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 let icon = updateBtn.querySelector('.pmh-sync-icon') || e.target.closest('.pmh-sync-icon');
                 if (!icon || icon.classList.contains('fa-spin')) return;
-                
+
                 log("[UI] Manual update check button clicked.");
                 icon.classList.add('fa-spin');
                 showStatusMsg(`업데이트 확인 중...`, '#ccc', 0);
 
                 const result = await fetchLatestVersion();
-                
+
                 icon = updateBtn.querySelector('.pmh-sync-icon');
                 if (icon) icon.classList.remove('fa-spin');
 
                 if (result.error) {
-                    showStatusMsg(result.msg, '#bd362f', 4000); 
+                    showStatusMsg(result.msg, '#bd362f', 4000);
                 } else {
                     let hasJsUpdate = isNewerVersion(CURRENT_VERSION, result.jsVer);
-                    serversToUpdate = []; 
+                    serversToUpdate = [];
                     pendingJsVer = hasJsUpdate ? result.jsVer : null;
-                    
+
                     if (result.pyVer && AppSettings.SERVERS) {
                         for (const srv of AppSettings.SERVERS) {
                             const curVer = result.localPyVers[srv.machineIdentifier];
@@ -950,7 +950,7 @@ GM_addStyle(`
                     if (hasJsUpdate || hasPyUpdate) {
                         let combinedMsg = "업데이트: ";
                         let parts = [];
-                        
+
                         if (hasPyUpdate) {
                             let label = serversToUpdate.length > 1 ? `${serversToUpdate.length}개 서버` : `서버(v${result.pyVer})`;
                             let fullLabel = hasJsUpdate ? `스크립트(v${result.jsVer}) / ${label}` : label;
@@ -958,14 +958,14 @@ GM_addStyle(`
                         } else if (hasJsUpdate) {
                             parts.push(`<a href="#" id="pmh-js-update-link" data-ver="${result.jsVer}" style="color:#e5a00d; text-decoration:none;" title="클릭 시 스크립트 업데이트">스크립트(v${result.jsVer})</a>`);
                         }
-                        
+
                         defaultMsg = combinedMsg + parts.join("");
                         defaultColor = '#e5a00d';
-                        showStatusMsg(`업데이트 발견!`, '#e5a00d', 3000); 
+                        showStatusMsg(`업데이트 발견!`, '#e5a00d', 3000);
                     } else {
                         defaultMsg = '';
                         defaultColor = '#aaa';
-                        showStatusMsg(`최신 버전입니다`, '#51a351', 3000); 
+                        showStatusMsg(`최신 버전입니다`, '#51a351', 3000);
                     }
                 }
             }
