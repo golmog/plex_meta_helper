@@ -23,7 +23,7 @@ except ImportError:
 # ==============================================================================
 # [버전 및 설정 관리]
 # ==============================================================================
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "pmh_config.yaml")
