@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.17
+// @version      0.6.18
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -127,7 +127,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.17";
+    const CURRENT_VERSION = "0.6.18";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -631,16 +631,16 @@ GM_addStyle(`
 
         const latestVer = GM_getValue('pmh_latest_version', CURRENT_VERSION);
         if (isNewerVersion(CURRENT_VERSION, latestVer)) {
-            defaultMsg = `업데이트 발견! (v${latestVer})`;
+            defaultMsg = `업데이트(v${latestVer})`;
             defaultColor = '#e5a00d';
         }
 
         const showStatusMsg = (text, color, duration = 3000) => {
             const msgBox = document.getElementById('pmh-status-message');
             if (!msgBox) return;
-
+            
             if (msgTimeout) clearTimeout(msgTimeout);
-
+            
             msgBox.textContent = text;
             msgBox.style.color = color;
 
@@ -653,20 +653,14 @@ GM_addStyle(`
         };
 
         // --- 2. UI 요소 생성 ---
-        let updateBadgeHtml = '';
-        if (isNewerVersion(CURRENT_VERSION, latestVer)) {
-            updateBadgeHtml = `<span style="color:#e5a00d; font-size:11px; font-weight:bold;">업데이트(v${latestVer})</span>`;
-        }
-
         ctrl.insertAdjacentHTML('afterbegin', `
             <!-- 메시지 영역 -->
             <div id="pmh-status-message" style="margin-right: 5px; font-size: 11px; font-weight: bold; white-space: nowrap; transition: color 0.3s;"></div>
-
-            <!-- 아이콘 및 뱃지 래퍼 -->
+            
+            <!-- 아이콘 래퍼 -->
             <div style="display:flex; align-items:center; margin-right: 8px;">
+                <a href="#" id="pmh-manual-update-btn" style="color:#adb5bd; font-size:12px; margin-right:12px; transition:0.2s;" title="업데이트 확인" onmouseover="this.style.color='white'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-sync-alt pmh-sync-icon"></i></a>
                 <a href="https://github.com/golmog/plex_meta_helper" target="_blank" style="color:white; font-size:16px; transition:0.2s;" title="PMH GitHub 페이지" onmouseover="this.style.color='#e5a00d'" onmouseout="this.style.color='white'"><i class="fab fa-github"></i></a>
-                <a href="#" id="pmh-manual-update-btn" style="color:#adb5bd; font-size:12px; margin-left:12px; transition:0.2s;" title="업데이트 확인" onmouseover="this.style.color='white'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-sync-alt pmh-sync-icon"></i></a>
-                <span id="pmh-update-container" style="display:inline-block; margin-left:6px;">${updateBadgeHtml}</span>
             </div>
         `);
 
@@ -703,7 +697,7 @@ GM_addStyle(`
             const nl = parseInt(lenInp.value);
             if (!isNaN(nl) && nl >= 5 && nl <= 50) {
                 state.guidLen = nl; GM_setValue(STATE_KEYS.LEN, state.guidLen);
-                forceReRenderAll();
+                forceReRenderAll(); 
                 showStatusMsg(`GUID 길이 ${nl} 적용 완료`, '#51a351');
             }
         });
@@ -734,47 +728,41 @@ GM_addStyle(`
             if (updateBtn) {
                 e.preventDefault();
                 e.stopPropagation();
-
+                
                 log("[Update] Manual update button clicked via Event Delegation.");
-
+                
                 let icon = updateBtn.querySelector('.pmh-sync-icon') || e.target.closest('.pmh-sync-icon');
-
+                
                 if (!icon) {
                     errorLog("[Update] Icon element not found.");
                     return;
                 }
-
+                
                 if (icon.classList.contains('fa-spin')) {
                     log("[Update] Already spinning/fetching.");
                     return;
                 }
-
+                
                 icon.classList.add('fa-spin');
                 showStatusMsg(`업데이트 확인 중 (v${CURRENT_VERSION})...`, '#ccc', 0);
 
                 const result = await fetchLatestVersion();
-
+                
                 icon = updateBtn.querySelector('.pmh-sync-icon');
                 if (icon) {
                     icon.classList.remove('fa-spin');
                 }
 
-                const updateContainer = document.getElementById('pmh-update-container');
-
                 if (result.error) {
-                    showStatusMsg(result.msg, '#bd362f', 4000);
+                    showStatusMsg(result.msg, '#bd362f', 4000); 
                 } else if (isNewerVersion(CURRENT_VERSION, result.ver)) {
-                    defaultMsg = `업데이트 발견! (v${result.ver})`;
+                    defaultMsg = `업데이트(v${result.ver})`;
                     defaultColor = '#e5a00d';
-                    if (updateContainer) {
-                        updateContainer.innerHTML = `<span style="color:#e5a00d; font-size:11px; font-weight:bold;">업데이트(v${result.ver})</span>`;
-                    }
-                    showStatusMsg(defaultMsg, defaultColor, 0);
+                    showStatusMsg(`업데이트 발견! (v${result.ver})`, '#e5a00d', 3000); 
                 } else {
                     defaultMsg = '';
                     defaultColor = '#aaa';
-                    if (updateContainer) updateContainer.innerHTML = '';
-                    showStatusMsg(`최신 버전 (v${CURRENT_VERSION})`, '#51a351', 3000);
+                    showStatusMsg(`최신 버전 (v${CURRENT_VERSION})`, '#51a351', 3000); 
                 }
             }
         });
