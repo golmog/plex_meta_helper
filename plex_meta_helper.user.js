@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.24
+// @version      0.6.25
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -127,7 +127,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.24";
+    const CURRENT_VERSION = "0.6.25";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -706,13 +706,30 @@ GM_addStyle(`
             });
         }
 
+        let best_sub_id = "";
+        let best_sub_url = "";
+        if (versions.length > 0 && versions[0].subs) {
+            const korSubs = versions[0].subs.filter(s => s.languageCode === 'kor' || s.languageCode === 'ko');
+            if (korSubs.length > 0) {
+                korSubs.sort((a, b) => {
+                    let sA = 0, sB = 0;
+                    if(a.key && a.key.trim() !== '') sA+=100; if(['srt','ass','smi','vtt','ssa','sub'].includes(a.codec)) sA+=50;
+                    if(b.key && b.key.trim() !== '') sB+=100; if(['srt','ass','smi','vtt','ssa','sub'].includes(b.codec)) sB+=50;
+                    return sB - sA;
+                });
+                best_sub_id = korSubs[0].id;
+                best_sub_url = korSubs[0].key || "";
+            }
+        }
+
         const guid = meta.guid || "";
         return {
             type: (meta.type === 'movie' || meta.type === 'episode') ? 'video' : 'directory',
             itemId: itemId, guid: guid, duration: meta.duration || 0,
             versions: versions, markers: markers,
             g: guid.split('://')[1]?.split('?')[0] || guid, raw_g: guid, p: p, tags: tags,
-            part_id: versions.length > 0 ? versions[0].part_id : null
+            part_id: versions.length > 0 ? versions[0].part_id : null,
+            sub_id: best_sub_id, sub_url: best_sub_url
         };
     }
 
@@ -989,7 +1006,7 @@ GM_addStyle(`
                         if (meta) {
                             const localData = convertPlexMetaToLocalData(meta, id);
                             setMemoryCache(`F_${targetServerId}_${id}`, localData);
-                            renderListBadges(cont, poster, link, localData, srvConfig, id); // 리렌더링
+                            renderListBadges(cont, poster, link, localData, srvConfig, id);
                         } else {
                             fetchBtn.innerHTML = '<i class="fas fa-times" style="color:red;"></i>';
                         }
@@ -1032,8 +1049,26 @@ GM_addStyle(`
 
                 if (plexSrv) {
                     const vUrl = `${plexSrv.url}/library/parts/${info.part_id}/0/file?X-Plex-Token=${plexSrv.token}`;
+                    
+                    let justFileName = "Unknown_Video.mp4";
+                    if (info.p) {
+                        const pathParts = info.p.split(/[\\/]/);
+                        justFileName = pathParts[pathParts.length - 1];
+                    }
+
+                    let sUrl = '';
+                    if (info.sub_url && info.sub_url.trim() !== '') {
+                        if (info.sub_url.startsWith('/library/streams/')) {
+                            sUrl = `${plexSrv.url}${info.sub_url}?X-Plex-Token=${plexSrv.token}`;
+                        } else {
+                            sUrl = `${plexSrv.url}/library/streams/${info.sub_id}?X-Plex-Token=${plexSrv.token}`;
+                        }
+                    }
+
+                    const streamPayload = encodeURIComponent(vUrl) + '%7C' + encodeURIComponent(sUrl) + '%7C' + encodeURIComponent(justFileName);
+
                     const sBtn = document.createElement('a');
-                    sBtn.href = `plexstream://${encodeURIComponent(vUrl)}%7C`;
+                    sBtn.href = `plexstream://${streamPayload}`;
                     sBtn.className = 'plex-list-play-external plex-list-stream-btn';
                     sBtn.title = '스트리밍';
                     sBtn.innerHTML = '<i class="fas fa-wifi"></i>';
@@ -1360,7 +1395,7 @@ GM_addStyle(`
                                     let meta = await fetchPlexMetaFallback(item.iid, plexSrv);
                                     if (!meta) return;
 
-                                    let updatedInfo = { g: info.g, p: info.p, tags: [...info.tags], part_id: info.part_id };
+                                    let updatedInfo = { g: info.g, p: info.p, tags: [...info.tags], part_id: info.part_id, sub_id: info.sub_id, sub_url: info.sub_url };
                                     let needsUpdate = false;
                                     let fallbackTags = parsePlexFallbackTags(meta);
                                     const m = meta.Media && meta.Media[0] ? meta.Media[0] : null;
@@ -1383,6 +1418,27 @@ GM_addStyle(`
                                         } else if (fallbackTags.includes("SUB") && !updatedInfo.tags.includes("SUB")) {
                                             updatedInfo.tags.push("SUB");
                                             needsUpdate = true;
+                                        }
+                                    }
+
+                                    if (meta && meta.Media && meta.Media.length > 0) {
+                                        const topMedia = meta.Media.sort((a, b) => (b.width || 0) - (a.width || 0))[0];
+                                        if (topMedia.Part && topMedia.Part[0] && topMedia.Part[0].Stream) {
+                                            const korSubs = topMedia.Part[0].Stream.filter(s => s.streamType === 3 && (s.languageCode === 'kor' || s.languageCode === 'ko'));
+                                            if (korSubs.length > 0) {
+                                                korSubs.sort((a, b) => {
+                                                    let sA = 0, sB = 0;
+                                                    if(a.key && a.key.trim() !== '') sA+=100; if(['srt','ass','smi','vtt','ssa','sub'].includes(a.codec)) sA+=50;
+                                                    if(b.key && b.key.trim() !== '') sB+=100; if(['srt','ass','smi','vtt','ssa','sub'].includes(b.codec)) sB+=50;
+                                                    return sB - sA;
+                                                });
+                                                
+                                                if (korSubs[0].key && korSubs[0].key !== updatedInfo.sub_url) {
+                                                    updatedInfo.sub_id = korSubs[0].id;
+                                                    updatedInfo.sub_url = korSubs[0].key;
+                                                    needsUpdate = true;
+                                                }
+                                            }
                                         }
                                     }
 
@@ -1672,8 +1728,8 @@ GM_addStyle(`
 
                 let subHtml = '없음';
                 if (bestSub) {
-                    const isDownloadable = (bestSub.key && bestSub.key.trim() !== '') || ['srt', 'ass', 'smi', 'vtt', 'ssa', 'sub'].includes(bestSub.codec?.toLowerCase());
-                    if (isDownloadable) {
+                    const isExternal = bestSub.key && bestSub.key.trim() !== '';
+                    if (isExternal) {
                         subHtml = `<a href="javascript:void(0);" class="plex-guid-action plex-kor-subtitle-download" data-stream-id="${bestSub.id}" data-key="${bestSub.key || ''}" data-fmt="${bestSub.format}" data-vname="${videoFilename}"><i class="fas fa-download"></i></a> Kor (${bestSub.format})`;
                     } else {
                         subHtml = `Kor (${bestSub.format})`;
@@ -1684,19 +1740,30 @@ GM_addStyle(`
 
                 const isHardsub = v.file && /kor-?sub|자체자막/i.test(v.file);
                 if (!bestSub && isHardsub) {
-                    subHtml = `자체자막(하드섭)`;
+                    subHtml = `자체(하드섭)`;
                 }
 
                 let streamHtml = `<a href="#" class="plex-guid-action plex-play-stream"><i class="fas fa-wifi"></i></a>`;
                 if (plexSrv && v.part_id) {
                     const vUrl = `${plexSrv.url}/library/parts/${v.part_id}/0/file?X-Plex-Token=${plexSrv.token}`;
                     let sUrl = '';
-                    if (bestSub && bestSub.key && bestSub.key.startsWith('/library/streams/')) {
-                        sUrl = `${plexSrv.url}${bestSub.key}?X-Plex-Token=${plexSrv.token}`;
-                    } else if (bestSub) {
-                        sUrl = `${plexSrv.url}/library/streams/${bestSub.id}?X-Plex-Token=${plexSrv.token}`;
+                    
+                    if (bestSub && bestSub.key && bestSub.key.trim() !== '') {
+                        if (bestSub.key.startsWith('/library/streams/')) {
+                            sUrl = `${plexSrv.url}${bestSub.key}?X-Plex-Token=${plexSrv.token}`;
+                        } else {
+                            sUrl = `${plexSrv.url}/library/streams/${bestSub.id}?X-Plex-Token=${plexSrv.token}`;
+                        }
                     }
-                    streamHtml = `<a href="plexstream://${encodeURIComponent(vUrl) + '%7C' + encodeURIComponent(sUrl)}" class="plex-guid-action plex-play-stream" title="스트리밍"><i class="fas fa-wifi"></i></a>`;
+
+                    let justFileName = "Unknown_Video.mp4";
+                    if (v.file) {
+                        const pathParts = v.file.split(/[\\/]/);
+                        justFileName = pathParts[pathParts.length - 1];
+                    }
+
+                    const streamPayload = encodeURIComponent(vUrl) + '%7C' + encodeURIComponent(sUrl) + '%7C' + encodeURIComponent(justFileName);
+                    streamHtml = `<a href="plexstream://${streamPayload}" class="plex-guid-action plex-play-stream" title="스트리밍"><i class="fas fa-wifi"></i></a>`;
                 }
 
                 let playExternalHtml = `<span style="color:#555;" title="친구 서버는 지원하지 않습니다."><i class="fas fa-play"></i></span>`;

@@ -22,33 +22,37 @@ elif [ "$PROTOCOL" = "plexfolder" ]; then
     fi
 
 elif [ "$PROTOCOL" = "plexstream" ]; then
-    # [스트리밍] | 로 분리
-    VID_URL=$(echo "$DECODED_DATA" | cut -d'|' -f1)
-    SUB_URL=$(echo "$DECODED_DATA" | cut -d'|' -f2)
+    # [스트리밍] 파이프(|)로 파라미터 분리 (URL | SUB_URL | FILE_NAME)
+    VID_URL=$(echo "$DECODED_DATA" | awk -F'|' '{print $1}')
+    SUB_URL=$(echo "$DECODED_DATA" | awk -F'|' '{print $2}')
+    FILE_NAME=$(echo "$DECODED_DATA" | awk -F'|' '{print $3}')
 
-    # MPV 실행 (자막 있으면 포함)
-    # if [ -n "$SUB_URL" ]; then
-    #     mpv "$VID_URL" --sub-file="$SUB_URL"
-    # else
-    #     mpv "$VID_URL"
-    # fi
+    if [ -z "$FILE_NAME" ]; then
+        FILE_NAME="Plex_Stream_Video.mp4"
+    fi
 
-    # SMPlayer 실행
-if [ -n "$SUB_URL" ] && [ "$SUB_URL" != "$VID_URL" ]; then
-        # 1. 확장자 추출
-        EXT="${SUB_URL##*.}"
-        # 확장자가 없거나 이상할 경우 기본값 srt
-        if [ -z "$EXT" ] || [ ${#EXT} -gt 4 ]; then EXT="srt"; fi
+    # 1. M3U 플레이리스트 생성 (플레이어에 파일명을 띄워주기 위함)
+    PLAYLIST="/tmp/plex_stream.m3u"
+    echo "#EXTM3U" > "$PLAYLIST"
+    echo "#EXTINF:-1,$FILE_NAME" >> "$PLAYLIST"
+    echo "$VID_URL" >> "$PLAYLIST"
 
-        # 2. 임시 파일명에 .ko(한국어 코드) 삽입
-        TEMP_SUB="/tmp/plex_stream_sub.ko.$EXT"
+    # 2. 자막 처리 (자막이 있을 경우 로컬 다운로드)
+    if [ -n "$SUB_URL" ]; then
+        EXT="srt"
+        if echo "$SUB_URL" | grep -qi "\.ass"; then EXT="ass"; fi
+        if echo "$SUB_URL" | grep -qi "\.smi"; then EXT="smi"; fi
 
-        # 3. 자막 다운로드
+        # 동영상파일명.ko.srt 형태로 조립
+        BASE_NAME="${FILE_NAME%.*}"
+        TEMP_SUB="/tmp/${BASE_NAME}.ko.${EXT}"
+
+        # 자막 다운로드
         curl -sL "$SUB_URL" -o "$TEMP_SUB"
 
-        # 4. SMPlayer 실행
-        smplayer "$VID_URL" -sub "$TEMP_SUB"
+        # 플레이어 실행 (smplayer 사용 예시, mpv 사용시 mpv "$PLAYLIST" --sub-file="$TEMP_SUB" 사용)
+        smplayer "$PLAYLIST" -sub "$TEMP_SUB"
     else
-        smplayer "$VID_URL"
+        smplayer "$PLAYLIST"
     fi
 fi

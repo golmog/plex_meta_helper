@@ -9,7 +9,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.6.24"
+__version__ = "0.6.25"
 
 def get_version():
     return __version__
@@ -58,7 +58,7 @@ def handle_library_batch(data, max_batch_size, db_path):
             query = f"""
             SELECT mi.id, m.width,
                 (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 1) as raw_stream_data,
-                (SELECT group_concat(IFNULL(ms.language, 'und'), ',') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 3) as sub_langs,
+                (SELECT group_concat(ms.id || '|' || IFNULL(ms.language, 'und') || '|' || IFNULL(ms.codec, '') || '|' || IFNULL(ms.url, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 3) as sub_data,
                 mi.guid, mp.file, mp.id
             FROM metadata_items mi
             LEFT JOIN media_items m ON m.metadata_item_id = mi.id
@@ -67,12 +67,12 @@ def handle_library_batch(data, max_batch_size, db_path):
             """
             cursor.execute(query, ids)
             result_map = {}
-            for rk, width, raw_data, sub_langs, guid, filepath, part_id in cursor.fetchall():
+            for rk, width, raw_data, sub_data, guid, filepath, part_id in cursor.fetchall():
                 rk = str(rk)
                 if rk not in result_map:
                     clean_guid = guid.split("://")[1].split("?")[0] if guid and "://" in guid else (guid or "")
                     if not filepath:
-                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None }
+                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None, "sub_id": "", "sub_url": "" }
                         continue
                     tags, res_tag = [], None
                     width = width if width else 0
@@ -96,12 +96,36 @@ def handle_library_batch(data, max_batch_size, db_path):
                     if video_badge: tags.append(video_badge)
                     
                     has_sub = False
-                    if sub_langs:
-                        langs = sub_langs.lower().split(',')
-                        if any(l.startswith('kor') or l.startswith('ko') for l in langs if l): has_sub = True
+                    best_sub_id = ""
+                    best_sub_url = ""
+
+                    if sub_data:
+                        streams = sub_data.split(';;')
+                        kor_subs = []
+                        for s in streams:
+                            parts = s.split('|')
+                            if len(parts) >= 4:
+                                s_id, s_lang, s_codec, s_url = parts[0], parts[1].lower(), parts[2].lower(), parts[3]
+                                if s_lang.startswith('kor') or s_lang.startswith('ko'):
+                                    has_sub = True
+                                    score = 0
+                                    if s_url: score += 100
+                                    if s_codec in ['srt', 'ass', 'smi', 'vtt', 'ssa', 'sub']: score += 50
+                                    kor_subs.append((score, s_id, s_url))
+                        
+                        if kor_subs:
+                            kor_subs.sort(key=lambda x: x[0], reverse=True)
+                            best_sub_id = kor_subs[0][1]
+                            best_sub_url = kor_subs[0][2]
+
                     if has_sub: tags.append("SUB")
                     elif filepath and re.search(r'(?i)(kor-?sub|자체자막)', filepath): tags.append("SUBBED")
-                    result_map[rk] = { "tags": tags, "g": clean_guid, "raw_g": guid or "", "p": filepath, "part_id": part_id }
+
+                    result_map[rk] = { 
+                        "tags": tags, "g": clean_guid, "raw_g": guid or "", 
+                        "p": filepath, "part_id": part_id,
+                        "sub_id": best_sub_id, "sub_url": best_sub_url 
+                    }
         exec_time = time.time() - start_time
         print(f"[BATCH] Successfully processed {len(result_map)} items in {exec_time:.3f}s")
         return result_map, 200
