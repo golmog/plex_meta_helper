@@ -1,0 +1,22 @@
+# ==============================================================================
+# Plex Meta Helper (PMH) 서버 설정 파일
+# - 이 파일을 'pmh_config.yaml'로 변경한 후 환경에 맞게 수정하여 사용하세요.
+# - YAML 문법에 맞춰 작성해야 합니다.
+# ==============================================================================
+
+# Plex 라이브러리 DB 파일의 절대 경로 (읽기 전용으로 접근합니다)
+# 예시:
+#   Windows: "C:\\Users\\Username\\AppData\\Local\\Plex Media Server\\Plug-in Support\\Databases\\com.plexapp.plugins.library.db"
+#   Linux/Docker: "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+PLEX_DB_PATH: "/path/to/your/com.plexapp.plugins.library.db"
+
+# PMH API 서버가 실행될 포트 번호
+SERVER_PORT: 8899
+
+# 한 번에 처리할 목록(리스트) 배치의 최대 허용 개수
+# 너무 높이면 DB 조회 부하가 커질 수 있으므로 100~1000 사이를 권장합니다.
+MAX_BATCH_SIZE: 1000
+
+# 보안을 위한 API 인증 키
+# 클라이언트 스크립트(Tampermonkey)의 AppSettings.SERVERS "plexMateApiKey" 값과 정확히 일치해야 합니다.
+API_KEY: "YOUR_PLEX_MATE_API_KEY_HERE"
