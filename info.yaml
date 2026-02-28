@@ -1,0 +1,7 @@
+title: "Plex Meta Helper(PMH)"
+version: "0.6.17"
+package_name: "plex_mata_helper"
+developer: "golmog"
+description: "Plex Web UI 개선 스크립트"
+home: "https://github.com/golmog/plex_mata_helper"
+more: "https://raw.githubusercontent.com/golmog/plex_mata_helper/main/README.md"

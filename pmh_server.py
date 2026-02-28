@@ -90,6 +90,8 @@ def api_library_batch():
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            
+            # mp.id 를 part_id 로 가져오도록 추가
             query = f"""
             SELECT 
                 mi.id, m.width,
@@ -97,7 +99,7 @@ def api_library_batch():
                  FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 1) as raw_stream_data,
                 (SELECT group_concat(IFNULL(ms.language, 'und'), ',')
                  FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 3) as sub_langs,
-                mi.guid, mp.file
+                mi.guid, mp.file, mp.id
             FROM metadata_items mi
             LEFT JOIN media_items m ON m.metadata_item_id = mi.id
             LEFT JOIN media_parts mp ON mp.media_item_id = m.id
@@ -109,13 +111,13 @@ def api_library_batch():
             rows = cursor.fetchall()
             
             result_map = {}
-            for rk, width, raw_data, sub_langs, guid, filepath in rows:
+            for rk, width, raw_data, sub_langs, guid, filepath, part_id in rows:
                 rk = str(rk)
                 if rk not in result_map:
                     clean_guid = guid.split("://")[1].split("?")[0] if guid and "://" in guid else (guid or "")
                     
                     if not filepath:
-                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "" }
+                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None }
                         continue
 
                     tags = []
@@ -151,7 +153,7 @@ def api_library_batch():
                     if has_sub: tags.append("SUB")
                     elif filepath and re.search(r'(?i)(kor-?sub|자체자막)', filepath): tags.append("SUBBED")
                         
-                    result_map[rk] = { "tags": tags, "g": clean_guid, "raw_g": guid or "", "p": filepath }
+                    result_map[rk] = { "tags": tags, "g": clean_guid, "raw_g": guid or "", "p": filepath, "part_id": part_id }
 
         exec_time = time.time() - start_time
         print(f"[BATCH] Successfully processed {len(result_map)} items in {exec_time:.3f}s")
