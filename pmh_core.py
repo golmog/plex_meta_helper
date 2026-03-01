@@ -9,7 +9,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.6.25"
+__version__ = "0.6.26"
 
 def get_version():
     return __version__
@@ -38,6 +38,9 @@ def is_season_folder(folder_name):
     if re.match(r'^(specials?|스페셜)$', name_lower): return True
     if name_lower.isdigit(): return True
     return False
+
+def natural_sort_key(s):
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
 
 def handle_library_batch(data, max_batch_size, db_path):
     start_time = time.time()
@@ -158,10 +161,15 @@ def handle_media_detail(rating_key, db_path):
                     for row in cursor.fetchall():
                         if row and row[0]:
                             dir_path = os.path.dirname(row[0])
-                            target_path = os.path.dirname(dir_path) if is_season_folder(os.path.basename(dir_path)) else dir_path
-                            if target_path not in seen_paths:
-                                seen_paths.add(target_path)
-                                folder_paths.append(target_path)
+                            if dir_path not in seen_paths:
+                                seen_paths.add(dir_path)
+                                folder_paths.append(dir_path)
+                            if is_season_folder(os.path.basename(dir_path)):
+                                parent_path = os.path.dirname(dir_path)
+                                if parent_path not in seen_paths:
+                                    seen_paths.add(parent_path)
+                                    folder_paths.append(parent_path)
+
                 elif m_type == 3:
                     query = """SELECT mp.file FROM metadata_items ep JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE ep.parent_id = ? AND ep.metadata_type = 4 ORDER BY m.width DESC, m.bitrate DESC"""
                     cursor.execute(query, (rating_key,))
@@ -171,11 +179,13 @@ def handle_media_detail(rating_key, db_path):
                             if target_path not in seen_paths:
                                 seen_paths.add(target_path)
                                 folder_paths.append(target_path)
+
+                folder_paths.sort(key=natural_sort_key)
                 versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
                 exec_time = time.time() - start_time
                 print(f"[DETAIL] Directory {rating_key} parsed in {exec_time:.3f}s. Found {len(versions)} paths.")
                 return { "type": "directory", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions }, 200
-                
+
             query_media = """SELECT m.id, m.width, m.height, (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 1 LIMIT 1) as v_bitrate, (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE media_item_id = m.id AND stream_type_id = 1) as raw_stream_data, m.video_codec, m.audio_codec, m.duration, (SELECT channels FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as audio_ch, (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate, mp.id, mp.file FROM media_items m LEFT JOIN media_parts mp ON mp.media_item_id = m.id WHERE m.metadata_item_id = ? ORDER BY m.width DESC, m.bitrate DESC"""
             cursor.execute(query_media, (rating_key,))
             versions, duration = [], 0

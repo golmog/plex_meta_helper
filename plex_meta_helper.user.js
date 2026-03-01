@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.25
+// @version      0.6.26
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -127,7 +127,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.25";
+    const CURRENT_VERSION = "0.6.26";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -1660,38 +1660,82 @@ GM_addStyle(`
         };
 
         if (data.type === 'directory' && data.versions && data.versions.length > 0) {
-            versionsHtml = data.versions.map(v => {
-                const rPath = v.file;
-                if (!rPath) return '';
+            let paths = data.versions.map(v => v.file).filter(Boolean);
+            let roots = [];
+            let childrenMap = {};
 
-                if (!srvConfig) {
-                    return `
-                    <div class="media-version-block" style="border: 0; margin-bottom: 6px;">
-                        <div class="media-info-line" style="display: flex; align-items: center; grid-template-columns: none; gap: 10px;">
-                            <div style="flex-shrink: 0;">
-                                <span style="color:#555;" title="친구 서버는 폴더 열기를 지원하지 않습니다."><i class="fas fa-folder-open"></i></span>
-                            </div>
-                            <div style="flex-grow: 1; min-width: 0; font-size: 12px; color: #555; font-style: italic;">
-                                원격 서버 경로 숨김
-                            </div>
-                        </div>
-                    </div>`;
+            paths.forEach(p => {
+                let normP = p.replace(/\\/g, '/');
+                let longestParent = paths
+                    .filter(pp => {
+                        let normPP = pp.replace(/\\/g, '/');
+                        return normP !== normPP && normP.startsWith(normPP + '/');
+                    })
+                    .sort((a, b) => b.length - a.length)[0];
+                
+                if (longestParent) {
+                    if (!childrenMap[longestParent]) childrenMap[longestParent] = [];
+                    childrenMap[longestParent].push(p);
+                } else {
+                    roots.push(p);
+                }
+            });
+
+            function buildTreeLines(serverPath, level, isLast) {
+                const isRoot = level === 0;
+                
+                let displayPath = serverPath;
+                if (!isRoot) {
+                    const parts = serverPath.split(/[\\/]/);
+                    displayPath = parts[parts.length - 1]; 
+                } else {
+                    displayPath = emphasizeFileName(serverPath);
                 }
 
-                const ePath = encodeURIComponent(getLocalPath(rPath).replace(/\\/g, '/')).replace(/\(/g, '%28').replace(/\)/g, '%29');
+                let treeIconHtml = '';
+                if (level > 0) {
+                    treeIconHtml = `<span style="color:#777; font-family:monospace; margin-right:8px;">${isLast ? '└' : '├'}</span>`;
+                }
 
+                let folderIconHtml = `<span style="color:#555;" title="친구 서버는 폴더 열기를 지원하지 않습니다."><i class="fas fa-folder-open"></i></span>`;
+                let pathLinkHtml = `<span style="font-style:italic;">${displayPath}</span>`;
+
+                if (srvConfig) {
+                    const localPath = getLocalPath(serverPath);
+                    const ePath = encodeURIComponent(localPath.replace(/\\/g, '/')).replace(/\(/g, '%28').replace(/\)/g, '%29');
+                    folderIconHtml = `<a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열기"><i class="fas fa-folder-open"></i></a>`;
+                    pathLinkHtml = `<a href="#" class="plex-path-scan-link" data-path="${serverPath}" data-section-id="${data.librarySectionID}" data-type="directory" title="클릭하여 Plex Mate로 스캔">${displayPath}</a>`;
+                }
+
+                let html = `
+                <div style="display: flex; align-items: center; gap: 10px; padding: 3px 0;">
+                    <div style="flex-shrink: 0; margin-left: ${level * 22}px; display: flex; align-items: center;">
+                        ${treeIconHtml}${folderIconHtml}
+                    </div>
+                    <div style="flex-grow: 1; min-width: 0; font-size: 12px; color: ${isRoot ? '#ccc' : '#aaa'}; word-break: break-all; overflow-wrap: anywhere; line-height: 1.3; padding-left: 5px; padding-right: 10px;">
+                        ${pathLinkHtml}
+                    </div>
+                </div>`;
+
+                const children = childrenMap[serverPath] || [];
+                children.forEach((childPath, index) => {
+                    html += buildTreeLines(childPath, level + 1, index === children.length - 1);
+                });
+
+                return html;
+            }
+
+            versionsHtml = roots.map(rootPath => {
+                const treeContentHtml = buildTreeLines(rootPath, 0, false);
+                
                 return `
                 <div class="media-version-block" style="border: 0; margin-bottom: 6px;">
-                    <div class="media-info-line" style="display: flex; align-items: center; grid-template-columns: none; gap: 10px;">
-                        <div style="flex-shrink: 0;">
-                            <a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열기"><i class="fas fa-folder-open"></i></a>
-                        </div>
-                        <div style="flex-grow: 1; min-width: 0; font-size: 12px; color: #ccc; word-break: break-all; overflow-wrap: anywhere; line-height: 1.3; padding-left: 5px; padding-right: 10px;">
-                            <a href="#" class="plex-path-scan-link" data-path="${rPath}" data-section-id="${data.librarySectionID}" data-type="directory">${emphasizeFileName(rPath)}</a>
-                        </div>
+                    <div class="media-info-line" style="display: block; grid-template-columns: none; padding: 6px 10px;">
+                        ${treeContentHtml}
                     </div>
                 </div>`;
             }).join('');
+
         } else if (data.type === 'video') {
             versionsHtml = data.versions.map(v => {
                 const vRes = v.width >= 7000 ? '8K' : v.width >= 5000 ? '6K' : v.width >= 3400 ? '4K' : v.width >= 1900 ? 'FHD' : v.width >= 1200 ? 'HD' : 'SD';
