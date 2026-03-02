@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.27
+// @version      0.6.28
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -127,7 +127,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.27";
+    const CURRENT_VERSION = "0.6.28";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -236,8 +236,33 @@ GM_addStyle(`
     async function checkUpdate() {
         const lastCheck = GM_getValue('pmh_last_update_check', 0);
         if (Date.now() - lastCheck > 24 * 60 * 60 * 1000) {
-            log("[Update] Background daily update check initiated.");
-            await fetchLatestVersion();
+            log("[Update] Background update check initiated.");
+            const result = await fetchLatestVersion();
+            
+            if (!result.error) {
+                const latestKnownVer = result.targetVer;
+                let needsUpdate = isNewerVersion(CURRENT_VERSION, latestKnownVer);
+
+                if (AppSettings.SERVERS) {
+                    for (const srv of AppSettings.SERVERS) {
+                        const curVer = result.localPyVers[srv.machineIdentifier];
+                        if (!curVer || isNewerVersion(curVer, latestKnownVer)) {
+                            needsUpdate = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (needsUpdate) {
+                    const existingBtn = document.getElementById('pmh-unified-update-link');
+                    if (!existingBtn) {
+                        toastr.info(`새로운 업데이트(v${latestKnownVer})가 발견되었습니다!<br>상단 메뉴의 업데이트 버튼을 눌러 진행하세요.`, "업데이트 알림", {timeOut: 8000});
+                        const ctrl = document.getElementById('pmdv-controls');
+                        if (ctrl) ctrl.remove();
+                        injectControlUI();
+                    }
+                }
+            }
         } else {
             log("[Update] Background update check skipped (checked recently).");
         }
@@ -2237,6 +2262,7 @@ GM_addStyle(`
             document.getElementById('plex-guid-box')?.remove();
             currentDisplayedItemId = null;
 
+            checkUpdate();
             injectControlUI();
 
             if (window.location.hash.includes('/details?key=')) setTimeout(processDetail, 500);
