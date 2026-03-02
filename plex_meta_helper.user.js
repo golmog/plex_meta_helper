@@ -256,7 +256,7 @@ GM_addStyle(`
                 if (needsUpdate) {
                     const existingBtn = document.getElementById('pmh-unified-update-link');
                     if (!existingBtn) {
-                        toastr.info(`새로운 업데이트(v${latestKnownVer})가 발견되었습니다!<br>상단 메뉴의 업데이트 버튼을 눌러 진행하세요.`, "업데이트 알림", {timeOut: 8000});
+                        toastr.info(`새로운 업데이트(v${latestKnownVer})가 발견되었습니다!`, "업데이트 알림", {timeOut: 8000});
                         const ctrl = document.getElementById('pmdv-controls');
                         if (ctrl) ctrl.remove();
                         injectControlUI();
