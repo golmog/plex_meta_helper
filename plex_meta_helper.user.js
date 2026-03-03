@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.29
+// @version      0.6.30
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -127,7 +127,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.29";
+    const CURRENT_VERSION = "0.6.30";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -586,7 +586,7 @@ GM_addStyle(`
         });
     }
 
-function triggerPlexMetadataRefresh(itemId, plexSrv) {
+    function triggerPlexMetadataRefresh(itemId, plexSrv) {
         if (!plexSrv) return Promise.resolve(false);
         return new Promise((resolve) => {
             infoLog(`[Refresh] 📡 Sending Metadata Refresh request to Plex for Item ID: ${itemId}...`);
@@ -1130,7 +1130,7 @@ function triggerPlexMetadataRefresh(itemId, plexSrv) {
                 const plexSrv = extractPlexServerInfo(targetServerId);
 
                 if (plexSrv) {
-                    const vUrl = `${plexSrv.url}/library/parts/${info.part_id}/0/file?X-Plex-Token=${plexSrv.token}`;
+                    const vUrl = `${plexSrv.url}/library/parts/${info.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${id}`;
 
                     let justFileName = "Unknown_Video.mp4";
                     if (info.p) {
@@ -1247,6 +1247,9 @@ function triggerPlexMetadataRefresh(itemId, plexSrv) {
 
                 if (srvConfig && !isUnmatched) {
                     gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>DB 갱신중...`;
+
+                    triggerPlexMetadataRefresh(id, plexSrv);
+                    toastr.info("Plex 서버에 메타 갱신을 요청했습니다.<br>작업은 백그라운드에서 진행됩니다.", "메타 갱신 요청", {timeOut: 3000});
 
                     deleteMemoryCache(`L_${targetServerId}_${id}`);
                     poster.querySelector('.pmh-render-marker')?.remove();
@@ -1934,7 +1937,7 @@ function triggerPlexMetadataRefresh(itemId, plexSrv) {
 
                 let streamHtml = `<a href="#" class="plex-guid-action plex-play-stream"><i class="fas fa-wifi"></i></a>`;
                 if (plexSrv && v.part_id) {
-                    const vUrl = `${plexSrv.url}/library/parts/${v.part_id}/0/file?X-Plex-Token=${plexSrv.token}`;
+                    const vUrl = `${plexSrv.url}/library/parts/${v.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${data.itemId}`;
                     let sUrl = '';
 
                     if (bestSub && bestSub.key && bestSub.key.trim() !== '') {
