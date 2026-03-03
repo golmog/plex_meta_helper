@@ -9,7 +9,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.6.30"
+__version__ = "0.6.31"
 
 def get_version():
     return __version__
@@ -42,6 +42,44 @@ def is_season_folder(folder_name):
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
 
+def _get_unique_show_folder_count(cursor, rating_key):
+    seen_paths = set()
+    root_paths = set()
+    
+    query = """
+        SELECT mp.file 
+        FROM metadata_items ep 
+        JOIN metadata_items sea ON ep.parent_id = sea.id 
+        JOIN media_items m ON m.metadata_item_id = ep.id 
+        JOIN media_parts mp ON mp.media_item_id = m.id 
+        WHERE sea.parent_id = ? AND ep.metadata_type = 4
+    """
+    cursor.execute(query, (rating_key,))
+    for row in cursor.fetchall():
+        if row and row[0]:
+            file_path = row[0]
+            dir_path = os.path.dirname(file_path)
+            if dir_path in seen_paths:
+                continue
+
+            seen_paths.add(dir_path)
+            target_path = dir_path
+            while True:
+                base_name = os.path.basename(target_path)
+                if not base_name:
+                    break
+
+                if is_season_folder(base_name):
+                    parent_path = os.path.dirname(target_path)
+                    if parent_path == target_path:
+                        break
+                    target_path = parent_path
+                else:
+                    break
+
+            root_paths.add(target_path)
+    return len(root_paths)
+
 def handle_library_batch(data, max_batch_size, db_path):
     start_time = time.time()
     
@@ -53,11 +91,20 @@ def handle_library_batch(data, max_batch_size, db_path):
     ids = list(set(raw_ids))[:max_batch_size] 
     if not ids: return {}, 200
     
-    print(f"[BATCH] Requested {len(ids)} items.")
+    check_multi_path = data.get('check_multi_path', False)
+    
+    print(f"[BATCH] Requested {len(ids)} items. check_multi_path: {check_multi_path}")
     placeholders = ','.join('?' for _ in ids)
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
+            
+            meta_types = {}
+            if check_multi_path:
+                cursor.execute(f"SELECT id, metadata_type FROM metadata_items WHERE id IN ({placeholders})", ids)
+                for r_id, m_type in cursor.fetchall():
+                    meta_types[str(r_id)] = m_type
+
             query = f"""
             SELECT mi.id, m.width,
                 (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 1) as raw_stream_data,
@@ -72,10 +119,15 @@ def handle_library_batch(data, max_batch_size, db_path):
             result_map = {}
             for rk, width, raw_data, sub_data, guid, filepath, part_id in cursor.fetchall():
                 rk = str(rk)
+                
+                path_count = 1
+                if check_multi_path and rk not in result_map and meta_types.get(rk) == 2:
+                    path_count = _get_unique_show_folder_count(cursor, rk)
+
                 if rk not in result_map:
                     clean_guid = guid.split("://")[1].split("?")[0] if guid and "://" in guid else (guid or "")
                     if not filepath:
-                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None, "sub_id": "", "sub_url": "" }
+                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None, "sub_id": "", "sub_url": "", "path_count": path_count }
                         continue
                     tags, res_tag = [], None
                     width = width if width else 0
@@ -99,8 +151,7 @@ def handle_library_batch(data, max_batch_size, db_path):
                     if video_badge: tags.append(video_badge)
                     
                     has_sub = False
-                    best_sub_id = ""
-                    best_sub_url = ""
+                    best_sub_id, best_sub_url = "", ""
 
                     if sub_data:
                         streams = sub_data.split(';;')
@@ -118,8 +169,7 @@ def handle_library_batch(data, max_batch_size, db_path):
                         
                         if kor_subs:
                             kor_subs.sort(key=lambda x: x[0], reverse=True)
-                            best_sub_id = kor_subs[0][1]
-                            best_sub_url = kor_subs[0][2]
+                            best_sub_id, best_sub_url = kor_subs[0][1], kor_subs[0][2]
 
                     if has_sub: tags.append("SUB")
                     elif filepath and re.search(r'(?i)(kor-?sub|자체자막)', filepath): tags.append("SUBBED")
@@ -127,7 +177,8 @@ def handle_library_batch(data, max_batch_size, db_path):
                     result_map[rk] = { 
                         "tags": tags, "g": clean_guid, "raw_g": guid or "", 
                         "p": filepath, "part_id": part_id,
-                        "sub_id": best_sub_id, "sub_url": best_sub_url 
+                        "sub_id": best_sub_id, "sub_url": best_sub_url,
+                        "path_count": path_count
                     }
         exec_time = time.time() - start_time
         print(f"[BATCH] Successfully processed {len(result_map)} items in {exec_time:.3f}s")

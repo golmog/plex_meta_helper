@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.30
+// @version      0.6.31
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -119,6 +119,8 @@ GM_addStyle(`
     #pmdv-controls button:hover { background-color: rgba(0,0,0,0.4) !important; border-color: #aaa !important; }
     #pmdv-controls button.on { background-color: #e5a00d !important; color: #1f1f1f !important; border-color: #e5a00d !important; font-weight: bold; }
     #pmdv-controls button.on:hover { background-color: #d4910c !important; }
+
+    .plex-list-multipath-badge { display: inline-block; background-color: #e5a00d; color: #1f1f1f; font-size: 10px; font-weight: bold; padding: 0px 4px; border-radius: 3px; margin: 1px 2px 0 4px; vertical-align: top; }
 `);
 
 (function() {
@@ -127,7 +129,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.30";
+    const CURRENT_VERSION = "0.6.31";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -201,17 +203,24 @@ GM_addStyle(`
                     log(`[Update] info.yaml response status: ${res.status}`);
                     if (res.status === 200) {
                         const match = res.responseText.match(/version:\s*"([^"]+)"/);
-                        const latestVer = match ? match[1] : null;
+                        let latestVer = match ? match[1] : null;
+                        let reqRestart = false;
 
                         if (latestVer) {
+                            if (latestVer.includes('-server')) {
+                                reqRestart = true;
+                                latestVer = latestVer.replace('-server', '');
+                            }
+                            
                             infoLog(`[Update] Unified Target Version: ${latestVer}`);
                             GM_setValue('pmh_latest_version', latestVer);
+                            GM_setValue('pmh_server_restart_required', reqRestart);
                             GM_setValue('pmh_last_update_check', Date.now());
 
                             resolve({
                                 targetVer: latestVer,
                                 localPyVers: localServerVersions,
-                                msg: "성공", error: false
+                                msg: "성공", error: false, reqRestart
                             });
                         } else {
                             errorLog("[Update] Failed to parse version from info.yaml");
@@ -430,6 +439,7 @@ GM_addStyle(`
         GUID: 'pmh_s_guid',
         TAG: 'pmh_s_tag',
         PLAY: 'pmh_s_play',
+        MULTIPATH: 'pmh_s_multipath',
         LEN: 'pmh_s_len',
         DETAIL: 'pmh_s_detail'
     };
@@ -438,6 +448,7 @@ GM_addStyle(`
         listGuid: GM_getValue(STATE_KEYS.GUID, false),
         listTag: GM_getValue(STATE_KEYS.TAG, true),
         listPlay: GM_getValue(STATE_KEYS.PLAY, false),
+        listMultiPath: GM_getValue(STATE_KEYS.MULTIPATH, false),
         guidLen: GM_getValue(STATE_KEYS.LEN, 20),
         detailInfo: GM_getValue(STATE_KEYS.DETAIL, true)
     };
@@ -861,9 +872,12 @@ GM_addStyle(`
         let needsJsUpdate = false;
 
         const latestKnownVer = GM_getValue('pmh_latest_version', CURRENT_VERSION);
+        const reqRestart = GM_getValue('pmh_server_restart_required', false);
+        
         if (isNewerVersion(CURRENT_VERSION, latestKnownVer)) {
             needsJsUpdate = true;
-            defaultMsg = `<a href="#" id="pmh-unified-update-link" data-ver="${latestKnownVer}" style="color:#e5a00d; text-decoration:none;" title="클릭 시 전체 업데이트 진행">업데이트(v${latestKnownVer})</a>`;
+            const btnText = reqRestart ? `업데이트(v${latestKnownVer}): 서버 재시작 필요` : `업데이트(v${latestKnownVer})`;
+            defaultMsg = `<a href="#" id="pmh-unified-update-link" data-ver="${latestKnownVer}" style="color:#e5a00d; text-decoration:none;" title="클릭 시 전체 업데이트 진행">${btnText}</a>`;
             defaultColor = '#e5a00d';
         }
 
@@ -908,7 +922,8 @@ GM_addStyle(`
 
         const forceReRenderAll = () => {
             log("[UI] Forcing re-render of list items...");
-            document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box').forEach(e=>e.remove());
+            clearMemoryCache();
+            document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .pmh-guid-wrapper').forEach(e=>e.remove());
             processList();
         };
 
@@ -922,6 +937,7 @@ GM_addStyle(`
         ctrl.appendChild(createBtn('GUID', 'listGuid', STATE_KEYS.GUID, forceReRenderAll));
         ctrl.appendChild(createBtn('태그', 'listTag', STATE_KEYS.TAG, forceReRenderAll));
         ctrl.appendChild(createBtn('재생', 'listPlay', STATE_KEYS.PLAY, forceReRenderAll));
+        ctrl.appendChild(createBtn('다중경로', 'listMultiPath', STATE_KEYS.MULTIPATH, forceReRenderAll));
 
         ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;"><span style="opacity:0.3;">|</span> 상세:</span>`);
         ctrl.appendChild(createBtn('정보', 'detailInfo', STATE_KEYS.DETAIL, toggleDetailView));
@@ -960,9 +976,7 @@ GM_addStyle(`
         target.insertBefore(ctrl, target.firstChild);
         showStatusMsg(defaultMsg, defaultColor, 0);
 
-        // --- DOM 이벤트 위임 ---
         ctrl.addEventListener('click', async (e) => {
-
             const updateLinkBtn = e.target.closest('#pmh-unified-update-link');
             if (updateLinkBtn) {
                 e.preventDefault(); e.stopPropagation();
@@ -1027,7 +1041,8 @@ GM_addStyle(`
 
                     if (needsJsUpdate || serversToUpdate.length > 0) {
                         log(`[Update] Needs update. JS: ${needsJsUpdate}, Servers: ${serversToUpdate.length}`);
-                        defaultMsg = `<a href="#" id="pmh-unified-update-link" data-ver="${result.targetVer}" style="color:#e5a00d; text-decoration:none;" title="클릭 시 전체 업데이트 진행">업데이트(v${result.targetVer})</a>`;
+                        const btnText = result.reqRestart ? `업데이트(v${result.targetVer}): 서버 재시작 필요` : `업데이트(v${result.targetVer})`;
+                        defaultMsg = `<a href="#" id="pmh-unified-update-link" data-ver="${result.targetVer}" style="color:#e5a00d; text-decoration:none;" title="클릭 시 전체 업데이트 진행">${btnText}</a>`;
                         defaultColor = '#e5a00d';
                         showStatusMsg(`업데이트 발견!`, '#e5a00d', 3000);
                     } else {
@@ -1170,9 +1185,21 @@ GM_addStyle(`
             const currentLen = isWide ? state.guidLen * 2 : state.guidLen;
             const short = info.g.length > currentLen ? info.g.substring(0, currentLen) + '...' : info.g;
 
+            const gBoxWrapper = document.createElement('div');
+            gBoxWrapper.className = 'pmh-guid-wrapper';
+            gBoxWrapper.style.cssText = "display: block; margin-top: 1px; line-height: 1.2;";
+            
+            if (state.listMultiPath && info.path_count && info.path_count > 1) {
+                const pathBadge = document.createElement('span');
+                pathBadge.className = 'plex-list-multipath-badge';
+                pathBadge.textContent = `${info.path_count}`;
+                pathBadge.title = `최상위 경로가 서로 다른 ${info.path_count}개의 쇼가 병합된 것으로 의심됩니다.`;
+                gBoxWrapper.appendChild(pathBadge);
+            }
+
             const gBox = document.createElement('span');
             gBox.className = 'plex-guid-list-box';
-            gBox.style.cssText = "display: block; font-size: 11px; font-weight: normal; cursor: pointer; margin-top: 1px; line-height: 1.2;";
+            gBox.style.cssText = "font-size: 11px; font-weight: normal; cursor: pointer; display: inline-block; vertical-align: top;";
             gBox.textContent = short;
             gBox.title = `${info.g} : 클릭 시 갱신`;
 
@@ -1325,7 +1352,8 @@ GM_addStyle(`
                 }
             });
 
-            cont.appendChild(gBox);
+            gBoxWrapper.appendChild(gBox);
+            cont.appendChild(gBoxWrapper);
 
             cont.style.setProperty('overflow', 'visible', 'important');
             cont.style.setProperty('height', 'auto', 'important');
@@ -1478,7 +1506,12 @@ GM_addStyle(`
                 if (idsToFetch.length > 0) {
                     try {
                         infoLog(`[List SWR] Fetching ${idsToFetch.length} uncached items from DB.`);
-                        const dbData = await makeRequest(`${srvConfig.pmhServerUrl}/api/library/batch`, 'POST', { ids: idsToFetch }, srvConfig.plexMateApiKey);
+                        const dbData = await makeRequest(
+                            `${srvConfig.pmhServerUrl}/api/library/batch`, 
+                            'POST', 
+                            { ids: idsToFetch, check_multi_path: state.listMultiPath }, 
+                            srvConfig.plexMateApiKey
+                        );
 
                         idsToFetch.forEach(id => {
                             if (dbData[id]) {
@@ -1543,7 +1576,7 @@ GM_addStyle(`
                                     let meta = await fetchPlexMetaFallback(item.iid, plexSrv);
                                     if (!meta) return;
 
-                                    let updatedInfo = { g: info.g, p: info.p, tags: [...info.tags], part_id: info.part_id, sub_id: info.sub_id, sub_url: info.sub_url };
+                                    let updatedInfo = { g: info.g, p: info.p, tags: [...info.tags], part_id: info.part_id, sub_id: info.sub_id, sub_url: info.sub_url, path_count: info.path_count };
                                     let needsUpdate = false;
                                     let fallbackTags = parsePlexFallbackTags(meta);
                                     const m = meta.Media && meta.Media[0] ? meta.Media[0] : null;
