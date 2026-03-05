@@ -4,12 +4,13 @@ import sqlite3
 import os
 import time
 import re
+import unicodedata
 from contextlib import contextmanager
 
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.6.32"
+__version__ = "0.6.33"
 
 def get_version():
     return __version__
@@ -33,9 +34,9 @@ def get_db_connection(db_path):
             conn.close()
 
 def is_season_folder(folder_name):
-    name_lower = folder_name.lower().strip()
-    if re.match(r'^(season|시즌|series)\s*\d+', name_lower): return True
-    if re.match(r'^(specials?|스페셜)$', name_lower): return True
+    name_lower = unicodedata.normalize('NFC', folder_name).lower().strip()
+    if re.match(r'^(season|시즌|series|s)\s*\d+\b', name_lower): return True
+    if re.match(r'^(specials?|스페셜|extras?|특집|ova|ost)(\s*\d+)?$', name_lower): return True
     if name_lower.isdigit(): return True
     return False
 
@@ -57,13 +58,17 @@ def _get_unique_show_folder_count(cursor, rating_key):
     cursor.execute(query, (rating_key,))
     for row in cursor.fetchall():
         if row and row[0]:
-            file_path = row[0]
-            dir_path = os.path.dirname(file_path)
-            if dir_path in seen_paths:
+            raw_file = unicodedata.normalize('NFC', row[0])
+            
+            dir_path_original = os.path.dirname(raw_file)
+            dir_key = os.path.normpath(dir_path_original).replace('\\', '/').lower()
+            
+            if dir_key in seen_paths:
                 continue
 
-            seen_paths.add(dir_path)
-            target_path = dir_path
+            seen_paths.add(dir_key)
+            target_path = dir_path_original
+            
             while True:
                 base_name = os.path.basename(target_path)
                 if not base_name:
@@ -76,8 +81,10 @@ def _get_unique_show_folder_count(cursor, rating_key):
                     target_path = parent_path
                 else:
                     break
-
-            root_paths.add(target_path)
+            
+            root_key = os.path.normpath(target_path).replace('\\', '/').lower()
+            root_paths.add(root_key)
+            
     return len(root_paths)
 
 def handle_library_batch(data, max_batch_size, db_path):
@@ -119,6 +126,9 @@ def handle_library_batch(data, max_batch_size, db_path):
             result_map = {}
             for rk, width, raw_data, sub_data, guid, filepath, part_id in cursor.fetchall():
                 rk = str(rk)
+                
+                if filepath:
+                    filepath = unicodedata.normalize('NFC', filepath)
                 
                 path_count = 1
                 if check_multi_path and rk not in result_map and meta_types.get(rk) == 2:
@@ -211,25 +221,33 @@ def handle_media_detail(rating_key, db_path):
                     cursor.execute(query, (rating_key,))
                     for row in cursor.fetchall():
                         if row and row[0]:
-                            dir_path = os.path.dirname(row[0])
-                            if dir_path not in seen_paths:
-                                seen_paths.add(dir_path)
-                                folder_paths.append(dir_path)
-                            if is_season_folder(os.path.basename(dir_path)):
-                                parent_path = os.path.dirname(dir_path)
-                                if parent_path not in seen_paths:
-                                    seen_paths.add(parent_path)
-                                    folder_paths.append(parent_path)
+                            raw_file = unicodedata.normalize('NFC', row[0])
+                            dir_path_original = os.path.dirname(raw_file)
+                            dir_key = os.path.normpath(dir_path_original).replace('\\', '/').lower()
+                            
+                            if dir_key not in seen_paths:
+                                seen_paths.add(dir_key)
+                                folder_paths.append(dir_path_original)
+                                
+                            if is_season_folder(os.path.basename(dir_path_original)):
+                                parent_path_original = os.path.dirname(dir_path_original)
+                                parent_key = os.path.normpath(parent_path_original).replace('\\', '/').lower()
+                                if parent_key not in seen_paths:
+                                    seen_paths.add(parent_key)
+                                    folder_paths.append(parent_path_original)
 
                 elif m_type == 3:
                     query = """SELECT mp.file FROM metadata_items ep JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE ep.parent_id = ? AND ep.metadata_type = 4 ORDER BY m.width DESC, m.bitrate DESC"""
                     cursor.execute(query, (rating_key,))
                     for row in cursor.fetchall():
                         if row and row[0]:
-                            target_path = os.path.dirname(row[0])
-                            if target_path not in seen_paths:
-                                seen_paths.add(target_path)
-                                folder_paths.append(target_path)
+                            raw_file = unicodedata.normalize('NFC', row[0])
+                            target_path_original = os.path.dirname(raw_file)
+                            target_key = os.path.normpath(target_path_original).replace('\\', '/').lower()
+                            
+                            if target_key not in seen_paths:
+                                seen_paths.add(target_key)
+                                folder_paths.append(target_path_original)
 
                 folder_paths.sort(key=natural_sort_key)
                 versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
@@ -240,8 +258,19 @@ def handle_media_detail(rating_key, db_path):
             query_media = """SELECT m.id, m.width, m.height, (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 1 LIMIT 1) as v_bitrate, (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE media_item_id = m.id AND stream_type_id = 1) as raw_stream_data, m.video_codec, m.audio_codec, m.duration, (SELECT channels FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as audio_ch, (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate, mp.id, mp.file FROM media_items m LEFT JOIN media_parts mp ON mp.media_item_id = m.id WHERE m.metadata_item_id = ? ORDER BY m.width DESC, m.bitrate DESC"""
             cursor.execute(query_media, (rating_key,))
             versions, duration = [], 0
+            
+            seen_files = set() 
+
             for row in cursor.fetchall():
                 m_id, width, height, v_bitrate, raw_data, v_codec, a_codec, dur, a_ch, a_bitrate, part_id, file_path = row
+                
+                if file_path:
+                    file_path = unicodedata.normalize('NFC', file_path)
+                    file_key = os.path.normpath(file_path).replace('\\', '/').lower()
+                    if file_key in seen_files:
+                        continue
+                    seen_files.add(file_key)
+                    
                 if dur: duration = dur
                 hdr_badges = set()
                 if raw_data:
