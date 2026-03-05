@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.33
+// @version      0.6.34
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -151,7 +151,7 @@ GM_addStyle(`
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.33";
+    const CURRENT_VERSION = "0.6.34";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -1367,26 +1367,38 @@ GM_addStyle(`
             } else {
                 gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>로딩 중...`;
                 gBox.style.color = '#adb5bd';
-                gBox.title = '최신 데이터를 불러오는 중입니다...';
-                gBox.style.cursor = 'wait';
+                
+                gBox.title = '클릭 시 데이터 다시 불러오기 (8초 후 자동 시도)'; 
+                gBox.style.cursor = 'pointer'; 
+
+                setTimeout(() => {
+                    if (gBox.isConnected && gBox.dataset.refreshing !== 'true' && gBox.innerHTML.includes('로딩 중')) {
+                        infoLog(`[List] 'Loading...' timeout reached for ID: ${id}. Re-fetching from DB...`);
+                        gBox.click();
+                    }
+                }, 8000);
             }
 
             let abortPolling = false;
             gBox.addEventListener('click', async (e) => {
-                if (!info.g) return;
-
                 e.preventDefault(); e.stopPropagation();
 
                 if (gBox.dataset.refreshing === 'true') {
-                    if (gBox.textContent.includes('갱신중')) {
+                    if (gBox.textContent.includes('갱신중') || gBox.textContent.includes('불러오는')) {
                         abortPolling = true;
                         gBox.innerHTML = '<i class="fas fa-times"></i> 취소됨';
                         gBox.title = "";
                         setTimeout(() => {
                             if (gBox.isConnected) {
-                                gBox.textContent = short;
-                                gBox.title = `${info.g} : 클릭 시 재조회`;
-                                gBox.style.color = isUnmatched ? '#a68241' : '#e5a00d';
+                                if (info.g) {
+                                    gBox.textContent = short;
+                                    gBox.title = `${info.g} : 클릭 시 재조회`;
+                                    gBox.style.color = isUnmatched ? '#a68241' : '#e5a00d';
+                                } else {
+                                    gBox.innerHTML = `<i class="fas fa-redo" style="margin-right:4px;"></i>재시도`;
+                                    gBox.title = `클릭 시 데이터 다시 불러오기`;
+                                    gBox.style.color = '#adb5bd';
+                                }
                                 delete gBox.dataset.refreshing;
                             }
                         }, 1500);
@@ -1396,39 +1408,56 @@ GM_addStyle(`
 
                 abortPolling = false;
                 gBox.dataset.refreshing = 'true';
-                const originText = gBox.textContent;
+                
+                const originHTML = gBox.innerHTML; 
                 gBox.style.color = '#ccc';
 
                 const targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
                 const plexSrv = targetServerId ? extractPlexServerInfo(targetServerId) : null;
 
-                if (!srvConfig && plexSrv) {
+                if (srvConfig && plexSrv && !info.g) {
                     gBox.title = '클릭 시 취소';
-                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>API 갱신중...`;
+                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>데이터 로드 중...`;
+
                     try {
                         const meta = await fetchPlexMetaFallback(id, plexSrv);
                         if (abortPolling) return;
 
                         if (meta) {
                             const localData = convertPlexMetaToLocalData(meta, id);
-                            setMemoryCache(`F_${targetServerId}_${id}`, localData);
-                            renderListBadges(cont, poster, link, localData, srvConfig, id);
+                            
+                            let existingCache = getMemoryCache(`L_${targetServerId}_${id}`);
+                            if (existingCache) {
+                                localData.analyze_count = existingCache.analyze_count || 0;
+                                localData.last_analyze_time = existingCache.last_analyze_time || 0;
+                                localData.corrupt_logged = existingCache.corrupt_logged || false;
+                            }
+                            
+                            setMemoryCache(`L_${targetServerId}_${id}`, localData);
+                            sessionRevalidated.add(id);
+                            
+                            const displayData = { ...localData, tags: applyUserTags(localData.p, localData.tags) };
+                            renderListBadges(cont, poster, link, displayData, srvConfig, id);
                         } else {
-                            throw new Error("No data");
+                            throw new Error("No API Data");
                         }
                     } catch (err) {
                         if (gBox.isConnected && !abortPolling) {
-                            gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 실패';
+                            gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 로드 실패';
                             gBox.style.color = 'red';
                             setTimeout(() => {
-                                if (gBox.isConnected) renderListBadges(cont, poster, link, info, srvConfig, id);
+                                if (gBox.isConnected) {
+                                    gBox.innerHTML = originHTML;
+                                    gBox.style.color = '#adb5bd';
+                                    delete gBox.dataset.refreshing;
+                                }
                             }, 2000);
                         }
                     }
                     return;
                 }
 
-                if (srvConfig && !isUnmatched) {
+                if (srvConfig && !isUnmatched && info.g) {
                     infoLog(`[List] Metadata refresh requested to PMH DB for matched Item: ${id}`);
                     gBox.title = '클릭 시 취소';
                     gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>DB 갱신중...`;
@@ -1466,8 +1495,8 @@ GM_addStyle(`
                     return;
                 }
 
-                if (srvConfig && plexSrv && isUnmatched) {
-                    infoLog(`[List] Metadata refresh requested to Plex API (Polling) for unmatched Item: ${id}`);
+                if (srvConfig && plexSrv && (isUnmatched || !info.g)) {
+                    infoLog(`[List] Metadata refresh requested to Plex API (Polling) for unmatched/loading Item: ${id}`);
                     gBox.title = '클릭 시 취소';
                     gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>메타 갱신중...`;
 
@@ -1477,7 +1506,7 @@ GM_addStyle(`
                     await triggerPlexMetadataRefresh(id, plexSrv);
 
                     let pollSuccess = false;
-                    let finalMeta = null;
+                    let finalMeta = null; 
 
                     for (let attempt = 1; attempt <= 20; attempt++) {
                         if (abortPolling || !gBox.isConnected) return;
@@ -1490,7 +1519,7 @@ GM_addStyle(`
 
                             if (tempUpdated !== initialUpdated || isNowMatched) {
                                 pollSuccess = true;
-                                finalMeta = tempMeta;
+                                finalMeta = tempMeta; 
                                 break;
                             }
                         }
@@ -1501,11 +1530,13 @@ GM_addStyle(`
                         toastr.warning("응답 지연으로 대기를 종료합니다.<br>현재 상태로 UI를 갱신합니다.", "시간 초과", {timeOut: 4000});
                     }
 
+                    if (abortPolling) return;
+
                     if (finalMeta) {
                         try {
                             const localData = convertPlexMetaToLocalData(finalMeta, id);
                             setMemoryCache(`L_${targetServerId}_${id}`, localData);
-                            sessionRevalidated.add(id);
+                            sessionRevalidated.add(id); 
                             
                             renderListBadges(cont, poster, link, localData, srvConfig, id);
                             return; 
@@ -1518,9 +1549,9 @@ GM_addStyle(`
                     gBox.style.color = 'red';
                     setTimeout(() => {
                         if (gBox.isConnected) {
-                            gBox.textContent = originText;
-                            gBox.title = `${info.g} : 클릭 시 재조회`;
-                            gBox.style.color = '#a68241';
+                            gBox.innerHTML = originHTML;
+                            gBox.title = info.g ? `${info.g} : 클릭 시 재조회` : `클릭 시 강제 새로고침`;
+                            gBox.style.color = info.g ? '#a68241' : '#adb5bd';
                             delete gBox.dataset.refreshing;
                         }
                     }, 2000);
@@ -1535,7 +1566,7 @@ GM_addStyle(`
             let horizontalScroller = cont.closest('[class*="Scroller-horizontal"], [class*="HorizontalList-"]');
             if (horizontalScroller) {
                 horizontalScroller.style.setProperty('overflow-y', 'hidden', 'important');
-                horizontalScroller.style.setProperty('padding-bottom', '10px', 'important');
+                horizontalScroller.style.setProperty('padding-bottom', '15px', 'important');
             }
         }
     }
