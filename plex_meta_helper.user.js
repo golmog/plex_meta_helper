@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.36
+// @version      0.6.37
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -132,26 +132,47 @@ GM_addStyle(`
     }
 
     /* 손상 의심 파일(?) 오렌지색 에러 뱃지 전용 스타일 */
-    .pmh-corrupt-badge {
-        color: #e5a00d !important;
-        font-weight: 900 !important;
-        font-size: 11.5px !important;
-        padding: 0px 5px !important;
-        right: 2px;
-        transform: scaleX(1.3);
-        transform-origin: center;
-        display: inline-block;
-        letter-spacing: -1px;
-    }
+    .pmh-corrupt-badge { color: #e5a00d !important; font-weight: 900 !important; font-size: 11.5px !important; padding: 0px 5px !important; right: 2px; transform: scaleX(1.3); transform-origin: center; display: inline-block; letter-spacing: -1px; }
+
+    .pmh-match-badge { display: block; width: max-content; background-color: rgba(0, 0, 0, 0.8); color: #e5a00d; border: 1px solid rgba(229, 160, 13, 0.4); font-size: 11px; font-weight: normal; padding: 2px 5px; border-radius: 4px; margin: 0; line-height: 1.2; letter-spacing: -0.2px; box-shadow: 0 1px 2px rgba(0,0,0,0.5); }
 `);
 
 (function() {
     'use strict';
 
+    let pmhMatchResultsCache = [];
+    const origOpen = XMLHttpRequest.prototype.open;
+    const origSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function(method, url) {
+        this._url = url;
+        return origOpen.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function() {
+        this.addEventListener('load', function() {
+            if (this._url && this._url.includes('/matches')) {
+                try {
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(this.responseText, "text/xml");
+                    const items = xmlDoc.querySelectorAll('SearchResult, Directory, Video');
+                    pmhMatchResultsCache = [];
+                    items.forEach(item => {
+                        const guid = item.getAttribute('guid');
+                        if (guid) pmhMatchResultsCache.push(guid);
+                    });
+                } catch (e) {
+                    console.error("[PMH] XML Parse Error during match extraction", e);
+                }
+            }
+        });
+        return origSend.apply(this, arguments);
+    };
+
     // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.36";
+    const CURRENT_VERSION = "0.6.37";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -1097,9 +1118,10 @@ GM_addStyle(`
             </div>
         `);
 
-        const createBtn = (label, stateKey, storeKey, callback) => {
+        const createBtn = (label, title, stateKey, storeKey, callback) => {
             const btn = document.createElement('button');
             btn.textContent = `${label}:${state[stateKey]?'ON':'OFF'}`;
+            btn.title = title;
             if(state[stateKey]) btn.classList.add('on');
             btn.addEventListener('click', () => {
                 state[stateKey] = !state[stateKey];
@@ -1128,19 +1150,22 @@ GM_addStyle(`
         };
 
         ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label">목록:</span>`);
-        ctrl.appendChild(createBtn('GUID', 'listGuid', STATE_KEYS.GUID, forceReRenderAll));
-        ctrl.appendChild(createBtn('태그', 'listTag', STATE_KEYS.TAG, forceReRenderAll));
-        ctrl.appendChild(createBtn('재생', 'listPlay', STATE_KEYS.PLAY, forceReRenderAll));
-        ctrl.appendChild(createBtn('다중경로', 'listMultiPath', STATE_KEYS.MULTIPATH, forceReRenderAll));
+        ctrl.appendChild(createBtn('GUID', '목록 포스터 아래에 매칭된 GUID(에이전트 ID)를 표시합니다.', 'listGuid', STATE_KEYS.GUID, forceReRenderAll));
+        ctrl.appendChild(createBtn('태그', '목록 포스터 우측 상단에 화질, 해상도 등 속성 뱃지를 표시합니다.', 'listTag', STATE_KEYS.TAG, forceReRenderAll));
+        ctrl.appendChild(createBtn('재생', '목록 포스터 우측 상단에 외부 재생/스트리밍 아이콘을 표시합니다.', 'listPlay', STATE_KEYS.PLAY, forceReRenderAll));
+        ctrl.appendChild(createBtn('다중경로', '여러 폴더/경로가 병합된 컨텐츠일 경우 병합된 개수를 뱃지로 표시합니다.', 'listMultiPath', STATE_KEYS.MULTIPATH, forceReRenderAll));
 
         ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;"><span style="opacity:0.3;">|</span> 상세:</span>`);
-        ctrl.appendChild(createBtn('정보', 'detailInfo', STATE_KEYS.DETAIL, toggleDetailView));
+        ctrl.appendChild(createBtn('정보', '상세 페이지 진입 시 PMH 전용 미디어 정보(파일 경로, 코덱 등) 패널을 표시합니다.', 'detailInfo', STATE_KEYS.DETAIL, toggleDetailView));
 
         ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;"><span style="opacity:0.3;">|</span> GUID길이:</span>`);
+        
         const lenInp = document.createElement('input');
         lenInp.type = 'number'; lenInp.min = '5'; lenInp.max = '50'; lenInp.value = state.guidLen;
+        lenInp.title = '목록에 표시될 GUID 텍스트의 최대 글자 수입니다. (5~50)';
 
         const lenBtn = document.createElement('button'); lenBtn.textContent = '적용';
+        lenBtn.title = '변경된 길이를 화면에 즉시 반영합니다.';
         lenBtn.addEventListener('click', () => {
             const nl = parseInt(lenInp.value);
             if (!isNaN(nl) && nl >= 5 && nl <= 50) {
@@ -1154,6 +1179,7 @@ GM_addStyle(`
 
         const clearCacheBtn = document.createElement('button');
         clearCacheBtn.textContent = '메모리 초기화';
+        clearCacheBtn.title = '임시로 보관 중인 데이터를 삭제하고 화면을 새로 갱신합니다.';
         clearCacheBtn.style.marginLeft = '10px';
         clearCacheBtn.addEventListener('click', () => {
             log("[UI] Clearing memory cache...");
@@ -3086,6 +3112,8 @@ GM_addStyle(`
     const observer = new MutationObserver(() => {
         if (isObserverLocked) return;
 
+        processMatchModal();
+
         if (!document.getElementById('pmdv-controls')) injectControlUI();
 
         if (window.location.hash.includes('/details?key=')) {
@@ -3260,6 +3288,43 @@ GM_addStyle(`
             }
         };
     });
+
+    let isProcessingMatchModal = false;
+
+    function processMatchModal() {
+        if (isProcessingMatchModal) return;
+
+        const modal = document.querySelector('.fix-incorrect-match-modal');
+        if (!modal) return;
+
+        const listItems = modal.querySelectorAll('.match-result-list-item');
+        if (listItems.length === 0) return;
+
+        isProcessingMatchModal = true;
+        try {
+            listItems.forEach((row, index) => {
+                if (row.querySelector('.pmh-match-badge') || !pmhMatchResultsCache[index]) return;
+
+                const fullGuid = pmhMatchResultsCache[index];
+                let displayGuid = fullGuid.split('://')[1]?.split('?')[0] || fullGuid;
+                displayGuid = displayGuid.replace(/^com\.plexapp\.agents\./, '').replace(/^tv\.plex\.agents\./, '');
+
+                const nameEl = row.querySelector('.match-name');
+                if (nameEl) {
+                    const badge = document.createElement('span');
+                    badge.className = 'pmh-match-badge';
+                    badge.textContent = displayGuid;
+                    badge.title = `${fullGuid}`;
+
+                    nameEl.insertAdjacentElement('afterend', badge);
+                }
+            });
+        } catch (e) {
+            errorLog("[PMH] Match Modal 처리 중 오류:", e);
+        } finally {
+            isProcessingMatchModal = false;
+        }
+    }
 
     window.addEventListener('load', () => {
         checkUpdate();
