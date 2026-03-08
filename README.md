@@ -203,7 +203,7 @@ Plex 웹앱 페이지에서 브라우저 상단의(확장 프로그램) Tampermo
 | `DISPLAY_PATH_PREFIXES_TO_REMOVE`  | UI에 표시될 파일 경로에서 제거할 앞부분을 지정합니다. 경로가 너무 길 경우 간결하게 표시하기 위해 사용합니다. (예: `/mnt/gds/Movies/Avatar (2009)/...` -> `/Movies/Avatar (2009)/...`) |
 | `LOG_LEVEL`                        | `INFO`(기본값), `DEBUG` 레벨 지원 |
 | `USER_TAGS`                        | 파일명에 포함된 문자열 패턴을 기반으로 사용자 태그를 지정할 수 있습니다. `PRIORITY_GROUP`: 설정한 태그 중 먼저 해당하는 한 가지만 출력합니다(우선순위). / `INDEPENDENT`: 개별 태그를 설정합니다. `target`은 `path`(전체경로)/`filename`(파일명만) 중 선택 가능합니다. |
-| `PATH_MAPPINGS`                    | 서버의 파일 경로를 로컬 PC의 경로로 변환하는 규칙입니다. **외부 플레이어/폴더 열기 기능을 사용하려면 PlexExternalPlayer 에이전트 실행과 함께 이 설정이 필수적입니다.** `serverPrefix`는 Plex 서버가 인식하는 경로, `localPrefix`는 로컬 PC에서 접근 가능한 경로(네트워크 드라이브 등)를 입력합니다. 최근 Windows에서는 백슬래시를 사용하지 않고 슬래시를 사용해도 문제가 없습니다. |
+| `PATH_MAPPINGS`                    | 서버의 파일 경로를 로컬 PC의 경로로 변환하는 규칙입니다(외부 플레이어/폴더 열기 기능 사용시 필요). `serverPrefix`는 Plex 서버가 인식하는 경로, `localPrefix`는 로컬 PC에서 접근 가능한 경로(네트워크 드라이브 등)를 입력합니다. 최근 Windows에서는 백슬래시를 사용하지 않고 슬래시를 사용해도 문제가 없습니다. |
 | `SERVERS`                          | 서버를 그룹별 리스트로 설정합니다. |
 | - `name`                           | 알아보기 편한 이름으로 지정하세요. |
 | - `machineIdentifier`              | Plex 서버의 Machine Identifier를 입력합니다. |
