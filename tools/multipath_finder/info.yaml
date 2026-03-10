@@ -1,5 +1,5 @@
-id: "multipath_finder"
-name: "다중 경로 항목 검색기"
+id: "saibi_multipath_finder"
+name: "다중 경로 항목 검색"
 description: "서로 다른 폴더 경로를 가진 파일들이 하나의 메타(쇼/영화)로 병합된 항목을 찾습니다."
 version: "0.1.0"
 icon: "fas fa-copy"
