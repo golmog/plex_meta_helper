@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-[PMH Tool Reference Template] - 라이브러리 통계 분석기 (즉시 반환형 대시보드)
+[PMH Tool Reference Template] - 라이브러리 통계 분석 (즉시 반환형 대시보드)
 
 * PMH Tool 아키텍처 핵심 가이드 (대시보드형):
 1. 이 툴은 긴 시간이 걸리는 백그라운드 작업(worker)이 필요 없습니다.

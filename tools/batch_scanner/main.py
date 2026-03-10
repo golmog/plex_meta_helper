@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-[PMH Tool Reference Template] - 배치 스캐너 (코어 관리형)
+[PMH Tool Reference Template] - 배치 스캐너
 
 * PMH Tool 아키텍처 핵심 가이드:
 1. 클라이언트(JS)는 단순히 명령만 내리고 화면(UI)만 그리는 '뷰어' 역할을 합니다.
