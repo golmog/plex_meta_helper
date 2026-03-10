@@ -33,6 +33,8 @@ def get_ui(core_api):
     return {
         "title": "배치 스캐너",
         "description": "대상 항목을 안전한 속도로 순차 처리합니다.<br>서버 코어 시스템에 의해 브라우저를 닫아도 언제든 <strong>이어서 실행</strong>할 수 있습니다.",
+        
+        # [조회 시 사용되는 조건 필터들]
         "inputs": [
             {"id": "target_section", "type": "select", "label": "작업 대상 섹션", "options": sections},
             {"id": "mode", "type": "select", "label": "작업 모드", "options": [
@@ -40,13 +42,18 @@ def get_ui(core_api):
                 {"value": "rematch", "text": "메타 다시 매칭 (Fix Match)"},
                 {"value": "analyze", "text": "미분석 항목 강제 분석 (Analyze)"}
             ]},
+            {"id": "target_agent", "type": "text", "label": "에이전트 제외 필터", "placeholder": "예: tv.plex.agents.movie (입력 시 해당 에이전트는 조회 제외)"}
+        ],
+        
+        # [실행 시 사용되는 옵션들]
+        "execute_inputs": [
             {"id": "sleep_time", "type": "select", "label": "항목간 대기 시간 (초)", "options": [
                 {"value": "1", "text": "1초 (빠름)"},
                 {"value": "2", "text": "2초 (권장)"},
                 {"value": "5", "text": "5초 (안전)"}
-            ]},
-            {"id": "target_agent", "type": "text", "label": "에이전트 필터", "placeholder": "예: tv.plex.agents.movie (입력 에이전트는 무시함)"}
+            ]}
         ],
+        
         "button_text": "대상 목록 조회"
     }
 

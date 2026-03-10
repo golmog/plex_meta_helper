@@ -1,6 +1,6 @@
 id: "batch_scanner"
 name: "배치 스캐너"
 description: "대량의 메타 스캔, 새로고침, 리매칭을 백그라운드에서 안전하게 순차 실행합니다."
-version: "0.1.0"
+version: "0.1.1"
 icon: "fas fa-cogs"
 entry_file: "main.py"
