@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.38
+// @version      0.7.39
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1260,7 +1260,7 @@ GM_addStyle(`
                 `;
 
                 formHtml += `<div style="text-align:center; margin-top:20px;">${mainBtnHtml}</div></div>`; 
-                formHtml += `<div id="pmh_run_res_form" style="font-size:13px; display:none; margin-top:15px; border-top:1px solid #333; padding-top:15px; flex-grow:1; min-height:0;"></div>`;
+                formHtml += `<div id="pmh_run_res_form" style="font-size:13px; display:none; margin-top:15px; flex-grow:1; min-height:0;"></div>`;
                 formHtml += `</div>`; 
 
                 let isAlreadyRunning = ui.active_task && ui.active_task.state === 'running';
