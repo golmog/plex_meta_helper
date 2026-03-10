@@ -18,7 +18,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.40"
+__version__ = "0.7.41"
 
 def get_version():
     return __version__
@@ -626,8 +626,12 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     if not saved_task or 'task_data' not in saved_task:
                         return {"error": "이어서 실행할 작업 데이터가 없습니다."}, 400
                     
+                    for k, v in data.items():
+                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
+                            saved_task['task_data'][k] = v
+                    task_mgr.save(saved_task)
                     task_mgr.update_state('running')
-                    task_mgr.log("작업을 재개합니다...")
+                    task_mgr.log("최신 설정값을 적용하여 작업을 재개합니다...")
                     t = threading.Thread(target=_core_worker_runner, args=(module, saved_task['task_data'], core_api, saved_task.get('progress', 0), tool_id))
                     t.daemon = True
                     t.start()
