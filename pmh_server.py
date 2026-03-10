@@ -26,9 +26,11 @@ SERVER_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh
 
 DEFAULT_CONFIG = {
     "PLEX_DB_PATH": "/path/to/your/com.plexapp.plugins.library.db",
+    "PLEX_URL": "http://plex:32400",
+    "PLEX_TOKEN": "",
     "SERVER_PORT": 8899,
     "MAX_BATCH_SIZE": 1000,
-    "API_KEY": "YOUR_PLEX_MATE_API_KEY_HERE"
+    "API_KEY": "YOUR_PLEX_MATE_API_KEY_HERE",
 }
 
 def load_config():
@@ -44,6 +46,8 @@ def load_config():
 
 cfg = load_config()
 PLEX_DB_PATH = cfg.get("PLEX_DB_PATH", DEFAULT_CONFIG["PLEX_DB_PATH"])
+PLEX_URL = cfg.get("PLEX_URL", DEFAULT_CONFIG["PLEX_URL"])
+PLEX_TOKEN = cfg.get("PLEX_TOKEN", DEFAULT_CONFIG["PLEX_TOKEN"])
 SERVER_PORT = cfg.get("SERVER_PORT", DEFAULT_CONFIG["SERVER_PORT"])
 MAX_BATCH_SIZE = cfg.get("MAX_BATCH_SIZE", DEFAULT_CONFIG["MAX_BATCH_SIZE"])
 API_KEY = cfg.get("API_KEY", DEFAULT_CONFIG["API_KEY"])
@@ -78,16 +82,10 @@ def check_api_key():
         return jsonify({"error": "Unauthorized. Invalid API Key."}), 401
 
 # ==============================================================================
-# [API 라우팅 (프록시)]
+# [서버 전용 라우팅] (코어 자체 업데이트)
 # ==============================================================================
-@app.route('/api/ping', methods=['GET'])
-def api_ping():
-    print(f"[API] GET /api/ping - Responding with core version: {pmh_core.get_version()}")
-    return jsonify({"status": "ok", "version": pmh_core.get_version()})
-
 @app.route('/api/admin/update', methods=['POST'])
 def api_admin_update():
-    """서버 프로세스를 재시작하지 않고 pmh_core.py 만 교체하여 메모리에 리로드합니다."""
     print("[UPDATE] Update request received. Downloading latest core module...")
     try:
         req = urllib.request.Request(CORE_URL, headers={'Cache-Control': 'no-cache'})
@@ -117,15 +115,31 @@ def api_admin_update():
         print(f"[UPDATE ERROR] Failed to update core: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/api/library/batch', methods=['POST'])
-def api_library_batch():
-    result, code = pmh_core.handle_library_batch(request.get_json(), MAX_BATCH_SIZE, PLEX_DB_PATH)
-    return jsonify(result), code
+# ==============================================================================
+# [동적 라우팅 게이트웨이]
+# ==============================================================================
+@app.route('/api/<path:subpath>', methods=['GET', 'POST', 'PUT', 'DELETE'])
+def api_gateway(subpath):
+    method = request.method
+    args = request.args.to_dict()
+    
+    json_data = None
+    if method in ['POST', 'PUT'] and request.is_json:
+        json_data = request.get_json()
 
-@app.route('/api/media/<rating_key>', methods=['GET'])
-def api_media_detail(rating_key):
-    result, code = pmh_core.handle_media_detail(rating_key, PLEX_DB_PATH)
-    return jsonify(result), code
+    result, status_code = pmh_core.dispatch_request(
+        subpath=subpath, 
+        method=method, 
+        args=args, 
+        data=json_data, 
+        db_path=PLEX_DB_PATH,
+        base_dir=BASE_DIR,
+        max_batch_size=MAX_BATCH_SIZE,
+        plex_url=PLEX_URL,
+        plex_token=PLEX_TOKEN,
+    )
+    
+    return jsonify(result), status_code
 
 if __name__ == '__main__':
     print(f">>> PMH API Server (Gateway) initialized.")

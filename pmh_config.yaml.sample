@@ -10,6 +10,10 @@
 #   Linux/Docker: "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
 PLEX_DB_PATH: "/path/to/your/com.plexapp.plugins.library.db"
 
+# 서버가 접근할 Plex URL과 토큰을 입력하세요.
+PLEX_URL: "http://plex:32400"
+PLEX_TOKEN: "YOUR_PLEX_TOKEN"
+
 # PMH API 서버가 실행될 포트 번호
 SERVER_PORT: 8899
 

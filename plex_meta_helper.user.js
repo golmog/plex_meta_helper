@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.6.37
+// @version      0.7.38
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -135,6 +135,58 @@ GM_addStyle(`
     .pmh-corrupt-badge { color: #e5a00d !important; font-weight: 900 !important; font-size: 11.5px !important; padding: 0px 5px !important; right: 2px; transform: scaleX(1.3); transform-origin: center; display: inline-block; letter-spacing: -1px; }
 
     .pmh-match-badge { display: block; width: max-content; background-color: rgba(0, 0, 0, 0.8); color: #e5a00d; border: 1px solid rgba(229, 160, 13, 0.4); font-size: 11px; font-weight: normal; padding: 2px 5px; border-radius: 4px; margin: 0; line-height: 1.2; letter-spacing: -0.2px; box-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+
+    /* PMH 툴박스 드롭다운 */
+    #pmh-tool-dropdown {
+        position: absolute; background-color: rgba(25, 28, 32, 0.98); border: 1px solid #444;
+        border-radius: 6px; min-width: 250px; z-index: 99999;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.7); display: none; backdrop-filter: blur(5px);
+    }
+    .pmh-tool-item {
+        color: #ccc; font-size: 12px; transition: 0.2s; border-bottom: 1px solid #333;
+    }
+    .pmh-tool-item:last-child { border-bottom: none; }
+    .pmh-tool-run-btn:hover { color: #e5a00d; font-weight: bold; cursor: pointer; }
+    .pmh-tool-delete-btn { color: rgba(255, 255, 255, 0.4) !important; transition: color 0.2s, transform 0.2s; }
+    .pmh-tool-delete-btn:hover { color: #ff6b6b !important; transform: scale(1.1); }
+    .pmh-action-icon:hover { transform: scale(1.1); color: #fff !important; }
+
+    #pmh-tool-panel {
+        position: fixed; top: 80px; left: 60%; width: 450px; 
+        background-color: rgba(15, 17, 20, 0.98); border: 1px solid #e5a00d; border-radius: 8px;
+        z-index: 999999; display: none; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,0.9);
+        backdrop-filter: blur(10px); transition: opacity 0.2s ease;
+        min-width: 350px; min-height: 200px;
+        max-width: 95vw; max-height: 95vh;
+    }
+
+    .pmh-panel-header {
+        padding: 12px 15px; background-color: rgba(0,0,0,0.7); border-bottom: 1px solid #444;
+        border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; 
+        cursor: move; flex-shrink: 0;
+    }
+    .pmh-panel-title { color: #e5a00d; font-weight: bold; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+    .pmh-panel-close { color: #aaa; cursor: pointer; font-size: 16px; transition: color 0.2s; text-decoration: none !important; }
+    .pmh-panel-close:hover { color: #fff; transform: scale(1.1); }
+    
+    .pmh-panel-content { 
+        padding: 15px; overflow-y: auto; overflow-x: hidden; color: #ddd; 
+        font-size: 13px; line-height: 1.5; flex-grow: 1; min-height: 0;
+    }
+    .pmh-panel-content::-webkit-scrollbar { width: 8px; }
+    .pmh-panel-content::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+    .pmh-panel-content::-webkit-scrollbar-thumb:hover { background: #e5a00d; }
+
+    .pmh-resizer { position: absolute; z-index: 100000; }
+    .pmh-resizer-n { top: -4px; left: 0; width: 100%; height: 8px; cursor: ns-resize; }
+    .pmh-resizer-s { bottom: -4px; left: 0; width: 100%; height: 8px; cursor: ns-resize; }
+    .pmh-resizer-e { top: 0; right: -4px; width: 8px; height: 100%; cursor: ew-resize; }
+    .pmh-resizer-w { top: 0; left: -4px; width: 8px; height: 100%; cursor: ew-resize; }
+    .pmh-resizer-ne { top: -4px; right: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
+    .pmh-resizer-nw { top: -4px; left: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
+    .pmh-resizer-se { bottom: -4px; right: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
+    .pmh-resizer-sw { bottom: -4px; left: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
+
 `);
 
 (function() {
@@ -170,9 +222,77 @@ GM_addStyle(`
     };
 
     // ==========================================
+    // PMH Tool 패널 및 UI 제어 유틸리티
+    // ==========================================
+    function makeDraggable(elmnt, header) {
+        let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+        header.onmousedown = dragMouseDown;
+
+        function dragMouseDown(e) {
+            e.preventDefault();
+            pos3 = e.clientX; pos4 = e.clientY;
+            document.onmouseup = closeDragElement;
+            document.onmousemove = elementDrag;
+        }
+        function elementDrag(e) {
+            e.preventDefault();
+            pos1 = pos3 - e.clientX; pos2 = pos4 - e.clientY;
+            pos3 = e.clientX; pos4 = e.clientY;
+            elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
+            elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
+            elmnt.style.right = "auto"; 
+        }
+        function closeDragElement() {
+            document.onmouseup = null; document.onmousemove = null;
+        }
+    }
+
+    function showPmhToolPanel(title, htmlContent) {
+        let panel = document.getElementById('pmh-tool-panel');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'pmh-tool-panel';
+            panel.innerHTML = `
+                <div class="pmh-panel-header" id="pmh-panel-header">
+                    <div class="pmh-panel-title"><i class="fas fa-toolbox"></i> <span id="pmh-panel-title-text"></span></div>
+                    <a href="#" class="pmh-panel-close" id="pmh-panel-close"><i class="fas fa-times"></i></a>
+                </div>
+                <div class="pmh-panel-content" id="pmh-panel-content"></div>
+            `;
+            document.body.appendChild(panel);
+
+            document.getElementById('pmh-panel-close').addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                panel.style.display = 'none';
+            });
+            makeDraggable(panel, document.getElementById('pmh-panel-header'));
+        }
+        document.getElementById('pmh-panel-title-text').innerText = title;
+        document.getElementById('pmh-panel-content').innerHTML = htmlContent;
+        panel.style.display = 'flex';
+    }
+
+    // ==========================================
+    // PMH 자연 정렬(Natural Sort) 유틸리티
+    // ==========================================
+    window.pmhNaturalSort = function(a, b, direction = 'asc') {
+        const ax = [], bx = [];
+        a.replace(/(\d+)|(\D+)/g, function(_, $1, $2) { ax.push([$1 || Infinity, $2 || ""]); });
+        b.replace(/(\d+)|(\D+)/g, function(_, $1, $2) { bx.push([$1 || Infinity, $2 || ""]); });
+        
+        while (ax.length && bx.length) {
+            const an = ax.shift();
+            const bn = bx.shift();
+            const nn = (an[0] - bn[0]) || an[1].localeCompare(bn[1]);
+            if (nn) return direction === 'asc' ? nn : -nn;
+        }
+        return direction === 'asc' ? ax.length - bx.length : bx.length - ax.length;
+    };
+
+    // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
-    const CURRENT_VERSION = "0.6.37";
+    const CURRENT_VERSION = typeof GM_info !== 'undefined' ? GM_info.script.version : "0.0.0";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
     const SETTINGS_KEY = 'pmh_server_final_settings';
 
@@ -1055,7 +1175,749 @@ GM_addStyle(`
     }
 
     // ==========================================
-    // 5. UI 컨트롤 주입
+    // 5-1. Tool UI 렌더링 및 모니터링
+    // ==========================================
+    function openPmhToolUI(toolId) {
+        const repSrv = AppSettings.SERVERS[0];
+        window.showPmhToolPanel(toolId, "로딩 중...", `<div style="text-align:center; padding:30px;"><i class="fas fa-spinner fa-spin" style="font-size:30px; color:#e5a00d; margin-bottom:15px;"></i><br>UI 화면을 구성하고 있습니다...</div>`);
+        
+        GM_xmlhttpRequest({
+            method: "GET", url: `${repSrv.pmhServerUrl}/api/tool/${toolId}/ui`,
+            headers: { "X-API-Key": repSrv.plexMateApiKey },
+            onload: (res) => {
+                if(res.status !== 200) return window.showPmhToolPanel(toolId, "오류 발생", `<p style="color:#bd362f;">UI 스키마 로드 실패 (HTTP ${res.status})</p>`);
+                
+                const ui = JSON.parse(res.responseText);
+                const savedOptions = JSON.parse(GM_getValue(`pmh_tool_cache_${toolId}`, "{}"));
+                const isFormCollapsed = savedOptions._form_collapsed === true;
+                const collapseIcon = isFormCollapsed ? 'fa-chevron-down' : 'fa-chevron-up';
+                const formDisplay = isFormCollapsed ? 'none' : 'block';
+
+                let formHtml = `
+                    <div style="display:flex; flex-direction:column; height:100%;">
+                        <div style="display:flex; border-bottom:1px solid #444; margin-bottom:15px; flex-shrink:0;">
+                            <div class="pmh-tab-btn active" data-tab="tab_form" style="padding:10px 15px; cursor:pointer; color:#e5a00d; font-weight:bold; border-bottom:2px solid #e5a00d;"><i class="fas fa-search"></i> 조회 및 설정</div>
+                            <div class="pmh-tab-btn" data-tab="tab_monitor" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-desktop"></i> 실행 모니터링</div>
+                        </div>
+                `;
+
+                formHtml += `<div id="pmh_tab_form" style="display:flex; flex-direction:column; flex-grow:1; overflow-y:auto; overflow-x:hidden; min-height:0; padding-right:5px;">`;
+                formHtml += `
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:10px; flex-shrink:0;">
+                        <div style="color:#aaa; font-size:13px; line-height:1.4; flex-grow:1;">${ui.description || ''}</div>
+                        <div style="display:flex; gap:12px; align-items:center; margin-left:15px; margin-top:2px;">
+                            <i class="fas ${collapseIcon}" id="pmh_tool_toggle_form" title="옵션 접기/펼치기" style="color:#2f96b4; cursor:pointer; font-size:15px; transition:0.2s;"></i>
+                            <i class="fas fa-eraser" id="pmh_tool_reset_cache" title="옵션 및 서버 기록 초기화" style="color:#777; cursor:pointer; font-size:14px; transition:0.2s;"></i>
+                        </div>
+                    </div>
+                `;
+                
+                formHtml += `<div id="pmh_tool_form_container" style="display:${formDisplay}; flex-shrink:0; padding-bottom:15px; border-bottom:1px solid #333; margin-bottom:15px;">`;
+
+                const currentSrvId = window.location.hash.match(/\/server\/([a-f0-9]+)\//)?.[1];
+                const currentSecId = window.location.hash.match(/source=%2Flibrary%2Fsections%2F(\d+)/)?.[1] || "all";
+
+                if (AppSettings.SERVERS.length > 1) {
+                    formHtml += `<div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px dashed #444;">`;
+                    formHtml += `<label style="display:block; color:#2f96b4; font-size:12px; margin-bottom:6px; font-weight:bold;"><i class="fas fa-server"></i> 대상 서버 선택</label>`;
+                    formHtml += `<select id="pmh_target_server_idx" style="width:100%; padding:8px; background:#1a2327; border:1px solid #2f96b4; color:#fff; border-radius:4px; font-size:13px; font-weight:bold;">`;
+                    AppSettings.SERVERS.forEach((srv, idx) => {
+                        const defaultSrv = savedOptions['target_server_idx'] !== undefined ? parseInt(savedOptions['target_server_idx']) : null;
+                        const isSelected = (defaultSrv === idx || (defaultSrv === null && srv.machineIdentifier === currentSrvId)) ? "selected" : "";
+                        formHtml += `<option value="${idx}" ${isSelected}>${srv.name} (${srv.machineIdentifier.substring(0,8)}...)</option>`;
+                    });
+                    formHtml += `</select></div>`;
+                }
+
+                (ui.inputs || []).forEach(input => {
+                    formHtml += `<div style="margin-bottom: 12px;">`;
+                    formHtml += `<label style="display:block; color:#e5a00d; font-size:12px; margin-bottom:6px; font-weight:bold;">${input.label}</label>`;
+                    const cachedVal = savedOptions[input.id];
+
+                    if (input.type === 'text') {
+                        formHtml += `<input type="text" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" style="width:100%; padding:8px; background:#111; border:1px solid #444; color:#fff; border-radius:4px; font-size:13px;">`;
+                    } else if (input.type === 'select') {
+                        formHtml += `<select id="pmh_inp_${input.id}" style="width:100%; padding:8px; background:#111; border:1px solid #444; color:#fff; border-radius:4px; font-size:13px;">`;
+                        input.options.forEach(o => {
+                            const isSelected = (cachedVal !== undefined) ? (o.value === cachedVal ? "selected" : "") : ((input.id === 'target_section' && o.value === currentSecId) ? "selected" : "");
+                            formHtml += `<option value="${o.value}" ${isSelected}>${o.text}</option>`;
+                        });
+                        formHtml += `</select>`;
+                    } else if (input.type === 'checkbox') {
+                        formHtml += `<label style="color:#ddd; font-size:13px; cursor:pointer;"><input type="checkbox" id="pmh_inp_${input.id}" style="margin-right:6px;" ${cachedVal ? "checked" : ""}> 활성화</label>`;
+                    }
+                    formHtml += `</div>`;
+                });
+                
+                const showResume = ui.active_task && (ui.active_task.state === 'cancelled' || ui.active_task.state === 'error');
+                let mainBtnHtml = `
+                    <button id="pmh_run_btn" style="padding:12px 30px; background:#e5a00d; color:#1f1f1f; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:14px; transition:0.2s; margin-right:10px;">
+                        <i class="fas fa-search"></i> ${ui.button_text || '조회'}
+                    </button>
+                    <button id="pmh_resume_btn" style="display:${showResume ? 'inline-block' : 'none'}; padding:12px 20px; background:#2f96b4; color:#fff; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:14px; transition:0.2s;">
+                        <i class="fas fa-step-forward"></i> 중단된 작업 이어서 실행
+                    </button>
+                `;
+
+                formHtml += `<div style="text-align:center; margin-top:20px;">${mainBtnHtml}</div></div>`; 
+                formHtml += `<div id="pmh_run_res_form" style="font-size:13px; display:none; margin-top:15px; border-top:1px solid #333; padding-top:15px; flex-grow:1; min-height:0;"></div>`;
+                formHtml += `</div>`; 
+
+                let isAlreadyRunning = ui.active_task && ui.active_task.state === 'running';
+                formHtml += `<div id="pmh_tab_monitor" style="display:none; flex-direction:column; flex-grow:1; min-height:0; padding-right:5px;">`;
+                formHtml += `<div id="pmh_run_res_monitor" style="display:flex; flex-direction:column; flex-grow:1; min-height:0; font-size:13px; color:#aaa; text-align:center; padding:30px 0;">`;
+                if (isAlreadyRunning) {
+                    formHtml += `<i class="fas fa-spinner fa-spin" style="font-size:24px; color:#e5a00d; margin-bottom:10px;"></i><br>현재 실행 중인 작업을 불러오는 중입니다...`;
+                } else {
+                    formHtml += `<i class="fas fa-info-circle"></i> 진행 중이거나 완료된 작업이 없습니다.`;
+                }
+                formHtml += `</div></div></div>`; 
+
+                window.showPmhToolPanel(toolId, ui.title, formHtml);
+
+                setTimeout(() => {
+                    let isTaskRunning = false;
+                    let pollTimer = null;
+                    
+                    const switchTab = (targetId) => {
+                        document.querySelectorAll('.pmh-tab-btn').forEach(btn => {
+                            if (btn.dataset.tab === targetId) {
+                                btn.classList.add('active');
+                                btn.style.color = '#e5a00d'; btn.style.fontWeight = 'bold'; btn.style.borderBottomColor = '#e5a00d';
+                            } else {
+                                btn.classList.remove('active');
+                                btn.style.color = '#777'; btn.style.fontWeight = 'normal'; btn.style.borderBottomColor = 'transparent';
+                            }
+                        });
+                        document.getElementById('pmh_tab_form').style.display = targetId === 'tab_form' ? 'flex' : 'none';
+                        document.getElementById('pmh_tab_monitor').style.display = targetId === 'tab_monitor' ? 'flex' : 'none';
+                    };
+
+                    document.querySelectorAll('.pmh-tab-btn').forEach(btn => {
+                        btn.onmouseover = () => { if(!btn.classList.contains('active')) btn.style.color = '#fff'; };
+                        btn.onmouseout = () => { if(!btn.classList.contains('active')) btn.style.color = '#777'; };
+                        btn.onclick = () => switchTab(btn.dataset.tab);
+                    });
+
+                    const resetBtn = document.getElementById('pmh_tool_reset_cache');
+                    if(resetBtn) {
+                        resetBtn.onmouseover = () => resetBtn.style.color = "#bd362f";
+                        resetBtn.onmouseout = () => resetBtn.style.color = "#777";
+                        resetBtn.onclick = () => {
+                            if(isTaskRunning) return alert("진행 중인 작업을 먼저 중단해 주세요.");
+                            if(confirm("저장된 옵션과 결과, 작업 기록을 모두 초기화하시겠습니까?")) {
+                                GM_deleteValue(`pmh_tool_cache_${toolId}`);
+                                GM_deleteValue(`pmh_panel_geo_${toolId}`);
+                                GM_deleteValue(`pmh_tool_result_${toolId}`);
+                                
+                                const srvSelect = document.getElementById('pmh_target_server_idx');
+                                const targetSrv = AppSettings.SERVERS[srvSelect ? parseInt(srvSelect.value) : 0];
+                                
+                                GM_xmlhttpRequest({
+                                    method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                    headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                    data: JSON.stringify({ action_type: 'reset' }),
+                                    onload: () => {
+                                        const resForm = document.getElementById('pmh_run_res_form');
+                                        if (resForm) {
+                                            resForm.style.display = 'none';
+                                            resForm.innerHTML = '';
+                                        }
+                                        const resMonitor = document.getElementById('pmh_run_res_monitor');
+                                        if (resMonitor) {
+                                            resMonitor.innerHTML = `<i class="fas fa-info-circle"></i> 진행 중이거나 완료된 작업이 없습니다.`;
+                                            resMonitor.style.display = 'flex';
+                                            resMonitor.style.justifyContent = 'center';
+                                            resMonitor.style.alignItems = 'center';
+                                        }
+                                        const rBtn = document.getElementById('pmh_resume_btn');
+                                        if (rBtn) rBtn.style.display = 'none';
+
+                                        toastr.success("설정 및 데이터 캐시가 초기화되었습니다.");
+                                        switchTab('tab_form');
+                                    }
+                                });
+                            }
+                        };
+                    }
+
+                    const processAndRenderResult = (resData, itemsPerPage, targetSrv) => {
+                        if ((resData.type === 'datatable' || resData.type === 'dashboard') && resData.logs && resData.logs.length > 0) {
+                            const resMonitor = document.getElementById('pmh_run_res_monitor');
+                            if (resMonitor) {
+                                resMonitor.style.display = 'flex';
+                                resMonitor.style.flexDirection = 'column';
+                                resMonitor.style.flexGrow = '1';
+                                resMonitor.style.minHeight = '0';
+                                
+                                let logsHtml = resData.logs.map(l => `<div style="margin-bottom:2px;">${l}</div>`).join('');
+                                
+                                resMonitor.innerHTML = `
+                                    <div style="display:flex; flex-direction:column; background:#15181a; border:1px solid #333; border-radius:6px; padding:15px; text-align:left; flex-grow:1; min-height:0;">
+                                        <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-bottom:15px; flex-shrink:0; border-bottom:1px dashed #333; padding-bottom:8px;">
+                                            <span style="font-weight:bold; color:#51a351;"><i class="fas fa-check-circle"></i> 조회/분석이 완료되었습니다. (로그 참조)</span>
+                                        </div>
+                                        <div id="pmh_log_container_static" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:8px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; display:flex; flex-direction:column; min-height:0;">
+                                            <div>${logsHtml}</div>
+                                        </div>
+                                    </div>
+                                `;
+                                const logBox = document.getElementById('pmh_log_container_static');
+                                if (logBox) logBox.scrollTop = logBox.scrollHeight;
+                            }
+                        }
+                        
+                        // =========================================================
+                        // 1. Datatable 렌더링 분기
+                        // =========================================================
+                        if (resData.type === 'datatable') {
+                            switchTab('tab_form');
+                            const resForm = document.getElementById('pmh_run_res_form');
+                            resForm.style.display = 'block';
+                            resForm.style.position = 'relative';
+
+                            const { data: pageData, page, total_pages, total_items, columns, action_button } = resData;
+                            
+                            let currentSortCol = savedOptions._sort_key || null;
+                            let currentSortDir = savedOptions._sort_dir || 'asc';
+
+                            const showOverlayLoading = () => {
+                                let overlay = document.getElementById('pmh-table-overlay');
+                                if (!overlay) {
+                                    overlay = document.createElement('div');
+                                    overlay.id = 'pmh-table-overlay';
+                                    overlay.style.position = 'absolute';
+                                    overlay.style.top = '0';
+                                    overlay.style.left = '0';
+                                    overlay.style.width = '100%';
+                                    overlay.style.height = '100%';
+                                    overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.6)';
+                                    overlay.style.zIndex = '100';
+                                    overlay.style.display = 'flex';
+                                    overlay.style.alignItems = 'center';
+                                    overlay.style.justifyContent = 'center';
+                                    overlay.style.borderRadius = '4px';
+                                    overlay.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size:30px; color:#e5a00d;"></i>`;
+                                    resForm.appendChild(overlay);
+                                }
+                            };
+
+                            const fetchPageFromServer = (p, sKey = currentSortCol, sDir = currentSortDir, currentLimit = itemsPerPage) => {
+                                showOverlayLoading(); 
+                                GM_xmlhttpRequest({
+                                    method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                    headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                    data: JSON.stringify({ action_type: 'page', page: p, limit: currentLimit, sort_key: sKey, sort_dir: sDir }),
+                                    onload: (r) => { 
+                                        if (r.status === 200) processAndRenderResult(JSON.parse(r.responseText), currentLimit, targetSrv); 
+                                    }
+                                });
+                            };
+
+                            let finalHtml = ``;
+
+                            if (resData.summary_cards || resData.bar_charts) {
+                                finalHtml += `<div style="padding-bottom:15px; margin-bottom:15px; border-bottom:1px solid #333;">`;
+                                
+                                if (resData.summary_cards && resData.summary_cards.length > 0) {
+                                    finalHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:15px;">`;
+                                    resData.summary_cards.forEach(card => {
+                                        const color = card.color || '#e5a00d';
+                                        const icon = card.icon || 'fas fa-info-circle';
+                                        finalHtml += `
+                                            <div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px;">
+                                                <div style="font-size:24px; color:${color}; width:30px; text-align:center;"><i class="${icon}"></i></div>
+                                                <div style="flex-grow:1; min-width:0;">
+                                                    <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
+                                                    <div style="font-size:16px; color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.value}</div>
+                                                </div>
+                                            </div>
+                                        `;
+                                    });
+                                    finalHtml += `</div>`;
+                                }
+                                
+                                if (resData.bar_charts && resData.bar_charts.length > 0) {
+                                    finalHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;">`;
+                                    resData.bar_charts.forEach(chart => {
+                                        finalHtml += `
+                                            <div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;">
+                                                <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">${chart.title}</div>
+                                        `;
+                                        chart.items.forEach(item => {
+                                            const pct = item.percent || 0;
+                                            const barColor = chart.color || '#e5a00d';
+                                            finalHtml += `
+                                                <div style="margin-bottom:8px;">
+                                                    <div style="display:flex; justify-content:space-between; font-size:11px; color:#ccc; margin-bottom:3px;">
+                                                        <span>${item.label}</span><span>${item.count} (${pct}%)</span>
+                                                    </div>
+                                                    <div style="width:100%; height:6px; background:#222; border-radius:3px; overflow:hidden;">
+                                                        <div style="width:${pct}%; height:100%; background:${barColor}; border-radius:3px;"></div>
+                                                    </div>
+                                                </div>
+                                            `;
+                                        });
+                                        finalHtml += `</div>`;
+                                    });
+                                    finalHtml += `</div>`;
+                                }
+                                finalHtml += `</div>`;
+                            }
+
+                            const createPagingHtml = (p, tPages) => {
+                                let html = `<div style="display:flex; justify-content:center; align-items:center; gap:5px; font-size:12px;">`;
+                                const btnStyle = `min-width:26px; height:26px; padding:0 6px; display:flex; justify-content:center; align-items:center; border-radius:4px; font-family:monospace; font-size:13px; background:#222; color:#ccc; border:1px solid #444; cursor:pointer;`;
+                                const actStyle = `min-width:26px; height:26px; padding:0 6px; display:flex; justify-content:center; align-items:center; border-radius:4px; font-family:monospace; font-size:13px; background:#e5a00d; color:#1f1f1f; border:1px solid #e5a00d; font-weight:bold; cursor:default;`;
+                                const disStyle = `min-width:26px; height:26px; padding:0 6px; display:flex; justify-content:center; align-items:center; border-radius:4px; font-family:monospace; font-size:13px; background:#111; color:#555; border:1px solid #222; cursor:not-allowed;`;
+
+                                html += `<button class="pmh-page-btn" data-p="1" style="${p > 1 ? btnStyle : disStyle}" ${p > 1 ? '' : 'disabled'}><i class="fas fa-angle-double-left"></i></button>`;
+                                html += `<button class="pmh-page-btn" data-p="${p-1}" style="${p > 1 ? btnStyle : disStyle}" ${p > 1 ? '' : 'disabled'}><i class="fas fa-angle-left"></i></button>`;
+                                
+                                let startP = Math.max(1, p - 2); let endP = Math.min(tPages, p + 2);
+                                for (let i = startP; i <= endP; i++) {
+                                    html += (i === p) ? `<button style="${actStyle}">${i}</button>` : `<button class="pmh-page-btn" data-p="${i}" style="${btnStyle}">${i}</button>`;
+                                }
+                                
+                                html += `<button class="pmh-page-btn" data-p="${Math.min(tPages, p+1)}" style="${p < tPages ? btnStyle : disStyle}" ${p < tPages ? '' : 'disabled'}><i class="fas fa-angle-right"></i></button>`;
+                                html += `<button class="pmh-page-btn" data-p="${tPages}" style="${p < tPages ? btnStyle : disStyle}" ${p < tPages ? '' : 'disabled'}><i class="fas fa-angle-double-right"></i></button></div>`;
+                                return html;
+                            };
+
+                            let pagingHtml = '';
+                            if (total_pages > 1) pagingHtml = createPagingHtml(page, total_pages);
+
+                            // =========================================================
+                            // [데이터 테이블 렌더링]
+                            // =========================================================
+                            finalHtml += `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><div style="color:#51a351; font-weight:bold; font-size:13px;"><i class="fas fa-list"></i> 총 ${total_items}건 조회됨</div></div>`;
+                            
+                            if (total_items === 0) {
+                                resForm.innerHTML = finalHtml + `<div style="padding:15px; background:#111; color:#aaa; text-align:center; border-radius:4px;">조회된 항목이 없습니다.</div>`;
+                                return;
+                            }
+
+                            let dtHtml = `<table style="width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed;"><tr style="border-bottom:1px solid #444; color:#e5a00d;">`;
+                            (columns || []).forEach(col => {
+                                const widthStr = col.width ? `width:${col.width};` : '';
+                                const alignStr = `text-align:${col.header_align || col.align || 'left'};`;
+                                
+                                let sortIcon = '';
+                                if (currentSortCol === col.key) {
+                                    sortIcon = currentSortDir === 'asc' ? ' <i class="fas fa-sort-up"></i>' : ' <i class="fas fa-sort-down"></i>';
+                                }
+                                dtHtml += `<th class="pmh-dt-header" data-key="${col.key}" style="padding:8px 6px; ${widthStr} ${alignStr} cursor:pointer;" title="클릭하여 정렬">${col.label}${sortIcon}</th>`;
+                            });
+                            dtHtml += `</tr>`;
+
+                            const currentHashBase = window.location.hash.split('/server/')[0] || '#!';
+                            const machineId = resData.machine_id;
+
+                            pageData.forEach(row => {
+                                dtHtml += `<tr style="border-bottom:1px solid #333; transition:background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">`;
+                                
+                                (columns || []).forEach(col => {
+                                    let val = row[col.key] !== undefined && row[col.key] !== null ? row[col.key] : '-';
+                                    let displayHtml = val;
+
+                                    const alignStr = `text-align:${col.align || 'left'};`;
+
+                                    if (col.type === 'link' && machineId && row[col.link_key]) {
+                                        const ratingKey = row[col.link_key];
+                                        const href = `${currentHashBase}/server/${machineId}/details?key=%2Flibrary%2Fmetadata%2F${ratingKey}`;
+                                        displayHtml = `<a href="${href}" style="color:#2f96b4; text-decoration:none;" title="Plex 항목 열기" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${val}</a>`;
+                                    }
+
+                                    dtHtml += `<td style="padding:8px 6px; ${alignStr} white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${String(val).replace(/"/g, '&quot;')}">${displayHtml}</td>`;
+                                });
+                                dtHtml += `</tr>`;
+                            });
+                            dtHtml += `</table>`;
+                            finalHtml += dtHtml;
+
+                            if (pagingHtml) finalHtml += `<div style="display:flex; justify-content:center; margin-top:15px;">${pagingHtml}</div>`;
+
+                            if (action_button) {
+                                finalHtml += `
+                                    <div style="text-align:center; margin-top:20px; padding-top:15px; border-top:1px dashed #444;">
+                                        <button id="pmh_dt_action_btn" style="padding:12px 30px; background:#bd362f; color:#fff; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:14px; transition:0.2s;">
+                                            ${action_button.label}
+                                        </button>
+                                    </div>
+                                `;
+                            }
+
+                            resForm.innerHTML = finalHtml;
+                            
+                            // =========================================================
+                            // 이벤트 리스너 바인딩
+                            // =========================================================
+                            const limitSelect = document.getElementById('pmh_dt_limit_select');
+                            if (limitSelect) {
+                                limitSelect.addEventListener('change', (e) => {
+                                    const newLimit = parseInt(e.target.value, 10);
+                                    savedOptions.items_per_page = newLimit;
+                                    GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(savedOptions));
+                                    fetchPageFromServer(1, currentSortCol, currentSortDir, newLimit);
+                                });
+                            }
+
+                            document.querySelectorAll('.pmh-page-btn').forEach(btn => {
+                                btn.onclick = () => fetchPageFromServer(parseInt(btn.dataset.p));
+                            });
+
+                            document.querySelectorAll('.pmh-dt-header').forEach(th => {
+                                th.onclick = () => {
+                                    const key = th.dataset.key;
+                                    if (currentSortCol === key) { currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc'; } 
+                                    else { currentSortCol = key; currentSortDir = 'asc'; }
+                                    
+                                    savedOptions._sort_key = currentSortCol; savedOptions._sort_dir = currentSortDir;
+                                    GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(savedOptions));
+                                    fetchPageFromServer(1, currentSortCol, currentSortDir);
+                                };
+                            });
+
+                            const actionBtn = document.getElementById('pmh_dt_action_btn');
+                            if (actionBtn) {
+                                actionBtn.onmouseover = () => actionBtn.style.backgroundColor = "#e0483d";
+                                actionBtn.onmouseout = () => actionBtn.style.backgroundColor = "#bd362f";
+                                actionBtn.onclick = () => {
+                                    if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
+                                    
+                                    const rBtn = document.getElementById('pmh_resume_btn');
+                                    if (rBtn) rBtn.style.display = 'none';
+
+                                    const originalBtnHtml = actionBtn.innerHTML;
+                                    actionBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 백그라운드 작업 중...';
+                                    actionBtn.style.pointerEvents = 'none'; actionBtn.style.opacity = '0.7';
+                                    
+                                    setTimeout(() => {
+                                        if (actionBtn && actionBtn.isConnected) {
+                                            actionBtn.innerHTML = originalBtnHtml;
+                                            actionBtn.style.pointerEvents = 'auto'; actionBtn.style.opacity = '1';
+                                        }
+                                    }, 3000);
+
+                                    const executeData = getFormData().reqData;
+                                    executeData.action_type = 'execute';
+                                    
+                                    GM_xmlhttpRequest({
+                                        method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                        headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                        data: JSON.stringify(executeData),
+                                        onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, targetSrv); }
+                                    });
+                                };
+                            }
+                        } 
+                        
+                        // =========================================================
+                        // 2. 단일 Dashboard 렌더링 분기
+                        // =========================================================
+                        else if (resData.type === 'dashboard') {
+                            switchTab('tab_form');
+                            const resForm = document.getElementById('pmh_run_res_form');
+                            resForm.style.display = 'block';
+
+                            const overlay = document.getElementById('pmh-table-overlay');
+                            if (overlay) overlay.remove();
+
+                            let dashHtml = `<div style="padding:5px;">`;
+                            
+                            if (resData.summary_cards && resData.summary_cards.length > 0) {
+                                dashHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:20px;">`;
+                                resData.summary_cards.forEach(card => {
+                                    const color = card.color || '#e5a00d';
+                                    const icon = card.icon || 'fas fa-info-circle';
+                                    dashHtml += `
+                                        <div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px; transition:border-color 0.2s;" onmouseover="this.style.borderColor='${color}'" onmouseout="this.style.borderColor='#333'">
+                                            <div style="font-size:24px; color:${color}; width:30px; text-align:center;"><i class="${icon}"></i></div>
+                                            <div style="flex-grow:1; min-width:0;">
+                                                <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
+                                                <div style="font-size:16px; color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.value}</div>
+                                            </div>
+                                        </div>
+                                    `;
+                                });
+                                dashHtml += `</div>`;
+                            }
+                            
+                            if (resData.bar_charts && resData.bar_charts.length > 0) {
+                                dashHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;">`;
+                                resData.bar_charts.forEach(chart => {
+                                    dashHtml += `
+                                        <div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;">
+                                            <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">
+                                                ${chart.title}
+                                            </div>
+                                    `;
+                                    chart.items.forEach(item => {
+                                        const pct = item.percent || 0;
+                                        const barColor = chart.color || '#e5a00d';
+                                        dashHtml += `
+                                            <div style="margin-bottom:8px;">
+                                                <div style="display:flex; justify-content:space-between; font-size:11px; color:#ccc; margin-bottom:3px;">
+                                                    <span>${item.label}</span>
+                                                    <span>${item.count} (${pct}%)</span>
+                                                </div>
+                                                <div style="width:100%; height:6px; background:#222; border-radius:3px; overflow:hidden;">
+                                                    <div style="width:${pct}%; height:100%; background:${barColor}; border-radius:3px;"></div>
+                                                </div>
+                                            </div>
+                                        `;
+                                    });
+                                    dashHtml += `</div>`;
+                                });
+                                dashHtml += `</div>`;
+                            }
+                            dashHtml += `</div>`;
+                            resForm.innerHTML = dashHtml;
+                        }
+
+                        else if (resData.type === 'async_task') {
+                            switchTab('tab_monitor');
+                            const taskId = resData.task_id;
+                            const isPreviewing = resData.is_preview === true;
+                            const resMonitor = document.getElementById('pmh_run_res_monitor');
+                            isTaskRunning = true;
+                            
+                            if (pollTimer) clearTimeout(pollTimer);
+                            
+                            resMonitor.style.display = 'flex';
+                            resMonitor.style.flexDirection = 'column';
+                            resMonitor.style.flexGrow = '1';
+                            resMonitor.style.minHeight = '0';
+                            
+                            const pollStatus = () => {
+                                if (!document.getElementById('pmh_run_res_monitor')) return;
+
+                                GM_xmlhttpRequest({
+                                    method: "GET", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/status?task_id=${taskId}`,
+                                    headers: { "X-API-Key": targetSrv.plexMateApiKey },
+                                    onload: (pollRes) => {
+                                        if (pollRes.status === 404) {
+                                            resMonitor.innerHTML = `<div style="color:#bd362f; padding:10px; background:#111; border-radius:4px; text-align:center;"><i class="fas fa-exclamation-triangle"></i> 작업을 찾을 수 없습니다.</div>`;
+                                            isTaskRunning = false; 
+                                            return;
+                                        }
+
+                                        if (pollRes.status === 200) {
+                                            const statusData = JSON.parse(pollRes.responseText);
+                                            
+                                            let percent = 0;
+                                            if (statusData.total > 0) percent = Math.floor((statusData.progress / statusData.total) * 100);
+                                            else if (statusData.state === 'completed') percent = 100;
+                                            
+                                            const isDone = statusData.state === 'completed' || statusData.state === 'error' || statusData.state === 'cancelled';
+                                            const barColor = (statusData.state === 'error' || statusData.state === 'cancelled') ? '#bd362f' : '#51a351';
+                                            
+                                            let stateIcon = '<i class="fas fa-spinner fa-spin"></i> 작업 진행 중...';
+                                            if (statusData.state === 'error') stateIcon = '<i class="fas fa-exclamation-triangle"></i> 오류 발생 / 중단됨';
+                                            else if (statusData.state === 'cancelled') stateIcon = '<i class="fas fa-ban"></i> 사용자에 의해 취소됨';
+                                            else if (statusData.state === 'completed') stateIcon = '<i class="fas fa-check-circle"></i> 작업 완료';
+
+                                            let logsHtml = (statusData.logs || []).map(l => `<div style="margin-bottom:2px;">${l}</div>`).join('');
+                                            
+                                            let controlsHtml = '';
+                                            if (!isDone) {
+                                                controlsHtml = `<button id="pmh_async_cancel_btn" style="padding:6px 15px; background:#bd362f; color:#fff; border:none; border-radius:4px; cursor:pointer; font-weight:bold; font-size:12px;"><i class="fas fa-stop"></i> 진행 중단</button>`;
+                                            } else {
+                                                isTaskRunning = false;
+                                                if (!isPreviewing && (statusData.state === 'cancelled' || statusData.state === 'error')) {
+                                                    const rBtn = document.getElementById('pmh_resume_btn');
+                                                    if (rBtn) rBtn.style.display = 'inline-block';
+                                                }
+                                            }
+
+                                            const targetMonitor = document.getElementById('pmh_run_res_monitor');
+                                            if (targetMonitor) {
+                                                targetMonitor.innerHTML = `
+                                                    <div style="display:flex; flex-direction:column; background:#15181a; border:1px solid #333; border-radius:6px; padding:15px; text-align:left; flex-grow:1; min-height:0;">
+                                                        <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-bottom:8px; flex-shrink:0;">
+                                                            <span style="font-weight:bold; color:${barColor};">${stateIcon}</span>
+                                                            <span>${statusData.progress} / ${statusData.total} (${percent}%)</span>
+                                                        </div>
+                                                        <div style="width:100%; height:12px; background:#222; border-radius:6px; overflow:hidden; margin-bottom:15px; flex-shrink:0;">
+                                                            <div style="width:${percent}%; height:100%; background:${barColor}; transition:width 0.5s;"></div>
+                                                        </div>
+                                                        <div id="pmh_log_container" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:8px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; display:flex; flex-direction:column; min-height:0;">
+                                                            <div>${logsHtml}</div>
+                                                        </div>
+                                                        <div style="margin-top:15px; display:flex; justify-content:center; flex-shrink:0;">
+                                                            ${controlsHtml}
+                                                        </div>
+                                                    </div>
+                                                `;
+                                                
+                                                const logBox = document.getElementById('pmh_log_container');
+                                                if (logBox) logBox.scrollTop = logBox.scrollHeight;
+
+                                                const cancelBtn = document.getElementById('pmh_async_cancel_btn');
+                                                if (cancelBtn) {
+                                                    cancelBtn.onclick = () => {
+                                                        cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 취소 요청 중...';
+                                                        GM_xmlhttpRequest({
+                                                            method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/cancel`,
+                                                            headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                                            data: JSON.stringify({ task_id: taskId })
+                                                        });
+                                                    };
+                                                }
+                                            }
+
+                                            if (isDone && isPreviewing && statusData.state === 'completed') {
+                                                setTimeout(() => {
+                                                    GM_xmlhttpRequest({
+                                                        method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                                        headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                                        data: JSON.stringify({ 
+                                                            action_type: 'page', 
+                                                            page: 1, 
+                                                            limit: savedOptions.items_per_page || 10, 
+                                                            sort_key: savedOptions._sort_key, 
+                                                            sort_dir: savedOptions._sort_dir || 'asc' 
+                                                        }),
+                                                        onload: (r) => { 
+                                                            if (r.status === 200) {
+                                                                processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, targetSrv); 
+                                                            }
+                                                        }
+                                                    });
+                                                }, 500);
+                                                return;
+                                            }
+
+                                            if (!isDone) pollTimer = setTimeout(pollStatus, 1500); 
+                                        }
+                                    }
+                                });
+                            };
+                            setTimeout(pollStatus, 50);
+                        }
+                    };
+
+                    const getFormData = () => {
+                        const srvSelect = document.getElementById('pmh_target_server_idx');
+                        const targetSrvIdx = srvSelect ? parseInt(srvSelect.value) : 0;
+                        const targetSrv = AppSettings.SERVERS[targetSrvIdx];
+                        const reqData = {};
+                        const cacheToSave = { ...savedOptions }; 
+                        
+                        if(srvSelect) cacheToSave['target_server_idx'] = targetSrvIdx;
+                        (ui.inputs || []).forEach(i => {
+                            const el = document.getElementById(`pmh_inp_${i.id}`);
+                            const val = (i.type === 'checkbox') ? el.checked : el.value;
+                            reqData[i.id] = val; cacheToSave[i.id] = val;
+                        });
+                        
+                        const plexInfo = extractPlexServerInfo(targetSrv.machineIdentifier);
+                        if (plexInfo) { reqData['_plex_url'] = plexInfo.url; reqData['_plex_token'] = plexInfo.token; }
+                        
+                        GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(cacheToSave));
+                        
+                        return { targetSrv, reqData };
+                    };
+
+                    const srvSelect = document.getElementById('pmh_target_server_idx');
+                    const initialTargetSrv = AppSettings.SERVERS[srvSelect ? parseInt(srvSelect.value) : 0];
+                    const itemsPerPage = parseInt(savedOptions.items_per_page || 10);
+
+                    GM_xmlhttpRequest({
+                        method: "POST", url: `${initialTargetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                        headers: { "Content-Type": "application/json", "X-API-Key": initialTargetSrv.plexMateApiKey },
+                        data: JSON.stringify({ action_type: 'page', page: 1, limit: itemsPerPage, sort_key: savedOptions._sort_key, sort_dir: savedOptions._sort_dir }),
+                        onload: (r) => {
+                            if (r.status === 200) {
+                                try { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, initialTargetSrv); } catch(e) {}
+                            }
+                        }
+                    });
+
+                    if (ui.active_task && ui.active_task.state === 'running') {
+                        processAndRenderResult({ type: 'async_task', task_id: ui.active_task.task_id }, itemsPerPage, initialTargetSrv, {});
+                    }
+
+                    const mainRunBtn = document.getElementById('pmh_run_btn');
+                    if (mainRunBtn) {
+                        mainRunBtn.onmouseover = () => mainRunBtn.style.backgroundColor = "#d4910c";
+                        mainRunBtn.onmouseout = () => mainRunBtn.style.backgroundColor = "#e5a00d";
+                        
+                        mainRunBtn.onclick = (e2) => {
+                            e2.preventDefault();
+                            
+                            if (isTaskRunning) {
+                                return alert("진행 중인 백그라운드 작업이 있습니다.\n모니터링 탭을 확인하여 작업을 중지하거나 완료를 기다려 주세요.");
+                            }
+
+                            const srvSel = document.getElementById('pmh_target_server_idx');
+                            const tSrvIdx = srvSel ? parseInt(srvSel.value) : 0;
+                            const tSrv = AppSettings.SERVERS[tSrvIdx];
+
+                            const reqData = {};
+                            const cacheToSave = { ...savedOptions }; 
+                            
+                            if(srvSel) cacheToSave['target_server_idx'] = tSrvIdx;
+
+                            (ui.inputs || []).forEach(i => {
+                                const el = document.getElementById(`pmh_inp_${i.id}`);
+                                const val = (i.type === 'checkbox') ? el.checked : el.value;
+                                reqData[i.id] = val; cacheToSave[i.id] = val;
+                            });
+
+                            const plexInfo = extractPlexServerInfo(tSrv.machineIdentifier);
+                            if (plexInfo) { reqData['_plex_url'] = plexInfo.url; reqData['_plex_token'] = plexInfo.token; }
+                            
+                            reqData.action_type = 'preview';
+                            GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(cacheToSave));
+                            
+                            GM_xmlhttpRequest({
+                                method: "POST", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
+                                data: JSON.stringify(reqData),
+                                onload: (r) => {
+                                    try {
+                                        const resData = JSON.parse(r.responseText);
+                                        processAndRenderResult(resData, itemsPerPage, tSrv); 
+                                    } catch(err) {
+                                        const resForm = document.getElementById('pmh_run_res_form');
+                                        resForm.style.display = 'block';
+                                        resForm.innerHTML = `<pre style="white-space:pre-wrap; background:#2b1515; padding:12px; border:1px solid #5c2020; border-radius:4px; color:#e06c6c;">${r.responseText}</pre>`;
+                                    }
+                                }
+                            });
+                        };
+                    }
+
+                    const resumeBtn = document.getElementById('pmh_resume_btn');
+                    if (resumeBtn) {
+                        resumeBtn.onclick = (e) => {
+                            e.preventDefault();
+                            if (isTaskRunning) return;
+
+                            const { targetSrv, reqData } = getFormData();
+                            reqData['action_type'] = 'resume'; 
+                            resumeBtn.style.display = 'none';
+
+                            switchTab('tab_monitor');
+                            const resMonitor = document.getElementById('pmh_run_res_monitor');
+                            resMonitor.innerHTML = `<div style="text-align:center; padding:30px 0;"><i class="fas fa-spinner fa-spin" style="font-size:24px; color:#2f96b4; margin-bottom:10px;"></i><br>작업을 재개합니다...</div>`;
+                            
+                            GM_xmlhttpRequest({
+                                method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                data: JSON.stringify(reqData),
+                                onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, targetSrv, reqData); }
+                            });
+                        };
+                    }
+                }, 50); 
+            }
+        }); 
+    }
+
+    // ==========================================
+    // 5-2. 기본 제어 패널(Top Nav UI) 주입
     // ==========================================
     function injectControlUI() {
         if (document.getElementById('pmdv-controls')) return;
@@ -1072,10 +1934,10 @@ GM_addStyle(`
         ctrl.id = 'pmdv-controls';
         ctrl.style.cssText = "display: flex; align-items: center; gap: 5px; margin-right: 10px; order: -1;";
 
+        let isUiExpanded = GM_getValue('pmh_ui_expanded', true);
         let defaultMsg = '';
         let defaultColor = '#aaa';
         let msgTimeout = null;
-
         let serversToUpdate = [];
         let needsJsUpdate = false;
 
@@ -1086,8 +1948,7 @@ GM_addStyle(`
         if (hasServerError) {
             defaultMsg = `<span style="color:#bd362f; cursor:help;" title="로컬 PMH 파이썬 서버가 꺼져 있거나 설정이 잘못되었습니다."><i class="fas fa-exclamation-triangle"></i> 서버 연결 오류</span>`;
             defaultColor = '#bd362f';
-        } 
-        else if (isNewerVersion(CURRENT_VERSION, latestKnownVer)) {
+        } else if (isNewerVersion(CURRENT_VERSION, latestKnownVer)) {
             needsJsUpdate = true;
             const btnText = reqRestart ? `업데이트(v${latestKnownVer}): 서버 재시작 필요` : `업데이트(v${latestKnownVer})`;
             defaultMsg = `<a href="#" id="pmh-unified-update-link" data-ver="${latestKnownVer}" style="color:#e5a00d; text-decoration:none;" title="클릭 시 전체 업데이트 진행">${btnText}</a>`;
@@ -1098,25 +1959,26 @@ GM_addStyle(`
             const msgBox = document.getElementById('pmh-status-message');
             if (!msgBox) return;
             if (msgTimeout) clearTimeout(msgTimeout);
-
-            msgBox.innerHTML = text;
-            msgBox.style.color = color;
-
+            msgBox.innerHTML = text; msgBox.style.color = color;
             if (duration > 0) {
                 msgTimeout = setTimeout(() => {
-                    msgBox.innerHTML = defaultMsg;
-                    msgBox.style.color = defaultColor;
+                    msgBox.innerHTML = defaultMsg; msgBox.style.color = defaultColor;
                 }, duration);
             }
         };
 
         ctrl.insertAdjacentHTML('afterbegin', `
             <div id="pmh-status-message" style="margin-right: 5px; font-size: 11px; font-weight: bold; white-space: nowrap; transition: color 0.3s;"></div>
-            <div style="display:flex; align-items:center; margin-right: 8px;">
-                <a href="#" id="pmh-manual-update-btn" style="color:#adb5bd; font-size:12px; margin-right:12px; transition:0.2s;" title="업데이트 확인" onmouseover="this.style.color='white'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-sync-alt pmh-sync-icon"></i></a>
-                <a href="https://github.com/golmog/plex_meta_helper" target="_blank" style="color:white; font-size:16px; transition:0.2s;" title="PMH GitHub 페이지" onmouseover="this.style.color='#e5a00d'" onmouseout="this.style.color='white'"><i class="fab fa-github"></i></a>
+            <div style="display:flex; align-items:center; margin-right: 8px; height: 100%;">
+                <a href="#" id="pmh-manual-update-btn" style="display:flex; align-items:center; justify-content:center; color:#adb5bd; font-size:14px; margin-right:12px; transition:0.2s; text-decoration:none;" title="PMH 업데이트 확인" onmouseover="this.style.color='white'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-sync-alt pmh-sync-icon"></i></a>
+                <a href="https://github.com/golmog/plex_meta_helper" target="_blank" style="display:flex; align-items:center; justify-content:center; color:white; font-size:16px; transition:0.2s; text-decoration:none;" title="PMH GitHub 페이지" onmouseover="this.style.color='#e5a00d'" onmouseout="this.style.color='white'"><i class="fab fa-github"></i></a>
             </div>
         `);
+
+        const settingsWrapper = document.createElement('div');
+        settingsWrapper.id = 'pmh-settings-wrapper';
+        settingsWrapper.style.cssText = "display: flex; align-items: center; gap: 5px;";
+        settingsWrapper.style.display = isUiExpanded ? 'flex' : 'none';
 
         const createBtn = (label, title, stateKey, storeKey, callback) => {
             const btn = document.createElement('button');
@@ -1128,70 +1990,521 @@ GM_addStyle(`
                 GM_setValue(storeKey, state[stateKey]);
                 btn.textContent = `${label}:${state[stateKey]?'ON':'OFF'}`;
                 btn.classList.toggle('on', state[stateKey]);
-                log(`[UI] Toggle button clicked: ${label} -> ${state[stateKey]}`);
                 callback();
             });
             return btn;
         };
 
         const forceReRenderAll = () => {
-            log("[UI] Forcing re-render of list items...");
             clearMemoryCache();
             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear(); 
-            
             document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e=>e.remove());
             processList();
         };
 
         const toggleDetailView = () => {
-            log(`[UI] Toggling Detail View. State is now: ${state.detailInfo}`);
             if (state.detailInfo) { processDetail(); }
             else { document.getElementById('plex-guid-box')?.remove(); currentDisplayedItemId = null; }
         };
 
-        ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label">목록:</span>`);
-        ctrl.appendChild(createBtn('GUID', '목록 포스터 아래에 매칭된 GUID(에이전트 ID)를 표시합니다.', 'listGuid', STATE_KEYS.GUID, forceReRenderAll));
-        ctrl.appendChild(createBtn('태그', '목록 포스터 우측 상단에 화질, 해상도 등 속성 뱃지를 표시합니다.', 'listTag', STATE_KEYS.TAG, forceReRenderAll));
-        ctrl.appendChild(createBtn('재생', '목록 포스터 우측 상단에 외부 재생/스트리밍 아이콘을 표시합니다.', 'listPlay', STATE_KEYS.PLAY, forceReRenderAll));
-        ctrl.appendChild(createBtn('다중경로', '여러 폴더/경로가 병합된 컨텐츠일 경우 병합된 개수를 뱃지로 표시합니다.', 'listMultiPath', STATE_KEYS.MULTIPATH, forceReRenderAll));
+        settingsWrapper.insertAdjacentHTML('beforeend', `<span class="ctrl-label">목록:</span>`);
+        settingsWrapper.appendChild(createBtn('GUID', '목록 포스터 아래에 매칭된 GUID(에이전트 ID)를 표시합니다.', 'listGuid', STATE_KEYS.GUID, forceReRenderAll));
+        settingsWrapper.appendChild(createBtn('태그', '목록 포스터 우측 상단에 화질, 해상도 등 속성 뱃지를 표시합니다.', 'listTag', STATE_KEYS.TAG, forceReRenderAll));
+        settingsWrapper.appendChild(createBtn('재생', '목록 포스터 우측 상단에 외부 재생/스트리밍 아이콘을 표시합니다.', 'listPlay', STATE_KEYS.PLAY, forceReRenderAll));
+        settingsWrapper.appendChild(createBtn('다중경로', '여러 폴더/경로가 병합된 컨텐츠일 경우 병합된 개수를 뱃지로 표시합니다.', 'listMultiPath', STATE_KEYS.MULTIPATH, forceReRenderAll));
 
-        ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;"><span style="opacity:0.3;">|</span> 상세:</span>`);
-        ctrl.appendChild(createBtn('정보', '상세 페이지 진입 시 PMH 전용 미디어 정보(파일 경로, 코덱 등) 패널을 표시합니다.', 'detailInfo', STATE_KEYS.DETAIL, toggleDetailView));
+        settingsWrapper.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;"><span style="opacity:0.3;">|</span> 상세:</span>`);
+        settingsWrapper.appendChild(createBtn('정보', '상세 페이지 진입 시 PMH 전용 미디어 정보 패널을 표시합니다.', 'detailInfo', STATE_KEYS.DETAIL, toggleDetailView));
 
-        ctrl.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;"><span style="opacity:0.3;">|</span> GUID길이:</span>`);
-        
+        settingsWrapper.insertAdjacentHTML('beforeend', `<span class="ctrl-label" style="margin-left:8px;"><span style="opacity:0.3;">|</span> GUID길이:</span>`);
         const lenInp = document.createElement('input');
         lenInp.type = 'number'; lenInp.min = '5'; lenInp.max = '50'; lenInp.value = state.guidLen;
-        lenInp.title = '목록에 표시될 GUID 텍스트의 최대 글자 수입니다. (5~50)';
-
         const lenBtn = document.createElement('button'); lenBtn.textContent = '적용';
-        lenBtn.title = '변경된 길이를 화면에 즉시 반영합니다.';
         lenBtn.addEventListener('click', () => {
             const nl = parseInt(lenInp.value);
             if (!isNaN(nl) && nl >= 5 && nl <= 50) {
-                log(`[UI] Changing GUID length to: ${nl}`);
-                state.guidLen = nl;
-                GM_setValue(STATE_KEYS.LEN, state.guidLen);
-                forceReRenderAll();
-                showStatusMsg(`GUID 길이 ${nl} 적용 완료`, '#51a351');
+                state.guidLen = nl; GM_setValue(STATE_KEYS.LEN, state.guidLen);
+                forceReRenderAll(); showStatusMsg(`GUID 길이 ${nl} 적용 완료`, '#51a351');
             }
         });
-
         const clearCacheBtn = document.createElement('button');
-        clearCacheBtn.textContent = '메모리 초기화';
-        clearCacheBtn.title = '임시로 보관 중인 데이터를 삭제하고 화면을 새로 갱신합니다.';
-        clearCacheBtn.style.marginLeft = '10px';
+        clearCacheBtn.textContent = '메모리 초기화'; clearCacheBtn.style.marginLeft = '10px';
         clearCacheBtn.addEventListener('click', () => {
-            log("[UI] Clearing memory cache...");
-            clearMemoryCache();
-            showStatusMsg("캐시 초기화 완료", "#51a351");
-            forceReRenderAll();
+            clearMemoryCache(); showStatusMsg("캐시 초기화 완료", "#51a351"); forceReRenderAll();
             if(document.getElementById('plex-guid-box')) { currentDisplayedItemId = null; processDetail(true); }
         });
 
-        ctrl.appendChild(lenInp);
-        ctrl.appendChild(lenBtn);
-        ctrl.appendChild(clearCacheBtn);
+        settingsWrapper.appendChild(lenInp); settingsWrapper.appendChild(lenBtn); settingsWrapper.appendChild(clearCacheBtn);
+        ctrl.appendChild(settingsWrapper);
+
+        const uiToggleBtn = document.createElement('a');
+        uiToggleBtn.href = '#';
+        uiToggleBtn.id = 'pmh-ui-toggle-btn';
+        uiToggleBtn.style.cssText = "color:#adb5bd; font-size:16px; margin-left:8px; transition:0.2s; display:flex; align-items:center; justify-content:center; text-decoration:none;";
+        uiToggleBtn.title = isUiExpanded ? "PMH 설정 접기" : "PMH 설정 펼치기";
+        uiToggleBtn.innerHTML = isUiExpanded ? '<i class="fas fa-chevron-circle-right"></i>' : '<i class="fas fa-chevron-circle-left"></i>';
+        uiToggleBtn.style.opacity = '0.6';
+        uiToggleBtn.addEventListener('mouseenter', () => {
+            uiToggleBtn.style.color = '#fff';
+            uiToggleBtn.style.opacity = '1';
+        });
+        uiToggleBtn.addEventListener('mouseleave', () => {
+            uiToggleBtn.style.color = '#adb5bd';
+            uiToggleBtn.style.opacity = '0.6';
+        });
+        uiToggleBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            isUiExpanded = !isUiExpanded;
+            GM_setValue('pmh_ui_expanded', isUiExpanded);
+            settingsWrapper.style.display = isUiExpanded ? 'flex' : 'none';
+            uiToggleBtn.innerHTML = isUiExpanded ? '<i class="fas fa-chevron-circle-right"></i>' : '<i class="fas fa-chevron-circle-left"></i>';
+            uiToggleBtn.title = isUiExpanded ? "PMH 설정 접기" : "PMH 설정 펼치기";
+        });
+
+        ctrl.appendChild(uiToggleBtn);
+
+        const toolDivider = document.createElement('span');
+        toolDivider.style.cssText = "opacity: 0.3; color: #adb5bd; margin: 0 8px; font-size: 14px; user-select: none;";
+        toolDivider.textContent = "|";
+        ctrl.appendChild(toolDivider);
+
+        if (!window.showPmhToolPanel) {
+            window.pmhCurrentToolId = 'default';
+            window.savePmhPanelGeometry = function() {
+                const panel = document.getElementById('pmh-tool-panel');
+                if(panel) {
+                    const geo = { top: panel.style.top, left: panel.style.left, width: panel.style.width, height: panel.style.height };
+                    GM_setValue(`pmh_panel_geo_${window.pmhCurrentToolId}`, JSON.stringify(geo));
+                }
+            };
+            window.makeDraggable = function(elmnt, header) {
+                let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+                header.onmousedown = (e) => {
+                    e.preventDefault(); pos3 = e.clientX; pos4 = e.clientY;
+                    document.onmouseup = () => { document.onmouseup = null; document.onmousemove = null; window.savePmhPanelGeometry(); };
+                    document.onmousemove = (e) => {
+                        e.preventDefault(); pos1 = pos3 - e.clientX; pos2 = pos4 - e.clientY; pos3 = e.clientX; pos4 = e.clientY;
+                        let newTop = elmnt.offsetTop - pos2; let newLeft = elmnt.offsetLeft - pos1;
+                        if (newTop < 0) newTop = 0; if (newLeft < 0) newLeft = 0;
+                        if (newTop + elmnt.offsetHeight > window.innerHeight) newTop = window.innerHeight - elmnt.offsetHeight;
+                        if (newLeft + elmnt.offsetWidth > window.innerWidth) newLeft = window.innerWidth - elmnt.offsetWidth;
+                        elmnt.style.top = newTop + "px"; elmnt.style.left = newLeft + "px"; elmnt.style.right = "auto"; 
+                    };
+                };
+            };
+            window.makeResizable = function(panel) {
+                const minW = 350, minH = 200;
+                let originalW, originalH, originalX, originalY, originalMouseX, originalMouseY, currentResizer;
+                panel.querySelectorAll('.pmh-resizer').forEach(resizer => {
+                    resizer.addEventListener('mousedown', function(e) {
+                        e.preventDefault(); currentResizer = e.target;
+                        originalW = parseFloat(getComputedStyle(panel, null).getPropertyValue('width').replace('px', ''));
+                        originalH = parseFloat(getComputedStyle(panel, null).getPropertyValue('height').replace('px', ''));
+                        originalX = panel.offsetLeft; originalY = panel.offsetTop;
+                        originalMouseX = e.clientX; originalMouseY = e.clientY;
+                        
+                        const resize = (e) => {
+                            const mouseX = Math.max(0, Math.min(e.clientX, window.innerWidth));
+                            const mouseY = Math.max(0, Math.min(e.clientY, window.innerHeight));
+                            if (currentResizer.classList.contains('pmh-resizer-e') || currentResizer.classList.contains('pmh-resizer-se') || currentResizer.classList.contains('pmh-resizer-ne')) {
+                                const width = originalW + (mouseX - originalMouseX); if (width > minW) panel.style.width = width + 'px';
+                            }
+                            if (currentResizer.classList.contains('pmh-resizer-s') || currentResizer.classList.contains('pmh-resizer-se') || currentResizer.classList.contains('pmh-resizer-sw')) {
+                                const height = originalH + (mouseY - originalMouseY); if (height > minH) panel.style.height = height + 'px';
+                            }
+                            if (currentResizer.classList.contains('pmh-resizer-w') || currentResizer.classList.contains('pmh-resizer-sw') || currentResizer.classList.contains('pmh-resizer-nw')) {
+                                const width = originalW - (mouseX - originalMouseX); if (width > minW) { panel.style.width = width + 'px'; panel.style.left = originalX + (mouseX - originalMouseX) + 'px'; }
+                            }
+                            if (currentResizer.classList.contains('pmh-resizer-n') || currentResizer.classList.contains('pmh-resizer-ne') || currentResizer.classList.contains('pmh-resizer-nw')) {
+                                const height = originalH - (mouseY - originalMouseY); if (height > minH) { panel.style.height = height + 'px'; panel.style.top = originalY + (mouseY - originalMouseY) + 'px'; }
+                            }
+                        };
+                        const stopResize = () => { document.removeEventListener('mousemove', resize); document.removeEventListener('mouseup', stopResize); window.savePmhPanelGeometry(); };
+                        document.addEventListener('mousemove', resize); document.addEventListener('mouseup', stopResize);
+                    });
+                });
+            };
+            window.showPmhToolPanel = function(toolId, title, htmlContent) {
+                window.pmhCurrentToolId = toolId;
+                let panel = document.getElementById('pmh-tool-panel');
+                if (!panel) {
+                    panel = document.createElement('div'); panel.id = 'pmh-tool-panel';
+                    panel.innerHTML = `
+                        <div class="pmh-resizer pmh-resizer-n"></div><div class="pmh-resizer pmh-resizer-s"></div>
+                        <div class="pmh-resizer pmh-resizer-e"></div><div class="pmh-resizer pmh-resizer-w"></div>
+                        <div class="pmh-resizer pmh-resizer-ne"></div><div class="pmh-resizer pmh-resizer-nw"></div>
+                        <div class="pmh-resizer pmh-resizer-se"></div><div class="pmh-resizer pmh-resizer-sw"></div>
+                        <div style="display: flex; flex-direction: column; width: 100%; height: 100%;">
+                            <div class="pmh-panel-header" id="pmh-panel-header">
+                                <div class="pmh-panel-title"><i class="fas fa-toolbox"></i> <span id="pmh-panel-title-text"></span></div>
+                                <a href="#" class="pmh-panel-close" id="pmh-panel-close"><i class="fas fa-times"></i></a>
+                            </div>
+                            <div class="pmh-panel-content" id="pmh-panel-content"></div>
+                        </div>
+                    `;
+                    document.body.appendChild(panel);
+                    document.getElementById('pmh-panel-close').onclick = (e) => { e.preventDefault(); e.stopPropagation(); panel.style.display = 'none'; };
+                    window.makeDraggable(panel, document.getElementById('pmh-panel-header'));
+                    window.makeResizable(panel);
+                    panel.addEventListener('click', (e) => {
+                        if (e.target.id === 'pmh_tool_toggle_form' || e.target.closest('#pmh_tool_toggle_form')) {
+                            const toggleBtn = e.target.closest('#pmh_tool_toggle_form');
+                            const formContainer = document.getElementById('pmh_tool_form_container');
+                            if (formContainer && toggleBtn) {
+                                const isCurrentlyCollapsed = formContainer.style.display === 'none';
+                                formContainer.style.display = isCurrentlyCollapsed ? 'block' : 'none';
+                                toggleBtn.classList.replace(isCurrentlyCollapsed ? 'fa-chevron-down' : 'fa-chevron-up', isCurrentlyCollapsed ? 'fa-chevron-up' : 'fa-chevron-down');
+                                let currentCache = JSON.parse(GM_getValue(`pmh_tool_cache_${window.pmhCurrentToolId}`, "{}"));
+                                currentCache._form_collapsed = !isCurrentlyCollapsed; GM_setValue(`pmh_tool_cache_${window.pmhCurrentToolId}`, JSON.stringify(currentCache));
+                            }
+                        }
+                    });
+                }
+                
+                panel.style.top = '80px'; panel.style.left = '60%'; panel.style.width = '450px'; panel.style.height = 'auto';
+                const savedGeoStr = GM_getValue(`pmh_panel_geo_${toolId}`);
+                if (savedGeoStr) {
+                    try {
+                        const geo = JSON.parse(savedGeoStr);
+                        if (parseInt(geo.left) < window.innerWidth && parseInt(geo.top) < window.innerHeight) {
+                            if (geo.top) panel.style.top = geo.top; if (geo.left) panel.style.left = geo.left;
+                            if (geo.width) panel.style.width = geo.width; if (geo.height) panel.style.height = geo.height;
+                        }
+                    } catch(e) {}
+                }
+                document.getElementById('pmh-panel-title-text').innerText = title;
+                document.getElementById('pmh-panel-content').innerHTML = htmlContent;
+                panel.style.display = 'flex';
+            };
+        }
+
+        const toolMenuBtn = document.createElement('a');
+        toolMenuBtn.href = '#'; toolMenuBtn.id = 'pmh-tool-menu-btn';
+        toolMenuBtn.style.cssText = "color:#adb5bd; font-size:15px; transition:0.2s; display:flex; align-items:center; justify-content:center; text-decoration:none;";
+        toolMenuBtn.title = "PMH Toolbox";
+        toolMenuBtn.innerHTML = '<i class="fas fa-toolbox"></i>';
+        toolMenuBtn.addEventListener('mouseenter', () => { toolMenuBtn.style.color = '#e5a00d'; });
+        toolMenuBtn.addEventListener('mouseleave', () => { toolMenuBtn.style.color = '#adb5bd'; });
+        ctrl.appendChild(toolMenuBtn);
+
+        let dropdown = document.getElementById('pmh-tool-dropdown');
+        if (!dropdown) {
+            dropdown = document.createElement('div'); dropdown.id = 'pmh-tool-dropdown'; document.body.appendChild(dropdown);
+            document.addEventListener('click', (e) => {
+                const currentToolBtn = document.getElementById('pmh-tool-menu-btn');
+                if (dropdown.style.display === 'block') {
+                    if (!dropdown.contains(e.target) && (!currentToolBtn || !currentToolBtn.contains(e.target))) dropdown.style.display = 'none';
+                }
+            });
+        }
+
+const fetchTools = () => {
+            if(!AppSettings.SERVERS || AppSettings.SERVERS.length === 0) return;
+            GM_xmlhttpRequest({
+                method: "GET", url: `${AppSettings.SERVERS[0].pmhServerUrl}/api/tools`,
+                headers: { "X-API-Key": AppSettings.SERVERS[0].plexMateApiKey },
+                onload: (res) => {
+                    let html = `
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
+                            <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
+                            <div style="display:flex; gap:12px; font-size:13px;">
+                                <span id="pmh-tool-check-update-btn" class="pmh-action-icon" title="전체 툴 업데이트 확인" style="cursor:pointer; color:#aaa; transition:color 0.2s;" onmouseover="this.style.color='#2f96b4'" onmouseout="this.style.color='#aaa'">
+                                    <i class="fas fa-cloud-download-alt"></i>
+                                </span>
+                                <span id="pmh-tool-install-btn" class="pmh-action-icon" title="신규 등록 (전체 서버에 설치)" style="cursor:pointer; color:#51a351; transition:0.2s;">
+                                    <i class="fas fa-plus"></i>
+                                </span>
+                                <span id="pmh-tool-refresh-btn" class="pmh-action-icon" title="새로고침" style="cursor:pointer; color:#aaa; transition:0.2s;">
+                                    <i class="fas fa-sync-alt"></i>
+                                </span>
+                            </div>
+                        </div>
+                        <div class="pmh-tool-divider" style="margin:0;"></div>
+                    `;
+
+                    if (res.status === 200) {
+                        const toolsData = JSON.parse(res.responseText).tools;
+                        if (!toolsData || toolsData.length === 0) {
+                            html += `<div style="padding:20px 15px; text-align:center; color:#777; font-size:12px;">설치된 툴이 없습니다.</div>`;
+                        } else {
+                            toolsData.forEach(tool => {
+                                html += `
+                                    <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333;" data-id="${tool.id}" data-url="${tool.update_url || ''}" data-ver="${tool.version || '0.0'}">
+                                        <div class="pmh-tool-run-btn" data-id="${tool.id}" style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:pointer;">
+                                            <i class="${tool.icon || 'fas fa-wrench'}"></i><span>${tool.name || tool.id} <span style="color:#777; font-size:10px;">v${tool.version || '1.0'}</span></span>
+                                        </div>
+                                        <div style="display:flex; gap:10px; align-items:center;">
+                                            <span class="pmh-tool-update-btn" data-id="${tool.id}" data-url="${tool.update_url || ''}" style="display:none; color:#51a351; font-size:11px; font-weight:bold; cursor:pointer; margin-left:8px;" title="클릭하여 업데이트 진행"></span>
+                                            <i class="fas fa-trash-alt pmh-tool-delete-btn" data-id="${tool.id}" data-name="${tool.name || tool.id}" style="cursor:pointer; font-size:13px;" title="전체 서버에서 삭제"></i>
+                                        </div>
+                                    </div>`;
+                            });
+                        }
+                    } else { html += `<div style="padding:20px 15px; text-align:center; color:#bd362f; font-size:12px;">툴 목록을 가져올 수 없습니다.</div>`; }
+                    dropdown.innerHTML = html;
+                },
+                onerror: () => { dropdown.innerHTML = `<div style="padding:20px; color:#bd362f;">서버 통신 오류</div>`; }
+            });
+        };
+
+        dropdown.onclick = async (e) => {
+            if (e.target.closest('#pmh-tool-refresh-btn')) { e.preventDefault(); e.stopPropagation(); fetchTools(); return; }
+            
+            const updateCheckBtn = e.target.closest('#pmh-tool-check-update-btn');
+            
+            if (updateCheckBtn) {
+                e.preventDefault(); e.stopPropagation();
+                
+                if (updateCheckBtn.innerHTML.includes('fa-spin')) {
+                    infoLog("[Tool Update] 이미 업데이트 확인 작업이 진행 중입니다. 무시합니다.");
+                    return;
+                }
+                
+                updateCheckBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                updateCheckBtn.style.color = '#2f96b4';
+                
+                infoLog("[Tool Update] 전체 툴 일괄 업데이트 확인을 시작합니다.");
+                
+                const toolItems = dropdown.querySelectorAll('.pmh-tool-item');
+                let checkCount = 0;
+                let updateAvailableCount = 0;
+                let hasUrlToCheck = false;
+                
+                const startTime = Date.now();
+
+                const finishCheck = () => {
+                    const elapsedTime = Date.now() - startTime;
+                    const minDelay = 500; 
+                    
+                    const doFinish = () => {
+                        if (updateCheckBtn) {
+                            updateCheckBtn.innerHTML = '<i class="fas fa-cloud-download-alt"></i>';
+                            updateCheckBtn.style.color = '#aaa'; 
+                        }
+                        
+                        if (updateAvailableCount > 0) {
+                            infoLog(`[Tool Update] 업데이트 확인 완료. (발견된 업데이트: ${updateAvailableCount}개)`);
+                            toastr.info(`${updateAvailableCount}개의 업데이트가 발견되었습니다.`);
+                        } else {
+                            infoLog(`[Tool Update] 업데이트 확인 완료. 모든 툴이 최신 버전입니다.`);
+                            toastr.success("모든 툴이 최신 버전입니다.");
+                        }
+                    };
+
+                    if (elapsedTime < minDelay) {
+                        setTimeout(doFinish, minDelay - elapsedTime);
+                    } else {
+                        doFinish();
+                    }
+                };
+
+                toolItems.forEach(item => {
+                    const toolId = item.dataset.id;
+                    const updateUrl = item.dataset.url;
+                    const currentVer = item.dataset.ver;
+                    const updateBtn = item.querySelector('.pmh-tool-update-btn');
+
+                    if (updateUrl && updateUrl !== 'undefined') {
+                        hasUrlToCheck = true;
+                        checkCount++;
+                        
+                        GM_xmlhttpRequest({
+                            method: "GET", url: `${updateUrl}?t=${Date.now()}`,
+                            onload: (res) => {
+                                if (res.status === 200) {
+                                    const match = res.responseText.match(/version:\s*"([^"]+)"/);
+                                    if (match) {
+                                        const remoteVer = match[1];
+                                        if (isNewerVersion(currentVer, remoteVer)) {
+                                            infoLog(`[Tool Update] 💡 신규 업데이트 발견: [${toolId}] v${currentVer} -> v${remoteVer}`);
+                                            updateBtn.style.display = 'inline-block';
+                                            updateBtn.innerHTML = `<i class="fas fa-arrow-circle-up"></i> v${remoteVer}`;
+                                            updateAvailableCount++;
+                                        } else {
+                                            updateBtn.style.display = 'none';
+                                        }
+                                    }
+                                }
+                                checkCount--;
+                                if (checkCount === 0) finishCheck();
+                            },
+                            onerror: () => { 
+                                checkCount--; 
+                                if (checkCount === 0) finishCheck(); 
+                            }
+                        });
+                    }
+                });
+                
+                if (!hasUrlToCheck || checkCount === 0) {
+                    finishCheck();
+                }
+                return;
+            }
+
+            const doUpdateBtn = e.target.closest('.pmh-tool-update-btn');
+            if (doUpdateBtn) {
+                e.preventDefault(); e.stopPropagation();
+                if (doUpdateBtn.dataset.updating) return;
+                
+                const targetId = doUpdateBtn.dataset.id;
+                const updateUrl = doUpdateBtn.dataset.url;
+                doUpdateBtn.dataset.updating = "true";
+                doUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 설치 중...`;
+
+                let successCount = 0;
+                await Promise.all(AppSettings.SERVERS.map(srv => new Promise(res => {
+                    GM_xmlhttpRequest({
+                        method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
+                        headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
+                        data: JSON.stringify({ url: updateUrl, target_id: targetId }), 
+                        onload: (r) => { if(r.status === 200) successCount++; res(); }, onerror: () => res()
+                    });
+                })));
+                
+                if (successCount > 0) {
+                    toastr.success(`전체 ${successCount}대 서버에 업데이트 완료!`);
+                    fetchTools();
+                } else {
+                    toastr.error("업데이트에 실패했습니다.");
+                    delete doUpdateBtn.dataset.updating;
+                    doUpdateBtn.innerHTML = `<i class="fas fa-exclamation-triangle"></i> 오류`;
+                }
+                return;
+            }
+
+            if (e.target.closest('#pmh-tool-install-btn')) {
+                e.preventDefault(); e.stopPropagation(); dropdown.style.display = 'none';
+                window.showPmhToolPanel('installer', "새로운 툴 등록", `
+                    <p style="font-size:13px; color:#aaa; margin-top:0;">설치할 툴의 <strong>GitHub 폴더 주소</strong>를 입력하세요.</p>
+                    <input type="text" id="pmh-install-url" style="width:100%; padding:10px; background:#111; color:#fff; border:1px solid #444; margin-bottom:20px; border-radius:4px; font-size:12px;">
+                    <div style="text-align:center;"><button id="pmh-do-install" style="padding:12px 30px; background:#51a351; color:#fff; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:14px;"><i class="fas fa-download"></i> 다운로드 및 설치</button></div>
+                    <div id="pmh-install-msg" style="margin-top:20px; font-size:13px; text-align:center;"></div>
+                `);
+                setTimeout(() => {
+                    const btn = document.getElementById('pmh-do-install');
+                    if (btn) {
+                        btn.onmouseover = () => btn.style.backgroundColor = "#3e823e";
+                        btn.onmouseout = () => btn.style.backgroundColor = "#51a351";
+
+                        btn.onclick = async (e) => {
+                            e.preventDefault(); e.stopPropagation();
+                            
+                            let url = document.getElementById('pmh-install-url').value.trim();
+                            if (!url) return;
+                            
+                            const msgDiv = document.getElementById('pmh-install-msg');
+                            if (url.endsWith('/')) url = url.slice(0, -1);
+                            
+                            let namespace = ""; 
+                            
+                            const treeMatch = url.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/tree\/([^\/]+)\/(.+)$/i);
+                            if (treeMatch) { 
+                                namespace = treeMatch[1]; 
+                                url = `https://raw.githubusercontent.com/${treeMatch[1]}/${treeMatch[2]}/${treeMatch[3]}/${treeMatch[4]}/info.yaml`; 
+                            }
+                            else if (url.includes('github.com') && url.includes('/blob/')) { 
+                                namespace = url.match(/github\.com\/([^\/]+)\//)?.[1] || ""; 
+                                url = url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/'); 
+                            }
+                            else if (url.includes('raw.githubusercontent.com')) { 
+                                namespace = url.match(/raw\.githubusercontent\.com\/([^\/]+)\//)?.[1] || ""; 
+                            }
+                            else {
+                                try {
+                                    const parsed = new URL(url);
+                                    const hostParts = parsed.hostname.split('.');
+                                    const host = hostParts.length > 1 ? hostParts[hostParts.length - 2] : hostParts[0];
+                                    const pathUser = parsed.pathname.split('/')[1] || "custom";
+                                    namespace = `${host}_${pathUser}`;
+                                } catch(e) {
+                                    namespace = "custom";
+                                }
+                            }
+
+                            if (!url.endsWith('.yaml') && !url.endsWith('.yml')) {
+                                url += '/info.yaml';
+                            }
+                            
+                            namespace = namespace.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+                            
+                            btn.style.pointerEvents = "none"; 
+                            btn.style.opacity = "0.5";
+                            msgDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${AppSettings.SERVERS.length}대의 서버에 설치 중...`;
+                            
+                            let successCount = 0;
+                            await Promise.all(AppSettings.SERVERS.map(srv => new Promise(res => {
+                                GM_xmlhttpRequest({
+                                    method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
+                                    headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
+                                    data: JSON.stringify({ url: url, prefix: namespace }), 
+                                    onload: (r) => { if(r.status === 200) successCount++; res(); }, 
+                                    onerror: () => res()
+                                });
+                            })));
+                            
+                            btn.style.pointerEvents = "auto"; 
+                            btn.style.opacity = "1";
+                            if (successCount > 0) { 
+                                msgDiv.innerHTML = `<span style="color:#51a351;"><i class="fas fa-check"></i> ${successCount}/${AppSettings.SERVERS.length}대 서버 설치 완료!</span>`; 
+                                fetchTools();
+                            } else { 
+                                msgDiv.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> 설치 실패 (URL 및 서버 상태 확인)</span>`; 
+                            }
+                        };
+                    }
+                }, 50);
+                return;
+            }
+            
+            const delBtn = e.target.closest('.pmh-tool-delete-btn');
+            if (delBtn) {
+                e.preventDefault(); e.stopPropagation();
+                if(confirm(`'${delBtn.dataset.name}' 툴을 삭제하시겠습니까?`)) {
+                    GM_deleteValue(`pmh_tool_cache_${delBtn.dataset.id}`);
+                    await Promise.all(AppSettings.SERVERS.map(srv => new Promise(res => {
+                        GM_xmlhttpRequest({
+                            method: "DELETE", url: `${srv.pmhServerUrl}/api/tools/${delBtn.dataset.id}`,
+                            headers: { "X-API-Key": srv.plexMateApiKey }, onload: () => res(), onerror: () => res()
+                        });
+                    })));
+                    fetchTools();
+                }
+                return;
+            }
+            
+            const runBtn = e.target.closest('.pmh-tool-run-btn');
+            if (runBtn) {
+                e.preventDefault(); e.stopPropagation();
+                dropdown.style.display = 'none';
+                openPmhToolUI(runBtn.dataset.id); 
+                return;
+            }
+        };
+
+        toolMenuBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if (dropdown.style.display !== 'block') {
+                const rect = toolMenuBtn.getBoundingClientRect();
+                dropdown.style.top = `${rect.bottom + 10}px`;
+                dropdown.style.right = `${window.innerWidth - rect.right}px`;
+                dropdown.style.display = 'block';
+                dropdown.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
+                        <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
+                    </div>
+                    <div class="pmh-tool-divider" style="margin:0;"></div>
+                    <div style="padding:30px 15px; text-align:center; color:#aaa; font-size:13px;">
+                        <i class="fas fa-spinner fa-spin" style="font-size:24px; color:#e5a00d; margin-bottom:12px;"></i><br>
+                        서버에서 설치된 툴을 불러오고 있습니다...
+                    </div>
+                `;
+                
+                fetchTools(); 
+            } else {
+                dropdown.style.display = 'none';
+            }
+        });
 
         target.insertBefore(ctrl, target.firstChild);
         showStatusMsg(defaultMsg, defaultColor, 0);
@@ -1201,38 +2514,31 @@ GM_addStyle(`
             if (updateLinkBtn) {
                 e.preventDefault(); e.stopPropagation();
                 if (updateLinkBtn.dataset.updating) return;
-
-                log("[UI] Unified update link clicked.");
                 updateLinkBtn.dataset.updating = "true";
                 const originalHtml = updateLinkBtn.innerHTML;
                 updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 진행중...`;
-
                 let serverSuccess = true;
-                if (serversToUpdate.length > 0) {
-                    serverSuccess = await triggerServerUpdate(showStatusMsg, serversToUpdate);
-                }
-
+                if (serversToUpdate.length > 0) serverSuccess = await triggerServerUpdate(showStatusMsg, serversToUpdate);
                 if (serverSuccess) {
                     if (needsJsUpdate) {
                         showStatusMsg(`서버 완료! 스크립트를 업데이트합니다...`, '#51a351', 3000);
-                        setTimeout(() => {
-                            window.open("https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js", "_blank");
-                        }, 1500);
+                        setTimeout(() => { window.open("https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js", "_blank"); }, 1500);
                     }
-                    defaultMsg = '';
-                    defaultColor = '#aaa';
+                    defaultMsg = ''; defaultColor = '#aaa';
                 } else {
-                    log("[UI] Server update failed.");
-                    delete updateLinkBtn.dataset.updating;
-                    updateLinkBtn.innerHTML = originalHtml;
+                    delete updateLinkBtn.dataset.updating; updateLinkBtn.innerHTML = originalHtml;
                 }
                 return;
             }
-
             const updateBtn = e.target.closest('#pmh-manual-update-btn');
             if (updateBtn) {
-                e.preventDefault(); e.stopPropagation();
-                let icon = updateBtn.querySelector('.pmh-sync-icon') || e.target.closest('.pmh-sync-icon');
+                e.preventDefault(); 
+                e.stopPropagation();
+                
+                const realBtn = document.getElementById('pmh-manual-update-btn');
+                if (!realBtn) return;
+                
+                const icon = realBtn.querySelector('.pmh-sync-icon');
                 if (!icon || icon.classList.contains('fa-spin')) return;
 
                 log("[UI] Manual update check button clicked.");
@@ -1240,9 +2546,8 @@ GM_addStyle(`
                 showStatusMsg(`업데이트 확인 중...`, '#ccc', 0);
 
                 const result = await fetchLatestVersion();
-
-                icon = updateBtn.querySelector('.pmh-sync-icon');
-                if (icon) icon.classList.remove('fa-spin');
+                const safeIcon = document.querySelector('#pmh-manual-update-btn .pmh-sync-icon');
+                if (safeIcon) safeIcon.classList.remove('fa-spin');
 
                 if (result.error) {
                     showStatusMsg(result.msg, '#bd362f', 4000);
@@ -1268,7 +2573,7 @@ GM_addStyle(`
                     } else {
                         defaultMsg = '';
                         defaultColor = '#aaa';
-                        showStatusMsg(`최신 버전입니다`, '#51a351', 3000);
+                        showStatusMsg(`최신 버전입니다 (v${CURRENT_VERSION})`, '#51a351', 3000);
                     }
                 }
             }
