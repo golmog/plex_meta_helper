@@ -18,7 +18,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.39"
+__version__ = "0.7.40"
 
 def get_version():
     return __version__
@@ -295,12 +295,11 @@ def handle_media_detail(rating_key, db_path):
 
 # ==============================================================================
 # [코어 작업 관리자 (Task Manager)]
-# 툴의 파일 입출력, 상태 로깅, 스레드 생성을 코어가 직접 제어합니다.
 # ==============================================================================
 class CoreTaskManager:
-    def __init__(self, base_dir, tool_id):
+    def __init__(self, base_dir, tool_id, server_id="default"):
         self.tool_id = tool_id
-        self.task_file = os.path.join(base_dir, 'task_logs', f"{tool_id}.json")
+        self.task_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}.json")
         os.makedirs(os.path.dirname(self.task_file), exist_ok=True)
         self._lock = threading.Lock()
 
@@ -319,8 +318,7 @@ class CoreTaskManager:
                 with open(tmp, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 os.replace(tmp, self.task_file)
-            except Exception as e:
-                print(f"[TaskMgr] Save Error: {e}")
+            except Exception as e: pass
 
     def init_task(self, task_data):
         base = {
@@ -339,8 +337,7 @@ class CoreTaskManager:
     def log(self, msg):
         print(f"[{self.tool_id}] {msg}")
         t = self.load()
-        if not t: 
-            t = {"state": "completed", "progress": 0, "total": 0, "logs": []}
+        if not t: t = {"state": "completed", "progress": 0, "total": 0, "logs": []}
         stamp = datetime.now().strftime('%H:%M:%S')
         t.setdefault('logs', []).append(f"[{stamp}] {msg}")
         if len(t['logs']) > 50: t['logs'].pop(0)
@@ -361,11 +358,11 @@ class CoreTaskManager:
 
 # ==============================================================================
 # [코어 데이터 캐시 관리자 (Data Manager)]
-# UI 목록 조회(Preview) 결과를 JSON으로 저장하고 페이징/정렬을 코어가 처리합니다.
 # ==============================================================================
 class CoreDataManager:
-    def __init__(self, base_dir, tool_id):
-        self.data_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_data.json")
+    def __init__(self, base_dir, tool_id, server_id="default"):
+        # [수정] 데이터 캐시도 서버별로 격리합니다.
+        self.data_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_data.json")
         self._lock = threading.Lock()
 
     def load(self):
@@ -515,26 +512,19 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
         elif subpath.startswith('tools/') and method == 'DELETE':
             tool_id = subpath.split('/')[1]
             tool_path = os.path.join(tools_dir, tool_id)
-            task_file = os.path.join(base_dir, 'task_logs', f"{tool_id}.json")
-            data_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_data.json")
-            
-            for tmp_f in [task_file, data_file, task_file + ".tmp", data_file + ".tmp"]:
-                if os.path.exists(tmp_f):
-                    try:
-                        os.remove(tmp_f)
-                    except Exception as e:
-                        print(f"[TOOL DELETE] 캐시 파일 삭제 실패 ({tmp_f}): {e}")
+            logs_dir = os.path.join(base_dir, 'task_logs')
+            if os.path.exists(logs_dir):
+                for f_name in os.listdir(logs_dir):
+                    if f_name.startswith(f"{tool_id}_") or f_name == f"{tool_id}.json":
+                        try: os.remove(os.path.join(logs_dir, f_name))
+                        except: pass
 
             if os.path.exists(tool_path):
                 shutil.rmtree(tool_path)
                 print(f"[TOOL DELETE] {tool_id} 및 관련 데이터 완전 삭제됨.")
                 return {"status": "success"}, 200
-                
             return {"error": "해당 툴을 찾을 수 없습니다."}, 404
 
-        # ----------------------------------------------------------------------
-        # 툴(Tool) UI / 실행 / 상태 / 취소 제어 (Core 인터셉트)
-        # ----------------------------------------------------------------------
         elif subpath.startswith('tool/') and len(subpath.split('/')) >= 3:
             parts = subpath.split('/')
             tool_id = parts[1]
@@ -553,9 +543,9 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 return {"error": f"툴 로드 실패: {load_err}"}, 500
 
             db_api = create_db_api(db_path)
-            task_mgr = CoreTaskManager(base_dir, tool_id)
+            server_id = args.get('server_id', data.get('_server_id', 'default')) if data else args.get('server_id', 'default')
+            task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
 
-            # 1. UI 조회
             if action == 'ui' and method == 'GET':
                 if hasattr(module, 'get_ui'): 
                     sig = inspect.signature(module.get_ui)
@@ -572,14 +562,13 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     return ui_data, 200
                 return {"error": "해당 툴은 UI를 제공하지 않습니다."}, 404
                 
-            # 2. 실행 (run)
             elif action == 'run' and method == 'POST':
                 if not hasattr(module, 'run'): return {"error": "해당 툴에 실행(run) 함수가 없습니다."}, 500
                 if data is None: data = {}
                 
                 final_url = plex_url if str(plex_url).strip() else data.get('_plex_url', '')
                 final_token = plex_token if str(plex_token).strip() else data.get('_plex_token', '')
-                for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token']:
+                for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token', '_server_id']:
                     data.pop(key, None)
                 
                 def get_plex_instance():
@@ -594,7 +583,7 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 }
 
                 action_type = data.get('action_type', 'preview')
-                data_mgr = CoreDataManager(base_dir, tool_id)
+                data_mgr = CoreDataManager(base_dir, tool_id, server_id)
 
                 # =================================================================
                 # [내부 헬퍼] 데이터 정렬 수행 (단일 키 및 default_sort 다중 컬럼 지원)
