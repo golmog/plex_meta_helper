@@ -56,7 +56,7 @@ def get_ui(core_api):
 
     return {
         "title": "라이브러리 통계 분석",
-        "description": "선택한 라이브러리의 방대한 메타 데이터를 분석하여 요약 대시보드를 생성합니다.<br>(데이터가 많을 경우 약간의 시간이 소요될 수 있습니다.)",
+        "description": "선택한 라이브러리의 방대한 메타 데이터를 분석하여 요약 대시보드를 생성합니다.",
         "inputs": [
             # 위에서 동적으로 만든 sections 리스트를 옵션으로 주입
             {"id": "target_section", "type": "select", "label": "분석할 라이브러리 섹션", "options": sections}
