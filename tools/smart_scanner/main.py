@@ -185,6 +185,10 @@ def run(data, core_api):
         targets = get_target_issues(data, core_api)
         table_data = []
         
+    if action == 'preview':
+        targets = get_target_issues(data, core_api)
+        table_data = []
+        
         # 차트를 그리기 위한 카운터 변수 초기화
         total_issues = len(targets)
         fix_counts = {'analyze': 0, 'match': 0, 'refresh': 0, 'yaml': 0}
@@ -260,6 +264,28 @@ def run(data, core_api):
             ],
             "data": table_data
         }, 200
+
+    if action == 'execute':
+        if data.get('_is_single'):
+            targets = {
+                str(data.get('rating_key')): {
+                    "title": data.get('title', '단일 항목'),
+                    "section": data.get('section', ''),
+                    "fix": data.get('fix_type', 'analyze'),
+                    "type": data.get('m_type', 1),
+                    "files": data.get('files', [])
+                }
+            }
+        else:
+            targets = get_target_issues(data, core_api)
+            
+        if not targets: return {"status": "error", "message": "실행할 대상이 없습니다."}, 400
+        
+        task_data = {"targets": targets, "total": len(targets)}
+        if data.get('_is_single'):
+            task_data['_is_single'] = True
+            
+        return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
     return {"status": "error", "message": "알 수 없는 명령"}, 400
 
