@@ -185,6 +185,10 @@ def run(data, core_api):
         targets = get_target_issues(data, core_api)
         table_data = []
         
+        # 차트를 그리기 위한 카운터 변수 초기화
+        total_issues = len(targets)
+        fix_counts = {'analyze': 0, 'match': 0, 'refresh': 0, 'yaml': 0}
+        
         fix_labels = {
             'analyze': ("<span style='color:#2f96b4;'>분석</span>", 1),
             'match': ("<span style='color:#bd362f;'>매칭</span>", 2),
@@ -194,8 +198,11 @@ def run(data, core_api):
 
         for rk, info in targets.items():
             fix_type = info['fix']
-            label_html, sort_score = fix_labels.get(fix_type, ("Unknown", 5))
             
+            # 해당 작업(fix_type)의 개수 누적
+            fix_counts[fix_type] = fix_counts.get(fix_type, 0) + 1
+            
+            label_html, sort_score = fix_labels.get(fix_type, ("Unknown", 5))
             table_data.append({
                 "rating_key": str(rk),
                 "section": info['section'],
@@ -207,6 +214,24 @@ def run(data, core_api):
                 "files": list(info['files'])
             })
         
+        # 프론트엔드 대시보드 렌더링용 차트 데이터 가공
+        chart_items = []
+        chart_labels_kr = {
+            'analyze': '미분석 항목 강제 분석',
+            'match': '미매칭 항목 자동 매칭',
+            'refresh': '메타데이터 새로고침',
+            'yaml': 'YAML(Plex Mate) 적용'
+        }
+
+        if total_issues > 0:
+            for f_type, count in fix_counts.items():
+                if count > 0:
+                    pct = round((count / total_issues) * 100, 1)
+                    chart_items.append({"label": chart_labels_kr[f_type], "count": f"{count}건", "percent": pct})
+            
+            # 비중(퍼센트)이 높은 순서대로 정렬
+            chart_items.sort(key=lambda x: float(x['percent']), reverse=True)
+
         action_btn = None
         if len(table_data) > 0:
             action_btn = {"label": f"<i class='fas fa-magic'></i> 전체 {len(table_data)}건 복구 시작", "payload": {"action_type": "execute"}}
@@ -214,6 +239,17 @@ def run(data, core_api):
         return {
             "status": "success",
             "type": "datatable",
+            
+            # 요약 카드 1개 (총 발견된 문제 수)
+            "summary_cards": [
+                {"label": "총 복구 대상", "value": f"{total_issues:,} 건", "icon": "fas fa-exclamation-triangle", "color": "#bd362f"}
+            ] if total_issues > 0 else [],
+            
+            # 가로형 막대 그래프 데이터
+            "bar_charts": [
+                {"title": "<i class='fas fa-chart-pie'></i> 작업 유형별 비중 통계", "color": "#2f96b4", "items": chart_items}
+            ] if chart_items else [],
+
             "action_button": action_btn,
             "default_sort": [{"key": "sort_score", "dir": "asc"}, {"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}],
             "columns": [
@@ -224,28 +260,6 @@ def run(data, core_api):
             ],
             "data": table_data
         }, 200
-
-    if action == 'execute':
-        if data.get('_is_single'):
-            targets = {
-                str(data.get('rating_key')): {
-                    "title": data.get('title', '단일 항목'),
-                    "section": data.get('section', ''),
-                    "fix": data.get('fix_type', 'analyze'),
-                    "type": data.get('m_type', 1),
-                    "files": data.get('files', [])
-                }
-            }
-        else:
-            targets = get_target_issues(data, core_api)
-            
-        if not targets: return {"status": "error", "message": "실행할 대상이 없습니다."}, 400
-        
-        task_data = {"targets": targets, "total": len(targets)}
-        if data.get('_is_single'):
-            task_data['_is_single'] = True
-            
-        return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
     return {"status": "error", "message": "알 수 없는 명령"}, 400
 
