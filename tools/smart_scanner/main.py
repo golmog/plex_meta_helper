@@ -57,6 +57,14 @@ def get_ui(core_api):
                 {"id": "opt_yaml", "label": "마커 누락 및 3자리 시즌 항목 YAML(Plex Mate) 적용", "default": True}
             ]}
         ],
+        "settings_inputs": [
+            {"id": "s_h1", "type": "header", "label": "<i class='fas fa-tachometer-alt'></i> 실행 속도 제어"},
+            {"id": "sleep_time", "type": "number", "label": "항목 처리 후 대기 시간 (단위: 초)", "default": 2},
+            
+            {"id": "s_h2", "type": "header", "label": "<i class='fab fa-discord'></i> 알림 설정"},
+            {"id": "discord_enable", "type": "checkbox", "label": "작업 완료 시 디스코드 알림 발송", "default": False},
+            {"id": "discord_webhook", "type": "text", "label": "툴 전용 웹훅 URL (비워두면 서버 전역 설정 사용)", "placeholder": "https://discord.com/api/webhooks/..."}
+        ],
         "button_text": "복구 대상 조회 (Preview)"
     }
 
@@ -269,6 +277,10 @@ def worker(task_data, core_api, start_index):
     targets = task_data.get('targets', {})
     total = task_data.get('total', len(targets))
     
+    opts = core_api.get('options', {})
+    try: sleep_time = float(opts.get('sleep_time', 2))
+    except: sleep_time = 2.0
+    
     mate_url = core_api['config'].get('mate_url', '')
     mate_apikey = core_api['config'].get('mate_apikey', '')
     path_mappings = core_api['config'].get('path_mappings', [])
@@ -353,27 +365,33 @@ def worker(task_data, core_api, start_index):
             task.log(f"   -> 오류 발생: {e}")
             
         core_api['cache'].mark_as_done('rating_key', str(rk))
-            
-        for _ in range(4):
-            if task.is_cancelled(): break
-            time.sleep(0.5)
+        
+        if sleep_time > 0:
+            loops = max(1, int(sleep_time * 2))
+            for _ in range(loops):
+                if task.is_cancelled(): return
+                time.sleep(0.5)
 
     # -------------------------------------------------------------
-    # [일괄 검증] 작업 완료 후 손상 파일 한 번에 찾아내기
+    # [일괄 검증 및 종료 처리]
     # -------------------------------------------------------------
+    # 전체 실행(배치 모드)이면서, 도중에 취소되지 않았을 때만 일괄 검증 수행
     if not task.is_cancelled() and not task_data.get('_is_single'):
         analyze_rks = [str(k) for k in sorted_rks if targets[k]['fix'] == 'analyze']
+        
         if analyze_rks:
             task.log("분석 작업 완료. DB 갱신 상태를 일괄 검증합니다...")
-            time.sleep(2) 
+            time.sleep(2)  # DB 쓰기 여유 시간 확보
             
             try:
                 corrupt_titles = []
+                # SQLite 쿼리 인자 한계(일반적으로 999)를 방지하기 위해 500개씩 청크(Chunk) 처리
                 for i in range(0, len(analyze_rks), 500):
                     chunk = analyze_rks[i:i+500]
                     placeholders = ",".join("?" for _ in chunk)
                     check_q = f"SELECT metadata_item_id FROM media_items WHERE metadata_item_id IN ({placeholders}) AND (width IS NULL OR width = 0)"
                     rows = core_api['query'](check_q, tuple(chunk))
+                    
                     for r in rows:
                         fail_rk_str = str(r['metadata_item_id'])
                         fail_title = targets.get(fail_rk_str, {}).get('title', f"Unknown Title (ID:{fail_rk_str})")
@@ -387,12 +405,18 @@ def worker(task_data, core_api, start_index):
                     task.log("=" * 45)
                 else:
                     task.log("모든 분석 항목이 정상적으로 갱신되었습니다.")
+                    
             except Exception as e:
                 task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
 
-        task.update_state('completed')
-        task.log("전체 복구 작업이 성공적으로 완료되었습니다!")
+        # 전체 실행 완료 상태 업데이트 및 디스코드 알림
+        task.update_state('completed', progress=total)
+        msg = f"총 {total}건의 전체 스마트 복구 작업이 완료되었습니다! (딜레이: {sleep_time}초)"
+        task.log(msg)
+        core_api['notify']("스마트 스캐너 완료", msg, "#e5a00d")
         
+    # 단일 실행(1건) 모드이면서, 도중에 취소되지 않았을 때
     elif not task.is_cancelled():
-        task.update_state('completed')
-        task.log("단일 실행 작업이 정상적으로 완료되었습니다!")
+        task.update_state('completed', progress=total)
+        msg = "단일 실행 작업이 정상적으로 완료되었습니다!"
+        task.log(msg)

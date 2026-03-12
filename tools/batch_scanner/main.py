@@ -59,13 +59,14 @@ def get_ui(core_api):
             {"id": "target_agent", "type": "text", "label": "에이전트 제외 필터", "placeholder": "예: tv.plex.agents.movie (입력 시 해당 에이전트는 조회 제외)"}
         ],
         
-        # [실행 시 사용되는 옵션들]
-        "execute_inputs": [
-            {"id": "sleep_time", "type": "select", "label": "항목간 대기 시간 (초)", "options": [
-                {"value": "1", "text": "1초 (빠름)"},
-                {"value": "2", "text": "2초 (권장)"},
-                {"value": "5", "text": "5초 (안전)"}
-            ]}
+        # 툴 고유 환경 설정 탭 (자동 렌더링 및 자동 저장됨)
+        "settings_inputs": [
+            {"id": "s_h1", "type": "header", "label": "<i class='fab fa-discord'></i> 디스코드 알림 설정"},
+            {"id": "sleep_time", "type": "number", "label": "항목 처리 후 대기 시간 (단위: 초)", "default": 2},
+            
+            {"id": "s_h2", "type": "header", "label": "<i class='fab fa-discord'></i> 알림 설정"},
+            {"id": "discord_enable", "type": "checkbox", "label": "작업 완료 시 디스코드 알림 발송", "default": False},
+            {"id": "discord_webhook", "type": "text", "label": "툴 전용 웹훅 URL (비워두면 서버 전역 설정 사용)", "placeholder": "https://discord.com/api/webhooks/..."}
         ],
         
         "button_text": "대상 목록 조회"
@@ -227,6 +228,11 @@ def worker(task_data, core_api, start_index):
     sleep_time = int(task_data.get('sleep_time', 2))
     items = task_data.get('target_items', [])
     total_items = task_data.get('total', len(items))
+    # 환경 설정 탭에서 유저가 입력한 커스텀 값을 불러와서 활용할 수 있습니다.
+    opts = core_api.get('options', {})
+    # 사용자가 빈칸으로 두거나 잘못 입력했을 경우를 대비한 안전한 형변환 (기본값 2초)
+    try: sleep_time = float(opts.get('sleep_time', 2))
+    except: sleep_time = 2.0
 
     try:
         plex = core_api['get_plex']()
@@ -291,16 +297,20 @@ def worker(task_data, core_api, start_index):
         except Exception as e:
             task.log(f"   -> 처리 오류: {e}")
         
-        # 항목 간 슬립 (긴 슬립 타임 도중 취소를 누르면 즉각 반응하기 위해 잘게 쪼개서 sleep)
-        for _ in range(int(sleep_time * 2)):
-            if task.is_cancelled(): return
-            time.sleep(0.5)
+        # 항목 간 슬립 (0초일 때는 아예 슬립 생략)
+        if sleep_time > 0:
+            loops = max(1, int(sleep_time * 2))
+            for _ in range(loops):
+                if task.is_cancelled(): return
+                time.sleep(0.5)
 
-    # 모든 루프가 끝난 뒤 상태를 완료로 변경
+    # 작업 완료 후 디스코드 알림 발송 로직
     task.update_state('completed', progress=total_items)
-    
-    # 단일/전체 실행 여부에 따라 명확한 종료 메시지 출력
+
     if task_data.get('_is_single'):
-        task.log("단일 실행 작업이 정상적으로 완료되었습니다!")
+        msg = "단일 실행 작업이 정상적으로 완료되었습니다!"
+        task.log(msg)
     else:
-        task.log("전체 배치 작업이 성공적으로 완료되었습니다!")
+        msg = f"총 {total_items}건의 전체 배치 작업이 성공적으로 완료되었습니다!"
+        task.log(msg)
+        core_api['notify']("배치 스캐너 완료", msg, "#51a351")
