@@ -55,11 +55,18 @@ def get_ui(core_api):
         pass
 
     return {
-        "title": "라이브러리 통계 분석",
-        "description": "선택한 라이브러리의 방대한 메타 데이터를 분석하여 요약 대시보드를 생성합니다.",
+        "title": "라이브러리 종합 통계 분석",
+        "description": "선택한 라이브러리의 방대한 메타 데이터를 분석하여 요약 대시보드를 생성합니다.<br>원하는 미디어 종류만 선택하여 분석할 수 있습니다.",
         "inputs": [
-            # 위에서 동적으로 만든 sections 리스트를 옵션으로 주입
-            {"id": "target_section", "type": "select", "label": "분석할 라이브러리 섹션", "options": sections}
+            {"id": "target_section", "type": "select", "label": "분석할 라이브러리 섹션", "options": sections},
+            
+            # 미디어 종류를 선택할 수 있는 체크박스 그룹
+            {"id": "media_types", "type": "checkbox_group", "label": "분석 대상 미디어 (실제 파일 단위)", "options": [
+                {"id": "type_movie", "label": "영화 (Movies)", "default": True},
+                {"id": "type_show", "label": "TV 쇼 (Episodes)", "default": True},
+                {"id": "type_music", "label": "음악 (Audio Tracks)", "default": False},
+                {"id": "type_photo", "label": "사진 및 기타 (Photos)", "default": False}
+            ]}
         ],
         "button_text": "통계 추출 시작"
     }
@@ -76,9 +83,17 @@ def run(data, core_api):
 
     section_id = data.get('target_section', 'all')
     
+    # 체크박스 값에 따라 Plex 내부 metadata_type(ID) 리스트 생성
+    type_filters = []
+    if data.get('type_movie', True): type_filters.append(1)   # 영화
+    if data.get('type_show', True): type_filters.append(4)    # 에피소드
+    if data.get('type_music', False): type_filters.append(10) # 음악 트랙
+    if data.get('type_photo', False): type_filters.append(13) # 사진
+
     # [Reference] 파라미터 바인딩을 위한 준비 (SQL 인젝션 방지)
-    where_clause = "WHERE mi.metadata_type IN (1, 4)"
-    params = []
+    type_placeholders = ",".join("?" for _ in type_filters)
+    where_clause = f"WHERE mi.metadata_type IN ({type_placeholders})"
+    params = list(type_filters) # 리스트 복사
     
     if section_id != "all":
         where_clause += " AND mi.library_section_id = ?"
@@ -102,14 +117,18 @@ def run(data, core_api):
         # [Reference] DB 쿼리 예시 1: COUNT 등 집계 함수 사용
         # 집계 함수를 쓸 때는 AS 키워드로 별칭(Alias)을 주어야 파이썬 dict 키로 쓰기 편합니다.
         # -------------------------------------------------------------
-        record_log("1. 영화 및 에피소드 카운트 집계 중...")
+        # [데이터 집계 1] 미디어 타입별 카운트
+        record_log("1. 미디어 종류별 개수 집계 중...")
         q_count = f"SELECT metadata_type, COUNT(*) as cnt FROM metadata_items mi {where_clause} GROUP BY metadata_type"
         rows_count = core_api['query'](q_count, tuple(params))
         
         counts = {row['metadata_type']: row['cnt'] for row in rows_count}
-        movie_count = counts.get(1, 0)     # 영화(1)
-        episode_count = counts.get(4, 0)   # 에피소드(4)
+        movie_count = counts.get(1, 0)
+        episode_count = counts.get(4, 0)
+        music_count = counts.get(10, 0)
+        photo_count = counts.get(13, 0)
 
+        # [데이터 집계 2] 용량 및 재생 시간 (사진 등은 duration이 null일 수 있음)
         record_log("2. 총 소모 용량 및 재생 시간 분석 중...")
         q_size = f"""
             SELECT SUM(m.duration) as dur, SUM(mp.size) as sz
@@ -130,7 +149,7 @@ def run(data, core_api):
             SELECT m.width, COUNT(*) as cnt
             FROM metadata_items mi
             JOIN media_items m ON m.metadata_item_id = mi.id
-            {where_clause} AND m.width IS NOT NULL
+            {where_clause} AND m.width IS NOT NULL AND m.width > 0
             GROUP BY m.width
         """
         rows_res = core_api['query'](q_res, tuple(params))
@@ -138,7 +157,6 @@ def run(data, core_api):
         # Plex DB의 width(가로 픽셀) 값을 기준으로 일반적인 해상도 규격으로 합산
         res_dict = {"8K":0, "6K":0, "4K":0, "1080p":0, "720p":0, "SD":0}
         total_res_count = 0
-        
         for row in rows_res:
             w = row['width']
             c = row['cnt']
@@ -156,13 +174,14 @@ def run(data, core_api):
                 resolution_data.append({"label": k, "count": f"{v:,} 개", "percent": pct})
         resolution_data.sort(key=lambda x: x['percent'], reverse=True) 
 
+        # [데이터 집계 4] 코덱 점유율 (비디오/오디오/음악 모두 포함)
         record_log("4. 비디오 및 오디오 코덱 점유율 분석 중...")
         q_codec = f"""
             SELECT ms.stream_type_id, ms.codec, COUNT(*) as cnt
             FROM metadata_items mi
             JOIN media_items m ON m.metadata_item_id = mi.id
             JOIN media_streams ms ON ms.media_item_id = m.id
-            {where_clause} AND ms.codec != ''
+            {where_clause} AND ms.codec != '' AND ms.codec IS NOT NULL
             GROUP BY ms.stream_type_id, ms.codec
         """
         rows_codec = core_api['query'](q_codec, tuple(params))
@@ -175,10 +194,10 @@ def run(data, core_api):
             c_name = str(codec).upper()
             cnt = row['cnt']
             
-            if row['stream_type_id'] == 1: # Video Stream
+            if row['stream_type_id'] == 1: # Video
                 v_codecs[c_name] = v_codecs.get(c_name, 0) + cnt
                 total_v += cnt
-            elif row['stream_type_id'] == 2: # Audio Stream
+            elif row['stream_type_id'] == 2: # Audio (영화, 에피소드, 음악 트랙 모두 포함)
                 a_codecs[c_name] = a_codecs.get(c_name, 0) + cnt
                 total_a += cnt
                 
@@ -202,28 +221,32 @@ def run(data, core_api):
     # [프론트엔드 반환 포맷: Dashboard Schema]
     # JS 프론트엔드가 이 JSON 규격을 읽어 예쁜 카드와 막대 그래프를 그려줍니다.
     # =========================================================================
+    # 1. 요약 카드 동적 생성
+    cards = []
+    if 1 in type_filters: cards.append({"label": "영화 컨텐츠", "value": f"{movie_count:,} 편", "icon": "fas fa-film", "color": "#e5a00d"})
+    if 4 in type_filters: cards.append({"label": "TV 에피소드", "value": f"{episode_count:,} 화", "icon": "fas fa-tv", "color": "#2f96b4"})
+    if 10 in type_filters: cards.append({"label": "음악 트랙", "value": f"{music_count:,} 곡", "icon": "fas fa-music", "color": "#9c27b0"})
+    if 13 in type_filters: cards.append({"label": "사진/기타", "value": f"{photo_count:,} 장", "icon": "fas fa-image", "color": "#607d8b"})
+    
+    cards.append({"label": "총 소모 용량", "value": format_size(total_size), "icon": "fas fa-hdd", "color": "#51a351"})
+    
+    # 음악이나 영상을 선택해서 재생 시간이 존재할 경우에만 표시
+    if total_duration > 0:
+        cards.append({"label": "총 재생 시간", "value": format_duration(total_duration), "icon": "fas fa-clock", "color": "#bd362f"})
+
+    # 2. 그래프 동적 생성 (데이터가 있는 경우에만 차트 렌더링)
+    charts = []
+    if resolution_data:
+        charts.append({"title": "<i class='fas fa-tv'></i> 비디오 해상도 비율", "color": "#e5a00d", "items": resolution_data})
+    if video_codec_data:
+        charts.append({"title": "<i class='fas fa-video'></i> 주요 비디오 코덱", "color": "#2f96b4", "items": video_codec_data})
+    if audio_codec_data:
+        charts.append({"title": "<i class='fas fa-music'></i> 주요 오디오 코덱", "color": "#51a351", "items": audio_codec_data})
+
     return {
         "status": "success",
-        
-        # [Reference] 핵심: 이 타입을 지정해야 대시보드 UI가 렌더링됩니다.
         "type": "dashboard",  
-        
-        # 상단 요약 카드 (가로 배치)
-        "summary_cards": [
-            {"label": "영화 컨텐츠", "value": f"{movie_count:,} 편", "icon": "fas fa-film", "color": "#e5a00d"},
-            {"label": "TV 에피소드", "value": f"{episode_count:,} 화", "icon": "fas fa-tv", "color": "#2f96b4"},
-            {"label": "총 소모 용량", "value": format_size(total_size), "icon": "fas fa-hdd", "color": "#51a351"},
-            {"label": "총 재생 시간", "value": format_duration(total_duration), "icon": "fas fa-clock", "color": "#bd362f"}
-        ],
-        
-        # 하단 프로그레스 바 형태의 차트 (세로 배치)
-        "bar_charts": [
-            {"title": "<i class='fas fa-tv'></i> 비디오 해상도 비율", "color": "#e5a00d", "items": resolution_data},
-            {"title": "<i class='fas fa-video'></i> 주요 비디오 코덱", "color": "#2f96b4", "items": video_codec_data},
-            {"title": "<i class='fas fa-music'></i> 주요 오디오 코덱", "color": "#51a351", "items": audio_codec_data}
-        ],
-        
-        # [Reference] 동기식 즉시 반환 툴의 로그 표출을 위해 문자열 배열 전달
+        "summary_cards": cards,
+        "bar_charts": charts,
         "logs": logs
-        
     }, 200
