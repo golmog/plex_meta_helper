@@ -24,3 +24,10 @@ MAX_BATCH_SIZE: 1000
 # 보안을 위한 API 인증 키
 # 클라이언트 스크립트(Tampermonkey)의 AppSettings.SERVERS "plexMateApiKey" 값과 정확히 일치해야 합니다.
 API_KEY: "YOUR_PLEX_MATE_API_KEY_HERE"
+
+# 서버에서 PLEX_MATE 접속을 위한 URL 설정(FF URL).
+PLEX_MATE_URL: "http://127.0.0.1:9999"
+
+# 서버 경로와 PLEX 라이브러리 경로가 다를 경우를 위한 설정(ex. /plex_mnt/gds|/server_mnt/gds)
+PATH_MAPPINGS:
+  - "/mnt/gds/|/mnt/gds/"

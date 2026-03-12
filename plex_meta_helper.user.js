@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.41
+// @version      0.7.42
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -157,7 +157,7 @@ GM_addStyle(`
         z-index: 999999; display: none; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,0.9);
         backdrop-filter: blur(10px); transition: opacity 0.2s ease;
         min-width: 350px; min-height: 200px;
-        max-width: 95vw; max-height: 95vh;
+        max-width: 95vw; max-height: calc(100vh - 50px);
     }
 
     .pmh-panel-header {
@@ -1178,16 +1178,13 @@ GM_addStyle(`
     // 5-1. Tool UI 렌더링 및 모니터링
     // ==========================================
     function openPmhToolUI(toolId, forceSrvIdx = null) {
-        const savedOptions = JSON.parse(GM_getValue(`pmh_tool_cache_${toolId}`, "{}"));
+        const globalCache = JSON.parse(GM_getValue(`pmh_tool_cache_global_${toolId}`, "{}"));
         const currentSrvId = window.location.hash.match(/\/server\/([a-f0-9]+)\//)?.[1];
         
-        // 1. 타겟 서버 결정 (강제 지정 > 캐시 > 현재 접속 중인 Plex > 0번 기본값)
         let srvIdx = 0;
-        if (forceSrvIdx !== null) {
-            srvIdx = forceSrvIdx;
-        } else if (savedOptions['target_server_idx'] !== undefined) {
-            srvIdx = parseInt(savedOptions['target_server_idx']);
-        } else if (currentSrvId) {
+        if (forceSrvIdx !== null) srvIdx = forceSrvIdx;
+        else if (globalCache['target_server_idx'] !== undefined) srvIdx = parseInt(globalCache['target_server_idx']);
+        else if (currentSrvId) {
             const matchIdx = AppSettings.SERVERS.findIndex(s => s.machineIdentifier === currentSrvId);
             if (matchIdx !== -1) srvIdx = matchIdx;
         }
@@ -1206,25 +1203,26 @@ GM_addStyle(`
                 if(res.status !== 200) return window.showPmhToolPanel(toolId, "오류 발생", `<p style="color:#bd362f;">UI 스키마 로드 실패 (HTTP ${res.status})</p>`);
                 
                 const ui = JSON.parse(res.responseText);
+                const savedOptions = ui.saved_options || {};
                 const isFormCollapsed = savedOptions._form_collapsed === true;
                 const collapseIcon = isFormCollapsed ? 'fa-chevron-down' : 'fa-chevron-up';
                 const formDisplay = isFormCollapsed ? 'none' : 'block';
 
                 let formHtml = `
                     <div style="display:flex; flex-direction:column; height:100%;">
-                        <div style="display:flex; border-bottom:1px solid #444; margin-bottom:15px; flex-shrink:0;">
-                            <div class="pmh-tab-btn active" data-tab="tab_form" style="padding:10px 15px; cursor:pointer; color:#e5a00d; font-weight:bold; border-bottom:2px solid #e5a00d;"><i class="fas fa-search"></i> 조회 및 설정</div>
-                            <div class="pmh-tab-btn" data-tab="tab_monitor" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-desktop"></i> 실행 모니터링</div>
+                        <div style="display:flex; border-bottom:1px solid #444; margin-bottom:15px; flex-shrink:0; justify-content:space-between; align-items:flex-end;">
+                            <div style="display:flex;">
+                                <div class="pmh-tab-btn active" data-tab="tab_form" style="padding:10px 15px; cursor:pointer; color:#e5a00d; font-weight:bold; border-bottom:2px solid #e5a00d;"><i class="fas fa-search"></i> 조회 및 설정</div>
+                                <div class="pmh-tab-btn" data-tab="tab_monitor" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-desktop"></i> 실행 모니터링</div>
+                            </div>
+                            <div style="padding-bottom:10px; padding-right:5px;">
+                                <i class="fas fa-eraser" id="pmh_tool_reset_cache" title="옵션 및 캐시 초기화" style="color:#777; cursor:pointer; font-size:14px; transition:0.2s;" onmouseover="this.style.color='#bd362f'" onmouseout="this.style.color='#777'"></i>
+                            </div>
                         </div>
                         <div id="pmh_tab_form" style="display:flex; flex-direction:column; flex-grow:1; overflow-y:auto; overflow-x:hidden; min-height:0; padding-right:5px;">
-                            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:10px; flex-shrink:0;">
-                                <div style="color:#aaa; font-size:13px; line-height:1.4; flex-grow:1;">${ui.description || ''}</div>
-                                <div style="display:flex; gap:12px; align-items:center; margin-left:15px; margin-top:2px;">
-                                    <i class="fas ${collapseIcon}" id="pmh_tool_toggle_form" title="옵션 접기/펼치기" style="color:#2f96b4; cursor:pointer; font-size:15px; transition:0.2s;"></i>
-                                    <i class="fas fa-eraser" id="pmh_tool_reset_cache" title="옵션 및 캐시 초기화" style="color:#777; cursor:pointer; font-size:14px; transition:0.2s;"></i>
-                                </div>
-                            </div>
-                            <div id="pmh_tool_form_container" style="display:${formDisplay}; flex-shrink:0; padding-bottom:15px; border-bottom:1px solid #333; margin-bottom:15px;">
+                            <div style="color:#aaa; font-size:13px; line-height:1.4; flex-shrink:0; margin-bottom:10px;">${ui.description || ''}</div>
+                            <div style="border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:10px; position:relative; flex-shrink:0;">
+                                <div id="pmh_tool_form_container" style="display:${formDisplay};">
                 `;
 
                 if (AppSettings.SERVERS.length > 1) {
@@ -1240,16 +1238,22 @@ GM_addStyle(`
                 const currentSecId = window.location.hash.match(/source=%2Flibrary%2Fsections%2F(\d+)/)?.[1] || "all";
 
                 const renderInput = (input) => {
-                    let html = `<div style="margin-bottom: 12px;">
-                                    <label style="display:block; color:#e5a00d; font-size:12px; margin-bottom:6px; font-weight:bold;">${input.label}</label>`;
-                    
+                    if (input.type === 'header') return `<div style="margin-top:20px; margin-bottom:12px; font-size:14px; font-weight:bold; color:#2f96b4; border-bottom:1px solid #333; padding-bottom:6px;">${input.label}</div>`;
+                    if (input.type === 'checkbox_group') {
+                        let html = `<div style="margin-bottom:15px;"><div style="color:#e5a00d; font-size:13px; font-weight:bold; margin-bottom:6px;">${input.label}</div><div style="display:flex; flex-direction:column; gap:8px; background:rgba(0,0,0,0.2); padding:12px; border-radius:4px; border:1px solid #333;">`;
+                        input.options.forEach(opt => {
+                            let isChecked = savedOptions[opt.id] !== undefined ? savedOptions[opt.id] : (opt.default || false);
+                            html += `<label style="color:#fff; font-size:13px; cursor:pointer; display:flex; align-items:center;"><input type="checkbox" id="pmh_inp_${opt.id}" style="margin-right:8px; width:16px; height:16px; cursor:pointer; accent-color:#e5a00d;" ${isChecked ? "checked" : ""}>${opt.label}</label>`;
+                        });
+                        return html + `</div></div>`;
+                    }
+                    let html = `<div style="margin-bottom: 12px;"><label style="display:block; color:#e5a00d; font-size:12px; margin-bottom:6px; font-weight:bold;">${input.label}</label>`;
                     let cachedVal = savedOptions[input.id];
                     if (input.type === 'text') {
                         html += `<input type="text" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" style="width:100%; padding:8px; background:#111; border:1px solid #444; color:#fff; border-radius:4px; font-size:13px;">`;
                     } else if (input.type === 'select') {
                         const validOptions = input.options.map(o => String(o.value));
                         if (cachedVal !== undefined && !validOptions.includes(String(cachedVal))) cachedVal = undefined;
-
                         html += `<select id="pmh_inp_${input.id}" style="width:100%; padding:8px; background:#111; border:1px solid #444; color:#fff; border-radius:4px; font-size:13px;">`;
                         input.options.forEach(o => {
                             const isSelected = (cachedVal !== undefined) ? (String(o.value) === String(cachedVal) ? "selected" : "") : ((input.id === 'target_section' && String(o.value) === currentSecId) ? "selected" : "");
@@ -1259,21 +1263,28 @@ GM_addStyle(`
                     } else if (input.type === 'checkbox') {
                         html += `<label style="color:#ddd; font-size:13px; cursor:pointer;"><input type="checkbox" id="pmh_inp_${input.id}" style="margin-right:6px;" ${cachedVal ? "checked" : ""}> 활성화</label>`;
                     }
-                    html += `</div>`;
-                    return html;
+                    return html + `</div>`;
                 };
 
                 if (ui.inputs && ui.inputs.length > 0) {
                     formHtml += `<div style="margin-bottom:15px; padding:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;">
-                                    <div style="color:#51a351; font-weight:bold; margin-bottom:12px; font-size:12px; border-bottom:1px dashed #444; padding-bottom:6px;"><i class="fas fa-search"></i> 1. 조회 조건 설정</div>`;
+                                    <div style="color:#51a351; font-weight:bold; margin-bottom:12px; font-size:12px; border-bottom:1px dashed #444; padding-bottom:6px;"><i class="fas fa-search"></i> 조회 조건 설정</div>`;
                     ui.inputs.forEach(input => { formHtml += renderInput(input); });
                     formHtml += `</div>`;
                 }
 
-                let mainBtnHtml = `<button id="pmh_run_btn" style="padding:12px 30px; background:#e5a00d; color:#1f1f1f; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:14px; transition:0.2s;"><i class="fas fa-search"></i> ${ui.button_text || '조회'}</button>`;
-                formHtml += `<div style="text-align:center; margin-top:20px;">${mainBtnHtml}</div></div>`;
-                formHtml += `<div id="pmh_run_res_form" style="font-size:13px; display:none; margin-top:15px; flex-grow:1; min-height:0;"></div></div>`;
-                
+                formHtml += `<div style="text-align:center; margin-top:15px; margin-bottom:10px; flex-shrink:0;">
+                                <button id="pmh_run_btn" style="padding:12px 30px; background:#e5a00d; color:#1f1f1f; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:14px; transition:0.2s;"><i class="fas fa-search"></i> ${ui.button_text || '조회'}</button>
+                             </div>`;
+                formHtml += `</div>`;
+                formHtml += `</div>`;
+                formHtml += `
+                    <div style="text-align:center; margin-top:-20px; margin-bottom:15px; position:relative; z-index:2; height:15px;">
+                        <i class="fas ${collapseIcon}" id="pmh_tool_toggle_form" title="옵션 접기/펼치기" style="color:#2f96b4; cursor:pointer; font-size:16px; background:#1a1d21; padding:0 12px; border-radius:10px; border:1px solid #333; transition:0.2s;"></i>
+                    </div>
+                `;
+
+                formHtml += `<div id="pmh_run_res_form" style="font-size:13px; display:none; margin-top:5px; flex-grow:1; min-height:0;"></div></div>`;
                 formHtml += `<div id="pmh_tab_monitor" style="display:none; flex-direction:column; flex-grow:1; min-height:0; padding-right:5px;">`;
                 formHtml += `<div id="pmh_run_res_monitor" style="display:flex; flex-direction:column; flex-grow:1; min-height:0; font-size:13px; color:#aaa; text-align:center; padding:30px 0;"><i class="fas fa-info-circle"></i> 진행 중이거나 완료된 작업이 없습니다.</div>`;
                 formHtml += `</div></div>`;
@@ -1282,20 +1293,92 @@ GM_addStyle(`
 
                 setTimeout(() => {
                     let isTaskRunning = false;
+                    let isCancelling = false;
                     let pollTimer = null;
-                    
+                    let currentTaskStatus = ui.active_task || {};
+
+                    const updateFormTabButtons = (isRunning) => {
+                        isTaskRunning = isRunning;
+                        const mainRunBtn = document.getElementById('pmh_run_btn');
+                        const actionBtn = document.getElementById('pmh_dt_action_btn');
+                        const resumeBtn = document.getElementById('pmh_resume_btn');
+                        const cancelBtns = document.querySelectorAll('.pmh_global_cancel_btn');
+
+                        const canResume = (currentTaskStatus.state === 'cancelled' || currentTaskStatus.state === 'error') 
+                                          && currentTaskStatus.progress > 0 && currentTaskStatus.total > 0;
+
+                        if (isRunning) {
+                            if (mainRunBtn) {
+                                if (!mainRunBtn.dataset.originalHtml) mainRunBtn.dataset.originalHtml = mainRunBtn.innerHTML;
+                                mainRunBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 작업 진행 중...';
+                                mainRunBtn.style.backgroundColor = '#555';
+                                mainRunBtn.style.color = '#aaa';
+                                mainRunBtn.style.cursor = 'not-allowed';
+                                mainRunBtn.disabled = true;
+                            }
+                            if (actionBtn) actionBtn.style.display = 'none';
+                            if (resumeBtn) resumeBtn.style.display = 'none';
+                            cancelBtns.forEach(btn => btn.style.display = 'inline-block');
+                        } else {
+                            if (mainRunBtn && mainRunBtn.dataset.originalHtml) {
+                                mainRunBtn.innerHTML = mainRunBtn.dataset.originalHtml;
+                                mainRunBtn.style.backgroundColor = '#e5a00d';
+                                mainRunBtn.style.color = '#1f1f1f';
+                                mainRunBtn.style.cursor = 'pointer';
+                                mainRunBtn.disabled = false;
+                            }
+                            
+                            if (canResume) {
+                                if (resumeBtn) {
+                                    resumeBtn.style.display = 'inline-block';
+                                    resumeBtn.innerHTML = `<i class="fas fa-step-forward"></i> 이어서 계속하기 (${currentTaskStatus.progress} / ${currentTaskStatus.total})`;
+                                }
+                                if (actionBtn) actionBtn.style.display = 'none';
+                            } else {
+                                if (resumeBtn) resumeBtn.style.display = 'none';
+                                if (actionBtn) actionBtn.style.display = 'inline-block';
+                            }
+                            
+                            cancelBtns.forEach(btn => {
+                                btn.style.display = 'none';
+                                btn.innerHTML = '<i class="fas fa-stop"></i> 작업 중단';
+                            });
+                        }
+                    };
+
+                    if (currentTaskStatus && currentTaskStatus.state === 'running') {
+                        updateFormTabButtons(true);
+                        setTimeout(() => {
+                            processAndRenderResult({ type: 'async_task', task_id: toolId, is_preview: false }, savedOptions.items_per_page || 10, targetSrv, true);
+                        }, 50);
+                    } else {
+                        updateFormTabButtons(false);
+                    }
+
+                    GM_xmlhttpRequest({
+                        method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                        headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                        data: JSON.stringify({ action_type: 'page', page: 1, limit: savedOptions.items_per_page || 10, sort_key: savedOptions._sort_key, sort_dir: savedOptions._sort_dir || 'asc', _server_id: serverId }),
+                        onload: (r) => { 
+                            if (r.status === 200) {
+                                try {
+                                    const preventSwitch = (currentTaskStatus && currentTaskStatus.state === 'running');
+                                    processAndRenderResult(JSON.parse(r.responseText), parseInt(savedOptions.items_per_page || 10), targetSrv, preventSwitch);
+                                } catch(e) {}
+                            } 
+                        }
+                    });
+
                     const srvSelectEl = document.getElementById('pmh_target_server_idx');
                     if (srvSelectEl) {
                         srvSelectEl.addEventListener('change', (e) => {
                             if (isTaskRunning) {
-                                e.preventDefault();
-                                srvSelectEl.value = srvIdx; 
+                                e.preventDefault(); srvSelectEl.value = srvIdx; 
                                 return alert("현재 서버에서 작업이 진행 중입니다. 작업을 멈춘 뒤 서버를 변경해주세요.");
                             }
                             const newIdx = parseInt(e.target.value);
-                            savedOptions['target_server_idx'] = newIdx;
-                            GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(savedOptions));
-                            
+                            globalCache['target_server_idx'] = newIdx;
+                            GM_setValue(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
                             if (pollTimer) clearTimeout(pollTimer);
                             openPmhToolUI(toolId, newIdx); 
                         });
@@ -1303,27 +1386,58 @@ GM_addStyle(`
 
                     const getFormData = () => {
                         const reqData = { _server_id: serverId };
-                        const cacheToSave = { ...savedOptions }; 
-                        
-                        if(srvSelectEl) cacheToSave['target_server_idx'] = parseInt(srvSelectEl.value);
-
                         const allInputs = [ ...(ui.inputs || []), ...(ui.execute_inputs || []) ];
                         allInputs.forEach(i => {
-                            const el = document.getElementById(`pmh_inp_${i.id}`);
-                            if (el) {
-                                const val = (i.type === 'checkbox') ? el.checked : el.value;
-                                reqData[i.id] = val; cacheToSave[i.id] = val;
+                            if (i.type === 'checkbox_group') {
+                                i.options.forEach(opt => {
+                                    const el = document.getElementById(`pmh_inp_${opt.id}`);
+                                    if (el) { reqData[opt.id] = el.checked; savedOptions[opt.id] = el.checked; }
+                                });
+                            } else {
+                                const el = document.getElementById(`pmh_inp_${i.id}`);
+                                if (el) {
+                                    const val = (i.type === 'checkbox') ? el.checked : el.value;
+                                    reqData[i.id] = val; savedOptions[i.id] = val; 
+                                }
                             }
                         });
-
                         const plexInfo = extractPlexServerInfo(serverId);
                         if (plexInfo) { reqData['_plex_url'] = plexInfo.url; reqData['_plex_token'] = plexInfo.token; }
-                        
-                        GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(cacheToSave));
                         return { targetSrv, reqData };
                     };
 
+                    const autoSaveInputs = [ ...(ui.inputs || []), ...(ui.execute_inputs || []) ];
+                    autoSaveInputs.forEach(i => {
+                        if (i.type === 'checkbox_group') {
+                            i.options.forEach(opt => {
+                                const el = document.getElementById(`pmh_inp_${opt.id}`);
+                                if (el) el.addEventListener('change', () => { saveOptionsToServer(); });
+                            });
+                        } else {
+                            const el = document.getElementById(`pmh_inp_${i.id}`);
+                            if (el) el.addEventListener('change', () => { saveOptionsToServer(); });
+                        }
+                    });
+
+                    const saveOptionsToServer = () => {
+                        const { reqData } = getFormData();
+                        reqData.action_type = 'save_options'; 
+                        reqData._form_collapsed = savedOptions._form_collapsed;
+                        reqData.items_per_page = savedOptions.items_per_page;
+                        reqData._sort_key = savedOptions._sort_key;
+                        reqData._sort_dir = savedOptions._sort_dir;
+
+                        GM_xmlhttpRequest({
+                            method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                            headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                            data: JSON.stringify(reqData)
+                        });
+                    };
+
                     const switchTab = (targetId) => {
+                        const panel = document.getElementById('pmh-tool-panel');
+                        if (panel && panel.style.height === 'auto') panel.style.height = panel.offsetHeight + 'px'; 
+
                         document.querySelectorAll('.pmh-tab-btn').forEach(btn => {
                             if (btn.dataset.tab === targetId) {
                                 btn.classList.add('active');
@@ -1333,8 +1447,33 @@ GM_addStyle(`
                                 btn.style.color = '#777'; btn.style.fontWeight = 'normal'; btn.style.borderBottomColor = 'transparent';
                             }
                         });
+                        
                         document.getElementById('pmh_tab_form').style.display = targetId === 'tab_form' ? 'flex' : 'none';
                         document.getElementById('pmh_tab_monitor').style.display = targetId === 'tab_monitor' ? 'flex' : 'none';
+                        
+                        if (targetId === 'tab_form' && panel) {
+                            const savedGeoStr = GM_getValue(`pmh_panel_geo_${toolId}`);
+                            let isManuallyResized = false;
+                            if (savedGeoStr) {
+                                try { const geo = JSON.parse(savedGeoStr); if (geo.height && geo.height !== 'auto') isManuallyResized = true; } catch(e){}
+                            }
+                            if (!isManuallyResized) {
+                                panel.style.height = 'auto';
+                                setTimeout(() => {
+                                    const content = document.getElementById('pmh_tab_form');
+                                    if (content) { content.style.display = 'none'; content.offsetHeight; content.style.display = 'flex'; }
+                                }, 10);
+                            }
+                        }
+                        
+                        if (targetId === 'tab_form') {
+                            GM_xmlhttpRequest({
+                                method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                data: JSON.stringify({ action_type: 'page', page: 1, limit: savedOptions.items_per_page || 10, sort_key: savedOptions._sort_key, sort_dir: savedOptions._sort_dir || 'asc', _server_id: serverId }),
+                                onload: (r) => { if (r.status === 200) processAndRenderResult(JSON.parse(r.responseText), savedOptions.items_per_page || 10, targetSrv, true); }
+                            });
+                        }
                     };
 
                     document.querySelectorAll('.pmh-tab-btn').forEach(btn => {
@@ -1345,20 +1484,11 @@ GM_addStyle(`
 
                     const resetBtn = document.getElementById('pmh_tool_reset_cache');
                     if(resetBtn) {
-                        resetBtn.onmouseover = () => resetBtn.style.color = "#bd362f";
-                        resetBtn.onmouseout = () => resetBtn.style.color = "#777";
                         resetBtn.onclick = () => {
                             if(isTaskRunning) return alert("진행 중인 작업을 먼저 중단해 주세요.");
                             if(confirm(`[${targetSrv.name}] 서버에 저장된 옵션과 결과, 작업 기록을 모두 초기화하시겠습니까?`)) {
-                                
-                                const currentTarget = savedOptions.target_server_idx;
+                                GM_deleteValue(`pmh_panel_geo_${toolId}`);
                                 GM_deleteValue(`pmh_tool_cache_${toolId}`);
-                                GM_deleteValue(`pmh_tool_result_${toolId}`);
-                                
-                                savedOptions._sort_key = null; savedOptions._sort_dir = 'asc'; savedOptions.items_per_page = 10;
-                                if(currentTarget !== undefined) savedOptions.target_server_idx = currentTarget;
-                                GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(savedOptions));
-                                
                                 GM_xmlhttpRequest({
                                     method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
                                     headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
@@ -1366,46 +1496,90 @@ GM_addStyle(`
                                     onload: () => { 
                                         const resForm = document.getElementById('pmh_run_res_form');
                                         if (resForm) { resForm.style.display = 'none'; resForm.innerHTML = ''; }
-                                        
                                         const resMonitor = document.getElementById('pmh_run_res_monitor');
                                         if (resMonitor) {
                                             resMonitor.innerHTML = `<i class="fas fa-info-circle"></i> 진행 중이거나 완료된 작업이 없습니다.`;
                                             resMonitor.style.display = 'flex'; resMonitor.style.justifyContent = 'center'; resMonitor.style.alignItems = 'center';
                                         }
-                                        
-                                        const rBtn = document.getElementById('pmh_resume_btn');
-                                        if (rBtn) rBtn.style.display = 'none';
-
+                                        const panel = document.getElementById('pmh-tool-panel');
+                                        if (panel) { panel.style.top = '80px'; panel.style.left = '60%'; panel.style.width = '450px'; panel.style.height = 'auto'; }
+                                        currentTaskStatus = {};
+                                        isCancelling = false;
                                         toastr.success("설정 및 데이터 캐시가 초기화되었습니다.");
                                         switchTab('tab_form'); 
+                                        openPmhToolUI(toolId, srvIdx);
                                     }
                                 });
                             }
                         };
                     }
 
-                    // =========================================================
-                    // 데이터 렌더링 함수
-                    // =========================================================
-                    const processAndRenderResult = (resData, itemsPerPage, targetSrv) => {
+                    const handleGlobalClick = (e) => {
+                        const toggleBtn = e.target.closest('#pmh_tool_toggle_form');
+                        if (toggleBtn && document.getElementById('pmh-tool-panel')?.contains(toggleBtn)) {
+                            e.preventDefault(); e.stopPropagation();
+                            const formContainer = document.getElementById('pmh_tool_form_container');
+                            if (formContainer) {
+                                const isCurrentlyCollapsed = formContainer.style.display === 'none';
+                                if (isCurrentlyCollapsed) {
+                                    formContainer.style.display = 'block';
+                                    toggleBtn.classList.remove('fa-chevron-down');
+                                    toggleBtn.classList.add('fa-chevron-up');
+                                } else {
+                                    formContainer.style.display = 'none';
+                                    toggleBtn.classList.remove('fa-chevron-up');
+                                    toggleBtn.classList.add('fa-chevron-down');
+                                }
+                                savedOptions._form_collapsed = !isCurrentlyCollapsed;
+                                saveOptionsToServer();
+                                
+                                const tabForm = document.getElementById('pmh_tab_form');
+                                const panel = document.getElementById('pmh-tool-panel');
+                                if (tabForm && panel && panel.style.height === 'auto') {
+                                    setTimeout(() => { tabForm.style.display = 'none'; tabForm.offsetHeight; tabForm.style.display = 'flex'; }, 10);
+                                }
+                            }
+                            return;
+                        }
+
+                        const cancelBtn = e.target.closest('.pmh_global_cancel_btn');
+                        if (cancelBtn && document.getElementById('pmh-tool-panel')?.contains(cancelBtn)) {
+                            e.preventDefault(); e.stopPropagation();
+                            if (isCancelling) return; 
+                            isCancelling = true;
+                            
+                            const allCancelBtns = document.querySelectorAll('.pmh_global_cancel_btn');
+                            allCancelBtns.forEach(b => {
+                                b.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 취소 요청 중...';
+                                b.style.opacity = '0.7';
+                                b.style.cursor = 'not-allowed';
+                            });
+                            
+                            GM_xmlhttpRequest({
+                                method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/cancel`,
+                                headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                data: JSON.stringify({ task_id: toolId, _server_id: serverId })
+                            });
+                        }
+                    };
+                    
+                    document.removeEventListener('click', window._pmhGlobalClickHandler);
+                    window._pmhGlobalClickHandler = handleGlobalClick;
+                    document.addEventListener('click', window._pmhGlobalClickHandler);
+
+                    const processAndRenderResult = (resData, itemsPerPage, renderSrv, preventTabSwitch = false) => {
                         
-                        // 모니터링 로그 기록 연동 (조용히 업데이트)
                         if ((resData.type === 'datatable' || resData.type === 'dashboard') && resData.logs && resData.logs.length > 0) {
                             const resMonitor = document.getElementById('pmh_run_res_monitor');
                             if (resMonitor) {
-                                resMonitor.style.display = 'flex';
-                                resMonitor.style.flexDirection = 'column';
-                                resMonitor.style.flexGrow = '1';
-                                resMonitor.style.minHeight = '0';
-                                
+                                resMonitor.style.display = 'flex'; resMonitor.style.flexDirection = 'column'; resMonitor.style.flexGrow = '1';
                                 let logsHtml = resData.logs.map(l => `<div style="margin-bottom:2px;">${l}</div>`).join('');
-                                
                                 resMonitor.innerHTML = `
                                     <div style="display:flex; flex-direction:column; background:#15181a; border:1px solid #333; border-radius:6px; padding:15px; text-align:left; flex-grow:1; min-height:0;">
                                         <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-bottom:15px; flex-shrink:0; border-bottom:1px dashed #333; padding-bottom:8px;">
-                                            <span style="font-weight:bold; color:#51a351;"><i class="fas fa-check-circle"></i> 조회/분석이 완료되었습니다. (로그 참조)</span>
+                                            <span style="font-weight:bold; color:#51a351;"><i class="fas fa-check-circle"></i> 조회/분석 완료 (로그 참조)</span>
                                         </div>
-                                        <div id="pmh_log_container_static" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:8px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; display:flex; flex-direction:column; min-height:0;">
+                                        <div id="pmh_log_container_static" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:8px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; display:flex; flex-direction:column;">
                                             <div>${logsHtml}</div>
                                         </div>
                                     </div>
@@ -1416,13 +1590,11 @@ GM_addStyle(`
                         }
 
                         if (resData.type === 'datatable') {
-                            switchTab('tab_form');
+                            if (!preventTabSwitch) switchTab('tab_form');
                             const resForm = document.getElementById('pmh_run_res_form');
-                            resForm.style.display = 'block';
-                            resForm.style.position = 'relative';
+                            resForm.style.display = 'block'; resForm.style.position = 'relative';
 
                             const { data: pageData, page, total_pages, total_items, columns, action_button, machine_id } = resData;
-                            
                             let currentSortCol = savedOptions._sort_key || null;
                             let currentSortDir = savedOptions._sort_dir || 'asc';
 
@@ -1431,11 +1603,7 @@ GM_addStyle(`
                                 if (!overlay) {
                                     overlay = document.createElement('div');
                                     overlay.id = 'pmh-table-overlay';
-                                    overlay.style.position = 'absolute'; overlay.style.top = '0'; overlay.style.left = '0';
-                                    overlay.style.width = '100%'; overlay.style.height = '100%';
-                                    overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.6)'; overlay.style.zIndex = '100';
-                                    overlay.style.display = 'flex'; overlay.style.alignItems = 'center'; overlay.style.justifyContent = 'center';
-                                    overlay.style.borderRadius = '4px';
+                                    overlay.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.6); z-index:100; display:flex; align-items:center; justify-content:center; border-radius:4px;';
                                     overlay.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size:30px; color:#e5a00d;"></i>`;
                                     resForm.appendChild(overlay);
                                 }
@@ -1444,68 +1612,44 @@ GM_addStyle(`
                             const fetchPageFromServer = (p, sKey = currentSortCol, sDir = currentSortDir, currentLimit = itemsPerPage) => {
                                 showOverlayLoading(); 
                                 GM_xmlhttpRequest({
-                                    method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
-                                    headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                    method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                    headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
                                     data: JSON.stringify({ action_type: 'page', page: p, limit: currentLimit, sort_key: sKey, sort_dir: sDir, _server_id: serverId }),
-                                    onload: (r) => { if (r.status === 200) processAndRenderResult(JSON.parse(r.responseText), currentLimit, targetSrv); }
+                                    onload: (r) => { if (r.status === 200) processAndRenderResult(JSON.parse(r.responseText), currentLimit, renderSrv, true); }
                                 });
                             };
 
                             let finalHtml = ``;
 
-                            if (total_items > 0 && ui.execute_inputs && ui.execute_inputs.length > 0) {
-                                finalHtml += `<div style="margin-bottom:15px; padding:15px; background:rgba(60,20,20,0.1); border:1px solid #4a2121; border-radius:4px;">
-                                                <div style="color:#e06c6c; font-weight:bold; margin-bottom:12px; font-size:12px; border-bottom:1px dashed #5c2020; padding-bottom:6px;">
-                                                    <i class="fas fa-cogs"></i> 작업 실행 옵션 설정
-                                                </div>`;
-                                ui.execute_inputs.forEach(input => { 
-                                    finalHtml += renderInput(input); 
-                                });
-                                finalHtml += `</div>`;
-                            }
-
-                            // --- [복합형 대시보드 렌더링] ---
                             if (resData.summary_cards || resData.bar_charts) {
                                 finalHtml += `<div style="padding-bottom:15px; margin-bottom:15px; border-bottom:1px solid #333;">`;
-                                
                                 if (resData.summary_cards && resData.summary_cards.length > 0) {
                                     finalHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:15px;">`;
                                     resData.summary_cards.forEach(card => {
-                                        const color = card.color || '#e5a00d';
-                                        const icon = card.icon || 'fas fa-info-circle';
-                                        finalHtml += `
-                                            <div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px;">
-                                                <div style="font-size:24px; color:${color}; width:30px; text-align:center;"><i class="${icon}"></i></div>
-                                                <div style="flex-grow:1; min-width:0;">
-                                                    <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
-                                                    <div style="font-size:16px; color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.value}</div>
-                                                </div>
-                                            </div>
-                                        `;
+                                        finalHtml += `<div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px;">
+                                                        <div style="font-size:24px; color:${card.color||'#e5a00d'}; width:30px; text-align:center;"><i class="${card.icon||'fas fa-info-circle'}"></i></div>
+                                                        <div style="flex-grow:1; min-width:0;">
+                                                            <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
+                                                            <div style="font-size:16px; color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.value}</div>
+                                                        </div>
+                                                      </div>`;
                                     });
                                     finalHtml += `</div>`;
                                 }
-                                
                                 if (resData.bar_charts && resData.bar_charts.length > 0) {
                                     finalHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;">`;
                                     resData.bar_charts.forEach(chart => {
-                                        finalHtml += `
-                                            <div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;">
-                                                <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">${chart.title}</div>
-                                        `;
+                                        finalHtml += `<div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;">
+                                                        <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">${chart.title}</div>`;
                                         chart.items.forEach(item => {
-                                            const pct = item.percent || 0;
-                                            const barColor = chart.color || '#e5a00d';
-                                            finalHtml += `
-                                                <div style="margin-bottom:8px;">
-                                                    <div style="display:flex; justify-content:space-between; font-size:11px; color:#ccc; margin-bottom:3px;">
-                                                        <span>${item.label}</span><span>${item.count} (${pct}%)</span>
-                                                    </div>
-                                                    <div style="width:100%; height:6px; background:#222; border-radius:3px; overflow:hidden;">
-                                                        <div style="width:${pct}%; height:100%; background:${barColor}; border-radius:3px;"></div>
-                                                    </div>
-                                                </div>
-                                            `;
+                                            finalHtml += `<div style="margin-bottom:8px;">
+                                                            <div style="display:flex; justify-content:space-between; font-size:11px; color:#ccc; margin-bottom:3px;">
+                                                                <span>${item.label}</span><span>${item.count} (${item.percent||0}%)</span>
+                                                            </div>
+                                                            <div style="width:100%; height:6px; background:#222; border-radius:3px; overflow:hidden;">
+                                                                <div style="width:${item.percent||0}%; height:100%; background:${chart.color||'#e5a00d'}; border-radius:3px;"></div>
+                                                            </div>
+                                                          </div>`;
                                         });
                                         finalHtml += `</div>`;
                                     });
@@ -1514,7 +1658,15 @@ GM_addStyle(`
                                 finalHtml += `</div>`;
                             }
 
-                            // --- [데이터 테이블 렌더링] ---
+                            if (total_items > 0 && ui.execute_inputs && ui.execute_inputs.length > 0) {
+                                finalHtml += `<div style="margin-bottom:15px; padding:15px; background:rgba(60,20,20,0.1); border:1px solid #4a2121; border-radius:4px;">
+                                                <div style="color:#e06c6c; font-weight:bold; margin-bottom:12px; font-size:12px; border-bottom:1px dashed #5c2020; padding-bottom:6px;">
+                                                    <i class="fas fa-cogs"></i> 작업 실행 옵션 설정
+                                                </div>`;
+                                ui.execute_inputs.forEach(input => { finalHtml += renderInput(input); });
+                                finalHtml += `</div>`;
+                            }
+
                             const createPagingHtml = (p, tPages) => {
                                 let html = `<div style="display:flex; justify-content:center; align-items:center; gap:5px; font-size:12px;">`;
                                 const btnStyle = `min-width:26px; height:26px; padding:0 6px; display:flex; justify-content:center; align-items:center; border-radius:4px; font-family:monospace; font-size:13px; background:#222; color:#ccc; border:1px solid #444; cursor:pointer;`;
@@ -1523,12 +1675,10 @@ GM_addStyle(`
 
                                 html += `<button class="pmh-page-btn" data-p="1" style="${p > 1 ? btnStyle : disStyle}" ${p > 1 ? '' : 'disabled'}><i class="fas fa-angle-double-left"></i></button>`;
                                 html += `<button class="pmh-page-btn" data-p="${p-1}" style="${p > 1 ? btnStyle : disStyle}" ${p > 1 ? '' : 'disabled'}><i class="fas fa-angle-left"></i></button>`;
-                                
                                 let startP = Math.max(1, p - 2); let endP = Math.min(tPages, p + 2);
                                 for (let i = startP; i <= endP; i++) {
                                     html += (i === p) ? `<button style="${actStyle}">${i}</button>` : `<button class="pmh-page-btn" data-p="${i}" style="${btnStyle}">${i}</button>`;
                                 }
-                                
                                 html += `<button class="pmh-page-btn" data-p="${Math.min(tPages, p+1)}" style="${p < tPages ? btnStyle : disStyle}" ${p < tPages ? '' : 'disabled'}><i class="fas fa-angle-right"></i></button>`;
                                 html += `<button class="pmh-page-btn" data-p="${tPages}" style="${p < tPages ? btnStyle : disStyle}" ${p < tPages ? '' : 'disabled'}><i class="fas fa-angle-double-right"></i></button></div>`;
                                 return html;
@@ -1538,9 +1688,17 @@ GM_addStyle(`
                             if (total_pages > 1) pagingHtml = createPagingHtml(page, total_pages);
 
                             finalHtml += `
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                                    <div style="color:#51a351; font-weight:bold; font-size:13px;">
-                                        <i class="fas fa-list"></i> 총 ${total_items}건 조회됨
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                                    <div style="display:flex; align-items:center; gap:12px;">
+                                        <div style="color:#51a351; font-weight:bold; font-size:13px;">
+                                            <i class="fas fa-list"></i> 남은 항목: ${total_items}건
+                                        </div>
+                                        <a href="#" id="pmh_dt_refresh_btn" style="color:#2f96b4; font-size:12px; text-decoration:none; display:flex; align-items:center; gap:4px; padding:2px 6px; background:rgba(47,150,180,0.1); border:1px solid rgba(47,150,180,0.3); border-radius:4px; transition:0.2s;" title="실시간 DB 새로고침" onmouseover="this.style.background='rgba(47,150,180,0.3)'" onmouseout="this.style.background='rgba(47,150,180,0.1)'">
+                                            <i class="fas fa-sync-alt"></i> 목록 갱신
+                                        </a>
+                                        <a href="#" id="pmh_dt_default_sort_btn" style="color:#e5a00d; font-size:12px; text-decoration:none; display:flex; align-items:center; gap:4px; padding:2px 6px; background:rgba(229,160,13,0.1); border:1px solid rgba(229,160,13,0.3); border-radius:4px; transition:0.2s;" title="작업 실행 순서(작업종류 ➔ 섹션 ➔ 제목)로 되돌리기" onmouseover="this.style.background='rgba(229,160,13,0.3)'" onmouseout="this.style.background='rgba(229,160,13,0.1)'">
+                                            <i class="fas fa-sort-amount-down"></i> 기본 정렬
+                                        </a>
                                     </div>
                                     <div style="display:flex; align-items:center; gap:8px;">
                                         <span style="color:#aaa; font-size:11px;">페이지당:</span>
@@ -1555,246 +1713,324 @@ GM_addStyle(`
                                 </div>
                             `;
 
-                            if (pagingHtml) finalHtml += `<div style="display:flex; justify-content:center; margin-bottom:10px;">${pagingHtml}</div>`;
-                            
                             if (total_items === 0) {
-                                resForm.innerHTML = finalHtml + `<div style="padding:15px; background:#111; color:#aaa; text-align:center; border-radius:4px;">조회된 항목이 없습니다.</div>`;
-                                return;
-                            }
-
-                            let dtHtml = `<table style="width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed;"><tr style="border-bottom:1px solid #444; color:#e5a00d;">`;
-                            (columns || []).forEach(col => {
-                                const widthStr = col.width ? `width:${col.width};` : '';
-                                const alignStr = `text-align:${col.header_align || col.align || 'left'};`;
-                                let sortIcon = '';
-                                if (currentSortCol === col.key) {
-                                    sortIcon = currentSortDir === 'asc' ? ' <i class="fas fa-sort-up"></i>' : ' <i class="fas fa-sort-down"></i>';
-                                }
-                                dtHtml += `<th class="pmh-dt-header" data-key="${col.key}" style="padding:8px 6px; ${widthStr} ${alignStr} cursor:pointer;" title="클릭하여 정렬">${col.label}${sortIcon}</th>`;
-                            });
-                            dtHtml += `</tr>`;
-
-                            const currentHashBase = window.location.hash.split('/server/')[0] || '#!';
-
-                            pageData.forEach(row => {
-                                dtHtml += `<tr style="border-bottom:1px solid #333; transition:background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">`;
-                                
+                                resForm.innerHTML = finalHtml + `<div style="padding:15px; background:#111; color:#aaa; text-align:center; border-radius:4px;">조회된 항목이 없습니다. (모두 처리 완료됨)</div>`;
+                            } else {
+                                let dtHtml = `<table style="width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed;"><tr style="border-bottom:1px solid #444; color:#e5a00d;">`;
                                 (columns || []).forEach(col => {
-                                    let val = row[col.key] !== undefined && row[col.key] !== null ? row[col.key] : '-';
-                                    let displayHtml = val;
-                                    const alignStr = `text-align:${col.align || 'left'};`;
-
-                                    if (col.type === 'link' && machine_id && row[col.link_key]) {
-                                        const ratingKey = row[col.link_key];
-                                        const href = `${currentHashBase}/server/${machine_id}/details?key=%2Flibrary%2Fmetadata%2F${ratingKey}`;
-                                        displayHtml = `<a href="${href}" style="color:#2f96b4; text-decoration:none;" title="Plex 항목 열기" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${val}</a>`;
-                                    }
-
-                                    dtHtml += `<td style="padding:8px 6px; ${alignStr} white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${String(val).replace(/"/g, '&quot;')}">${displayHtml}</td>`;
+                                    const widthStr = col.width ? `width:${col.width};` : '';
+                                    const alignStr = `text-align:${col.header_align || col.align || 'center'};`;
+                                    let sortIcon = '';
+                                    if (currentSortCol === col.key) sortIcon = currentSortDir === 'asc' ? ' <i class="fas fa-sort-up"></i>' : ' <i class="fas fa-sort-down"></i>';
+                                    dtHtml += `<th class="pmh-dt-header" data-key="${col.key}" style="padding:8px 6px; ${widthStr} ${alignStr} cursor:pointer;" title="클릭하여 정렬">${col.label}${sortIcon}</th>`;
                                 });
                                 dtHtml += `</tr>`;
-                            });
-                            dtHtml += `</table>`;
-                            finalHtml += dtHtml;
 
-                            if (pagingHtml) finalHtml += `<div style="display:flex; justify-content:center; margin-top:15px;">${pagingHtml}</div>`;
+                                const currentHashBase = window.location.hash.split('/server/')[0] || '#!';
 
-                            if (action_button) {
-                                const payloadStr = JSON.stringify(action_button.payload || {}).replace(/"/g, '&quot;');
-                                
-                                finalHtml += `<div style="text-align:center; margin-top:20px; padding-top:15px; border-top:1px dashed #444; display:flex; flex-wrap:wrap; justify-content:center; gap:10px;">`;
-                                
-                                if (ui.active_task && (ui.active_task.state === 'cancelled' || ui.active_task.state === 'error')) {
-                                    finalHtml += `
-                                        <button id="pmh_resume_btn" style="padding:10px 20px; background:#2f96b4; color:#fff; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:13px; transition:0.2s; box-shadow:0 4px 10px rgba(0,0,0,0.3); white-space:nowrap;">
-                                            <i class="fas fa-step-forward"></i> 이어서 계속하기 (${ui.active_task.progress}~)
-                                        </button>
-                                    `;
+                                pageData.forEach(row => {
+                                    dtHtml += `<tr style="border-bottom:1px solid #333; transition:background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">`;
+                                    (columns || []).forEach(col => {
+                                        let val = row[col.key] !== undefined && row[col.key] !== null ? row[col.key] : '-';
+                                        let displayHtml = val;
+                                        const alignStr = `text-align:${col.align || 'left'};`;
+                                        const safeTitle = String(val).replace(/"/g, '&quot;');
+
+                                        const actualMachineId = machine_id || renderSrv.machineIdentifier;
+                                        if (col.type === 'link' && actualMachineId && row[col.link_key]) {
+                                            const ratingKey = row[col.link_key];
+                                            const href = `${currentHashBase}/server/${actualMachineId}/details?key=%2Flibrary%2Fmetadata%2F${ratingKey}`;
+                                            displayHtml = `<a href="${href}" style="color:#2f96b4; text-decoration:none;" title="${safeTitle}" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${val}</a>`;
+                                        }
+                                        else if (col.type === 'action_btn') {
+                                            const btnPayload = JSON.stringify({ action_type: col.action_type || 'execute', _is_single: true, ...row }).replace(/"/g, '&quot;');
+                                            
+                                            displayHtml = `<a href="#" class="pmh_dt_row_action_btn" data-payload="${btnPayload}" style="color:#e5a00d; font-size:14px; text-decoration:none; transition:0.2s; display:inline-block;" onmouseover="this.style.color='#ffc107'; this.style.transform='scale(1.2)';" onmouseout="this.style.color='#e5a00d'; this.style.transform='scale(1)';" title="이 항목만 단독 실행"><i class="${col.icon || 'fas fa-play'}"></i></a>`;
+                                        }
+
+                                        dtHtml += `<td style="padding:8px 6px; ${alignStr} white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${safeTitle}">${displayHtml}</td>`;
+                                    });
+                                    dtHtml += `</tr>`;
+                                });
+
+                                dtHtml += `</table>`;
+                                finalHtml += dtHtml;
+
+                                if (pagingHtml) {
+                                    let jumpHtml = '';
+                                    if (total_pages > 3) {
+                                        jumpHtml = `
+                                            <div class="pmh-page-jump-container" style="display:flex; align-items:center; justify-content:center; gap: 10px; margin-bottom: 12px; width: 100%; max-width: 400px;">
+                                                <span style="color:#aaa; font-size:11px;">페이지 이동:</span>
+                                                <input type="number" id="pmh_page_input" value="${page}" min="1" max="${total_pages}" style="width: 50px; height: 24px; padding: 0 4px; background: #111; color: #fff; border: 1px solid #444; border-radius: 4px; font-size: 12px; text-align: center;" title="엔터(Enter)를 누르면 이동합니다">
+                                                <span style="color:#777; font-size:11px; margin-right: 5px;">/ ${total_pages}</span>
+                                                <input type="range" id="pmh_page_slider" min="1" max="${total_pages}" value="${page}" style="flex-grow: 1; height: 4px; accent-color: #e5a00d; cursor: pointer;" title="드래그 후 놓으면 이동합니다">
+                                            </div>
+                                        `;
+                                    }
+                                    
+                                    finalHtml += `<div style="display:flex; flex-direction:column; align-items:center; margin-top:20px;">
+                                                    ${jumpHtml}
+                                                    ${pagingHtml}
+                                                  </div>`;
                                 }
 
-                                let btnLabel = action_button.label || "<i class='fas fa-rocket'></i> 새로 실행";
-                                if (btnLabel.includes('대상') && btnLabel.includes('건 새로 작업 시작')) {
-                                    btnLabel = btnLabel.replace('새로 작업 시작', '새로 실행');
+                                if (action_button) {
+                                    const payloadStr = JSON.stringify(action_button.payload || {}).replace(/"/g, '&quot;');
+                                    finalHtml += `<div style="text-align:center; margin-top:20px; padding-top:15px; border-top:1px dashed #444; display:flex; flex-wrap:wrap; justify-content:center; gap:10px;">`;
+                                    
+                                    let btnLabel = action_button.label || "<i class='fas fa-rocket'></i> 작업 실행";
+                                    
+                                    finalHtml += `<button id="pmh_resume_btn" style="display:none; padding:10px 20px; background:#2f96b4; color:#1f1f1f; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:13px; transition:0.2s; box-shadow:0 4px 10px rgba(0,0,0,0.3); white-space:nowrap;"><i class="fas fa-step-forward"></i> 이어서 계속하기</button>`;
+                                    finalHtml += `<button id="pmh_dt_action_btn" data-payload="${payloadStr}" style="display:none; padding:10px 20px; background:#51a351; color:#1f1f1f; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:13px; transition:0.2s; box-shadow:0 4px 10px rgba(0,0,0,0.3); white-space:nowrap;">${btnLabel}</button>`;
+                                    finalHtml += `<button class="pmh_global_cancel_btn" style="display:none; padding:10px 20px; background:#bd362f; color:#fff; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:13px; transition:0.2s; box-shadow:0 4px 10px rgba(0,0,0,0.3); white-space:nowrap;"><i class="fas fa-stop"></i> 작업 중단</button>`;
+                                    
+                                    finalHtml += `</div>`;
                                 }
-
-                                finalHtml += `
-                                    <button id="pmh_dt_action_btn" data-payload="${payloadStr}" style="padding:10px 20px; background:#bd362f; color:#fff; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:13px; transition:0.2s; box-shadow:0 4px 10px rgba(0,0,0,0.3); white-space:nowrap;">
-                                        ${btnLabel}
-                                    </button>
-                                </div>`;
+                                resForm.innerHTML = finalHtml; 
+                                
+                                updateFormTabButtons(isTaskRunning);
                             }
 
-                            resForm.innerHTML = finalHtml; 
-                            
-                            // [이벤트 리스너 바인딩]
+                            setTimeout(() => {
+                                const panel = document.getElementById('pmh-tool-panel');
+                                if (panel && (panel.style.height === 'auto' || !panel.style.height)) {
+                                    const maxAllowedHeight = window.innerHeight - 80;
+                                    if (panel.offsetHeight >= maxAllowedHeight) {
+                                        panel.style.height = maxAllowedHeight + 'px';
+                                    }
+                                }
+                            }, 10);
+
                             const limitSelect = document.getElementById('pmh_dt_limit_select');
-                            if (limitSelect) {
-                                limitSelect.addEventListener('change', (e) => {
-                                    const newLimit = parseInt(e.target.value, 10);
-                                    savedOptions.items_per_page = newLimit;
-                                    GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(savedOptions));
-                                    fetchPageFromServer(1, currentSortCol, currentSortDir, newLimit);
+                            if (limitSelect) limitSelect.addEventListener('change', (e) => {
+                                const newLimit = parseInt(e.target.value, 10);
+                                savedOptions.items_per_page = newLimit; saveOptionsToServer();
+                                fetchPageFromServer(1, currentSortCol, currentSortDir, newLimit);
+                            });
+
+                            const refreshBtn = document.getElementById('pmh_dt_refresh_btn');
+                            if (refreshBtn) {
+                                refreshBtn.onclick = (e) => {
+                                    e.preventDefault(); e.stopPropagation();
+                                    const { reqData } = getFormData();
+                                    reqData.action_type = 'page'; reqData.page = 1; reqData.limit = itemsPerPage;
+                                    reqData.sort_key = currentSortCol; reqData.sort_dir = currentSortDir;
+                                    
+                                    const icon = refreshBtn.querySelector('i'); if(icon) icon.classList.add('fa-spin');
+                                    showOverlayLoading();
+                                    GM_xmlhttpRequest({
+                                        method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                        headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
+                                        data: JSON.stringify(reqData),
+                                        onload: (r) => { if(r.status===200) processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv, true); }
+                                    });
+                                };
+                            }
+
+                            const defaultSortBtn = document.getElementById('pmh_dt_default_sort_btn');
+                            if (defaultSortBtn) {
+                                defaultSortBtn.onclick = (e) => {
+                                    e.preventDefault(); e.stopPropagation();
+                                    
+                                    currentSortCol = null;
+                                    currentSortDir = 'asc';
+                                    savedOptions._sort_key = null;
+                                    savedOptions._sort_dir = null;
+                                    saveOptionsToServer();
+                                    
+                                    const icon = defaultSortBtn.querySelector('i');
+                                    if(icon) {
+                                        icon.classList.remove('fa-sort-amount-down');
+                                        icon.classList.add('fa-spinner', 'fa-spin');
+                                    }
+                                    showOverlayLoading();
+                                    
+                                    const { reqData } = getFormData();
+                                    reqData.action_type = 'page'; 
+                                    reqData.page = 1; 
+                                    reqData.limit = itemsPerPage;
+                                    reqData.sort_key = null; 
+                                    reqData.sort_dir = 'asc';
+                                    
+                                    GM_xmlhttpRequest({
+                                        method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                        headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
+                                        data: JSON.stringify(reqData),
+                                        onload: (r) => { 
+                                            if(r.status===200) processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv, true); 
+                                        }
+                                    });
+                                };
+                            }
+
+                            document.querySelectorAll('.pmh-page-btn').forEach(btn => { btn.onclick = () => fetchPageFromServer(parseInt(btn.dataset.p)); });
+
+                            const slider = document.getElementById('pmh_page_slider');
+                            const numInput = document.getElementById('pmh_page_input');
+
+                            if (slider && numInput) {
+                                slider.addEventListener('input', (e) => {
+                                    numInput.value = e.target.value;
+                                });
+
+                                slider.addEventListener('change', (e) => {
+                                    fetchPageFromServer(parseInt(e.target.value));
+                                });
+
+                                numInput.addEventListener('keydown', (e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        let val = parseInt(e.target.value);
+                                        if (val >= 1 && val <= total_pages) {
+                                            fetchPageFromServer(val);
+                                        } else {
+                                            e.target.value = page;
+                                        }
+                                    }
+                                });
+
+                                numInput.addEventListener('input', (e) => {
+                                    let val = parseInt(e.target.value);
+                                    if (val >= 1 && val <= total_pages) {
+                                        slider.value = val;
+                                    }
                                 });
                             }
-
-                            document.querySelectorAll('.pmh-page-btn').forEach(btn => {
-                                btn.onclick = () => fetchPageFromServer(parseInt(btn.dataset.p));
-                            });
 
                             document.querySelectorAll('.pmh-dt-header').forEach(th => {
                                 th.onclick = () => {
                                     const key = th.dataset.key;
-                                    if (currentSortCol === key) { currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc'; } 
+                                    if (currentSortCol === key) currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
                                     else { currentSortCol = key; currentSortDir = 'asc'; }
-                                    savedOptions._sort_key = currentSortCol; savedOptions._sort_dir = currentSortDir;
-                                    GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(savedOptions));
+                                    savedOptions._sort_key = currentSortCol; savedOptions._sort_dir = currentSortDir; saveOptionsToServer();
                                     fetchPageFromServer(1, currentSortCol, currentSortDir);
                                 };
                             });
 
                             const resumeBtn = document.getElementById('pmh_resume_btn');
+                            const actionBtn = document.getElementById('pmh_dt_action_btn');
+
                             if (resumeBtn) {
-                                resumeBtn.onmouseover = () => resumeBtn.style.backgroundColor = "#1b6f87";
+                                resumeBtn.onmouseover = () => resumeBtn.style.backgroundColor = "#52a5bd";
                                 resumeBtn.onmouseout = () => resumeBtn.style.backgroundColor = "#2f96b4";
                                 resumeBtn.onclick = (e) => {
                                     e.preventDefault();
                                     if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
-
-                                    const resumeData = getFormData().reqData;
                                     
-                                    if (ui.execute_inputs) {
-                                        ui.execute_inputs.forEach(i => {
-                                            const el = document.getElementById(`pmh_inp_${i.id}`);
-                                            if (el) {
-                                                const val = (i.type === 'checkbox') ? el.checked : el.value;
-                                                resumeData[i.id] = val;
-                                                savedOptions[i.id] = val;
-                                            }
-                                        });
-                                        GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(savedOptions));
-                                    }
-
-                                    resumeData.action_type = 'resume';
-                                    resumeData._server_id = serverId;
-
-                                    resumeBtn.style.display = 'none';
-                                    const aBtn = document.getElementById('pmh_dt_action_btn');
-                                    if (aBtn) aBtn.style.display = 'none';
-
+                                    const origHtml = resumeBtn.innerHTML;
+                                    resumeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
+                                    resumeBtn.style.pointerEvents = 'none';
+                                    resumeBtn.style.opacity = '0.7';
+                                    
+                                    const resumeData = getFormData().reqData; resumeData.action_type = 'resume';
+                                    
                                     GM_xmlhttpRequest({
-                                        method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
-                                        headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                        method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                        headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
                                         data: JSON.stringify(resumeData),
-                                        onload: (r) => {
-                                            processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, targetSrv);
+                                        onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv); },
+                                        onerror: () => { 
+                                            resumeBtn.innerHTML = origHtml; 
+                                            resumeBtn.style.pointerEvents = 'auto'; 
+                                            resumeBtn.style.opacity = '1';
+                                            toastr.error("서버 연결에 실패했습니다."); 
                                         }
                                     });
                                 }
                             }
 
-                            const actionBtn = document.getElementById('pmh_dt_action_btn');
                             if (actionBtn) {
-                                actionBtn.onmouseover = () => actionBtn.style.backgroundColor = "#e0483d";
-                                actionBtn.onmouseout = () => actionBtn.style.backgroundColor = "#bd362f";
+                                actionBtn.onmouseover = () => actionBtn.style.backgroundColor = "#5ebf5e";
+                                actionBtn.onmouseout = () => actionBtn.style.backgroundColor = "#51a351";
                                 actionBtn.onclick = () => {
                                     if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
                                     
-                                    const rBtn = document.getElementById('pmh_resume_btn');
-                                    if (rBtn) rBtn.style.display = 'none';
-
-                                    const originalBtnHtml = actionBtn.innerHTML;
-                                    actionBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 백그라운드 작업 중...';
-                                    actionBtn.style.pointerEvents = 'none'; actionBtn.style.opacity = '0.7';
+                                    const origHtml = actionBtn.innerHTML;
+                                    actionBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
+                                    actionBtn.style.pointerEvents = 'none';
+                                    actionBtn.style.opacity = '0.7';
                                     
-                                    setTimeout(() => {
-                                        if (actionBtn && actionBtn.isConnected) {
-                                            actionBtn.innerHTML = originalBtnHtml;
-                                            actionBtn.style.pointerEvents = 'auto'; actionBtn.style.opacity = '1';
-                                        }
-                                    }, 3000);
-
-                                    const executeData = getFormData().reqData;
-                                    
-                                    if (ui.execute_inputs) {
-                                        ui.execute_inputs.forEach(i => {
-                                            const el = document.getElementById(`pmh_inp_${i.id}`);
-                                            if (el) {
-                                                const val = (i.type === 'checkbox') ? el.checked : el.value;
-                                                executeData[i.id] = val;
-                                                savedOptions[i.id] = val;
-                                            }
-                                        });
-                                        GM_setValue(`pmh_tool_cache_${toolId}`, JSON.stringify(savedOptions));
-                                    }
-
-                                    executeData.action_type = 'execute';
-                                    executeData._server_id = serverId;
+                                    const executeData = getFormData().reqData; executeData.action_type = 'execute';
                                     try { Object.assign(executeData, JSON.parse(actionBtn.dataset.payload || "{}")); } catch(e){}
                                     
                                     GM_xmlhttpRequest({
-                                        method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
-                                        headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                        method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                        headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
                                         data: JSON.stringify(executeData),
-                                        onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, targetSrv); }
+                                        onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv); },
+                                        onerror: () => { 
+                                            actionBtn.innerHTML = origHtml; 
+                                            actionBtn.style.pointerEvents = 'auto'; 
+                                            actionBtn.style.opacity = '1';
+                                            toastr.error("서버 연결에 실패했습니다."); 
+                                        }
                                     });
                                 };
                             }
-                        } 
-                        
-                        // =========================================================
-                        // 2. Dashboard 단독 렌더링 분기
-                        // =========================================================
+
+                            document.querySelectorAll('.pmh_dt_row_action_btn').forEach(btn => {
+                                btn.onclick = (e) => {
+                                    e.preventDefault(); e.stopPropagation();
+                                    if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하거나 작업을 중지해주세요.");
+                                    
+                                    const origHtml = btn.innerHTML;
+                                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                                    btn.style.pointerEvents = 'none';
+                                    btn.style.opacity = '0.7';
+                                    
+                                    const executeData = getFormData().reqData;
+                                    try { Object.assign(executeData, JSON.parse(btn.dataset.payload || "{}")); } catch(err){}
+                                    
+                                    GM_xmlhttpRequest({
+                                        method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                        headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
+                                        data: JSON.stringify(executeData),
+                                        onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv); },
+                                        onerror: () => { 
+                                            btn.innerHTML = origHtml; 
+                                            btn.style.pointerEvents = 'auto'; 
+                                            btn.style.opacity = '1';
+                                            toastr.error("서버 연결에 실패했습니다."); 
+                                        }
+                                    });
+                                };
+                            });
+                        }
+
                         else if (resData.type === 'dashboard') {
-                            switchTab('tab_form');
+                            if (!preventTabSwitch) switchTab('tab_form');
                             const resForm = document.getElementById('pmh_run_res_form');
                             resForm.style.display = 'block';
 
-                            const overlay = document.getElementById('pmh-table-overlay');
-                            if (overlay) overlay.remove();
-
                             let dashHtml = `<div style="padding:5px;">`;
-                            
                             if (resData.summary_cards && resData.summary_cards.length > 0) {
                                 dashHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:20px;">`;
                                 resData.summary_cards.forEach(card => {
-                                    const color = card.color || '#e5a00d';
-                                    const icon = card.icon || 'fas fa-info-circle';
-                                    dashHtml += `
-                                        <div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px; transition:border-color 0.2s;" onmouseover="this.style.borderColor='${color}'" onmouseout="this.style.borderColor='#333'">
-                                            <div style="font-size:24px; color:${color}; width:30px; text-align:center;"><i class="${icon}"></i></div>
-                                            <div style="flex-grow:1; min-width:0;">
-                                                <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
-                                                <div style="font-size:16px; color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.value}</div>
-                                            </div>
-                                        </div>
-                                    `;
+                                    dashHtml += `<div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px;">
+                                                    <div style="font-size:24px; color:${card.color||'#e5a00d'}; width:30px; text-align:center;"><i class="${card.icon||'fas fa-info-circle'}"></i></div>
+                                                    <div style="flex-grow:1; min-width:0;">
+                                                        <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
+                                                        <div style="font-size:16px; color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.value}</div>
+                                                    </div>
+                                                  </div>`;
                                 });
                                 dashHtml += `</div>`;
                             }
-                            
                             if (resData.bar_charts && resData.bar_charts.length > 0) {
                                 dashHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;">`;
                                 resData.bar_charts.forEach(chart => {
-                                    dashHtml += `
-                                        <div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;">
-                                            <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">
-                                                ${chart.title}
-                                            </div>
-                                    `;
+                                    dashHtml += `<div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;">
+                                                    <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">${chart.title}</div>`;
                                     chart.items.forEach(item => {
-                                        const pct = item.percent || 0;
-                                        const barColor = chart.color || '#e5a00d';
-                                        dashHtml += `
-                                            <div style="margin-bottom:8px;">
-                                                <div style="display:flex; justify-content:space-between; font-size:11px; color:#ccc; margin-bottom:3px;">
-                                                    <span>${item.label}</span>
-                                                    <span>${item.count} (${pct}%)</span>
-                                                </div>
-                                                <div style="width:100%; height:6px; background:#222; border-radius:3px; overflow:hidden;">
-                                                    <div style="width:${pct}%; height:100%; background:${barColor}; border-radius:3px;"></div>
-                                                </div>
-                                            </div>
-                                        `;
+                                        dashHtml += `<div style="margin-bottom:8px;">
+                                                        <div style="display:flex; justify-content:space-between; font-size:11px; color:#ccc; margin-bottom:3px;">
+                                                            <span>${item.label}</span><span>${item.count} (${item.percent||0}%)</span>
+                                                        </div>
+                                                        <div style="width:100%; height:6px; background:#222; border-radius:3px; overflow:hidden;">
+                                                            <div style="width:${item.percent||0}%; height:100%; background:${chart.color||'#e5a00d'}; border-radius:3px;"></div>
+                                                        </div>
+                                                      </div>`;
                                     });
                                     dashHtml += `</div>`;
                                 });
@@ -1802,64 +2038,66 @@ GM_addStyle(`
                             }
                             dashHtml += `</div>`;
                             resForm.innerHTML = dashHtml;
+
+                            setTimeout(() => {
+                                const panel = document.getElementById('pmh-tool-panel');
+                                if (panel && (panel.style.height === 'auto' || !panel.style.height)) {
+                                    const maxAllowedHeight = window.innerHeight - 80;
+                                    if (panel.offsetHeight >= maxAllowedHeight) {
+                                        panel.style.height = maxAllowedHeight + 'px';
+                                    }
+                                }
+                            }, 10);
                         }
                         
-                        // =========================================================
-                        // 3. 비동기 작업 모니터링 분기 (async_task)
-                        // =========================================================
                         else if (resData.type === 'async_task') {
-                            switchTab('tab_monitor');
+                            if (!preventTabSwitch) switchTab('tab_monitor');
                             const taskId = resData.task_id;
                             const isPreviewing = resData.is_preview === true; 
                             
                             const resMonitor = document.getElementById('pmh_run_res_monitor');
-                            isTaskRunning = true;
-                            
                             if (pollTimer) clearTimeout(pollTimer);
-                            
-                            resMonitor.style.display = 'flex';
-                            resMonitor.style.flexDirection = 'column';
-                            resMonitor.style.flexGrow = '1';
-                            resMonitor.style.minHeight = '0';
+                            resMonitor.style.display = 'flex'; resMonitor.style.flexDirection = 'column'; resMonitor.style.flexGrow = '1';
                             
                             const pollStatus = () => {
                                 if (!document.getElementById('pmh_run_res_monitor')) return;
 
                                 GM_xmlhttpRequest({
-                                    method: "GET", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/status?task_id=${taskId}&server_id=${serverId}`,
-                                    headers: { "X-API-Key": targetSrv.plexMateApiKey },
+                                    method: "GET", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/status?task_id=${taskId}&server_id=${serverId}`,
+                                    headers: { "X-API-Key": renderSrv.plexMateApiKey },
                                     onload: (pollRes) => {
                                         if (pollRes.status === 404) {
                                             resMonitor.innerHTML = `<div style="color:#bd362f; padding:10px; background:#111; border-radius:4px; text-align:center;"><i class="fas fa-exclamation-triangle"></i> 작업을 찾을 수 없습니다.</div>`;
-                                            isTaskRunning = false; 
-                                            return;
+                                            currentTaskStatus = {}; updateFormTabButtons(false); isCancelling = false; return;
                                         }
 
                                         if (pollRes.status === 200) {
                                             const statusData = JSON.parse(pollRes.responseText);
+                                            currentTaskStatus = statusData;
                                             
                                             let percent = 0;
                                             if (statusData.total > 0) percent = Math.floor((statusData.progress / statusData.total) * 100);
                                             else if (statusData.state === 'completed') percent = 100;
                                             
                                             const isDone = statusData.state === 'completed' || statusData.state === 'error' || statusData.state === 'cancelled';
+                                            if (isDone) isCancelling = false;
+
                                             const barColor = (statusData.state === 'error' || statusData.state === 'cancelled') ? '#bd362f' : '#51a351';
                                             
+                                            updateFormTabButtons(!isDone);
+
                                             let stateIcon = '<i class="fas fa-spinner fa-spin"></i> 작업 진행 중...';
                                             if (statusData.state === 'error') stateIcon = '<i class="fas fa-exclamation-triangle"></i> 오류 발생 / 중단됨';
                                             else if (statusData.state === 'cancelled') stateIcon = '<i class="fas fa-ban"></i> 사용자에 의해 취소됨';
                                             else if (statusData.state === 'completed') stateIcon = '<i class="fas fa-check-circle"></i> 작업 완료';
 
                                             let logsHtml = (statusData.logs || []).map(l => `<div style="margin-bottom:2px;">${l}</div>`).join('');
-                                            
                                             let controlsHtml = '';
                                             if (!isDone) {
-                                                controlsHtml = `<button id="pmh_async_cancel_btn" style="padding:6px 15px; background:#bd362f; color:#fff; border:none; border-radius:4px; cursor:pointer; font-weight:bold; font-size:12px;"><i class="fas fa-stop"></i> 진행 중단</button>`;
-                                            } else {
-                                                isTaskRunning = false;
-                                                if (!isPreviewing && (statusData.state === 'cancelled' || statusData.state === 'error')) {
-                                                    const rBtn = document.getElementById('pmh_resume_btn');
-                                                    if (rBtn) rBtn.style.display = 'inline-block';
+                                                if (isCancelling) {
+                                                    controlsHtml = `<button class="pmh_global_cancel_btn" style="padding:6px 15px; background:#bd362f; color:#fff; border:none; border-radius:4px; cursor:not-allowed; font-weight:bold; font-size:12px; opacity:0.7;"><i class="fas fa-spinner fa-spin"></i> 취소 요청 중...</button>`;
+                                                } else {
+                                                    controlsHtml = `<button class="pmh_global_cancel_btn" style="padding:6px 15px; background:#bd362f; color:#fff; border:none; border-radius:4px; cursor:pointer; font-weight:bold; font-size:12px;"><i class="fas fa-stop"></i> 작업 중단</button>`;
                                                 }
                                             }
 
@@ -1872,7 +2110,7 @@ GM_addStyle(`
                                                     <div style="width:100%; height:12px; background:#222; border-radius:6px; overflow:hidden; margin-bottom:15px; flex-shrink:0;">
                                                         <div style="width:${percent}%; height:100%; background:${barColor}; transition:width 0.5s;"></div>
                                                     </div>
-                                                    <div id="pmh_log_container" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:8px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; display:flex; flex-direction:column; min-height:0;">
+                                                    <div id="pmh_log_container" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:8px; flex-grow:1; min-height:0; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; display:flex; flex-direction:column;">
                                                         <div>${logsHtml}</div>
                                                     </div>
                                                     <div style="margin-top:15px; display:flex; justify-content:center; flex-shrink:0;">
@@ -1880,98 +2118,47 @@ GM_addStyle(`
                                                     </div>
                                                 </div>
                                             `;
-                                            
+
                                             const logBox = document.getElementById('pmh_log_container');
                                             if (logBox) logBox.scrollTop = logBox.scrollHeight;
 
-                                            const cancelBtn = document.getElementById('pmh_async_cancel_btn');
-                                            if (cancelBtn) {
-                                                cancelBtn.onclick = () => {
-                                                    cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 취소 요청 중...';
-                                                    GM_xmlhttpRequest({
-                                                        method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/cancel`,
-                                                        headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
-                                                        data: JSON.stringify({ task_id: taskId, _server_id: serverId })
-                                                    });
-                                                };
-                                            }
-
-                                            // 조회용 워커 완료 시 폼 탭으로 돌아와 1페이지 로드
-                                            if (isDone && isPreviewing && statusData.state === 'completed') {
+                                            if (isDone && isPreviewing && (statusData.state === 'completed' || statusData.state === 'cancelled')) {
                                                 setTimeout(() => {
                                                     GM_xmlhttpRequest({
-                                                        method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
-                                                        headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
-                                                        data: JSON.stringify({ 
-                                                            action_type: 'page', 
-                                                            page: 1, 
-                                                            limit: savedOptions.items_per_page || 10, 
-                                                            sort_key: savedOptions._sort_key, 
-                                                            sort_dir: savedOptions._sort_dir || 'asc',
-                                                            _server_id: serverId 
-                                                        }),
+                                                        method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                                        headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
+                                                        data: JSON.stringify({ action_type: 'page', page: 1, limit: savedOptions.items_per_page || 10, sort_key: savedOptions._sort_key, sort_dir: savedOptions._sort_dir || 'asc', _server_id: serverId }),
                                                         onload: (r) => { 
                                                             if (r.status === 200) {
-                                                                processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, targetSrv); 
+                                                                processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv, false); 
+                                                            } else {
+                                                                switchTab('tab_form');
+                                                                const resForm = document.getElementById('pmh_run_res_form');
+                                                                if(resForm) resForm.innerHTML = `<div style="padding:15px; background:#111; color:#aaa; text-align:center; border-radius:4px;">조회된 항목이 없습니다.</div>`;
                                                             }
                                                         }
                                                     });
                                                 }, 500);
                                                 return; 
                                             }
-
                                             if (!isDone) pollTimer = setTimeout(pollStatus, 1500); 
                                         }
                                     }
                                 });
                             };
-                            
                             setTimeout(pollStatus, 50);
                         }
                     };
 
-                    // =========================================================
-                    // 툴 오픈 시 초기 캐시 로드 (1페이지)
-                    // =========================================================
-                    const itemsPerPage = parseInt(savedOptions.items_per_page || 10);
-                    GM_deleteValue(`pmh_tool_result_${toolId}`);
-
-                    GM_xmlhttpRequest({
-                        method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
-                        headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
-                        data: JSON.stringify({ 
-                            action_type: 'page', 
-                            page: 1, 
-                            limit: itemsPerPage, 
-                            sort_key: savedOptions._sort_key, 
-                            sort_dir: savedOptions._sort_dir || 'asc',
-                            _server_id: serverId
-                        }),
-                        onload: (r) => {
-                            if (r.status === 200) {
-                                try { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, targetSrv); } catch(e) {}
-                            }
-                        }
-                    });
-
-                    // =========================================================
-                    // 메인 폼 '조회(preview)' 버튼 동작
-                    // =========================================================
                     const mainRunBtn = document.getElementById('pmh_run_btn');
                     if (mainRunBtn) {
-                        mainRunBtn.onmouseover = () => mainRunBtn.style.backgroundColor = "#d4910c";
-                        mainRunBtn.onmouseout = () => mainRunBtn.style.backgroundColor = "#e5a00d";
-                        
+                        mainRunBtn.onmouseover = () => { if(!mainRunBtn.disabled) mainRunBtn.style.backgroundColor = "#d4910c"; };
+                        mainRunBtn.onmouseout = () => { if(!mainRunBtn.disabled) mainRunBtn.style.backgroundColor = "#e5a00d"; };
                         mainRunBtn.onclick = (e2) => {
                             e2.preventDefault();
-                            
-                            if (isTaskRunning) {
-                                return alert("진행 중인 백그라운드 작업이 있습니다.\n모니터링 탭을 확인하여 작업을 중지하거나 완료를 기다려 주세요.");
-                            }
-
+                            if (isTaskRunning) return alert("진행 중인 백그라운드 작업이 있습니다.\n모니터링 탭을 확인하여 작업을 중지하거나 완료를 기다려 주세요.");
                             const { targetSrv: tSrv, reqData } = getFormData();
                             reqData.action_type = 'preview'; 
-                            
                             switchTab('tab_form');
                             const resForm = document.getElementById('pmh_run_res_form');
                             resForm.style.display = 'block'; 
@@ -1979,7 +2166,6 @@ GM_addStyle(`
                             
                             let isFetchingPreview = true;
                             let previewPollTimer = null;
-
                             const pollPreviewLogs = () => {
                                 if (!isFetchingPreview) return;
                                 GM_xmlhttpRequest({
@@ -1993,13 +2179,8 @@ GM_addStyle(`
                                                 if (statusData.logs && statusData.logs.length > 0) {
                                                     const resMonitor = document.getElementById('pmh_run_res_monitor');
                                                     if (resMonitor) {
-                                                        resMonitor.style.display = 'flex';
-                                                        resMonitor.style.flexDirection = 'column';
-                                                        resMonitor.style.flexGrow = '1';
-                                                        resMonitor.style.minHeight = '0';
-                                                        
+                                                        resMonitor.style.display = 'flex'; resMonitor.style.flexDirection = 'column'; resMonitor.style.flexGrow = '1';
                                                         let logsHtml = statusData.logs.map(l => `<div style="margin-bottom:2px;">${l}</div>`).join('');
-                                                        
                                                         resMonitor.innerHTML = `
                                                             <div style="display:flex; flex-direction:column; background:#15181a; border:1px solid #333; border-radius:6px; padding:15px; text-align:left; flex-grow:1; min-height:0;">
                                                                 <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-bottom:15px; flex-shrink:0; border-bottom:1px dashed #333; padding-bottom:8px;">
@@ -2027,25 +2208,17 @@ GM_addStyle(`
                                 headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
                                 data: JSON.stringify(reqData),
                                 onload: (r) => {
-                                    isFetchingPreview = false;
-                                    if (previewPollTimer) clearTimeout(previewPollTimer);
-
-                                    try {
-                                        const resData = JSON.parse(r.responseText);
-                                        processAndRenderResult(resData, itemsPerPage, tSrv);
-                                    } catch(err) {
-                                        resForm.innerHTML = `<pre style="white-space:pre-wrap; background:#2b1515; padding:12px; border:1px solid #5c2020; border-radius:4px; color:#e06c6c;">${r.responseText}</pre>`;
-                                    }
+                                    isFetchingPreview = false; if (previewPollTimer) clearTimeout(previewPollTimer);
+                                    try { processAndRenderResult(JSON.parse(r.responseText), parseInt(savedOptions.items_per_page || 10), tSrv); }
+                                    catch(err) { resForm.innerHTML = `<pre style="white-space:pre-wrap; background:#2b1515; padding:12px; border:1px solid #5c2020; border-radius:4px; color:#e06c6c;">${r.responseText}</pre>`; }
                                 },
                                 onerror: () => {
-                                    isFetchingPreview = false;
-                                    if (previewPollTimer) clearTimeout(previewPollTimer);
+                                    isFetchingPreview = false; if (previewPollTimer) clearTimeout(previewPollTimer);
                                     resForm.innerHTML = `<div style="padding:15px; color:#bd362f; text-align:center;">서버 통신 중 오류가 발생했습니다.</div>`;
                                 }
                             });
                         };
                     }
-
                 }, 50); 
             }
         }); 
@@ -2281,19 +2454,6 @@ GM_addStyle(`
                     document.getElementById('pmh-panel-close').onclick = (e) => { e.preventDefault(); e.stopPropagation(); panel.style.display = 'none'; };
                     window.makeDraggable(panel, document.getElementById('pmh-panel-header'));
                     window.makeResizable(panel);
-                    panel.addEventListener('click', (e) => {
-                        if (e.target.id === 'pmh_tool_toggle_form' || e.target.closest('#pmh_tool_toggle_form')) {
-                            const toggleBtn = e.target.closest('#pmh_tool_toggle_form');
-                            const formContainer = document.getElementById('pmh_tool_form_container');
-                            if (formContainer && toggleBtn) {
-                                const isCurrentlyCollapsed = formContainer.style.display === 'none';
-                                formContainer.style.display = isCurrentlyCollapsed ? 'block' : 'none';
-                                toggleBtn.classList.replace(isCurrentlyCollapsed ? 'fa-chevron-down' : 'fa-chevron-up', isCurrentlyCollapsed ? 'fa-chevron-up' : 'fa-chevron-down');
-                                let currentCache = JSON.parse(GM_getValue(`pmh_tool_cache_${window.pmhCurrentToolId}`, "{}"));
-                                currentCache._form_collapsed = !isCurrentlyCollapsed; GM_setValue(`pmh_tool_cache_${window.pmhCurrentToolId}`, JSON.stringify(currentCache));
-                            }
-                        }
-                    });
                 }
                 
                 panel.style.top = '80px'; panel.style.left = '60%'; panel.style.width = '450px'; panel.style.height = 'auto';
@@ -2358,10 +2518,15 @@ const fetchTools = () => {
                     `;
 
                     if (res.status === 200) {
-                        const toolsData = JSON.parse(res.responseText).tools;
+                        let toolsData = JSON.parse(res.responseText).tools;
                         if (!toolsData || toolsData.length === 0) {
                             html += `<div style="padding:20px 15px; text-align:center; color:#777; font-size:12px;">설치된 툴이 없습니다.</div>`;
                         } else {
+                            toolsData.sort((a, b) => {
+                                const nameA = (a.name || a.id || "").toLowerCase();
+                                const nameB = (b.name || b.id || "").toLowerCase();
+                                return nameA.localeCompare(nameB);
+                            });
                             toolsData.forEach(tool => {
                                 html += `
                                     <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333;" data-id="${tool.id}" data-url="${tool.update_url || ''}" data-ver="${tool.version || '0.0'}">
@@ -2621,9 +2786,17 @@ const fetchTools = () => {
             e.preventDefault(); e.stopPropagation();
             if (dropdown.style.display !== 'block') {
                 const rect = toolMenuBtn.getBoundingClientRect();
-                dropdown.style.top = `${rect.bottom + 10}px`;
-                dropdown.style.right = `${window.innerWidth - rect.right}px`;
+                
                 dropdown.style.display = 'block';
+                let leftPos = rect.left + (rect.width / 2) - (dropdown.offsetWidth / 2);
+                if (leftPos + dropdown.offsetWidth > window.innerWidth - 10) {
+                    leftPos = window.innerWidth - dropdown.offsetWidth - 10;
+                }
+                
+                dropdown.style.top = `${rect.bottom + 10}px`;
+                dropdown.style.left = `${leftPos}px`;
+                dropdown.style.right = 'auto';
+                
                 dropdown.innerHTML = `
                     <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
                         <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
@@ -4549,136 +4722,142 @@ const fetchTools = () => {
     const itemApiDebounceTimers = new Map();
     const API_DEBOUNCE_DELAY = 1000;
 
+    let masterObserverTimer = null;
     const observer = new MutationObserver(() => {
         if (isObserverLocked) return;
 
-        processMatchModal();
+        if (masterObserverTimer) clearTimeout(masterObserverTimer);
+        
+        masterObserverTimer = setTimeout(() => {
+            processMatchModal();
 
-        if (!document.getElementById('pmdv-controls')) injectControlUI();
+            if (!document.getElementById('pmdv-controls')) injectControlUI();
 
-        if (window.location.hash.includes('/details?key=')) {
-            const { serverId, itemId } = extractIds();
-            const currentHash = getDetailStateHash();
-            const guidBox = document.getElementById('plex-guid-box');
+            if (window.location.hash.includes('/details?key=')) {
+                const { serverId, itemId } = extractIds();
+                const currentHash = getDetailStateHash();
+                const guidBox = document.getElementById('plex-guid-box');
 
-            if (currentDisplayedItemId === itemId && currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash) {
-                infoLog(`[Detail-Observer] 🔄 Metadata change detected! (${currentDetailStateHash} -> ${currentHash}). Forcing update.`);
-                currentDetailStateHash = currentHash; 
-                
-                if (serverId && itemId) {
-                    deleteMemoryCache(`D_${serverId}_${itemId}`);
-                    deleteMemoryCache(`F_${serverId}_${itemId}`);
-                    deleteMemoryCache(`L_${serverId}_${itemId}`);
-                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
-                }
-                
-                if (guidBox) guidBox.style.opacity = '0.4';
-                
-                if(observer.detailTimer) clearTimeout(observer.detailTimer);
-                observer.detailTimer = setTimeout(() => { processDetail(true); }, 600);
-            }
-            else if (!guidBox && !isFetchingDetail) {
-                const target = document.querySelector('div[data-testid="metadata-top-level-items"]')
-                            || document.querySelector('div[data-testid="metadata-starRatings"]')
-                            || document.querySelector('div[data-testid="metadata-ratings"]')
-                            || document.querySelector('button[data-testid="preplay-play"]')
-                            || document.querySelector('span[data-testid="metadata-line2"]');
-                if (target) {
-                    if(observer.detailTimer) clearTimeout(observer.detailTimer);
-                    observer.detailTimer = setTimeout(() => { processDetail(); }, 200);
-                }
-            }
-        }
-
-        const allListItems = document.querySelectorAll(`
-            div[data-testid^="cellItem"],
-            div[class*="ListItem-container"],
-            div[class*="MetadataPosterCard-container"]
-        `);
-
-        let needsRender = false;
-
-        for (const cont of allListItems) {
-            let link = cont.querySelector('a[data-testid="metadataTitleLink"]');
-            if (!link) {
-                const fallbackLinks = cont.querySelectorAll('a[href*="key="], a[href*="/metadata/"]');
-                link = fallbackLinks[0];
-            }
-            if (!link) continue;
-
-            let iid = null;
-            try {
-                const keyParam = new URLSearchParams(link.getAttribute('href').split('?')[1]).get('key');
-                if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
-            } catch(e) {}
-
-            if (isIgnoredItem(link.getAttribute('href'), iid)) continue;
-
-            if (iid) {
-                const marker = cont.querySelector('.pmh-render-marker');
-                let needsDraw = false;
-
-                if (!marker || marker.getAttribute('data-iid') !== iid) {
-                    needsDraw = true;
-                } else {
-                    const oldHash = marker.getAttribute('data-state-hash');
-                    const currentHash = getItemStateHash(cont);
+                if (currentDisplayedItemId === itemId && currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash) {
+                    infoLog(`[Detail-Observer] 🔄 Metadata change detected! (${currentDetailStateHash} -> ${currentHash}). Forcing update.`);
+                    currentDetailStateHash = currentHash; 
                     
-                    if (oldHash && currentHash && oldHash !== currentHash) {
-                        let logTitle = "Unknown Title";
-                        const hashParts = currentHash.split('|');
-                        let candidateTitle = hashParts.find(p => p && isNaN(p));
-
-                        const targetServerId = link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
-                        const localCache = targetServerId ? getMemoryCache(`L_${targetServerId}_${iid}`) : null;
-                        
-                        if (candidateTitle && (candidateTitle.includes('로딩') || candidateTitle.includes('Loading'))) {
-                            logTitle = (localCache && localCache.saved_title) ? localCache.saved_title : "Loading...";
-                        } else if (candidateTitle) {
-                            logTitle = candidateTitle;
-                            if (localCache) {
-                                localCache.saved_title = logTitle;
-                                setMemoryCache(`L_${targetServerId}_${iid}`, localCache);
-                            }
-                        }
-
-                        if (itemApiDebounceTimers.has(iid)) {
-                            clearTimeout(itemApiDebounceTimers.get(iid));
-                        } else {
-                            needsDraw = true;
-                            const now = Date.now();
-                            if (!observerLogCooldown[iid] || now - observerLogCooldown[iid] > 2000) {
-                                infoLog(`[List-Observer] 🔄 DOM State changed for [${logTitle}] (ID: ${iid}). Immediate update.`);
-                                observerLogCooldown[iid] = now;
-                            }
-                        }
-
-                        itemApiDebounceTimers.set(iid, setTimeout(() => {
-                            itemApiDebounceTimers.delete(iid);
-                            
-                            if(observer.listTimer) clearTimeout(observer.listTimer);
-                            observer.listTimer = setTimeout(() => { processList(); }, 150);
-                        }, API_DEBOUNCE_DELAY));
-
-                    } else {
-                        const isIgnored = marker.getAttribute('data-ignored') === 'true';
-                        if (!isIgnored) {
-                            if ((state.listTag || state.listPlay) && !cont.querySelector('.pmh-top-right-wrapper')) needsDraw = true;
-                            if ((state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) needsDraw = true;
-                        }
+                    if (serverId && itemId) {
+                        deleteMemoryCache(`D_${serverId}_${itemId}`);
+                        deleteMemoryCache(`F_${serverId}_${itemId}`);
+                        deleteMemoryCache(`L_${serverId}_${itemId}`);
+                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
+                    }
+                    
+                    if (guidBox) guidBox.style.opacity = '0.4';
+                    
+                    if(observer.detailTimer) clearTimeout(observer.detailTimer);
+                    observer.detailTimer = setTimeout(() => { processDetail(true); }, 600);
+                }
+                else if (!guidBox && !isFetchingDetail) {
+                    const target = document.querySelector('div[data-testid="metadata-top-level-items"]')
+                                || document.querySelector('div[data-testid="metadata-starRatings"]')
+                                || document.querySelector('div[data-testid="metadata-ratings"]')
+                                || document.querySelector('button[data-testid="preplay-play"]')
+                                || document.querySelector('span[data-testid="metadata-line2"]');
+                    if (target) {
+                        if(observer.detailTimer) clearTimeout(observer.detailTimer);
+                        observer.detailTimer = setTimeout(() => { processDetail(); }, 200);
                     }
                 }
+            }
 
-                if (needsDraw) {
-                    needsRender = true;
+            const allListItems = document.querySelectorAll(`
+                div[data-testid^="cellItem"],
+                div[class*="ListItem-container"],
+                div[class*="MetadataPosterCard-container"]
+            `);
+
+            let needsRender = false;
+
+            for (const cont of allListItems) {
+                let link = cont.querySelector('a[data-testid="metadataTitleLink"]');
+                if (!link) {
+                    const fallbackLinks = cont.querySelectorAll('a[href*="key="], a[href*="/metadata/"]');
+                    link = fallbackLinks[0];
+                }
+                if (!link) continue;
+
+                let iid = null;
+                try {
+                    const keyParam = new URLSearchParams(link.getAttribute('href').split('?')[1]).get('key');
+                    if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
+                } catch(e) {}
+
+                if (isIgnoredItem(link.getAttribute('href'), iid)) continue;
+
+                if (iid) {
+                    const marker = cont.querySelector('.pmh-render-marker');
+                    let needsDraw = false;
+
+                    if (!marker || marker.getAttribute('data-iid') !== iid) {
+                        needsDraw = true;
+                    } else {
+                        const oldHash = marker.getAttribute('data-state-hash');
+                        const currentHash = getItemStateHash(cont);
+                        
+                        if (oldHash && currentHash && oldHash !== currentHash) {
+                            let logTitle = "Unknown Title";
+                            const hashParts = currentHash.split('|');
+                            let candidateTitle = hashParts.find(p => p && isNaN(p));
+
+                            const targetServerId = link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
+                            const localCache = targetServerId ? getMemoryCache(`L_${targetServerId}_${iid}`) : null;
+                            
+                            if (candidateTitle && (candidateTitle.includes('로딩') || candidateTitle.includes('Loading'))) {
+                                logTitle = (localCache && localCache.saved_title) ? localCache.saved_title : "Loading...";
+                            } else if (candidateTitle) {
+                                logTitle = candidateTitle;
+                                if (localCache) {
+                                    localCache.saved_title = logTitle;
+                                    setMemoryCache(`L_${targetServerId}_${iid}`, localCache);
+                                }
+                            }
+
+                            if (itemApiDebounceTimers.has(iid)) {
+                                clearTimeout(itemApiDebounceTimers.get(iid));
+                            } else {
+                                needsDraw = true;
+                                const now = Date.now();
+                                if (!observerLogCooldown[iid] || now - observerLogCooldown[iid] > 2000) {
+                                    infoLog(`[List-Observer] 🔄 DOM State changed for [${logTitle}] (ID: ${iid}). Immediate update.`);
+                                    observerLogCooldown[iid] = now;
+                                }
+                            }
+
+                            itemApiDebounceTimers.set(iid, setTimeout(() => {
+                                itemApiDebounceTimers.delete(iid);
+                                
+                                if(observer.listTimer) clearTimeout(observer.listTimer);
+                                observer.listTimer = setTimeout(() => { processList(); }, 150);
+                            }, API_DEBOUNCE_DELAY));
+
+                        } else {
+                            const isIgnored = marker.getAttribute('data-ignored') === 'true';
+                            if (!isIgnored) {
+                                if ((state.listTag || state.listPlay) && !cont.querySelector('.pmh-top-right-wrapper')) needsDraw = true;
+                                if ((state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) needsDraw = true;
+                            }
+                        }
+                    }
+
+                    if (needsDraw) {
+                        needsRender = true;
+                    }
                 }
             }
-        }
 
-        if (needsRender) {
-            if(observer.listTimer) clearTimeout(observer.listTimer);
-            observer.listTimer = setTimeout(() => { processList(); }, 150);
-        }
+            if (needsRender) {
+                if(observer.listTimer) clearTimeout(observer.listTimer);
+                observer.listTimer = setTimeout(() => { processList(); }, 150);
+            }
+
+        }, 150);
     });
 
     const pushState = history.pushState;

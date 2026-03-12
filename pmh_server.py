@@ -31,6 +31,10 @@ DEFAULT_CONFIG = {
     "SERVER_PORT": 8899,
     "MAX_BATCH_SIZE": 1000,
     "API_KEY": "YOUR_PLEX_MATE_API_KEY_HERE",
+    "PLEX_MATE_URL": "http://127.0.0.1:9999",
+    "PATH_MAPPINGS": [
+        "/mnt/gds/|/mnt/gds/"
+    ]
 }
 
 def load_config():
@@ -51,7 +55,8 @@ PLEX_TOKEN = cfg.get("PLEX_TOKEN", DEFAULT_CONFIG["PLEX_TOKEN"])
 SERVER_PORT = cfg.get("SERVER_PORT", DEFAULT_CONFIG["SERVER_PORT"])
 MAX_BATCH_SIZE = cfg.get("MAX_BATCH_SIZE", DEFAULT_CONFIG["MAX_BATCH_SIZE"])
 API_KEY = cfg.get("API_KEY", DEFAULT_CONFIG["API_KEY"])
-
+PLEX_MATE_URL = cfg.get("PLEX_MATE_URL", DEFAULT_CONFIG["PLEX_MATE_URL"])
+PATH_MAPPINGS = cfg.get("PATH_MAPPINGS", DEFAULT_CONFIG["PATH_MAPPINGS"])
 CORE_FILE_PATH = os.path.join(BASE_DIR, "pmh_core.py")
 if not os.path.exists(CORE_FILE_PATH):
     print("[BOOTSTRAP] pmh_core.py 가 존재하지 않아 GitHub에서 다운로드합니다...")
@@ -137,6 +142,11 @@ def api_gateway(subpath):
         max_batch_size=MAX_BATCH_SIZE,
         plex_url=PLEX_URL,
         plex_token=PLEX_TOKEN,
+        global_config={
+            "mate_apikey": API_KEY,
+            "mate_url": PLEX_MATE_URL,
+            "path_mappings": PATH_MAPPINGS
+        }
     )
     
     return jsonify(result), status_code

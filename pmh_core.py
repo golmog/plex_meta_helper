@@ -18,7 +18,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.41"
+__version__ = "0.7.42"
 
 def get_version():
     return __version__
@@ -53,7 +53,7 @@ def is_season_folder(folder_name):
     return False
 
 def natural_sort_key(s):
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+    return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
 
 def _get_unique_show_folder_count(cursor, rating_key):
     seen_paths = set()
@@ -299,94 +299,339 @@ def handle_media_detail(rating_key, db_path):
 class CoreTaskManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
         self.tool_id = tool_id
-        self.task_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}.json")
-        os.makedirs(os.path.dirname(self.task_file), exist_ok=True)
+        self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_task.db")
         self._lock = threading.Lock()
 
+    @contextmanager
+    def _get_conn(self):
+        conn = sqlite3.connect(self.db_file, timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.commit()
+            conn.close()
+
+    def _setup_db(self):
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            c.execute("CREATE TABLE IF NOT EXISTS task_info (state TEXT, progress INTEGER, total INTEGER, task_data TEXT)")
+            c.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, log_text TEXT)")
+            
+            c.execute("SELECT count(*) FROM task_info")
+            if c.fetchone()[0] == 0:
+                c.execute("INSERT INTO task_info (state, progress, total, task_data) VALUES ('completed', 0, 0, '{}')")
+
     def load(self):
+        """기존 JSON 구조와 100% 동일한 딕셔너리를 반환하여 하위 호환성 유지"""
         with self._lock:
-            if not os.path.exists(self.task_file): return None
+            if not os.path.exists(self.db_file): return None
             try:
-                with open(self.task_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except: return None
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT state, progress, total, task_data FROM task_info LIMIT 1")
+                    row = c.fetchone()
+                    if not row: return None
+                    
+                    data = {
+                        "state": row['state'],
+                        "progress": row['progress'],
+                        "total": row['total'],
+                        "task_data": json.loads(row['task_data'] or '{}')
+                    }
+                    
+                    # 가장 최근 로그 50개만 오름차순으로 가져옴
+                    c.execute("SELECT log_text FROM (SELECT id, log_text FROM logs ORDER BY id DESC LIMIT 50) sub ORDER BY id ASC")
+                    data['logs'] = [l['log_text'] for l in c.fetchall()]
+                    
+                    return data
+            except: 
+                return None
 
     def save(self, data):
+        """레거시 호환용 저장 함수 (주로 이어서 실행 task_data 덮어쓰기용)"""
         with self._lock:
+            self._setup_db()
             try:
-                tmp = self.task_file + ".tmp"
-                with open(tmp, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, self.task_file)
-            except Exception as e: pass
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    state = data.get('state', 'completed')
+                    progress = data.get('progress', 0)
+                    total = data.get('total', 0)
+                    task_data_str = json.dumps(data.get('task_data', {}), ensure_ascii=False)
+                    
+                    c.execute("UPDATE task_info SET state=?, progress=?, total=?, task_data=?", 
+                              (state, progress, total, task_data_str))
+            except: pass
 
     def init_task(self, task_data):
-        base = {
-            "state": "running", "progress": 0, "total": task_data.get('total', 0),
-            "logs": ["작업을 시작합니다..."],
-            "task_data": task_data
-        }
-        self.save(base)
+        """새로운 작업을 시작할 때 DB를 초기화하고 첫 로그를 찍습니다."""
+        with self._lock:
+            self._setup_db()
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("DELETE FROM logs")
+                c.execute("UPDATE task_info SET state='running', progress=0, total=?, task_data=?", 
+                          (task_data.get('total', 0), json.dumps(task_data, ensure_ascii=False)))
+                c.execute("INSERT INTO logs (log_text) VALUES ('작업을 시작합니다...')")
 
     def reset(self):
+        """작업 관련 캐시 파일 완전 삭제"""
         with self._lock:
-            if os.path.exists(self.task_file):
-                try: os.remove(self.task_file)
+            if os.path.exists(self.db_file):
+                try: os.remove(self.db_file)
                 except: pass
 
     def log(self, msg):
+        """가장 많이 호출되는 함수: 초고속 INSERT로 로그 기록"""
         print(f"[{self.tool_id}] {msg}")
-        t = self.load()
-        if not t: t = {"state": "completed", "progress": 0, "total": 0, "logs": []}
         stamp = datetime.now().strftime('%H:%M:%S')
-        t.setdefault('logs', []).append(f"[{stamp}] {msg}")
-        if len(t['logs']) > 50: t['logs'].pop(0)
-        self.save(t)
+        log_line = f"[{stamp}] {msg}"
+        
+        with self._lock:
+            self._setup_db()
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("INSERT INTO logs (log_text) VALUES (?)", (log_line,))
 
     def update_state(self, state, progress=None, total=None):
-        t = self.load()
-        if not t: return
-        t['state'] = state
-        if progress is not None: t['progress'] = progress
-        if total is not None: t['total'] = total
-        self.save(t)
+        """진행률 및 상태 업데이트"""
+        with self._lock:
+            self._setup_db()
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                if progress is not None and total is not None:
+                    c.execute("UPDATE task_info SET state=?, progress=?, total=?", (state, progress, total))
+                elif progress is not None:
+                    c.execute("UPDATE task_info SET state=?, progress=?", (state, progress))
+                else:
+                    c.execute("UPDATE task_info SET state=?", (state,))
 
     def is_cancelled(self):
-        t = self.load()
-        if not t: return True
-        return t.get('state') in ['cancelled', 'error']
+        """취소 상태 확인 (매 루프마다 호출되므로 빠르고 가볍게)"""
+        with self._lock:
+            if not os.path.exists(self.db_file): return True
+            try:
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT state FROM task_info LIMIT 1")
+                    row = c.fetchone()
+                    if row:
+                        return row['state'] in ['cancelled', 'error']
+            except: pass
+            return True
 
 # ==============================================================================
-# [코어 데이터 캐시 관리자 (Data Manager)]
+# [코어 데이터 캐시 관리자 (SQLite 기반 동적 스키마)]
 # ==============================================================================
 class CoreDataManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
-        # [수정] 데이터 캐시도 서버별로 격리합니다.
-        self.data_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_data.json")
+        self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_cache.db")
         self._lock = threading.Lock()
+
+    @contextmanager
+    def _get_conn(self):
+        conn = sqlite3.connect(self.db_file, timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        
+        # SQLite 엔진에 파이썬 자연정렬 콜백(Collation) 이식
+        def sqlite_natural_collate(s1, s2):
+            k1 = natural_sort_key(s1)
+            k2 = natural_sort_key(s2)
+            return -1 if k1 < k2 else (1 if k1 > k2 else 0)
+            
+        conn.create_collation("NATURAL_SORT", sqlite_natural_collate)
+        
+        try:
+            yield conn
+        finally:
+            conn.commit()
+            conn.close()
+
+    def reset_db(self):
+        with self._lock:
+            if os.path.exists(self.db_file):
+                try: os.remove(self.db_file)
+                except: pass
+
+    def save(self, res_data):
+        self.reset_db()
+        with self._lock:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                
+                meta_dict = {k: v for k, v in res_data.items() if k != 'data'}
+                c.execute("CREATE TABLE meta (payload TEXT)")
+                c.execute("INSERT INTO meta (payload) VALUES (?)", (json.dumps(meta_dict, ensure_ascii=False),))
+                
+                data_list = res_data.get('data', [])
+                if data_list:
+                    columns = list(data_list[0].keys())
+                    col_defs = ", ".join([f'"{col}" TEXT' for col in columns])
+                    c.execute(f"CREATE TABLE data ({col_defs}, pmh_status TEXT DEFAULT 'pending')")
+                    
+                    placeholders = ", ".join(["?" for _ in columns])
+                    col_names = ", ".join([f'"{col}"' for col in columns])
+                    insert_sql = f"INSERT INTO data ({col_names}) VALUES ({placeholders})"
+                    
+                    rows = [[str(row.get(col, '')) if row.get(col) is not None else '' for col in columns] for row in data_list]
+                    c.executemany(insert_sql, rows)
+
+    def load_page(self, page, limit, sort_key=None, sort_dir='asc'):
+        with self._lock:
+            if not os.path.exists(self.db_file): return None
+            
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                
+                c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='meta'")
+                if c.fetchone()[0] == 0: return None
+                
+                c.execute("SELECT payload FROM meta LIMIT 1")
+                meta_row = c.fetchone()
+                if not meta_row: return None
+                result = json.loads(meta_row[0])
+                
+                if result.get('type') == 'dashboard':
+                    return result
+                    
+                c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
+                if c.fetchone()[0] == 0:
+                    result['data'] = []
+                    result['total_items'] = 0
+                    result['total_pages'] = 1
+                    result['page'] = page
+                    return result
+
+                where_clause = "WHERE pmh_status != 'done'"
+
+                c.execute(f"SELECT COUNT(*) FROM data {where_clause}")
+                total_items = c.fetchone()[0]
+                
+                order_clause = ""
+                columns_meta = result.get('columns', [])
+                col_map = {c['key']: c for c in columns_meta}
+                
+                target_sort_key = sort_key
+                target_sort_dir = sort_dir.upper() if sort_dir in ['asc', 'desc'] else 'ASC'
+                
+                if target_sort_key:
+                    actual_key = col_map.get(target_sort_key, {}).get('sort_key', target_sort_key)
+                    sort_type = col_map.get(target_sort_key, {}).get('sort_type', 'string')
+                    if sort_type == 'number':
+                        order_clause = f"ORDER BY CAST(\"{actual_key}\" AS REAL) {target_sort_dir}"
+                    else:
+                        order_clause = f"ORDER BY \"{actual_key}\" COLLATE NATURAL_SORT {target_sort_dir}"
+                
+                elif result.get('default_sort'):
+                    ds = result['default_sort']
+                    if not isinstance(ds, list):
+                        ds = [ds]
+                    order_parts = []
+                    for rule in ds:
+                        r_key = rule.get('key')
+                        r_dir = rule.get('dir', 'asc').upper()
+                        actual_key = col_map.get(r_key, {}).get('sort_key', r_key)
+                        sort_type = col_map.get(r_key, {}).get('sort_type', 'string')
+                        if sort_type == 'number':
+                            order_parts.append(f"CAST(\"{actual_key}\" AS REAL) {r_dir}")
+                        else:
+                            order_parts.append(f"\"{actual_key}\" COLLATE NATURAL_SORT {r_dir}")
+                    if order_parts:
+                        order_clause = "ORDER BY " + ", ".join(order_parts)
+
+                offset = (page - 1) * limit
+                query = f"SELECT * FROM data {where_clause} {order_clause} LIMIT ? OFFSET ?"
+                c.execute(query, (limit, offset))
+
+                data_rows = []
+                for row in c.fetchall():
+                    row_dict = dict(row)
+                    row_dict.pop('pmh_status', None)
+                    data_rows.append(row_dict)
+                
+                result['data'] = data_rows
+                result['total_items'] = total_items
+                result['page'] = page
+                result['total_pages'] = max(1, (total_items + limit - 1) // limit)
+                
+                return result
+
+    def mark_as_done(self, key_column, key_value):
+        with self._lock:
+            if not os.path.exists(self.db_file): return
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
+                if c.fetchone()[0] == 1:
+                    c.execute(f"UPDATE data SET pmh_status = 'done' WHERE \"{key_column}\" = ?", (str(key_value),))
+
+    def load_dashboard(self):
+        """데이터테이블(data) 없이 메타데이터(dashboard)만 저장된 경우 호출"""
+        with self._lock:
+            if not os.path.exists(self.db_file): return None
+            try:
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='meta'")
+                    if c.fetchone()[0] == 0: return None
+                    c.execute("SELECT payload FROM meta LIMIT 1")
+                    row = c.fetchone()
+                    if row and row[0]:
+                        return json.loads(row[0])
+            except: pass
+            return None
+
+# ==============================================================================
+# [코어 UI 옵션 캐시 관리자 (Options Manager)]
+# ==============================================================================
+class CoreOptionsManager:
+    def __init__(self, base_dir, tool_id, server_id="default"):
+        self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_options.db")
+        self._lock = threading.Lock()
+
+    @contextmanager
+    def _get_conn(self):
+        conn = sqlite3.connect(self.db_file, timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.commit()
+            conn.close()
 
     def load(self):
         with self._lock:
-            if not os.path.exists(self.data_file): return None
+            if not os.path.exists(self.db_file): return {}
             try:
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except: return None
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='options'")
+                    if c.fetchone()[0] == 0: return {}
+                    
+                    c.execute("SELECT payload FROM options LIMIT 1")
+                    row = c.fetchone()
+                    if row and row[0]:
+                        return json.loads(row[0])
+            except: pass
+            return {}
 
     def save(self, data):
         with self._lock:
             try:
-                tmp = self.data_file + ".tmp"
-                with open(tmp, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, self.data_file)
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("CREATE TABLE IF NOT EXISTS options (payload TEXT)")
+                    c.execute("DELETE FROM options")
+                    c.execute("INSERT INTO options (payload) VALUES (?)", (json.dumps(data, ensure_ascii=False),))
             except: pass
 
     def reset(self):
         with self._lock:
-            if os.path.exists(self.data_file):
-                try: os.remove(self.data_file)
+            if os.path.exists(self.db_file):
+                try: os.remove(self.db_file)
                 except: pass
+
 
 def _core_worker_runner(module, task_data, core_api, start_progress, tool_id):
     """코어가 띄우는 비동기 스레드 실행기 (서버 재시작 감지용 이름 설정)"""
@@ -429,11 +674,15 @@ def _load_tool_module(tools_dir, tool_id, entry_file):
     
     module_name = f"pmh_tool_{tool_id}"
     spec = importlib.util.spec_from_file_location(module_name, file_path)
+
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load spec for module: {module_name}")
+
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
-def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_size=1000, plex_url="", plex_token=""):
+def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_size=1000, plex_url="", plex_token="", global_config=None):
     """모든 API 요청을 분기하여 처리하는 중앙 라우터"""
     tools_dir = os.path.join(base_dir, 'tools')
     os.makedirs(tools_dir, exist_ok=True)
@@ -542,17 +791,62 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             except Exception as load_err:
                 return {"error": f"툴 로드 실패: {load_err}"}, 500
 
+            if data is None: data = {}
             db_api = create_db_api(db_path)
             server_id = args.get('server_id', data.get('_server_id', 'default')) if data else args.get('server_id', 'default')
+            
             task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
+            data_mgr = CoreDataManager(base_dir, tool_id, server_id)
+            options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
+
+            final_url = plex_url if str(plex_url).strip() else data.get('_plex_url', '')
+            final_token = plex_token if str(plex_token).strip() else data.get('_plex_token', '')
+            for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token']:
+                data.pop(key, None)
+
+            def get_plex_instance():
+                from plexapi.server import PlexServer
+                if not final_url or not final_token: raise ValueError("Plex 서버 정보가 누락되었습니다.")
+                
+                plex = PlexServer(final_url, final_token, timeout=120)
+                
+                orig_fetchItem = plex.fetchItem
+                def safe_fetchItem(ekey, **kwargs):
+                    if isinstance(ekey, str) and ekey.strip().isdigit():
+                        ekey = f"/library/metadata/{ekey.strip()}"
+                    elif isinstance(ekey, int):
+                        ekey = f"/library/metadata/{ekey}"
+                    return orig_fetchItem(ekey, **kwargs)
+                
+                plex.fetchItem = safe_fetchItem  # type: ignore
+                
+                return plex
+
+            core_api = {
+                "query": db_api["query"],
+                "get_plex": get_plex_instance,
+                "task": task_mgr,
+                "config": global_config or {},
+                "cache": data_mgr
+            }
 
             if action == 'ui' and method == 'GET':
                 if hasattr(module, 'get_ui'): 
                     sig = inspect.signature(module.get_ui)
-                    ui_data = module.get_ui(db_api) if len(sig.parameters) > 0 else module.get_ui()
+                    ui_data = module.get_ui(core_api) if len(sig.parameters) > 0 else module.get_ui()
                     
+                    options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
+                    ui_data['saved_options'] = options_mgr.load()
+
                     saved_task = task_mgr.load()
                     if saved_task:
+                        if saved_task.get('state') == 'running':
+                            active_threads = [t.name for t in threading.enumerate()]
+                            if f"Worker_{tool_id}" not in active_threads:
+                                task_mgr.update_state('error')
+                                task_mgr.log("[System] 강제 종료(재시작)가 감지되어 이전 작업을 중단 상태(Error)로 변경했습니다.")
+                                saved_task = task_mgr.load()
+
                         ui_data['active_task'] = {
                             "task_id": tool_id,
                             "state": saved_task.get('state', 'unknown'),
@@ -568,22 +862,35 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 
                 final_url = plex_url if str(plex_url).strip() else data.get('_plex_url', '')
                 final_token = plex_token if str(plex_token).strip() else data.get('_plex_token', '')
-                for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token', '_server_id']:
+                for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token']:
                     data.pop(key, None)
                 
                 def get_plex_instance():
                     from plexapi.server import PlexServer
                     if not final_url or not final_token: raise ValueError("Plex 서버 정보가 누락되었습니다.")
-                    return PlexServer(final_url, final_token)
+                    return PlexServer(final_url, final_token, timeout=120)
+
+                action_type = data.get('action_type', 'preview')
+                
+                data_mgr = CoreDataManager(base_dir, tool_id, server_id)
+                options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
 
                 core_api = {
                     "query": db_api["query"],
                     "get_plex": get_plex_instance,
-                    "task": task_mgr
+                    "task": task_mgr,
+                    "config": global_config or {},
+                    "cache": data_mgr
                 }
 
-                action_type = data.get('action_type', 'preview')
-                data_mgr = CoreDataManager(base_dir, tool_id, server_id)
+                if action_type in ['preview', 'execute', 'page', 'save_options']:
+                    current_opts = options_mgr.load()
+                    for k, v in data.items():
+                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
+                            current_opts[k] = v
+                    options_mgr.save(current_opts)
+                    
+                    if action_type == 'save_options': return {"status": "success"}, 200
 
                 # =================================================================
                 # [내부 헬퍼] 데이터 정렬 수행 (단일 키 및 default_sort 다중 컬럼 지원)
@@ -617,7 +924,8 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 # 1. 초기화 (Reset)
                 if action_type == 'reset':
                     task_mgr.reset()
-                    data_mgr.reset()
+                    data_mgr.reset_db()
+                    options_mgr.reset()
                     return {"status": "success", "message": "초기화 완료"}, 200
 
                 # 2. 이어서 실행 (Resume)
@@ -629,7 +937,8 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     for k, v in data.items():
                         if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
                             saved_task['task_data'][k] = v
-                    task_mgr.save(saved_task)
+                    task_mgr.save(saved_task) 
+
                     task_mgr.update_state('running')
                     task_mgr.log("최신 설정값을 적용하여 작업을 재개합니다...")
                     t = threading.Thread(target=_core_worker_runner, args=(module, saved_task['task_data'], core_api, saved_task.get('progress', 0), tool_id))
@@ -639,46 +948,34 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
                 # 3. 데이터 로드 (페이징/정렬 및 대시보드 반환)
                 elif action_type == 'page':
-                    cached = data_mgr.load()
-                    if not cached: return {"error": "캐시된 데이터가 없습니다."}, 404
+                    sort_key = data.get('sort_key')
+                    sort_dir = data.get('sort_dir', 'asc')
+                    page = int(data.get('page', 1))
+                    limit = int(data.get('limit', 10))
 
+                    # DB 엔진을 통한 페이징 로드 시도
+                    cached = data_mgr.load_page(page, limit, sort_key, sort_dir)
+                    
+                    if not cached:
+                        # 페이지 로드가 실패했다면, 혹시 대시보드 전용 툴인지 확인
+                        cached = data_mgr.load_dashboard()
+                        if not cached: return {"error": "캐시된 데이터가 없습니다."}, 404
+                    
                     if cached.get('type') == 'dashboard':
                         return cached, 200
 
-                    if cached.get('type') == 'datatable':
-                        sort_key = data.get('sort_key')
-                        sort_dir = data.get('sort_dir', 'asc')
-                        page = int(data.get('page', 1))
-                        limit = int(data.get('limit', 10))
+                    machine_id = cached.get('machine_id', "")
+                    if not machine_id:
+                        try:
+                            plex = get_plex_instance()
+                            machine_id = plex.machineIdentifier
+                        except: pass
+                    cached['machine_id'] = machine_id
 
-                        cached['data'] = _apply_sorting(
-                            cached.get('data', []), 
-                            cached.get('columns', []), 
-                            sort_key=sort_key, 
-                            sort_dir=sort_dir, 
-                            default_sort=cached.get('default_sort')
-                        )
+                    t_data = task_mgr.load()
+                    if t_data and 'logs' in t_data: cached['logs'] = t_data['logs']
 
-                        total_items = len(cached['data'])
-                        start = (page - 1) * limit
-                        page_data = cached['data'][start : start + limit]
-
-                        machine_id = cached.get('machine_id', "")
-                        if not machine_id:
-                            try:
-                                plex = get_plex_instance()
-                                machine_id = plex.machineIdentifier
-                            except: pass
-
-                        return {
-                            "status": "success", "type": "datatable", "columns": cached.get('columns', []),
-                            "action_button": cached.get('action_button'), "data": page_data,
-                            "page": page, "total_pages": max(1, (total_items + limit - 1) // limit), "total_items": total_items,
-                            "machine_id": machine_id,
-                            "summary_cards": cached.get('summary_cards'),
-                            "bar_charts": cached.get('bar_charts'),
-                            "logs": cached.get('logs', [])
-                        }, 200
+                    return cached, 200
 
                 # 4. 백그라운드 조회를 위한 내부 워커
                 def _preview_worker():
@@ -706,8 +1003,10 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                             
                             task_mgr.log("[Core] 모든 처리가 완료되었습니다. 화면으로 복귀합니다.")
                             
-                            final_total = task_mgr.load().get('total', 1)
-                            task_mgr.update_state('completed', progress=final_total)
+                            current_state = task_mgr.load().get('state')
+                            if current_state != 'cancelled':
+                                final_total = task_mgr.load().get('total', 1)
+                                task_mgr.update_state('completed', progress=final_total)
                         else:
                             task_mgr.update_state('error')
                             task_mgr.log(f"[Core Error] 데이터 추출 실패 (HTTP {code})")
