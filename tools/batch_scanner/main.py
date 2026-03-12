@@ -191,21 +191,24 @@ def run(data, core_api):
     # -----------------------------------------------------------------
     if action == 'execute':
         if data.get('_is_single'):
-            items = [{'id': data.get('rating_key'), 'title': data.get('title', '단일 실행 항목')}]
+            items = [{'id': str(data.get('rating_key')), 'title': data.get('title', '단일 실행 항목')}]
         else:
             items = get_target_items(data, core_api)
             
         if not items: return {"status": "error", "message": "실행할 대상이 없습니다."}, 400
         
-        return {
-            "status": "success", "type": "async_task",
-            "task_data": {  
-                "mode": data.get('mode', 'refresh'),
-                "sleep_time": data.get('sleep_time', 2),
-                "target_items": items,
-                "total": len(items)
-            }
-        }, 200
+        task_data = {  
+            "mode": data.get('mode', 'refresh'),
+            "sleep_time": data.get('sleep_time', 2),
+            "target_items": items,
+            "total": len(items)
+        }
+        
+        # 단일 실행 여부를 워커에 전달
+        if data.get('_is_single'):
+            task_data['_is_single'] = True
+            
+        return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
     return {"status": "error", "message": "알 수 없는 명령"}, 400
 
@@ -295,4 +298,9 @@ def worker(task_data, core_api, start_index):
 
     # 모든 루프가 끝난 뒤 상태를 완료로 변경
     task.update_state('completed', progress=total_items)
-    task.log("모든 작업이 성공적으로 완료되었습니다.")
+    
+    # 단일/전체 실행 여부에 따라 명확한 종료 메시지 출력
+    if task_data.get('_is_single'):
+        task.log("단일 실행 작업이 정상적으로 완료되었습니다!")
+    else:
+        task.log("전체 배치 작업이 성공적으로 완료되었습니다!")

@@ -232,7 +232,12 @@ def run(data, core_api):
             targets = get_target_issues(data, core_api)
             
         if not targets: return {"status": "error", "message": "실행할 대상이 없습니다."}, 400
-        return {"status": "success", "type": "async_task", "task_data": {"targets": targets, "total": len(targets)}}, 200
+        
+        task_data = {"targets": targets, "total": len(targets)}
+        if data.get('_is_single'):
+            task_data['_is_single'] = True
+            
+        return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
     return {"status": "error", "message": "알 수 없는 명령"}, 400
 
@@ -362,25 +367,32 @@ def worker(task_data, core_api, start_index):
             task.log("분석 작업 완료. DB 갱신 상태를 일괄 검증합니다...")
             time.sleep(2) 
             
-            corrupt_titles = []
-            for i in range(0, len(analyze_rks), 500):
-                chunk = analyze_rks[i:i+500]
-                placeholders = ",".join("?" for _ in chunk)
-                check_q = f"SELECT metadata_item_id FROM media_items WHERE metadata_item_id IN ({placeholders}) AND (width IS NULL OR width = 0)"
-                rows = core_api['query'](check_q, tuple(chunk))
-                for r in rows:
-                    corrupt_titles.append(targets[r['metadata_item_id']]['title'])
-            
-            if corrupt_titles:
-                task.log("=" * 45)
-                task.log(f"🚨 [분석 실패 (파일 손상/권한 문제 의심): 총 {len(corrupt_titles)}건]")
-                for c_title in corrupt_titles: task.log(f"   > {c_title}")
-                task.log("=" * 45)
-            else:
-                task.log("모든 분석 항목이 정상적으로 갱신되었습니다.")
+            try:
+                corrupt_titles = []
+                for i in range(0, len(analyze_rks), 500):
+                    chunk = analyze_rks[i:i+500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    check_q = f"SELECT metadata_item_id FROM media_items WHERE metadata_item_id IN ({placeholders}) AND (width IS NULL OR width = 0)"
+                    rows = core_api['query'](check_q, tuple(chunk))
+                    for r in rows:
+                        fail_rk_str = str(r['metadata_item_id'])
+                        fail_title = targets.get(fail_rk_str, {}).get('title', f"Unknown Title (ID:{fail_rk_str})")
+                        corrupt_titles.append(fail_title)
+                
+                if corrupt_titles:
+                    task.log("=" * 45)
+                    task.log(f"🚨 [분석 실패 (파일 손상, 읽기 권한, 클라우드 마운트 해제 의심): 총 {len(corrupt_titles)}건]")
+                    for c_title in corrupt_titles: 
+                        task.log(f"   > {c_title}")
+                    task.log("=" * 45)
+                else:
+                    task.log("모든 분석 항목이 정상적으로 갱신되었습니다.")
+            except Exception as e:
+                task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
 
         task.update_state('completed')
-        task.log("모든 작업이 성공적으로 완료되었습니다!")
+        task.log("전체 복구 작업이 성공적으로 완료되었습니다!")
+        
     elif not task.is_cancelled():
         task.update_state('completed')
-        task.log("단일 실행 작업이 완료되었습니다!")
+        task.log("단일 실행 작업이 정상적으로 완료되었습니다!")
