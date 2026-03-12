@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.42
+// @version      0.7.43
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1969,33 +1969,34 @@ GM_addStyle(`
                                 };
                             }
 
-                            document.querySelectorAll('.pmh_dt_row_action_btn').forEach(btn => {
-                                btn.onclick = (e) => {
-                                    e.preventDefault(); e.stopPropagation();
-                                    if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하거나 작업을 중지해주세요.");
-                                    
-                                    const origHtml = btn.innerHTML;
-                                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-                                    btn.style.pointerEvents = 'none';
-                                    btn.style.opacity = '0.7';
-                                    
-                                    const executeData = getFormData().reqData;
-                                    try { Object.assign(executeData, JSON.parse(btn.dataset.payload || "{}")); } catch(err){}
-                                    
-                                    GM_xmlhttpRequest({
-                                        method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
-                                        headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
-                                        data: JSON.stringify(executeData),
-                                        onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv); },
-                                        onerror: () => { 
-                                            btn.innerHTML = origHtml; 
-                                            btn.style.pointerEvents = 'auto'; 
-                                            btn.style.opacity = '1';
-                                            toastr.error("서버 연결에 실패했습니다."); 
-                                        }
-                                    });
-                                };
-                            });
+                            resForm.onclick = (e) => {
+                                const btn = e.target.closest('.pmh_dt_row_action_btn');
+                                if (!btn) return; // 클릭한 곳이 단일 실행 버튼이 아니면 무시
+
+                                e.preventDefault(); e.stopPropagation();
+                                if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하거나 작업을 중지해주세요.");
+                                
+                                const origHtml = btn.innerHTML;
+                                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                                btn.style.pointerEvents = 'none';
+                                btn.style.opacity = '0.7';
+                                
+                                const executeData = getFormData().reqData;
+                                try { Object.assign(executeData, JSON.parse(btn.dataset.payload || "{}")); } catch(err){}
+                                
+                                GM_xmlhttpRequest({
+                                    method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                    headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
+                                    data: JSON.stringify(executeData),
+                                    onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv); },
+                                    onerror: () => { 
+                                        btn.innerHTML = origHtml; 
+                                        btn.style.pointerEvents = 'auto'; 
+                                        btn.style.opacity = '1';
+                                        toastr.error("서버 연결에 실패했습니다."); 
+                                    }
+                                });
+                            };
                         }
 
                         else if (resData.type === 'dashboard') {

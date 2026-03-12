@@ -18,7 +18,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.42"
+__version__ = "0.7.43"
 
 def get_version():
     return __version__
@@ -433,15 +433,6 @@ class CoreDataManager:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        
-        # SQLite 엔진에 파이썬 자연정렬 콜백(Collation) 이식
-        def sqlite_natural_collate(s1, s2):
-            k1 = natural_sort_key(s1)
-            k2 = natural_sort_key(s2)
-            return -1 if k1 < k2 else (1 if k1 > k2 else 0)
-            
-        conn.create_collation("NATURAL_SORT", sqlite_natural_collate)
-        
         try:
             yield conn
         finally:
@@ -468,7 +459,8 @@ class CoreDataManager:
                 if data_list:
                     columns = list(data_list[0].keys())
                     col_defs = ", ".join([f'"{col}" TEXT' for col in columns])
-                    c.execute(f"CREATE TABLE data ({col_defs}, pmh_status TEXT DEFAULT 'pending')")
+                    c.execute(f"CREATE TABLE data (pmh_id INTEGER PRIMARY KEY AUTOINCREMENT, {col_defs}, pmh_status TEXT DEFAULT 'pending')")
+                    c.execute("CREATE INDEX idx_status ON data (pmh_status)")
                     
                     placeholders = ", ".join(["?" for _ in columns])
                     col_names = ", ".join([f'"{col}"' for col in columns])
@@ -521,24 +513,10 @@ class CoreDataManager:
                     if sort_type == 'number':
                         order_clause = f"ORDER BY CAST(\"{actual_key}\" AS REAL) {target_sort_dir}"
                     else:
-                        order_clause = f"ORDER BY \"{actual_key}\" COLLATE NATURAL_SORT {target_sort_dir}"
+                        order_clause = f"ORDER BY \"{actual_key}\" COLLATE NOCASE {target_sort_dir}"
                 
-                elif result.get('default_sort'):
-                    ds = result['default_sort']
-                    if not isinstance(ds, list):
-                        ds = [ds]
-                    order_parts = []
-                    for rule in ds:
-                        r_key = rule.get('key')
-                        r_dir = rule.get('dir', 'asc').upper()
-                        actual_key = col_map.get(r_key, {}).get('sort_key', r_key)
-                        sort_type = col_map.get(r_key, {}).get('sort_type', 'string')
-                        if sort_type == 'number':
-                            order_parts.append(f"CAST(\"{actual_key}\" AS REAL) {r_dir}")
-                        else:
-                            order_parts.append(f"\"{actual_key}\" COLLATE NATURAL_SORT {r_dir}")
-                    if order_parts:
-                        order_clause = "ORDER BY " + ", ".join(order_parts)
+                else:
+                    order_clause = "ORDER BY pmh_id ASC"
 
                 offset = (page - 1) * limit
                 query = f"SELECT * FROM data {where_clause} {order_clause} LIMIT ? OFFSET ?"
@@ -594,6 +572,11 @@ class CoreOptionsManager:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=10.0)
         conn.row_factory = sqlite3.Row
+        
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        
         try:
             yield conn
         finally:
