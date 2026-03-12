@@ -1,29 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-[PMH Tool Reference Template] - 배치 스캐너
+====================================================================================
+ [PMH Tool Reference Template] - 배치 스캐너
+====================================================================================
 
-* PMH Tool 아키텍처 핵심 가이드:
-1. 클라이언트(JS)는 단순히 명령만 내리고 화면(UI)만 그리는 '뷰어' 역할을 합니다.
-2. 서버 코어(pmh_core.py)가 작업 목록, 진행률, 로그, 스레드 관리를 모두 대행합니다.
-3. 툴 개발자는 3개의 필수 함수(get_ui, run, worker)만 구현하면 됩니다.
+ 이 파일은 PMH(Plex Meta Helper) 커스텀 툴 중 '비동기 워커'와 '이어서 실행(Resume)'
+ 기능을 개발하기 위한 교과서/레퍼런스 파일입니다.
+
+ 1. [비동기 워커(Worker)와 이어서 실행]
+    - 프론트엔드가 'execute' 명령을 보내면, 코어는 `task_data`를 로컬 DB에 저장하고
+      `worker` 함수를 별도의 스레드로 실행시킵니다.
+    - 서버가 꺼지거나 사용자가 작업을 중단하더라도, 프론트엔드에서 [이어서 계속하기]를
+      누르면 코어는 저장해둔 `task_data`와 `progress`(마지막 성공 인덱스)를 읽어와 
+      `worker(..., start_index)` 로 작업을 재개합니다.
+    - 툴 개발자는 `for idx, item in enumerate(items[start_index:], start=start_index + 1):`
+      처럼 `start_index`부터 루프가 돌도록 작성하기만 하면 됩니다.
+
+ 2. [안전한 자연 정렬 (Natural Sort)]
+    - 파이썬3 에서는 숫자(int)와 문자(str)가 섞인 리스트를 `sort()`하면 TypeError가 발생합니다.
+    - 따라서 숫자를 `zfill(10)`으로 0 패딩 문자열로 만들어 일관되게 정렬해야 합니다.
+
+ 3. [취소(Cancel) 감지]
+    - 루프 중간중간에 `if task.is_cancelled(): return` 을 삽입하여,
+      유저가 화면에서 [작업 중단]을 눌렀을 때 즉시 스레드가 종료되도록 해야 합니다.
+====================================================================================
 """
 
 import time
 import os
 import re
 
-def natural_sort_key(s):
-    """문자열 내의 숫자를 인식하여 자연스럽게 정렬 (예: 1화, 2화)"""
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+def natural_sort_key_local(s):
+    """문자열 내의 숫자를 인식하여 자연스럽게 정렬 (예: 1화 -> 0000000001화)"""
+    return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
 
 # =====================================================================
 # 1. PMH Tool 표준 인터페이스 (UI 스키마)
 # =====================================================================
 def get_ui(core_api):
-    """
-    클라이언트가 툴을 클릭했을 때 그려질 UI 형태(JSON)를 반환합니다.
-    ※ 코어가 기존 작업 내역(이어서 실행 여부)을 자동으로 병합하여 클라이언트에 보냅니다.
-    """
     sections = [{"value": "all", "text": "전체 라이브러리 (All)"}]
     try:
         rows = core_api['query']("SELECT id, name FROM library_sections ORDER BY name")
@@ -61,50 +75,58 @@ def get_ui(core_api):
 # 2. 데이터 추출 비즈니스 로직
 # =====================================================================
 def get_target_items(req_data, core_api):
-    section_id = req_data.get('target_section')
+    section_id = req_data.get('target_section', 'all')
     mode = req_data.get('mode', 'refresh')
     target_agent = req_data.get('target_agent', '').strip()
     items = []
     
+    # [Reference] 쿼리를 깔끔하게 관리하기 위해 기본 형태를 정의합니다.
     select_clause = """
-        SELECT mi.id, mi.title, mi.guid, mp.file, mi.metadata_type,
+        SELECT mi.id, mi.title, mi.guid, mp.file, mi.metadata_type, ls.name AS section_name,
                (SELECT title FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) as show_title,
                (SELECT year FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) as show_year,
                (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as season_index,
                mi."index" as episode_index
         FROM metadata_items mi
+        JOIN library_sections ls ON mi.library_section_id = ls.id
         LEFT JOIN media_items m ON m.metadata_item_id = mi.id
         LEFT JOIN media_parts mp ON mp.media_item_id = m.id
     """
 
-    if mode in ['refresh', 'rematch']:
-        query = select_clause + " WHERE mi.metadata_type IN (1, 2)"
-        params = []
-        if section_id and str(section_id).lower() != 'all':
-            query += " AND mi.library_section_id = ?"
-            params.append(section_id)
-        query += " GROUP BY mi.id"
-        rows = core_api['query'](query, tuple(params))
+    params = []
+    where_clauses = []
 
+    # 모드에 따른 필수 조건 추가
+    if mode in ['refresh', 'rematch']:
+        where_clauses.append("mi.metadata_type IN (1, 2)")
     elif mode == 'analyze':
-        query = select_clause + """
-            WHERE mi.metadata_type IN (1, 4)
-              AND (m.width IS NULL OR m.width = 0 OR m.bitrate IS NULL)
-              AND mp.file IS NOT NULL
-        """
-        params = []
-        if section_id and str(section_id).lower() != 'all':
-            query += " AND mi.library_section_id = ?"
-            params.append(section_id)
-        query += " GROUP BY mi.id"
-        rows = core_api['query'](query, tuple(params))
+        where_clauses.append("mi.metadata_type IN (1, 4)")
+        where_clauses.append("(m.width IS NULL OR m.width = 0 OR m.bitrate IS NULL)")
+        where_clauses.append("mp.file IS NOT NULL")
+
+    # 섹션 필터 추가 (파라미터 바인딩 사용)
+    if str(section_id).lower() != 'all':
+        where_clauses.append("mi.library_section_id = ?")
+        params.append(section_id)
+
+    # 쿼리 조립
+    query = select_clause
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+    query += " GROUP BY mi.id"
+
+    # 코어 API로 안전하게 쿼리 실행
+    rows = core_api['query'](query, tuple(params))
 
     for r in rows:
         clean_guid = '-'
         if r.get('guid'):
             clean_guid = r['guid'].replace("com.plexapp.agents.", "", 1) if r['guid'].startswith("com.plexapp.agents.") else r['guid']
-            if target_agent and clean_guid.startswith(target_agent): continue 
+            # 제외할 에이전트 필터링 (파이썬 레벨에서 처리)
+            if target_agent and clean_guid.startswith(target_agent): 
+                continue 
 
+        # 화면에 예쁘게 보여줄 제목 가공
         m_type = r.get('metadata_type')
         if m_type == 4: 
             s_title = r.get('show_title') or "Unknown Show"
@@ -112,35 +134,40 @@ def get_target_items(req_data, core_api):
             s_idx = f"S{int(r.get('season_index')):02d}" if r.get('season_index') is not None else "S01"
             e_idx = f"E{int(r.get('episode_index')):02d}" if r.get('episode_index') is not None else "E01"
             ep_title = r.get('title') or "Episode"
-            display_title = f"{s_title}{s_year}/{s_idx}{e_idx}/{ep_title}"
+            display_title = f"{s_title}{s_year} / {s_idx}{e_idx} / {ep_title}"
         else:
-            display_title = r.get('title') or (os.path.basename(r.get('file', '')) if r.get('file') else "Unknown")
+            display_title = r.get('title') or (os.path.basename(r.get('file', '')) if r.get('file') else "Unknown Title")
 
-        items.append({'id': r['id'], 'title': display_title, 'guid': clean_guid})
+        items.append({
+            'id': str(r['id']),
+            'section': r.get('section_name', ''),
+            'title': display_title,
+            'guid': clean_guid
+        })
 
-    items.sort(key=lambda x: natural_sort_key(x['title']))
+    # [Reference] 파이썬 메모리에서 자연 정렬 수행
+    items.sort(key=lambda x: (natural_sort_key_local(x['section']), natural_sort_key_local(x['title'])))
     return items
 
 # =====================================================================
 # 3. 메인 라우터 (조회 및 실행 분기)
 # =====================================================================
 def run(data, core_api):
-    """
-    JS의 요청(action_type)을 분기 처리합니다. 
-    'execute' 요청시 작업을 지시(task_data 반환)하면, 코어가 자동으로 파일 저장 후 스레드를 띄웁니다.
-    """
     action = data.get('action_type', 'preview')
 
-    # [조회] UI 렌더링용 데이터 반환
+    # -----------------------------------------------------------------
+    # [조회] UI 렌더링용 데이터테이블 반환
+    # -----------------------------------------------------------------
     if action == 'preview':
         items = get_target_items(data, core_api)
-        # JS에서 링크를 생성할 때 참조할 수 있도록 rating_key도 함께 포함
-        table_data = [{"title": i['title'], "guid": i['guid'], "rating_key": str(i['id'])} for i in items]
+        
+        # JS에서 클릭 링크(rating_key)를 만들고, 화면엔 title/guid를 뿌려줍니다.
+        table_data = [{"section": i['section'], "title": i['title'], "guid": i['guid'], "rating_key": i['id']} for i in items]
         
         action_btn = None
         if len(items) > 0:
             action_btn = {
-                "label": f"<i class='fas fa-rocket'></i> 대상 {len(items)}건 새로 작업 시작",
+                "label": f"<i class='fas fa-rocket'></i> 대상 {len(items)}건 작업 시작",
                 "payload": {"action_type": "execute"}
             }
             
@@ -148,23 +175,31 @@ def run(data, core_api):
             "status": "success",
             "type": "datatable",
             "action_button": action_btn,
+            "default_sort": [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}],
             "columns": [
-                # type: 'link' 를 추가하면 프론트엔드가 이를 인식해 <a> 태그를 만들어 줌
-                {"key": "title", "label": "대상 항목 (제목/파일명)", "width": "70%", "type": "link", "link_key": "rating_key"},
-                {"key": "guid", "label": "현재 에이전트 정보", "width": "30%"}
+                {"key": "section", "label": "섹션", "width": "20%", "align": "left", "header_align": "center", "sortable": True},
+                # type: 'link' 를 추가하면 프론트엔드가 이를 인식해 클릭 가능한 <a> 태그를 만들어 줌
+                {"key": "title", "label": "대상 항목 (제목)", "width": "45%", "align": "left", "header_align": "center", "type": "link", "link_key": "rating_key", "sortable": True},
+                {"key": "guid", "label": "에이전트", "width": "25%", "align": "left", "header_align": "center", "sortable": True},
+                {"key": "action", "label": "실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn"}
             ],
             "data": table_data
         }, 200
 
-    # [실행] 작업을 구성하여 코어에 넘김 (코어가 파일 작성 & 스레드 처리)
+    # -----------------------------------------------------------------
+    # [실행] 작업을 구성하여 코어에 넘김 (코어가 스레드를 띄움)
+    # -----------------------------------------------------------------
     if action == 'execute':
-        items = get_target_items(data, core_api)
+        if data.get('_is_single'):
+            items = [{'id': data.get('rating_key'), 'title': data.get('title', '단일 실행 항목')}]
+        else:
+            items = get_target_items(data, core_api)
+            
         if not items: return {"status": "error", "message": "실행할 대상이 없습니다."}, 400
         
         return {
-            "status": "success",
-            "type": "async_task",
-            "task_data": {  # 이 데이터를 코어가 저장하고, worker 함수의 인자로 전달해줌
+            "status": "success", "type": "async_task",
+            "task_data": {  
                 "mode": data.get('mode', 'refresh'),
                 "sleep_time": data.get('sleep_time', 2),
                 "target_items": items,
@@ -182,8 +217,9 @@ def worker(task_data, core_api, start_index):
     코어가 백그라운드 스레드에서 실행시켜주는 메인 함수입니다.
     `core_api['task']` 객체를 통해 진행률, 로그, 취소 상태를 제어할 수 있습니다.
     """
-    task = core_api['task'] # 코어 시스템의 Task Manager
+    task = core_api['task'] 
     
+    # 저장해두었던 설정값들을 꺼내옵니다.
     mode = task_data.get('mode', 'refresh')
     sleep_time = int(task_data.get('sleep_time', 2))
     items = task_data.get('target_items', [])
@@ -197,10 +233,13 @@ def worker(task_data, core_api, start_index):
         task.log(f"Plex 연결 실패: {str(e)}")
         return
 
-    if start_index > 0: task.log(f"중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
-    else: task.log(f"총 {total_items}건 '{mode}' 작업을 시작합니다.")
+    # [Reference] 이어서 실행인지, 처음 실행인지 구분하여 로깅합니다.
+    if start_index > 0: 
+        task.log(f"중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
+    else: 
+        task.log(f"총 {total_items}건 '{mode}' 작업을 시작합니다.")
 
-    # 안정적인 서버 상태 확인 로직
+    # 안정적인 서버 상태 확인 로직 (작업 전 Plex 내부 큐가 비워질 때까지 대기)
     def wait_until_stable_idle():
         stable_count = 0
         while True:
@@ -214,31 +253,46 @@ def worker(task_data, core_api, start_index):
             except: pass
             time.sleep(2)
 
-    # 지정된 start_index 위치부터 처리 재개
+    # [Reference] 지정된 start_index 위치부터 처리 재개 (파이썬 리스트 슬라이싱 활용)
     for idx, item in enumerate(items[start_index:], start=start_index + 1):
-        if task.is_cancelled(): return # 코어에 의해 취소 처리됨
+        
+        # 취소 여부 지속 체크
+        if task.is_cancelled(): 
+            task.log("사용자 요청에 의해 작업이 중단되었습니다.")
+            return 
 
         mid, title = item['id'], item['title']
+        
+        # [Reference] 진행률 상태 업데이트 (화면의 게이지 바가 올라감)
         task.update_state('running', progress=idx)
         task.log(f"[{idx}/{total_items}] '{title}' 처리 중...")
         
         if not wait_until_stable_idle(): return
         
         try:
-            plex_item = plex.fetchItem(mid)
-            if mode == 'refresh': plex_item.refresh()
+            safe_endpoint = f"/library/metadata/{str(mid).strip()}"
+            plex_item = plex.fetchItem(safe_endpoint)
+            
+            if mode == 'refresh': 
+                plex_item.refresh()
             elif mode == 'rematch':
                 matches = plex_item.matches()
                 if matches: plex_item.fixMatch(matches[0])
                 else: task.log("   -> 매칭 결과 없음")
-            elif mode == 'analyze': plex_item.analyze()
+            elif mode == 'analyze': 
+                plex_item.analyze()
+                
+            # 처리가 성공적으로 끝났다면, 코어 캐시 DB에 '완료(done)' 마킹
+            core_api['cache'].mark_as_done('rating_key', str(mid))
+            
         except Exception as e:
-            task.log(f"   -> 오류: {e}")
+            task.log(f"   -> 처리 오류: {e}")
         
-        # 항목 간 슬립 (취소 신호를 받으면 즉시 빠져나옴)
+        # 항목 간 슬립 (긴 슬립 타임 도중 취소를 누르면 즉각 반응하기 위해 잘게 쪼개서 sleep)
         for _ in range(int(sleep_time * 2)):
             if task.is_cancelled(): return
             time.sleep(0.5)
 
-    task.update_state('completed')
+    # 모든 루프가 끝난 뒤 상태를 완료로 변경
+    task.update_state('completed', progress=total_items)
     task.log("모든 작업이 성공적으로 완료되었습니다.")
