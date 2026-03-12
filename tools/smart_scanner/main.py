@@ -46,7 +46,7 @@ def get_ui(core_api):
 
     return {
         "title": "스마트 스캐너",
-        "description": "미분석/미매칭/메타 누락을 감지하고 최적의 순서로 복구합니다.<br>우측 버튼으로 특정 항목만 <strong>단독 실행</strong>할 수도 있습니다.",
+        "description": "미분석/미매칭/메타/마커/YAML 적용 누락 등을 감지하고 최적의 순서로 복구합니다.",
         "inputs": [
             {"id": "h1", "type": "header", "label": "<i class='fas fa-filter'></i> 1. 복구 대상 라이브러리"},
             {"id": "target_section", "type": "select", "label": "검사할 라이브러리 선택", "options": sections},
