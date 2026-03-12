@@ -18,7 +18,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.43"
+__version__ = "0.7.44"
 
 def get_version():
     return __version__
@@ -805,12 +805,36 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 
                 return plex
 
+            def send_discord_notify(title, message, color_hex="#51a351"):
+                opts = options_mgr.load()
+                if not opts.get('discord_enable', False): return
+                
+                url = opts.get('discord_webhook', '').strip() or (global_config.get('discord_webhook', '').strip() if global_config else '')
+                if not url: return
+                
+                color_int = int(color_hex.lstrip('#'), 16) if color_hex.startswith('#') else 5349201
+                payload = {
+                    "embeds": [{
+                        "title": title,
+                        "description": message,
+                        "color": color_int,
+                        "footer": {"text": f"PMH Tool: {tool_id}"}
+                    }]
+                }
+                try:
+                    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'}, method='POST')
+                    urllib.request.urlopen(req, timeout=5)
+                except Exception as e:
+                    print(f"[Discord Error] {e}")
+
             core_api = {
                 "query": db_api["query"],
                 "get_plex": get_plex_instance,
                 "task": task_mgr,
                 "config": global_config or {},
-                "cache": data_mgr
+                "cache": data_mgr,
+                "options": options_mgr.load(),
+                "notify": send_discord_notify
             }
 
             if action == 'ui' and method == 'GET':
@@ -863,7 +887,9 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     "get_plex": get_plex_instance,
                     "task": task_mgr,
                     "config": global_config or {},
-                    "cache": data_mgr
+                    "cache": data_mgr,
+                    "options": options_mgr.load(),
+                    "notify": send_discord_notify
                 }
 
                 if action_type in ['preview', 'execute', 'page', 'save_options']:

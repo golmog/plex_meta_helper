@@ -31,3 +31,6 @@ PLEX_MATE_URL: "http://127.0.0.1:9999"
 # 서버 경로와 PLEX 라이브러리 경로가 다를 경우를 위한 설정(ex. /plex_mnt/gds|/server_mnt/gds)
 PATH_MAPPINGS:
   - "/mnt/gds/|/mnt/gds/"
+
+# 디스코드 알림용 웹훅 URL
+DISCORD_WEBHOOK: ""

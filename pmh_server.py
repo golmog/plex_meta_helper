@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
     "MAX_BATCH_SIZE": 1000,
     "API_KEY": "YOUR_PLEX_MATE_API_KEY_HERE",
     "PLEX_MATE_URL": "http://127.0.0.1:9999",
+    "DISCORD_WEBHOOK": "",
     "PATH_MAPPINGS": [
         "/mnt/gds/|/mnt/gds/"
     ]
@@ -57,6 +58,7 @@ MAX_BATCH_SIZE = cfg.get("MAX_BATCH_SIZE", DEFAULT_CONFIG["MAX_BATCH_SIZE"])
 API_KEY = cfg.get("API_KEY", DEFAULT_CONFIG["API_KEY"])
 PLEX_MATE_URL = cfg.get("PLEX_MATE_URL", DEFAULT_CONFIG["PLEX_MATE_URL"])
 PATH_MAPPINGS = cfg.get("PATH_MAPPINGS", DEFAULT_CONFIG["PATH_MAPPINGS"])
+DISCORD_WEBHOOK = cfg.get("DISCORD_WEBHOOK", DEFAULT_CONFIG["DISCORD_WEBHOOK"])
 CORE_FILE_PATH = os.path.join(BASE_DIR, "pmh_core.py")
 if not os.path.exists(CORE_FILE_PATH):
     print("[BOOTSTRAP] pmh_core.py 가 존재하지 않아 GitHub에서 다운로드합니다...")
@@ -145,7 +147,8 @@ def api_gateway(subpath):
         global_config={
             "mate_apikey": API_KEY,
             "mate_url": PLEX_MATE_URL,
-            "path_mappings": PATH_MAPPINGS
+            "path_mappings": PATH_MAPPINGS,
+            "discord_webhook": DISCORD_WEBHOOK
         }
     )
     

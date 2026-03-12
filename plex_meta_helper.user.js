@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.43
+// @version      0.7.44
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -187,6 +187,24 @@ GM_addStyle(`
     .pmh-resizer-se { bottom: -4px; right: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
     .pmh-resizer-sw { bottom: -4px; left: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
 
+    /* Tool 폼(Form) 공통 */
+    .pmh-form-group { margin-bottom: 15px; }
+    .pmh-form-label { display: block; color: #e5a00d; font-size: 12px; margin-bottom: 6px; font-weight: bold; }
+    .pmh-form-header { margin-top: 20px; margin-bottom: 12px; font-size: 14px; font-weight: bold; color: #2f96b4; border-bottom: 1px solid #333; padding-bottom: 6px; }
+    
+    .pmh-input-text { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; transition: border-color 0.2s; }
+    .pmh-input-text:focus { outline: none; border-color: #e5a00d; }
+    
+    .pmh-input-select { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; cursor: pointer; }
+    
+    .pmh-input-number-wrap { display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.1); padding: 8px 10px; border-radius: 4px; border: 1px solid #333; margin-bottom: 12px; }
+    .pmh-input-number-label { color: #e5a00d; font-size: 12px; font-weight: bold; margin: 0; }
+    .pmh-input-number { width: 60px; padding: 4px 6px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; text-align: center; }
+    
+    .pmh-check-group-box { display: flex; flex-direction: column; gap: 10px; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 4px; border: 1px solid #333; }
+    .pmh-check-label { color: #ddd; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0; line-height: 1.3; transition: color 0.2s; }
+    .pmh-check-label:hover { color: #fff; }
+    .pmh-check-input { margin: 0 !important; width: 14px; height: 14px; cursor: pointer; accent-color: #e5a00d; flex-shrink: 0; }
 `);
 
 (function() {
@@ -1214,6 +1232,7 @@ GM_addStyle(`
                             <div style="display:flex;">
                                 <div class="pmh-tab-btn active" data-tab="tab_form" style="padding:10px 15px; cursor:pointer; color:#e5a00d; font-weight:bold; border-bottom:2px solid #e5a00d;"><i class="fas fa-search"></i> 조회 및 설정</div>
                                 <div class="pmh-tab-btn" data-tab="tab_monitor" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-desktop"></i> 실행 모니터링</div>
+                                <div class="pmh-tab-btn" data-tab="tab_settings" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-cog"></i> 환경 설정</div>
                             </div>
                             <div style="padding-bottom:10px; padding-right:5px;">
                                 <i class="fas fa-eraser" id="pmh_tool_reset_cache" title="옵션 및 캐시 초기화" style="color:#777; cursor:pointer; font-size:14px; transition:0.2s;" onmouseover="this.style.color='#bd362f'" onmouseout="this.style.color='#777'"></i>
@@ -1221,12 +1240,10 @@ GM_addStyle(`
                         </div>
                         <div id="pmh_tab_form" style="display:flex; flex-direction:column; flex-grow:1; overflow-y:auto; overflow-x:hidden; min-height:0; padding-right:5px;">
                             <div style="color:#aaa; font-size:13px; line-height:1.4; flex-shrink:0; margin-bottom:10px;">${ui.description || ''}</div>
-                            <div style="border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:10px; position:relative; flex-shrink:0;">
-                                <div id="pmh_tool_form_container" style="display:${formDisplay};">
                 `;
 
                 if (AppSettings.SERVERS.length > 1) {
-                    formHtml += `<div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px dashed #444;">
+                    formHtml += `<div style="margin-bottom: 15px; flex-shrink:0;">
                                     <label style="display:block; color:#2f96b4; font-size:12px; margin-bottom:6px; font-weight:bold;"><i class="fas fa-server"></i> 대상 서버 선택</label>
                                     <select id="pmh_target_server_idx" style="width:100%; padding:8px; background:#1a2327; border:1px solid #2f96b4; color:#fff; border-radius:4px; font-size:13px; font-weight:bold; cursor:pointer;">`;
                     AppSettings.SERVERS.forEach((srv, idx) => {
@@ -1235,35 +1252,76 @@ GM_addStyle(`
                     formHtml += `</select></div>`;
                 }
 
+                formHtml += `
+                            <div style="border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:10px; position:relative; flex-shrink:0;">
+                                <div id="pmh_tool_form_container" style="display:${formDisplay};">
+                `;
+
                 const currentSecId = window.location.hash.match(/source=%2Flibrary%2Fsections%2F(\d+)/)?.[1] || "all";
 
                 const renderInput = (input) => {
-                    if (input.type === 'header') return `<div style="margin-top:20px; margin-bottom:12px; font-size:14px; font-weight:bold; color:#2f96b4; border-bottom:1px solid #333; padding-bottom:6px;">${input.label}</div>`;
-                    if (input.type === 'checkbox_group') {
-                        let html = `<div style="margin-bottom:15px;"><div style="color:#e5a00d; font-size:13px; font-weight:bold; margin-bottom:6px;">${input.label}</div><div style="display:flex; flex-direction:column; gap:8px; background:rgba(0,0,0,0.2); padding:12px; border-radius:4px; border:1px solid #333;">`;
-                        input.options.forEach(opt => {
-                            let isChecked = savedOptions[opt.id] !== undefined ? savedOptions[opt.id] : (opt.default || false);
-                            html += `<label style="color:#fff; font-size:13px; cursor:pointer; display:flex; align-items:center;"><input type="checkbox" id="pmh_inp_${opt.id}" style="margin-right:8px; width:16px; height:16px; cursor:pointer; accent-color:#e5a00d;" ${isChecked ? "checked" : ""}>${opt.label}</label>`;
-                        });
-                        return html + `</div></div>`;
-                    }
-                    let html = `<div style="margin-bottom: 12px;"><label style="display:block; color:#e5a00d; font-size:12px; margin-bottom:6px; font-weight:bold;">${input.label}</label>`;
                     let cachedVal = savedOptions[input.id];
-                    if (input.type === 'text') {
-                        html += `<input type="text" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" style="width:100%; padding:8px; background:#111; border:1px solid #444; color:#fff; border-radius:4px; font-size:13px;">`;
-                    } else if (input.type === 'select') {
-                        const validOptions = input.options.map(o => String(o.value));
-                        if (cachedVal !== undefined && !validOptions.includes(String(cachedVal))) cachedVal = undefined;
-                        html += `<select id="pmh_inp_${input.id}" style="width:100%; padding:8px; background:#111; border:1px solid #444; color:#fff; border-radius:4px; font-size:13px;">`;
-                        input.options.forEach(o => {
-                            const isSelected = (cachedVal !== undefined) ? (String(o.value) === String(cachedVal) ? "selected" : "") : ((input.id === 'target_section' && String(o.value) === currentSecId) ? "selected" : "");
-                            html += `<option value="${o.value}" ${isSelected}>${o.text}</option>`;
-                        });
-                        html += `</select>`;
-                    } else if (input.type === 'checkbox') {
-                        html += `<label style="color:#ddd; font-size:13px; cursor:pointer;"><input type="checkbox" id="pmh_inp_${input.id}" style="margin-right:6px;" ${cachedVal ? "checked" : ""}> 활성화</label>`;
+                    if (cachedVal === undefined && input.default !== undefined) cachedVal = input.default;
+
+                    switch (input.type) {
+                        case 'header':
+                            return `<div class="pmh-form-header">${input.label}</div>`;
+
+                        case 'checkbox_group': {
+                            let html = `<div class="pmh-form-group"><div class="pmh-form-label">${input.label}</div><div class="pmh-check-group-box">`;
+                            input.options.forEach(opt => {
+                                let isChecked = savedOptions[opt.id] !== undefined ? savedOptions[opt.id] : (opt.default || false);
+                                html += `<label class="pmh-check-label"><input type="checkbox" id="pmh_inp_${opt.id}" class="pmh-check-input" ${isChecked ? "checked" : ""}>${opt.label}</label>`;
+                            });
+                            return html + `</div></div>`;
+                        }
+
+                        case 'radio_group': {
+                            let html = `<div class="pmh-form-group"><div class="pmh-form-label">${input.label}</div><div class="pmh-check-group-box">`;
+                            input.options.forEach(opt => {
+                                let isChecked = (String(cachedVal) === String(opt.value));
+                                html += `<label class="pmh-check-label"><input type="radio" name="pmh_rad_${input.id}" value="${opt.value}" class="pmh-check-input" ${isChecked ? "checked" : ""}>${opt.label}</label>`;
+                            });
+                            return html + `</div></div>`;
+                        }
+
+                        case 'checkbox':
+                            return `<div class="pmh-form-group" style="padding:4px 0;">
+                                        <label class="pmh-check-label">
+                                            <input type="checkbox" id="pmh_inp_${input.id}" class="pmh-check-input" ${cachedVal ? "checked" : ""}>
+                                            ${input.label}
+                                        </label>
+                                    </div>`;
+
+                        case 'number':
+                            return `<div class="pmh-input-number-wrap">
+                                        <label class="pmh-input-number-label">${input.label}</label>
+                                        <input type="number" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" step="any" class="pmh-input-number">
+                                    </div>`;
+
+                        case 'text':
+                            return `<div class="pmh-form-group">
+                                        <label class="pmh-form-label">${input.label}</label>
+                                        <input type="text" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" class="pmh-input-text">
+                                    </div>`;
+
+                        case 'select': {
+                            const validOptions = input.options.map(o => String(o.value));
+                            if (cachedVal !== undefined && !validOptions.includes(String(cachedVal))) cachedVal = undefined;
+                            
+                            let html = `<div class="pmh-form-group">
+                                            <label class="pmh-form-label">${input.label}</label>
+                                            <select id="pmh_inp_${input.id}" class="pmh-input-select">`;
+                            input.options.forEach(o => {
+                                const isSelected = (cachedVal !== undefined) ? (String(o.value) === String(cachedVal) ? "selected" : "") : ((input.id === 'target_section' && String(o.value) === currentSecId) ? "selected" : "");
+                                html += `<option value="${o.value}" ${isSelected}>${o.text}</option>`;
+                            });
+                            return html + `</select></div>`;
+                        }
+                        
+                        default:
+                            return '';
                     }
-                    return html + `</div>`;
                 };
 
                 if (ui.inputs && ui.inputs.length > 0) {
@@ -1287,11 +1345,26 @@ GM_addStyle(`
                 formHtml += `<div id="pmh_run_res_form" style="font-size:13px; display:none; margin-top:5px; flex-grow:1; min-height:0;"></div></div>`;
                 formHtml += `<div id="pmh_tab_monitor" style="display:none; flex-direction:column; flex-grow:1; min-height:0; padding-right:5px;">`;
                 formHtml += `<div id="pmh_run_res_monitor" style="display:flex; flex-direction:column; flex-grow:1; min-height:0; font-size:13px; color:#aaa; text-align:center; padding:30px 0;"><i class="fas fa-info-circle"></i> 진행 중이거나 완료된 작업이 없습니다.</div>`;
+                formHtml += `</div>`;
+                formHtml += `<div id="pmh_tab_settings" style="display:none; flex-direction:column; flex-grow:1; min-height:0; overflow-y:auto; padding-right:5px;">`;
+                if (ui.settings_inputs && ui.settings_inputs.length > 0) {
+                    formHtml += `<div style="margin-bottom:15px; padding:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;">`;
+                    ui.settings_inputs.forEach(input => { 
+                        formHtml += renderInput(input); 
+                    });
+                    formHtml += `</div>`;
+                    formHtml += `<div style="text-align:center; margin-top:10px; margin-bottom:15px;">
+                                    <button id="pmh_settings_save_btn" style="padding:10px 30px; background:#e5a00d; color:#1f1f1f; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:13px; transition:0.2s;"><i class="fas fa-save"></i> 설정 적용</button>
+                                 </div>`;
+                } else {
+                    formHtml += `<div style="padding:30px 0; text-align:center; color:#777; font-size:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;"><i class="fas fa-tools" style="font-size:24px; margin-bottom:10px; color:#555;"></i><br>이 툴은 추가 환경 설정이 없습니다.</div>`;
+                }
                 formHtml += `</div></div>`;
 
                 window.showPmhToolPanel(toolId, ui.title, formHtml);
 
                 setTimeout(() => {
+                    let isDestroyed = false;
                     let isTaskRunning = false;
                     let isCancelling = false;
                     let pollTimer = null;
@@ -1372,13 +1445,12 @@ GM_addStyle(`
                     const srvSelectEl = document.getElementById('pmh_target_server_idx');
                     if (srvSelectEl) {
                         srvSelectEl.addEventListener('change', (e) => {
-                            if (isTaskRunning) {
-                                e.preventDefault(); srvSelectEl.value = srvIdx; 
-                                return alert("현재 서버에서 작업이 진행 중입니다. 작업을 멈춘 뒤 서버를 변경해주세요.");
-                            }
+                            isDestroyed = true;
+
                             const newIdx = parseInt(e.target.value);
                             globalCache['target_server_idx'] = newIdx;
                             GM_setValue(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
+                            
                             if (pollTimer) clearTimeout(pollTimer);
                             openPmhToolUI(toolId, newIdx); 
                         });
@@ -1386,13 +1458,19 @@ GM_addStyle(`
 
                     const getFormData = () => {
                         const reqData = { _server_id: serverId };
-                        const allInputs = [ ...(ui.inputs || []), ...(ui.execute_inputs || []) ];
+                        const allInputs = [ ...(ui.inputs || []), ...(ui.execute_inputs || []), ...(ui.settings_inputs || []) ];
                         allInputs.forEach(i => {
                             if (i.type === 'checkbox_group') {
                                 i.options.forEach(opt => {
                                     const el = document.getElementById(`pmh_inp_${opt.id}`);
                                     if (el) { reqData[opt.id] = el.checked; savedOptions[opt.id] = el.checked; }
                                 });
+                            } else if (i.type === 'radio_group') {
+                                const checkedEl = document.querySelector(`input[name="pmh_rad_${i.id}"]:checked`);
+                                if (checkedEl) {
+                                    reqData[i.id] = checkedEl.value;
+                                    savedOptions[i.id] = checkedEl.value;
+                                }
                             } else {
                                 const el = document.getElementById(`pmh_inp_${i.id}`);
                                 if (el) {
@@ -1405,19 +1483,6 @@ GM_addStyle(`
                         if (plexInfo) { reqData['_plex_url'] = plexInfo.url; reqData['_plex_token'] = plexInfo.token; }
                         return { targetSrv, reqData };
                     };
-
-                    const autoSaveInputs = [ ...(ui.inputs || []), ...(ui.execute_inputs || []) ];
-                    autoSaveInputs.forEach(i => {
-                        if (i.type === 'checkbox_group') {
-                            i.options.forEach(opt => {
-                                const el = document.getElementById(`pmh_inp_${opt.id}`);
-                                if (el) el.addEventListener('change', () => { saveOptionsToServer(); });
-                            });
-                        } else {
-                            const el = document.getElementById(`pmh_inp_${i.id}`);
-                            if (el) el.addEventListener('change', () => { saveOptionsToServer(); });
-                        }
-                    });
 
                     const saveOptionsToServer = () => {
                         const { reqData } = getFormData();
@@ -1434,6 +1499,35 @@ GM_addStyle(`
                         });
                     };
 
+                    const settingsSaveBtn = document.getElementById('pmh_settings_save_btn');
+                    if (settingsSaveBtn) {
+                        settingsSaveBtn.onmouseover = () => settingsSaveBtn.style.backgroundColor = "#d4910c";
+                        settingsSaveBtn.onmouseout = () => settingsSaveBtn.style.backgroundColor = "#e5a00d";
+                        settingsSaveBtn.onclick = (e) => {
+                            e.preventDefault(); e.stopPropagation();
+                            
+                            const origHtml = settingsSaveBtn.innerHTML;
+                            settingsSaveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 저장 중...';
+                            settingsSaveBtn.style.pointerEvents = 'none';
+                            
+                            saveOptionsToServer(); 
+                            
+                            setTimeout(() => {
+                                settingsSaveBtn.innerHTML = '<i class="fas fa-check"></i> 저장 완료';
+                                settingsSaveBtn.style.backgroundColor = "#51a351"; 
+                                settingsSaveBtn.style.color = "#fff"; 
+                                toastr.success("설정이 성공적으로 적용되었습니다.");
+                                
+                                setTimeout(() => {
+                                    settingsSaveBtn.innerHTML = origHtml;
+                                    settingsSaveBtn.style.backgroundColor = "#e5a00d"; 
+                                    settingsSaveBtn.style.color = "#1f1f1f"; 
+                                    settingsSaveBtn.style.pointerEvents = 'auto';
+                                }, 1500);
+                            }, 400);
+                        };
+                    }
+
                     const switchTab = (targetId) => {
                         const panel = document.getElementById('pmh-tool-panel');
                         if (panel && panel.style.height === 'auto') panel.style.height = panel.offsetHeight + 'px'; 
@@ -1448,8 +1542,13 @@ GM_addStyle(`
                             }
                         });
                         
-                        document.getElementById('pmh_tab_form').style.display = targetId === 'tab_form' ? 'flex' : 'none';
-                        document.getElementById('pmh_tab_monitor').style.display = targetId === 'tab_monitor' ? 'flex' : 'none';
+                        const tabForm = document.getElementById('pmh_tab_form');
+                        const tabMonitor = document.getElementById('pmh_tab_monitor');
+                        const tabSettings = document.getElementById('pmh_tab_settings');
+                        
+                        if (tabForm) tabForm.style.display = targetId === 'tab_form' ? 'flex' : 'none';
+                        if (tabMonitor) tabMonitor.style.display = targetId === 'tab_monitor' ? 'flex' : 'none';
+                        if (tabSettings) tabSettings.style.display = targetId === 'tab_settings' ? 'flex' : 'none';
                         
                         if (targetId === 'tab_form' && panel) {
                             const savedGeoStr = GM_getValue(`pmh_panel_geo_${toolId}`);
@@ -1457,15 +1556,12 @@ GM_addStyle(`
                             if (savedGeoStr) {
                                 try { const geo = JSON.parse(savedGeoStr); if (geo.height && geo.height !== 'auto') isManuallyResized = true; } catch(e){}
                             }
-                            if (!isManuallyResized) {
+                            if (!isManuallyResized && tabForm) {
                                 panel.style.height = 'auto';
-                                setTimeout(() => {
-                                    const content = document.getElementById('pmh_tab_form');
-                                    if (content) { content.style.display = 'none'; content.offsetHeight; content.style.display = 'flex'; }
-                                }, 10);
+                                setTimeout(() => { tabForm.style.display = 'none'; tabForm.offsetHeight; tabForm.style.display = 'flex'; }, 10);
                             }
                         }
-                        
+
                         if (targetId === 'tab_form') {
                             GM_xmlhttpRequest({
                                 method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
@@ -1568,6 +1664,7 @@ GM_addStyle(`
                     document.addEventListener('click', window._pmhGlobalClickHandler);
 
                     const processAndRenderResult = (resData, itemsPerPage, renderSrv, preventTabSwitch = false) => {
+                        if (isDestroyed) return;
                         
                         if ((resData.type === 'datatable' || resData.type === 'dashboard') && resData.logs && resData.logs.length > 0) {
                             const resMonitor = document.getElementById('pmh_run_res_monitor');
@@ -2067,6 +2164,8 @@ GM_addStyle(`
                                     method: "GET", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/status?task_id=${taskId}&server_id=${serverId}`,
                                     headers: { "X-API-Key": renderSrv.plexMateApiKey },
                                     onload: (pollRes) => {
+                                        if (isDestroyed) return;
+
                                         if (pollRes.status === 404) {
                                             resMonitor.innerHTML = `<div style="color:#bd362f; padding:10px; background:#111; border-radius:4px; text-align:center;"><i class="fas fa-exclamation-triangle"></i> 작업을 찾을 수 없습니다.</div>`;
                                             currentTaskStatus = {}; updateFormTabButtons(false); isCancelling = false; return;
