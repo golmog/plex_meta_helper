@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.44
+// @version      0.7.45
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1234,8 +1234,9 @@ GM_addStyle(`
                                 <div class="pmh-tab-btn" data-tab="tab_monitor" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-desktop"></i> 실행 모니터링</div>
                                 <div class="pmh-tab-btn" data-tab="tab_settings" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-cog"></i> 환경 설정</div>
                             </div>
-                            <div style="padding-bottom:10px; padding-right:5px;">
-                                <i class="fas fa-eraser" id="pmh_tool_reset_cache" title="옵션 및 캐시 초기화" style="color:#777; cursor:pointer; font-size:14px; transition:0.2s;" onmouseover="this.style.color='#bd362f'" onmouseout="this.style.color='#777'"></i>
+                            <div style="display:flex; gap:12px; padding-bottom:10px; padding-right:5px; align-items:center;">
+                                <i class="fas fa-broom" id="pmh_tool_clear_data" title="조회된 데이터 목록 비우기 (설정 유지)" style="color:#2f96b4; cursor:pointer; font-size:14px; transition:0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'"></i>
+                                <i class="fas fa-bomb" id="pmh_tool_reset_cache" title="공장 초기화 (모든 데이터, 옵션, 진행상태 삭제)" style="color:#777; cursor:pointer; font-size:14px; transition:0.2s;" onmouseover="this.style.color='#bd362f'; this.style.transform='scale(1.2)'" onmouseout="this.style.color='#777'; this.style.transform='scale(1)'"></i>
                             </div>
                         </div>
                         <div id="pmh_tab_form" style="display:flex; flex-direction:column; flex-grow:1; overflow-y:auto; overflow-x:hidden; min-height:0; padding-right:5px;">
@@ -1357,7 +1358,7 @@ GM_addStyle(`
                                     <button id="pmh_settings_save_btn" style="padding:10px 30px; background:#e5a00d; color:#1f1f1f; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:13px; transition:0.2s;"><i class="fas fa-save"></i> 설정 적용</button>
                                  </div>`;
                 } else {
-                    formHtml += `<div style="padding:30px 0; text-align:center; color:#777; font-size:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;"><i class="fas fa-tools" style="font-size:24px; margin-bottom:10px; color:#555;"></i><br>이 툴은 추가 환경 설정이 없습니다.</div>`;
+                    formHtml += `<div style="padding:30px 0; text-align:center; color:#777; font-size:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;"><i class="fas fa-tools" style="font-size:24px; margin-bottom:10px; color:#555;"></i><br>이 툴은 추가 설정이 없습니다.</div>`;
                 }
                 formHtml += `</div></div>`;
 
@@ -1577,6 +1578,27 @@ GM_addStyle(`
                         btn.onmouseout = () => { if(!btn.classList.contains('active')) btn.style.color = '#777'; };
                         btn.onclick = () => switchTab(btn.dataset.tab);
                     });
+
+                    const clearDataBtn = document.getElementById('pmh_tool_clear_data');
+                    if (clearDataBtn) {
+                        clearDataBtn.onclick = () => {
+                            if(isTaskRunning) return alert("진행 중인 작업을 먼저 중단해 주세요.");
+                            if(confirm(`[${targetSrv.name}] 서버의 조회된 데이터 목록을 비우시겠습니까?\n(환경 설정과 작업 진행 상태는 유지됩니다)`)) {
+                                GM_xmlhttpRequest({
+                                    method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                    headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                    data: JSON.stringify({ action_type: 'clear_data', _server_id: serverId }),
+                                    onload: () => { 
+                                        const resForm = document.getElementById('pmh_run_res_form');
+                                        if (resForm) { resForm.style.display = 'none'; resForm.innerHTML = ''; }
+                                        
+                                        toastr.info("데이터 목록이 비워졌습니다.");
+                                        switchTab('tab_form'); 
+                                    }
+                                });
+                            }
+                        };
+                    }
 
                     const resetBtn = document.getElementById('pmh_tool_reset_cache');
                     if(resetBtn) {
@@ -1823,7 +1845,7 @@ GM_addStyle(`
                                 });
                                 dtHtml += `</tr>`;
 
-                                const currentHashBase = window.location.hash.split('/server/')[0] || '#!';
+                                const currentHashBase = window.location.hash.startsWith('#!') ? '#!' : window.location.hash.split('?')[0].split('/server/')[0] || '#!';
 
                                 pageData.forEach(row => {
                                     dtHtml += `<tr style="border-bottom:1px solid #333; transition:background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">`;
@@ -1831,12 +1853,12 @@ GM_addStyle(`
                                         let val = row[col.key] !== undefined && row[col.key] !== null ? row[col.key] : '-';
                                         let displayHtml = val;
                                         const alignStr = `text-align:${col.align || 'left'};`;
-                                        const safeTitle = String(val).replace(/"/g, '&quot;');
+                                        const safeTitle = String(val).replace(/"/g, '&quot;'); 
 
                                         const actualMachineId = machine_id || renderSrv.machineIdentifier;
                                         if (col.type === 'link' && actualMachineId && row[col.link_key]) {
                                             const ratingKey = row[col.link_key];
-                                            const href = `${currentHashBase}/server/${actualMachineId}/details?key=%2Flibrary%2Fmetadata%2F${ratingKey}`;
+                                            const href = `${currentHashBase}/server/${actualMachineId}/details?key=${encodeURIComponent('/library/metadata/' + ratingKey)}&context=home%3Ahub.continueWatching`;
                                             displayHtml = `<a href="${href}" style="color:#2f96b4; text-decoration:none;" title="${safeTitle}" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${val}</a>`;
                                         }
                                         else if (col.type === 'action_btn') {
@@ -2651,51 +2673,26 @@ const fetchTools = () => {
             if (e.target.closest('#pmh-tool-refresh-btn')) { e.preventDefault(); e.stopPropagation(); fetchTools(); return; }
             
             const updateCheckBtn = e.target.closest('#pmh-tool-check-update-btn');
-            
             if (updateCheckBtn) {
                 e.preventDefault(); e.stopPropagation();
-                
-                if (updateCheckBtn.innerHTML.includes('fa-spin')) {
-                    infoLog("[Tool Update] 이미 업데이트 확인 작업이 진행 중입니다. 무시합니다.");
-                    return;
-                }
+                if (updateCheckBtn.innerHTML.includes('fa-spin')) return;
                 
                 updateCheckBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 updateCheckBtn.style.color = '#2f96b4';
                 
-                infoLog("[Tool Update] 전체 툴 일괄 업데이트 확인을 시작합니다.");
-                
                 const toolItems = dropdown.querySelectorAll('.pmh-tool-item');
-                let checkCount = 0;
-                let updateAvailableCount = 0;
-                let hasUrlToCheck = false;
-                
+                let checkCount = 0; let updateAvailableCount = 0; let hasUrlToCheck = false;
                 const startTime = Date.now();
 
                 const finishCheck = () => {
                     const elapsedTime = Date.now() - startTime;
-                    const minDelay = 500; 
-                    
                     const doFinish = () => {
-                        if (updateCheckBtn) {
-                            updateCheckBtn.innerHTML = '<i class="fas fa-cloud-download-alt"></i>';
-                            updateCheckBtn.style.color = '#aaa'; 
-                        }
-                        
-                        if (updateAvailableCount > 0) {
-                            infoLog(`[Tool Update] 업데이트 확인 완료. (발견된 업데이트: ${updateAvailableCount}개)`);
-                            toastr.info(`${updateAvailableCount}개의 업데이트가 발견되었습니다.`);
-                        } else {
-                            infoLog(`[Tool Update] 업데이트 확인 완료. 모든 툴이 최신 버전입니다.`);
-                            toastr.success("모든 툴이 최신 버전입니다.");
-                        }
+                        if (updateCheckBtn) { updateCheckBtn.innerHTML = '<i class="fas fa-cloud-download-alt"></i>'; updateCheckBtn.style.color = '#aaa'; }
+                        if (updateAvailableCount > 0) toastr.info(`${updateAvailableCount}개의 업데이트가 발견되었습니다.`);
+                        else toastr.success("모든 툴이 최신 버전입니다.");
                     };
-
-                    if (elapsedTime < minDelay) {
-                        setTimeout(doFinish, minDelay - elapsedTime);
-                    } else {
-                        doFinish();
-                    }
+                    if (elapsedTime < 500) setTimeout(doFinish, 500 - elapsedTime);
+                    else doFinish();
                 };
 
                 toolItems.forEach(item => {
@@ -2705,40 +2702,29 @@ const fetchTools = () => {
                     const updateBtn = item.querySelector('.pmh-tool-update-btn');
 
                     if (updateUrl && updateUrl !== 'undefined') {
-                        hasUrlToCheck = true;
-                        checkCount++;
-                        
+                        hasUrlToCheck = true; checkCount++;
                         GM_xmlhttpRequest({
                             method: "GET", url: `${updateUrl}?t=${Date.now()}`,
                             onload: (res) => {
                                 if (res.status === 200) {
-                                    const match = res.responseText.match(/version:\s*"([^"]+)"/);
+                                    const match = res.responseText.match(/version:\s*['"]?([^'"\r\n]+)['"]?/);
                                     if (match) {
                                         const remoteVer = match[1];
                                         if (isNewerVersion(currentVer, remoteVer)) {
-                                            infoLog(`[Tool Update] 💡 신규 업데이트 발견: [${toolId}] v${currentVer} -> v${remoteVer}`);
                                             updateBtn.style.display = 'inline-block';
                                             updateBtn.innerHTML = `<i class="fas fa-arrow-circle-up"></i> v${remoteVer}`;
+                                            updateBtn.dataset.targetVer = remoteVer;
                                             updateAvailableCount++;
-                                        } else {
-                                            updateBtn.style.display = 'none';
-                                        }
+                                        } else { updateBtn.style.display = 'none'; }
                                     }
                                 }
-                                checkCount--;
-                                if (checkCount === 0) finishCheck();
+                                checkCount--; if (checkCount === 0) finishCheck();
                             },
-                            onerror: () => { 
-                                checkCount--; 
-                                if (checkCount === 0) finishCheck(); 
-                            }
+                            onerror: () => { checkCount--; if (checkCount === 0) finishCheck(); }
                         });
                     }
                 });
-                
-                if (!hasUrlToCheck || checkCount === 0) {
-                    finishCheck();
-                }
+                if (!hasUrlToCheck || checkCount === 0) finishCheck();
                 return;
             }
 
@@ -2749,8 +2735,10 @@ const fetchTools = () => {
                 
                 const targetId = doUpdateBtn.dataset.id;
                 const updateUrl = doUpdateBtn.dataset.url;
+                const newVer = doUpdateBtn.dataset.targetVer || "최신";
+                
                 doUpdateBtn.dataset.updating = "true";
-                doUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 설치 중...`;
+                doUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`;
 
                 let successCount = 0;
                 await Promise.all(AppSettings.SERVERS.map(srv => new Promise(res => {
@@ -2763,8 +2751,19 @@ const fetchTools = () => {
                 })));
                 
                 if (successCount > 0) {
-                    toastr.success(`전체 ${successCount}대 서버에 업데이트 완료!`);
-                    fetchTools();
+                    toastr.success(`[${targetId}] 업데이트 완료!`);
+                    
+                    delete doUpdateBtn.dataset.updating;
+                    doUpdateBtn.style.display = 'none';
+                    
+                    const parentItem = doUpdateBtn.closest('.pmh-tool-item');
+                    if (parentItem) {
+                        parentItem.dataset.ver = newVer;
+                        const titleSpan = parentItem.querySelector('.pmh-tool-run-btn span span');
+                        if (titleSpan) titleSpan.innerText = `v${newVer}`;
+                        parentItem.style.backgroundColor = "rgba(81, 163, 81, 0.2)";
+                        setTimeout(() => parentItem.style.backgroundColor = "transparent", 1000);
+                    }
                 } else {
                     toastr.error("업데이트에 실패했습니다.");
                     delete doUpdateBtn.dataset.updating;
@@ -2775,28 +2774,42 @@ const fetchTools = () => {
 
             if (e.target.closest('#pmh-tool-install-btn')) {
                 e.preventDefault(); e.stopPropagation(); dropdown.style.display = 'none';
-                window.showPmhToolPanel('installer', "새로운 툴 등록", `
-                    <p style="font-size:13px; color:#aaa; margin-top:0;">설치할 툴의 <strong>GitHub 폴더 주소</strong>를 입력하세요.</p>
-                    <input type="text" id="pmh-install-url" style="width:100%; padding:10px; background:#111; color:#fff; border:1px solid #444; margin-bottom:20px; border-radius:4px; font-size:12px;">
-                    <div style="text-align:center;"><button id="pmh-do-install" style="padding:12px 30px; background:#51a351; color:#fff; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:14px;"><i class="fas fa-download"></i> 다운로드 및 설치</button></div>
-                    <div id="pmh-install-msg" style="margin-top:20px; font-size:13px; text-align:center;"></div>
+                window.showPmhToolPanel('installer', "새로운 툴 등록 / 주소 확인", `
+                    <p style="font-size:13px; color:#aaa; margin-top:0;">설치할 툴의 <strong>GitHub 폴더 주소</strong> (또는 info.yaml 주소)를 입력하세요.</p>
+                    <input type="text" id="pmh-install-url" style="width:100%; padding:10px; background:#111; color:#fff; border:1px solid #444; margin-bottom:10px; border-radius:4px; font-size:12px;">
+                    <div style="text-align:center; margin-bottom:15px;">
+                        <button id="pmh-check-url" style="padding:8px 20px; background:#2f96b4; color:#fff; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:13px; margin-right:8px;"><i class="fas fa-search"></i> 툴 정보 확인</button>
+                        <button id="pmh-do-install" style="padding:8px 20px; background:#555; color:#aaa; border:none; font-weight:bold; cursor:not-allowed; border-radius:4px; font-size:13px;" disabled><i class="fas fa-download"></i> 설치</button>
+                    </div>
+                    <div id="pmh-install-preview" style="display:none; background:rgba(0,0,0,0.3); border:1px solid #333; border-radius:4px; padding:12px; margin-bottom:15px; font-size:12px;"></div>
+                    <div id="pmh-install-msg" style="font-size:13px; text-align:center;"></div>
                 `);
-                setTimeout(() => {
-                    const btn = document.getElementById('pmh-do-install');
-                    if (btn) {
-                        btn.onmouseover = () => btn.style.backgroundColor = "#3e823e";
-                        btn.onmouseout = () => btn.style.backgroundColor = "#51a351";
 
-                        btn.onclick = async (e) => {
+                setTimeout(() => {
+                    const btnCheck = document.getElementById('pmh-check-url');
+                    const btnInstall = document.getElementById('pmh-do-install');
+                    const previewDiv = document.getElementById('pmh-install-preview');
+                    const msgDiv = document.getElementById('pmh-install-msg');
+                    const urlInput = document.getElementById('pmh-install-url');
+                    
+                    let verifiedYamlUrl = "";
+                    let verifiedPrefix = "";
+
+                    urlInput.addEventListener('input', () => {
+                        btnInstall.disabled = true;
+                        btnInstall.style.background = "#555"; btnInstall.style.color = "#aaa"; btnInstall.style.cursor = "not-allowed";
+                        previewDiv.style.display = "none";
+                        msgDiv.innerHTML = "";
+                    });
+
+                    if (btnCheck) {
+                        btnCheck.onclick = (e) => {
                             e.preventDefault(); e.stopPropagation();
-                            
-                            let url = document.getElementById('pmh-install-url').value.trim();
+                            let url = urlInput.value.trim();
                             if (!url) return;
                             
-                            const msgDiv = document.getElementById('pmh-install-msg');
                             if (url.endsWith('/')) url = url.slice(0, -1);
-                            
-                            let namespace = ""; 
+                            let namespace = "custom"; 
                             
                             const treeMatch = url.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/tree\/([^\/]+)\/(.+)$/i);
                             if (treeMatch) { 
@@ -2810,26 +2823,111 @@ const fetchTools = () => {
                             else if (url.includes('raw.githubusercontent.com')) { 
                                 namespace = url.match(/raw\.githubusercontent\.com\/([^\/]+)\//)?.[1] || ""; 
                             }
-                            else {
-                                try {
-                                    const parsed = new URL(url);
-                                    const hostParts = parsed.hostname.split('.');
-                                    const host = hostParts.length > 1 ? hostParts[hostParts.length - 2] : hostParts[0];
-                                    const pathUser = parsed.pathname.split('/')[1] || "custom";
-                                    namespace = `${host}_${pathUser}`;
-                                } catch(e) {
-                                    namespace = "custom";
-                                }
-                            }
+                            
+                            if (!url.endsWith('.yaml') && !url.endsWith('.yml')) url += '/info.yaml';
+                            verifiedPrefix = namespace.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
-                            if (!url.endsWith('.yaml') && !url.endsWith('.yml')) {
-                                url += '/info.yaml';
-                            }
+                            btnCheck.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 확인 중...';
+                            previewDiv.style.display = "block";
+                            previewDiv.innerHTML = `<div style="text-align:center; color:#aaa;">info.yaml 파일을 읽어오는 중입니다...</div>`;
+
+                            GM_xmlhttpRequest({
+                                method: "GET", url: `${url}?t=${Date.now()}`,
+                                onload: (res) => {
+                                    btnCheck.innerHTML = '<i class="fas fa-search"></i> 툴 정보 확인';
+                                    if (res.status === 200) {
+                                        try {
+                                            const parseYaml = (key) => {
+                                                const m = res.responseText.match(new RegExp(`^${key}\\s*:\\s*['"]?(.*?)['"]?$`, 'm'));
+                                                return m ? m[1] : '';
+                                            };
+                                            
+                                            const tId = parseYaml('id');
+                                            const tName = parseYaml('name') || tId;
+                                            const tVer = parseYaml('version') || '1.0';
+                                            const tDesc = parseYaml('description') || '설명이 없습니다.';
+                                            
+                                            if (!tId) throw new Error("ID 속성 누락");
+
+                                            // [수정됨] 서버가 툴을 설치할 때 사용하는 접두사(Prefix) 결합 방식을 프론트엔드에서도 똑같이 재현하여 검색
+                                            let expectedLocalId = tId;
+                                            if (verifiedPrefix && !tId.startsWith(verifiedPrefix + "_")) {
+                                                expectedLocalId = `${verifiedPrefix}_${tId}`;
+                                            }
+
+                                            let installedHtml = `<span style="color:#aaa; border:1px solid #444; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;">신규 설치</span>`;
+                                            let btnText = '<i class="fas fa-download"></i> 설치';
+                                            let btnColor = "#51a351";
+                                            
+                                            // 접두사가 붙은 ID로 먼저 찾고, 없으면 원본 ID로 재검색하는 이중 안전장치
+                                            const existingTool = document.querySelector(`.pmh-tool-item[data-id="${expectedLocalId}"]`) || document.querySelector(`.pmh-tool-item[data-id="${tId}"]`);
+                                            
+                                            if (existingTool) {
+                                                const existingVer = existingTool.dataset.ver || "0.0";
+                                                
+                                                if (isNewerVersion(existingVer, tVer)) {
+                                                    // 원격이 더 최신일 때 (정상 업데이트)
+                                                    installedHtml = `<span style="color:#51a351; border:1px solid #51a351; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;"><i class="fas fa-arrow-up"></i> 업데이트 가능 (현재: v${existingVer})</span>`;
+                                                    btnText = '<i class="fas fa-arrow-up"></i> 버전 업데이트';
+                                                } else if (existingVer === tVer) {
+                                                    // 버전이 완전히 같을 때 (재설치/덮어쓰기)
+                                                    installedHtml = `<span style="color:#e5a00d; border:1px solid #e5a00d; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;"><i class="fas fa-equals"></i> 이미 최신 버전 (현재: v${existingVer})</span>`;
+                                                    btnText = '<i class="fas fa-redo"></i> 덮어쓰기 (재설치)';
+                                                    btnColor = "#e5a00d"; // 주황색 경고
+                                                } else {
+                                                    // 원격이 더 구버전일 때 (다운그레이드)
+                                                    installedHtml = `<span style="color:#bd362f; border:1px solid #bd362f; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;"><i class="fas fa-arrow-down"></i> 구버전 주의 (현재: v${existingVer})</span>`;
+                                                    btnText = '<i class="fas fa-exclamation-triangle"></i> 강제 다운그레이드';
+                                                    btnColor = "#bd362f"; // 빨간색 경고
+                                                }
+                                            }
+
+                                            verifiedYamlUrl = url;
+
+                                            previewDiv.innerHTML = `
+                                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px dashed #444; padding-bottom:6px;">
+                                                    <span style="color:#fff; font-weight:bold; font-size:14px;">${tName}</span>
+                                                    <span style="color:#2f96b4; font-family:monospace; font-size:13px; font-weight:bold;">v${tVer}</span>
+                                                </div>
+                                                <div style="color:#aaa; margin-bottom:10px; display:flex; align-items:center;">
+                                                    <span style="font-family:monospace;">ID: ${tId}</span> ${installedHtml}
+                                                </div>
+                                                <div style="color:#ccc; line-height:1.5; background:rgba(0,0,0,0.2); padding:8px; border-radius:4px;">${tDesc}</div>
+                                            `;
+                                            
+                                            // 확인 후 버튼 상태 및 텍스트/색상 동적 변경
+                                            btnInstall.disabled = false;
+                                            btnInstall.innerHTML = btnText;
+                                            btnInstall.style.background = btnColor; 
+                                            btnInstall.style.color = "#fff"; 
+                                            btnInstall.style.cursor = "pointer";
+                                            msgDiv.innerHTML = "";
+
+                                        } catch (e) {
+                                            previewDiv.innerHTML = `<div style="color:#bd362f;"><i class="fas fa-times"></i> 유효한 info.yaml 파일이 아닙니다.</div>`;
+                                        }
+                                    } else {
+                                        previewDiv.innerHTML = `<div style="color:#bd362f;"><i class="fas fa-times"></i> 주소에 접근할 수 없습니다 (HTTP ${res.status})</div>`;
+                                    }
+                                },
+                                onerror: () => {
+                                    btnCheck.innerHTML = '<i class="fas fa-search"></i> 툴 정보 확인';
+                                    previewDiv.innerHTML = `<div style="color:#bd362f;"><i class="fas fa-times"></i> 네트워크 오류로 주소를 확인할 수 없습니다.</div>`;
+                                }
+                            });
+                        };
+                    }
+
+                    if (btnInstall) {
+                        btnInstall.onmouseover = () => { if(!btnInstall.disabled) btnInstall.style.backgroundColor = "#3e823e"; };
+                        btnInstall.onmouseout = () => { if(!btnInstall.disabled) btnInstall.style.backgroundColor = "#51a351"; };
+
+                        btnInstall.onclick = async (e) => {
+                            e.preventDefault(); e.stopPropagation();
+                            if (!verifiedYamlUrl) return;
                             
-                            namespace = namespace.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-                            
-                            btn.style.pointerEvents = "none"; 
-                            btn.style.opacity = "0.5";
+                            btnCheck.disabled = true; btnInstall.disabled = true; 
+                            btnInstall.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 설치 중...';
                             msgDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${AppSettings.SERVERS.length}대의 서버에 설치 중...`;
                             
                             let successCount = 0;
@@ -2837,19 +2935,29 @@ const fetchTools = () => {
                                 GM_xmlhttpRequest({
                                     method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
                                     headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
-                                    data: JSON.stringify({ url: url, prefix: namespace }), 
+                                    data: JSON.stringify({ url: verifiedYamlUrl, prefix: verifiedPrefix }), 
                                     onload: (r) => { if(r.status === 200) successCount++; res(); }, 
                                     onerror: () => res()
                                 });
                             })));
                             
-                            btn.style.pointerEvents = "auto"; 
-                            btn.style.opacity = "1";
+                            btnCheck.disabled = false;
+                            btnInstall.innerHTML = '<i class="fas fa-check"></i> 설치 완료';
+                            
                             if (successCount > 0) { 
-                                msgDiv.innerHTML = `<span style="color:#51a351;"><i class="fas fa-check"></i> ${successCount}/${AppSettings.SERVERS.length}대 서버 설치 완료!</span>`; 
-                                fetchTools();
+                                msgDiv.innerHTML = `<span style="color:#51a351;"><i class="fas fa-check"></i> ${successCount}/${AppSettings.SERVERS.length}대 서버 설치 완료!</span>`;
+                                setTimeout(() => {
+                                    urlInput.value = "";
+                                    previewDiv.style.display = "none";
+                                    btnInstall.disabled = true;
+                                    btnInstall.style.background = "#555"; btnInstall.style.color = "#aaa"; btnInstall.style.cursor = "not-allowed";
+                                    btnInstall.innerHTML = '<i class="fas fa-download"></i> 설치';
+                                    msgDiv.innerHTML = "";
+                                }, 2000);
                             } else { 
-                                msgDiv.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> 설치 실패 (URL 및 서버 상태 확인)</span>`; 
+                                msgDiv.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> 설치 실패 (서버 상태 확인)</span>`; 
+                                btnInstall.disabled = false;
+                                btnInstall.innerHTML = '<i class="fas fa-download"></i> 다시 시도';
                             }
                         };
                     }

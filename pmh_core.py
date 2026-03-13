@@ -18,7 +18,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.44"
+__version__ = "0.7.45"
 
 def get_version():
     return __version__
@@ -300,6 +300,7 @@ class CoreTaskManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
         self.tool_id = tool_id
         self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_task.db")
+        os.makedirs(os.path.dirname(self.db_file), exist_ok=True)
         self._lock = threading.Lock()
 
     @contextmanager
@@ -427,6 +428,7 @@ class CoreTaskManager:
 class CoreDataManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
         self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_cache.db")
+        os.makedirs(os.path.dirname(self.db_file), exist_ok=True)
         self._lock = threading.Lock()
 
     @contextmanager
@@ -566,6 +568,7 @@ class CoreDataManager:
 class CoreOptionsManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
         self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_options.db")
+        os.makedirs(os.path.dirname(self.db_file), exist_ok=True)
         self._lock = threading.Lock()
 
     @contextmanager
@@ -822,7 +825,11 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     }]
                 }
                 try:
-                    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'}, method='POST')
+                    headers = {
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+                    }
+                    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
                     urllib.request.urlopen(req, timeout=5)
                 except Exception as e:
                     print(f"[Discord Error] {e}")
@@ -936,6 +943,11 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     data_mgr.reset_db()
                     options_mgr.reset()
                     return {"status": "success", "message": "초기화 완료"}, 200
+
+                # 1-2. 가벼운 초기화 (현재 서버의 조회된 목록만 비우기)
+                elif action_type == 'clear_data':
+                    data_mgr.reset_db()
+                    return {"status": "success", "message": "조회 목록이 초기화되었습니다."}, 200
 
                 # 2. 이어서 실행 (Resume)
                 elif action_type == 'resume':
