@@ -388,50 +388,58 @@ def worker(task_data, core_api, start_index):
 
         if not wait_until_stable(): break
         
+        skip_delay = False 
+        
         try:
-            safe_endpoint = f"/library/metadata/{str(rk).strip()}"
-            plex_item = plex.fetchItem(safe_endpoint)
-            
-            if fix_type == 'analyze':
-                task.log("   -> 미디어 분석(Analyze) 요청")
-                plex_item.analyze()
-            elif fix_type == 'match':
-                task.log("   -> 자동 매칭(Auto Match) 시도")
-                matches = plex_item.matches()
-                if matches: plex_item.fixMatch(matches[0])
-                else: task.log("      (매칭 결과를 찾을 수 없습니다)")
-            elif fix_type == 'refresh':
-                task.log("   -> 메타데이터 새로고침(Refresh) 진행")
-                plex_item.refresh()
-            elif fix_type in ['yaml_season', 'yaml_marker']:
-                if not mate_url or not mate_apikey:
+            # 1. YAML 적용 작업일 경우: 파일 유무를 먼저 검사하여 불필요한 Plex 통신을 차단
+            if fix_type in ['yaml_season', 'yaml_marker']:
+                yaml_filename = 'movie.yaml' if info['type'] == 1 else 'show.yaml'
+                yml_filename = 'movie.yml' if info['type'] == 1 else 'show.yml'
+                
+                yaml_exists = False
+                if info['files']:
+                    for f in info['files']:
+                        local_path = translate_path(f, path_mappings)
+                        target_dir = get_show_root_dir(local_path)
+                        if os.path.exists(os.path.join(target_dir, yaml_filename)) or os.path.exists(os.path.join(target_dir, yml_filename)):
+                            yaml_exists = True; break
+                
+                if not yaml_exists:
+                    task.log(f"   -> 대상 폴더에 {yaml_filename} 파일이 없습니다. (작업 패스)")
+                    skip_delay = True
+                elif not mate_url or not mate_apikey:
                     task.log("   -> YAML 적용 불가 (Plex Mate 설정 누락)")
+                    skip_delay = True
                 else:
-                    yaml_filename = 'movie.yaml' if info['type'] == 1 else 'show.yaml'
-                    yml_filename = 'movie.yml' if info['type'] == 1 else 'show.yml'
-                    
-                    yaml_exists = True
-                    if info['files']:
-                        yaml_exists = False
-                        for f in info['files']:
-                            local_path = translate_path(f, path_mappings)
-                            target_dir = get_show_root_dir(local_path)
-                            if os.path.exists(os.path.join(target_dir, yaml_filename)) or os.path.exists(os.path.join(target_dir, yml_filename)):
-                                yaml_exists = True; break
-                    
-                    if yaml_exists:
-                        task.log("   -> Plex Mate에 YAML 연동 요청")
-                        if call_plexmate_refresh(mate_url, mate_apikey, rk): task.log("      (연동 성공!)")
-                        else: task.log("      (연동 실패)")
-                    else:
-                        task.log(f"   -> 대상 폴더에 {yaml_filename} 파일이 없습니다.")
+                    task.log("   -> Plex Mate에 YAML 연동 요청")
+                    if call_plexmate_refresh(mate_url, mate_apikey, rk): 
+                        task.log("      (연동 성공!)")
+                    else: 
+                        task.log("      (연동 실패)")
+                        
+            # 2. Plex API 작업 (Analyze, Match, Refresh)
+            else:
+                safe_endpoint = f"/library/metadata/{str(rk).strip()}"
+                plex_item = plex.fetchItem(safe_endpoint)
+                
+                if fix_type == 'analyze':
+                    task.log("   -> 미디어 분석(Analyze) 요청")
+                    plex_item.analyze()
+                elif fix_type == 'match':
+                    task.log("   -> 자동 매칭(Auto Match) 시도")
+                    matches = plex_item.matches()
+                    if matches: plex_item.fixMatch(matches[0])
+                    else: task.log("      (매칭 결과를 찾을 수 없습니다)")
+                elif fix_type == 'refresh':
+                    task.log("   -> 메타데이터 새로고침(Refresh) 진행")
+                    plex_item.refresh()
 
         except Exception as e:
             task.log(f"   -> 오류 발생: {e}")
             
         core_api['cache'].mark_as_done('rating_key', str(rk))
-            
-        if sleep_time > 0:
+        
+        if sleep_time > 0 and not skip_delay:
             loops = max(1, int(sleep_time * 2))
             for _ in range(loops):
                 if task.is_cancelled(): return
