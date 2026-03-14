@@ -19,10 +19,94 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.46"
+__version__ = "0.7.47"
 
 def get_version():
     return __version__
+
+# ==============================================================================
+# [코어 중앙 자연 정렬 엔진]
+# ==============================================================================
+def core_natural_sort(data_list, default_sort):
+    if not data_list or not default_sort: return data_list
+    def n_key(s): return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+    
+    rules = default_sort if isinstance(default_sort, list) else [default_sort]
+    # 안정 정렬(Stable Sort)을 위해 역순으로 다중 정렬 적용
+    for rule in reversed(rules):
+        k = rule.get('key')
+        d = rule.get('dir', 'asc').lower()
+        data_list.sort(key=lambda x: n_key(str(x.get(k, ''))), reverse=(d == 'desc'))
+    return data_list
+
+# ==============================================================================
+# [디스코드 통합 알림 팩토리]
+# ==============================================================================
+def create_discord_notifier(base_dir, tool_id, server_id, global_config):
+    """실행 컨텍스트(스케줄러/UI)와 무관하게 동일한 알림 로직을 생성합니다."""
+    
+    def send_discord_notify(title, message="", color_hex="#51a351", tool_vars=None):
+        if tool_vars is None: tool_vars = {}
+        
+        mgr = CoreOptionsManager(base_dir, tool_id, server_id)
+        current_opts = mgr.load()
+        
+        if not current_opts.get('discord_enable', True): return
+        
+        url = current_opts.get('discord_webhook', '').strip() or (global_config.get('discord_webhook', '').strip() if global_config else '')
+        if not url: return
+            
+        print(f"[PMH Discord] '{tool_id}' 알림 발송 시도 (제목: {title})")
+        
+        core_vars = {
+            "tool_id": tool_id,
+            "server_id": server_id[:8],
+            "server_name": current_opts.get('_server_name', f"Server-{server_id[:8]}"),
+            "date": datetime.now().strftime('%Y-%m-%d'),
+            "time": datetime.now().strftime('%H:%M:%S')
+        }
+        all_vars = {**core_vars, **tool_vars}
+        
+        class SafeDict(dict):
+            def __missing__(self, key): return '{' + key + '}'
+        safe_vars = SafeDict(**all_vars)
+
+        raw_body = current_opts.get('discord_template', message)
+        if not str(raw_body).strip(): raw_body = message
+        final_body = str(raw_body).format_map(safe_vars)
+        
+        final_title = str(title).format_map(safe_vars)
+        
+        raw_footer = current_opts.get('discord_template_footer', 'Plex Meta Helper - {tool_id} | {server_name}')
+        final_footer = str(raw_footer).format_map(safe_vars)
+        
+        raw_bot_name = current_opts.get('discord_bot_name', '').strip()
+        final_bot_name = str(raw_bot_name).format_map(safe_vars) if raw_bot_name else ''
+        
+        avatar_url = current_opts.get('discord_avatar_url', '').strip()
+        color_int = int(color_hex.lstrip('#'), 16) if color_hex.startswith('#') else 5349201
+
+        embed = {
+            "title": final_title,
+            "description": final_body,
+            "color": color_int
+        }
+        if final_footer.strip():
+            embed["footer"] = {"text": final_footer.strip()}
+            
+        payload = {"embeds": [embed]}
+        if final_bot_name: payload["username"] = final_bot_name
+        if avatar_url: payload["avatar_url"] = avatar_url
+        
+        try:
+            headers = {'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+            urllib.request.urlopen(req, timeout=5)
+            print(f"[PMH Discord] ✅ '{tool_id}' 알림 발송 성공.")
+        except Exception as e:
+            print(f"[PMH Discord Error] ❌ 발송 실패: {e}")
+            
+    return send_discord_notify
 
 # ==============================================================================
 # [코어 경량 크론 스케줄러 (Daemon)]
@@ -61,15 +145,47 @@ def start_scheduler_daemon(base_dir, db_path, plex_url, plex_token, global_confi
     def scheduler_loop():
         t = threading.current_thread()
         t.do_run = True
-        print("[PMH Daemon] 자동 실행 스케줄러가 백그라운드에서 시작되었습니다.")
+        tz_info = time.strftime('%z (%Z)')
         
+        # 글로벌 웹훅 연결 상태 체크
+        g_webhook = global_config.get('discord_webhook', '')
+        webhook_status = "설정됨" if g_webhook else "비어있음"
+        
+        print(f"[PMH Daemon] 자동 실행 스케줄러 시작. (현재 타임존: {tz_info})")
+        print(f"[PMH Daemon] 전역 디스코드 웹훅 상태: {webhook_status}")
+        
+        # 부팅 시 저장된 옵션 DB를 순회하며 툴 스케줄 대기 현황 출력
+        tools_dir = os.path.join(base_dir, 'tools')
+        task_logs_dir = os.path.join(base_dir, 'task_logs')
+        if os.path.exists(tools_dir) and os.path.exists(task_logs_dir):
+            for file in os.listdir(task_logs_dir):
+                if file.endswith('_options.db'):
+                    base_name = file.replace('_options.db', '')
+                    
+                    matched_tool = None
+                    server_id = "default"  # 기본값 할당 (안전 장치)
+                    
+                    for tool_id in os.listdir(tools_dir):
+                        if base_name.startswith(tool_id + '_'):
+                            matched_tool = tool_id
+                            # ✨ [수정됨] 스코프 밖에서도 안전하게 사용할 수 있도록 추출
+                            server_id = base_name[len(tool_id)+1:]
+                            break
+                            
+                    if matched_tool:
+                        mgr = CoreOptionsManager(base_dir, matched_tool, server_id)
+                        opts = mgr.load()
+                        if opts.get('cron_enable') and opts.get('cron_expr'):
+                            print(f"[PMH Daemon] ⏰ '{matched_tool}' (서버:{server_id[:8]}) 스케줄 대기 중: {opts.get('cron_expr')}")
+
+        # 메인 크론 확인 루프
         while getattr(t, "do_run", True):
             now = datetime.now()
             if now.second == 0:
                 try:
                     _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_config, now)
                 except Exception as e:
-                    print(f"[Scheduler Error] {e}")
+                    print(f"[PMH Scheduler Error] {e}")
                 time.sleep(1)
             time.sleep(0.5)
 
@@ -79,114 +195,92 @@ def start_scheduler_daemon(base_dir, db_path, plex_url, plex_token, global_confi
 
 def _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_config, now):
     tools_dir = os.path.join(base_dir, 'tools')
-    if not os.path.exists(tools_dir): return
+    task_logs_dir = os.path.join(base_dir, 'task_logs')
+    if not os.path.exists(tools_dir) or not os.path.exists(task_logs_dir): return
     
-    server_id = "default"
-    
-    for tool_id in os.listdir(tools_dir):
-        info_path = os.path.join(tools_dir, tool_id, 'info.yaml')
-        if not os.path.isdir(os.path.join(tools_dir, tool_id)) or not os.path.exists(info_path):
-            continue
+    for file in os.listdir(task_logs_dir):
+        if file.endswith('_options.db'):
+            base_name = file.replace('_options.db', '')
             
-        options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
-        opts = options_mgr.load()
-        
-        if not opts.get('cron_enable', False): continue
-        
-        cron_expr = opts.get('cron_expr', '').strip()
-        parts = cron_expr.split()
-        
-        if len(parts) != 5:
-            if now.minute == 0: 
-                print(f"[Scheduler Warning] 툴 '{tool_id}'의 자동실행이 켜져 있으나, 크론탭 문법({cron_expr})이 올바르지 않아 스킵합니다.")
-            continue
+            tool_id = None
+            server_id = "default"
             
-        if not match_cron(cron_expr, now): continue
-
-        # 1. 중복 실행 방지 (이미 돌고 있으면 무시)
-        task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
-        task_state = task_mgr.load()
-        if task_state and task_state.get('state') == 'running':
-            task_mgr.log("[Scheduler] 지정된 시간이 되었으나, 이미 작업이 실행 중이므로 스킵합니다.")
-            continue
-
-        # 2. 실행 조건이 맞으면 툴을 로드하고 Fake Request 전송
-        try:
-            with open(info_path, 'r', encoding='utf-8') as f:
-                entry_file = yaml.safe_load(f).get('entry_file', 'main.py')
-            module = _load_tool_module(tools_dir, tool_id, entry_file)
-            
-            req_data = opts.copy()
-            req_data['action_type'] = 'execute'
-            req_data['_is_cron'] = True
-            
-            data_mgr = CoreDataManager(base_dir, tool_id, server_id)
-            db_api = create_db_api(db_path)
-            
-            def get_plex_instance():
-                from plexapi.server import PlexServer
-                plex = PlexServer(plex_url, plex_token, timeout=120)
-                orig_fetchItem = plex.fetchItem
-                def safe_fetchItem(ekey, *args, **kwargs):
-                    if isinstance(ekey, str) and ekey.strip().isdigit(): ekey = f"/library/metadata/{ekey.strip()}"
-                    elif isinstance(ekey, int): ekey = f"/library/metadata/{ekey}"
-                    return orig_fetchItem(ekey, *args, **kwargs)
-                plex.fetchItem = safe_fetchItem
-                return plex
-                
-            def send_discord_notify(title, message, color_hex="#51a351"):
-                opts = options_mgr.load()
-                if not opts.get('discord_enable', False): return
-                
-                url = opts.get('discord_webhook', '').strip() or (global_config.get('discord_webhook', '').strip() if global_config else '')
-                if not url: return
-                
-                bot_name = opts.get('discord_bot_name', '').strip() or f"PMH - {tool_id}"
-                avatar_url = opts.get('discord_avatar_url', '').strip()
-                
-                color_int = int(color_hex.lstrip('#'), 16) if color_hex.startswith('#') else 5349201
-                payload = {
-                    "username": bot_name,
-                    "embeds": [{
-                        "title": title,
-                        "description": message,
-                        "color": color_int,
-                        "footer": {"text": f"Plex Meta Helper"}
-                    }]
-                }
-                if avatar_url:
-                    payload["avatar_url"] = avatar_url
+            for t_id in os.listdir(tools_dir):
+                if base_name.startswith(t_id + '_'):
+                    tool_id = t_id
+                    server_id = base_name[len(t_id)+1:]
+                    break
                     
-                try:
-                    headers = {
-                        'Content-Type': 'application/json',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-                    urllib.request.urlopen(req, timeout=5)
-                except Exception as e:
-                    print(f"[Discord Error] {e}")
-
-            core_api = {
-                "query": db_api["query"], "get_plex": get_plex_instance,
-                "task": task_mgr, "config": global_config or {},
-                "cache": data_mgr, "options": opts, "notify": send_discord_notify
-            }
-
-            res, code = module.run(req_data, core_api)
-            if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
-                t_data = res.get('task_data', {})
-                t_data['_is_cron'] = True
-                task_mgr.init_task(t_data)
+            if not tool_id: continue
+            
+            options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
+            opts = options_mgr.load()
+            
+            if not opts.get('cron_enable', False): continue
+            
+            cron_expr = opts.get('cron_expr', '').strip()
+            parts = cron_expr.split()
+            if len(parts) != 5: continue
                 
-                t = threading.Thread(target=_core_worker_runner, args=(module, t_data, core_api, 0, tool_id))
-                t.daemon = True
-                t.start()
-                task_mgr.log(f"⏰ [스케줄러] '{cron_expr}' 조건에 만족하여 자동 실행을 시작했습니다.")
-                
-        except Exception as e:
-            print(f"[Scheduler Error] Tool {tool_id} execution failed: {e}")
+            if not match_cron(cron_expr, now): continue
 
+            # 중복 실행 방지
+            task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
+            task_state = task_mgr.load(include_target_items=False)
+            if task_state and task_state.get('state') == 'running':
+                print(f"[PMH Scheduler] '{tool_id}' (서버:{server_id[:8]}) 이미 작업이 실행 중이므로 스킵합니다.")
+                continue
+
+            print(f"[PMH Scheduler] '{tool_id}' (서버:{server_id[:8]}) 크론 조건({cron_expr}) 달성. 워커 스레드를 트리거합니다.")
+
+            try:
+                info_path = os.path.join(tools_dir, tool_id, 'info.yaml')
+                with open(info_path, 'r', encoding='utf-8') as f:
+                    entry_file = yaml.safe_load(f).get('entry_file', 'main.py')
+                module = _load_tool_module(tools_dir, tool_id, entry_file)
+                
+                req_data = opts.copy()
+                req_data['action_type'] = 'execute'
+                req_data['_is_cron'] = True
+                
+                data_mgr = CoreDataManager(base_dir, tool_id, server_id)
+                db_api = create_db_api(db_path)
+                
+                def get_plex_instance():
+                    from plexapi.server import PlexServer
+                    plex = PlexServer(plex_url, plex_token, timeout=120)
+                    orig_fetchItem = plex.fetchItem
+                    def safe_fetchItem(ekey, *args, **kwargs):
+                        if isinstance(ekey, str) and ekey.strip().isdigit(): ekey = f"/library/metadata/{ekey.strip()}"
+                        elif isinstance(ekey, int): ekey = f"/library/metadata/{ekey}"
+                        return orig_fetchItem(ekey, *args, **kwargs)
+                    plex.fetchItem = safe_fetchItem
+                    return plex
+                    
+                core_api = {
+                    "query": db_api["query"], "get_plex": get_plex_instance,
+                    "task": task_mgr, "config": global_config or {},
+                    "cache": data_mgr, "options": opts, 
+                    "notify": create_discord_notifier(base_dir, tool_id, server_id, global_config),
+                    "sort": core_natural_sort
+                }
+
+                res, code = module.run(req_data, core_api)
+                if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
+                    t_data = res.get('task_data', {})
+                    t_data['_is_cron'] = True
+                    task_mgr.init_task(t_data)
+                    
+                    t = threading.Thread(target=_core_worker_runner, args=(module, t_data, core_api, 0, tool_id))
+                    t.daemon = True
+                    t.start()
+                    
+            except Exception as e:
+                print(f"[PMH Scheduler Error] Tool {tool_id} execution failed: {e}")
+
+# ==============================================================================
+# [DB 헬퍼 함수]
+# ==============================================================================
 @contextmanager
 def get_db_connection(db_path):
     if not os.path.exists(db_path):
@@ -196,17 +290,15 @@ def get_db_connection(db_path):
         conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=10.0, isolation_level=None)
         yield conn
     except sqlite3.OperationalError as e:
-        print(f"[DB ERROR] SQLite Operational Error: {str(e)}")
+        print(f"[PMH DB ERROR] SQLite Operational Error: {str(e)}")
         raise
     except Exception as e:
-        print(f"[DB ERROR] Connection failed: {str(e)}")
+        print(f"[PMH DB ERROR] Connection failed: {str(e)}")
         raise
     finally:
         if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
+            try: conn.rollback()
+            except: pass
             conn.close()
 
 def is_season_folder(folder_name):
@@ -218,18 +310,6 @@ def is_season_folder(folder_name):
 
 def natural_sort_key(s):
     return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
-
-def core_natural_sort(data_list, default_sort):
-    """코어 중앙 자연 정렬 엔진"""
-    if not data_list or not default_sort: return data_list
-    def n_key(s): return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
-    rules = default_sort if isinstance(default_sort, list) else [default_sort]
-    # 안정 정렬(Stable Sort)을 위해 역순으로 다중 정렬 적용
-    for rule in reversed(rules):
-        k = rule.get('key')
-        d = rule.get('dir', 'asc').lower()
-        data_list.sort(key=lambda x: n_key(str(x.get(k, ''))), reverse=(d == 'desc'))
-    return data_list
 
 def _get_unique_show_folder_count(cursor, rating_key):
     seen_paths = set()
@@ -250,9 +330,7 @@ def _get_unique_show_folder_count(cursor, rating_key):
             dir_path_original = os.path.dirname(raw_file)
             dir_key = os.path.normpath(dir_path_original).replace('\\', '/').lower()
             
-            if dir_key in seen_paths:
-                continue
-
+            if dir_key in seen_paths: continue
             seen_paths.add(dir_key)
             target_path = dir_path_original
             
@@ -273,7 +351,6 @@ def _get_unique_show_folder_count(cursor, rating_key):
 
 def handle_library_batch(data, max_batch_size, db_path):
     if not data or 'ids' not in data:
-        print("[BATCH] Rejected: Invalid request format.")
         return {"error": "Invalid request"}, 400
         
     raw_ids = [str(i) for i in data['ids'] if str(i).isdigit()]
@@ -307,9 +384,7 @@ def handle_library_batch(data, max_batch_size, db_path):
                 result_map = {}
                 for rk, width, raw_data, sub_data, guid, filepath, part_id in cursor.fetchall():
                     rk = str(rk)
-                    
-                    if filepath:
-                        filepath = unicodedata.normalize('NFC', filepath)
+                    if filepath: filepath = unicodedata.normalize('NFC', filepath)
                     
                     path_count = 1
                     if check_multi_path and rk not in result_map and meta_types.get(rk) == 2:
@@ -376,7 +451,7 @@ def handle_library_batch(data, max_batch_size, db_path):
 
         return result_map, 200
     except Exception as e:
-        print(f"[BATCH ERROR] Failed processing batch: {str(e)}")
+        print(f"[PMH BATCH ERROR] Failed processing batch: {str(e)}")
         return {"error": str(e)}, 500
 
 def handle_media_detail(rating_key, db_path):
@@ -466,7 +541,7 @@ def handle_media_detail(rating_key, db_path):
                 
         return { "type": "video", "itemId": rating_key, "guid": guid, "duration": duration, "librarySectionID": lib_section_id, "versions": versions, "markers": markers }, 200
     except Exception as e:
-        print(f"[DETAIL ERROR] Failed processing item {rating_key}: {str(e)}")
+        print(f"[PMH DETAIL ERROR] Failed processing item {rating_key}: {str(e)}")
         return {"error": str(e)}, 500
 
 # ==============================================================================
@@ -483,28 +558,20 @@ class CoreTaskManager:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.commit()
-            conn.close()
+        try: yield conn
+        finally: conn.commit(); conn.close()
 
     def _setup_db(self):
         with self._get_conn() as conn:
             c = conn.cursor()
             c.execute("CREATE TABLE IF NOT EXISTS task_info (state TEXT, progress INTEGER, total INTEGER, task_data TEXT)")
             c.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, log_text TEXT)")
-            
             c.execute("SELECT count(*) FROM task_info")
             if c.fetchone()[0] == 0:
                 c.execute("INSERT INTO task_info (state, progress, total, task_data) VALUES ('completed', 0, 0, '{}')")
 
     def load(self, include_target_items=False):
-        """
-        [핵심 최적화] 
-        UI 폴링(1.5초 간격) 시에는 include_target_items=False로 호출되어,
-        수만 건이 담긴 target_items 배열을 파싱/전송하지 않아 네트워크와 CPU 부하를 없앱니다.
-        """
+        """UI 폴링 병목 제거를 위해 include_target_items 옵션 제공"""
         with self._lock:
             if not os.path.exists(self.db_file): return None
             try:
@@ -515,7 +582,6 @@ class CoreTaskManager:
                     if not row: return None
                     
                     raw_task_data = json.loads(row['task_data'] or '{}')
-                    
                     if not include_target_items and 'target_items' in raw_task_data:
                         del raw_task_data['target_items']
 
@@ -525,7 +591,6 @@ class CoreTaskManager:
                         "total": row['total'],
                         "task_data": raw_task_data
                     }
-                    
                     c.execute("SELECT log_text FROM (SELECT id, log_text FROM logs ORDER BY id DESC LIMIT 50) sub ORDER BY id ASC")
                     data['logs'] = [l['log_text'] for l in c.fetchall()]
                     return data
@@ -562,7 +627,7 @@ class CoreTaskManager:
     def log(self, msg):
         stamp = datetime.now().strftime('%H:%M:%S')
         log_line = f"[{stamp}] {msg}"
-        print(f"[{self.tool_id}] {msg}")
+        print(f"[PMH {self.tool_id}] {msg}")
         with self._lock:
             self._setup_db()
             with self._get_conn() as conn:
@@ -570,7 +635,6 @@ class CoreTaskManager:
                 c.execute("INSERT INTO logs (log_text) VALUES (?)", (log_line,))
 
     def update_state(self, state, progress=None, total=None):
-        # 루프 진행 중에는 거대한 task_data를 건드리지 않고 숫자(progress) 1개만 업데이트함 (O(1))
         with self._lock:
             self._setup_db()
             with self._get_conn() as conn:
@@ -595,7 +659,7 @@ class CoreTaskManager:
             return True
 
 # ==============================================================================
-# [코어 데이터 캐시 관리자
+# [코어 데이터 캐시 관리자 (자동 직렬화/역직렬화 적용)]
 # ==============================================================================
 class CoreDataManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
@@ -629,7 +693,7 @@ class CoreDataManager:
                 data_list = res_data.get('data', [])
                 default_sort = res_data.get('default_sort')
                 
-                # ✨ [핵심] DB 삽입 전에 코어 엔진이 default_sort 규칙에 따라 완벽히 자연 정렬
+                # DB 삽입 전 코어가 직접 자연 정렬 수행
                 if data_list and default_sort:
                     data_list = core_natural_sort(data_list, default_sort)
 
@@ -702,12 +766,10 @@ class CoreDataManager:
                 for row in c.fetchall():
                     row_dict = dict(row)
                     row_dict.pop('pmh_status', None)
-                    
                     for k, v in row_dict.items():
                         if isinstance(v, str) and (v.startswith('[') or v.startswith('{')):
                             try: row_dict[k] = json.loads(v)
                             except: pass
-                            
                     data_rows.append(row_dict)
                 
                 result['data'] = data_rows
@@ -718,7 +780,6 @@ class CoreDataManager:
                 return result
 
     def mark_as_done(self, key_column, key_value):
-        """단일 아이템 처리 완료 시 호출. 전체 데이터를 건드리지 않고 해당 Row의 상태만 업데이트 (O(1))"""
         with self._lock:
             if not os.path.exists(self.db_file): return
             with self._get_conn() as conn:
@@ -754,16 +815,11 @@ class CoreOptionsManager:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA temp_store=MEMORY;")
-        
-        try:
-            yield conn
-        finally:
-            conn.commit()
-            conn.close()
+        try: yield conn
+        finally: conn.commit(); conn.close()
 
     def load(self):
         with self._lock:
@@ -773,11 +829,9 @@ class CoreOptionsManager:
                     c = conn.cursor()
                     c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='options'")
                     if c.fetchone()[0] == 0: return {}
-                    
                     c.execute("SELECT payload FROM options LIMIT 1")
                     row = c.fetchone()
-                    if row and row[0]:
-                        return json.loads(row[0])
+                    if row and row[0]: return json.loads(row[0])
             except: pass
             return {}
 
@@ -797,13 +851,10 @@ class CoreOptionsManager:
                 try: os.remove(self.db_file)
                 except: pass
 
-
 def _core_worker_runner(module, task_data, core_api, start_progress, tool_id):
-    """코어가 띄우는 비동기 스레드 실행기 (서버 재시작 감지용 이름 설정)"""
     threading.current_thread().name = f"Worker_{tool_id}"
     try:
-        if hasattr(module, 'worker'):
-            module.worker(task_data, core_api, start_progress)
+        if hasattr(module, 'worker'): module.worker(task_data, core_api, start_progress)
         else:
             core_api['task'].log("오류: 툴에 worker 함수가 구현되어 있지 않습니다.")
             core_api['task'].update_state('error')
@@ -813,20 +864,15 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id):
         traceback.print_exc()
         core_api['task'].update_state('error')
 
-# -------------------------------------------------------------------
-# 안전한 DB 접근 래퍼 (샌드박스 역할)
-# -------------------------------------------------------------------
 def create_db_api(db_path):
     def safe_query(query, params=()):
         if not query.strip().upper().startswith("SELECT"):
             raise ValueError("Security Error: Only SELECT queries are allowed in PMH Tools.")
-            
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
             columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
-            
     return {"query": safe_query}
 
 # ==============================================================================
@@ -836,19 +882,15 @@ def _load_tool_module(tools_dir, tool_id, entry_file):
     file_path = os.path.join(tools_dir, tool_id, entry_file)
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Entry file not found: {file_path}")
-    
     module_name = f"pmh_tool_{tool_id}"
     spec = importlib.util.spec_from_file_location(module_name, file_path)
-
     if spec is None or spec.loader is None:
         raise ImportError(f"Failed to load spec for module: {module_name}")
-
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_size=1000, plex_url="", plex_token="", global_config=None):
-    """모든 API 요청을 분기하여 처리하는 중앙 라우터"""
     tools_dir = os.path.join(base_dir, 'tools')
     os.makedirs(tools_dir, exist_ok=True)
 
@@ -863,9 +905,6 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             rating_key = subpath.split('/')[1]
             return handle_media_detail(rating_key, db_path)
 
-        # ----------------------------------------------------------------------
-        # 툴(Tool) 목록 조회 / 설치 / 삭제
-        # ----------------------------------------------------------------------
         elif subpath == 'tools' and method == 'GET':
             installed_tools = []
             for item in os.listdir(tools_dir):
@@ -878,7 +917,7 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                             tool_info['id'] = item 
                             installed_tools.append(tool_info)
                     except Exception as e:
-                        print(f"[TOOL ERROR] Could not read {info_path}: {e}")
+                        print(f"[PMH TOOL ERROR] Could not read {info_path}: {e}")
             return {"tools": installed_tools}, 200
 
         elif subpath == 'tools/install' and method == 'POST':
@@ -897,15 +936,11 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             
             if not original_id: return {"error": "잘못된 info.yaml 구조입니다. ('id' 필드 누락)"}, 400
 
-            if target_id:
-                safe_tool_id = target_id
-            else:
-                safe_tool_id = f"{prefix}_{original_id}" if (prefix and not original_id.startswith(prefix + "_")) else original_id
+            if target_id: safe_tool_id = target_id
+            else: safe_tool_id = f"{prefix}_{original_id}" if (prefix and not original_id.startswith(prefix + "_")) else original_id
                 
             tool_info['id'] = safe_tool_id
-            
-            if not tool_info.get('update_url'):
-                tool_info['update_url'] = yaml_url
+            if not tool_info.get('update_url'): tool_info['update_url'] = yaml_url
 
             base_url = yaml_url.rsplit('/', 1)[0]
             py_req = urllib.request.Request(f"{base_url}/{entry_file}", headers={'Cache-Control': 'no-cache'})
@@ -917,7 +952,6 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             
             with open(os.path.join(tool_path, 'info.yaml'), 'w', encoding='utf-8') as f:
                 yaml.dump(tool_info, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
-                
             with open(os.path.join(tool_path, entry_file), 'w', encoding='utf-8') as f:
                 f.write(py_content)
 
@@ -935,7 +969,7 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
             if os.path.exists(tool_path):
                 shutil.rmtree(tool_path)
-                print(f"[TOOL DELETE] {tool_id} 및 관련 데이터 완전 삭제됨.")
+                print(f"[PMH TOOL DELETE] {tool_id} 및 관련 데이터 완전 삭제됨.")
                 return {"status": "success"}, 200
             return {"error": "해당 툴을 찾을 수 없습니다."}, 404
 
@@ -945,16 +979,13 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             action = parts[2]
 
             info_path = os.path.join(tools_dir, tool_id, 'info.yaml')
-            if not os.path.exists(info_path): 
-                return {"error": "해당 툴이 로컬에 설치되어 있지 않습니다."}, 404
+            if not os.path.exists(info_path): return {"error": "해당 툴이 로컬에 설치되어 있지 않습니다."}, 404
             
             with open(info_path, 'r', encoding='utf-8') as f:
                 entry_file = yaml.safe_load(f).get('entry_file', 'main.py')
 
-            try:
-                module = _load_tool_module(tools_dir, tool_id, entry_file)
-            except Exception as load_err:
-                return {"error": f"툴 로드 실패: {load_err}"}, 500
+            try: module = _load_tool_module(tools_dir, tool_id, entry_file)
+            except Exception as load_err: return {"error": f"툴 로드 실패: {load_err}"}, 500
 
             if data is None: data = {}
             db_api = create_db_api(db_path)
@@ -966,52 +997,19 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
             final_url = plex_url if str(plex_url).strip() else data.get('_plex_url', '')
             final_token = plex_token if str(plex_token).strip() else data.get('_plex_token', '')
-            for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token']:
-                data.pop(key, None)
+            for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token']: data.pop(key, None)
 
             def get_plex_instance():
                 from plexapi.server import PlexServer
                 if not final_url or not final_token: raise ValueError("Plex 서버 정보가 누락되었습니다.")
-                
                 plex = PlexServer(final_url, final_token, timeout=120)
-                
                 orig_fetchItem = plex.fetchItem
                 def safe_fetchItem(ekey, **kwargs):
-                    if isinstance(ekey, str) and ekey.strip().isdigit():
-                        ekey = f"/library/metadata/{ekey.strip()}"
-                    elif isinstance(ekey, int):
-                        ekey = f"/library/metadata/{ekey}"
+                    if isinstance(ekey, str) and ekey.strip().isdigit(): ekey = f"/library/metadata/{ekey.strip()}"
+                    elif isinstance(ekey, int): ekey = f"/library/metadata/{ekey}"
                     return orig_fetchItem(ekey, **kwargs)
-                
-                plex.fetchItem = safe_fetchItem  # type: ignore
-                
+                plex.fetchItem = safe_fetchItem
                 return plex
-
-            def send_discord_notify(title, message, color_hex="#51a351"):
-                opts = options_mgr.load()
-                if not opts.get('discord_enable', False): return
-                
-                url = opts.get('discord_webhook', '').strip() or (global_config.get('discord_webhook', '').strip() if global_config else '')
-                if not url: return
-                
-                color_int = int(color_hex.lstrip('#'), 16) if color_hex.startswith('#') else 5349201
-                payload = {
-                    "embeds": [{
-                        "title": title,
-                        "description": message,
-                        "color": color_int,
-                        "footer": {"text": f"PMH Tool: {tool_id}"}
-                    }]
-                }
-                try:
-                    headers = {
-                        'Content-Type': 'application/json',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-                    }
-                    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-                    urllib.request.urlopen(req, timeout=5)
-                except Exception as e:
-                    print(f"[Discord Error] {e}")
 
             core_api = {
                 "query": db_api["query"],
@@ -1020,7 +1018,7 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 "config": global_config or {},
                 "cache": data_mgr,
                 "options": options_mgr.load(),
-                "notify": send_discord_notify,
+                "notify": create_discord_notifier(base_dir, tool_id, server_id, global_config),
                 "sort": core_natural_sort
             }
 
@@ -1028,18 +1026,16 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 if hasattr(module, 'get_ui'): 
                     sig = inspect.signature(module.get_ui)
                     ui_data = module.get_ui(core_api) if len(sig.parameters) > 0 else module.get_ui()
-                    
-                    options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
                     ui_data['saved_options'] = options_mgr.load()
 
-                    saved_task = task_mgr.load()
+                    saved_task = task_mgr.load(include_target_items=False)
                     if saved_task:
                         if saved_task.get('state') == 'running':
                             active_threads = [t.name for t in threading.enumerate()]
                             if f"Worker_{tool_id}" not in active_threads:
                                 task_mgr.update_state('error')
                                 task_mgr.log("[System] 강제 종료(재시작)가 감지되어 이전 작업을 중단 상태(Error)로 변경했습니다.")
-                                saved_task = task_mgr.load()
+                                saved_task = task_mgr.load(include_target_items=False)
 
                         ui_data['active_task'] = {
                             "task_id": tool_id,
@@ -1052,83 +1048,23 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 
             elif action == 'run' and method == 'POST':
                 if not hasattr(module, 'run'): return {"error": "해당 툴에 실행(run) 함수가 없습니다."}, 500
-                if data is None: data = {}
-                
-                final_url = plex_url if str(plex_url).strip() else data.get('_plex_url', '')
-                final_token = plex_token if str(plex_token).strip() else data.get('_plex_token', '')
-                for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token']:
-                    data.pop(key, None)
-                
-                def get_plex_instance():
-                    from plexapi.server import PlexServer
-                    if not final_url or not final_token: raise ValueError("Plex 서버 정보가 누락되었습니다.")
-                    return PlexServer(final_url, final_token, timeout=120)
-
                 action_type = data.get('action_type', 'preview')
-                
-                data_mgr = CoreDataManager(base_dir, tool_id, server_id)
-                options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
-
-                core_api = {
-                    "query": db_api["query"],
-                    "get_plex": get_plex_instance,
-                    "task": task_mgr,
-                    "config": global_config or {},
-                    "cache": data_mgr,
-                    "options": options_mgr.load(),
-                    "notify": send_discord_notify
-                }
-
-                if action_type in ['preview', 'execute', 'page', 'save_options']:
-                    current_opts = options_mgr.load()
-                    for k, v in data.items():
-                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
-                            current_opts[k] = v
-                    options_mgr.save(current_opts)
-                    
-                    if action_type == 'save_options': return {"status": "success"}, 200
-
-                # =================================================================
-                # [내부 헬퍼] 데이터 정렬 수행 (단일 키 및 default_sort 다중 컬럼 지원)
-                # =================================================================
-                def _apply_sorting(data_list, columns, sort_key=None, sort_dir='asc', default_sort=None):
-                    if not data_list: return data_list
-                    col_map = {c['key']: c for c in columns} if columns else {}
-                    def get_actual_key(k): return col_map.get(k, {}).get('sort_key', k)
-                    def get_sort_type(k): return col_map.get(k, {}).get('sort_type', 'string')
-
-                    if sort_key:
-                        actual_k = get_actual_key(sort_key)
-                        s_type = get_sort_type(sort_key)
-                        if s_type == 'number':
-                            data_list.sort(key=lambda x: float(x.get(actual_k, 0) or 0), reverse=(sort_dir == 'desc'))
-                        else:
-                            data_list.sort(key=lambda x: natural_sort_key(str(x.get(actual_k, ''))), reverse=(sort_dir == 'desc'))
-                    elif default_sort:
-                        rules = default_sort if isinstance(default_sort, list) else [default_sort]
-                        for rule in reversed(rules):
-                            r_key = rule.get('key')
-                            r_dir = rule.get('dir', 'asc')
-                            actual_k = get_actual_key(r_key)
-                            s_type = get_sort_type(r_key)
-                            if s_type == 'number':
-                                data_list.sort(key=lambda x: float(x.get(actual_k, 0) or 0), reverse=(r_dir == 'desc'))
-                            else:
-                                data_list.sort(key=lambda x: natural_sort_key(str(x.get(actual_k, ''))), reverse=(r_dir == 'desc'))
-                    return data_list
 
                 if action_type == 'reset':
+                    print(f"[PMH Core] 툴 '{tool_id}' 캐시 및 설정 완전 초기화")
                     task_mgr.reset()
                     data_mgr.reset_db()
                     options_mgr.reset()
                     return {"status": "success", "message": "초기화 완료"}, 200
 
                 elif action_type == 'clear_data':
+                    print(f"[PMH Core] 툴 '{tool_id}' 조회 데이터 초기화")
                     data_mgr.reset_db()
                     return {"status": "success", "message": "조회 목록이 초기화되었습니다."}, 200
 
                 elif action_type == 'resume':
-                    saved_task = task_mgr.load()
+                    print(f"[PMH Core] 툴 '{tool_id}' 작업 재개(Resume) 지시")
+                    saved_task = task_mgr.load(include_target_items=True)
                     if not saved_task or 'task_data' not in saved_task:
                         return {"error": "이어서 실행할 작업 데이터가 없습니다."}, 400
                     
@@ -1151,7 +1087,6 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     limit = int(data.get('limit', 10))
 
                     cached = data_mgr.load_page(page, limit, sort_key, sort_dir)
-                    
                     if not cached:
                         cached = data_mgr.load_dashboard()
                         if not cached: return {"error": "캐시된 데이터가 없습니다."}, 404
@@ -1167,13 +1102,30 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                         except: pass
                     cached['machine_id'] = machine_id
 
-                    t_data = task_mgr.load()
+                    t_data = task_mgr.load(include_target_items=False)
                     if t_data and 'logs' in t_data: cached['logs'] = t_data['logs']
 
                     return cached, 200
 
-                if action_type in ['execute', 'preview']:
+                elif action_type in ['preview', 'execute', 'save_options']:
+                    current_opts = options_mgr.load()
+                    for k, v in data.items():
+                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
+                            current_opts[k] = v
+                    options_mgr.save(current_opts)
+
+                    if action_type == 'save_options':
+                        c_enable = current_opts.get('cron_enable')
+                        c_expr = current_opts.get('cron_expr', '')
+                        if c_enable and str(c_expr).strip():
+                            print(f"[PMH Core] ⏰ '{tool_id}' 툴 스케줄 등록 완료: {c_expr}")
+                        else:
+                            print(f"[PMH Core] ⚙️ '{tool_id}' 툴 설정 저장 완료 (스케줄 비활성)")
+                        return {"status": "success"}, 200
+
+                    print(f"[PMH Core] 툴 '{tool_id}' {action_type.upper()} 워커 스레드 시작")
                     res, code = module.run(data, core_api)
+                    
                     if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
                         task_data = res.get('task_data', {})
                         if not task_data.get('_is_cron'):
@@ -1184,12 +1136,13 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                         t.daemon = True
                         t.start()
                         return {"status": "success", "type": "async_task", "task_id": tool_id}, 200
+                        
                     return res, code
 
                 return {"error": "잘못된 접근입니다."}, 400
 
             elif action == 'status' and method == 'GET':
-                status_data = task_mgr.load()
+                status_data = task_mgr.load(include_target_items=False)
                 if not status_data: return {"error": "Task not found"}, 404
                 
                 if status_data.get('state') == 'running':
@@ -1197,12 +1150,12 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     if f"Worker_{tool_id}" not in active_threads:
                         task_mgr.update_state('error')
                         task_mgr.log("[System] 서버 재시작이 감지되어 작업이 중지되었습니다.")
-                        status_data = task_mgr.load()
+                        status_data = task_mgr.load(include_target_items=False)
                         
                 return status_data, 200
                 
             elif action == 'cancel' and method == 'POST':
-                saved_task = task_mgr.load()
+                saved_task = task_mgr.load(include_target_items=False)
                 if saved_task and saved_task.get('state') == 'running':
                     task_mgr.update_state('cancelled')
                     task_mgr.log("[System] 사용자 취소 요청. 진행 중인 항목까지만 처리하고 중단합니다.")
@@ -1215,18 +1168,3 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
         import traceback
         traceback.print_exc()
         return {"error": str(e)}, 500
-
-# 코어 모듈이 로드될 때 스케줄러 데몬 자동 시작
-if not getattr(sys.modules[__name__], '_SCHEDULER_STARTED', False):
-    import __main__
-
-    p_url = getattr(__main__, 'PLEX_URL', '')
-    p_token = getattr(__main__, 'PLEX_TOKEN', '')
-    g_conf = {
-        "mate_apikey": getattr(__main__, 'API_KEY', ''),
-        "mate_url": getattr(__main__, 'PLEX_MATE_URL', ''),
-        "path_mappings": getattr(__main__, 'PATH_MAPPINGS', []),
-        "discord_webhook": getattr(__main__, 'DISCORD_WEBHOOK', '')
-    }
-    start_scheduler_daemon(getattr(__main__, 'BASE_DIR', '.'), getattr(__main__, 'PLEX_DB_PATH', ''), p_url, p_token, g_conf)
-    setattr(sys.modules[__name__], '_SCHEDULER_STARTED', True)

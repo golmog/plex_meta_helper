@@ -5,13 +5,15 @@ import sys
 import logging
 import urllib.request
 import importlib
+import time
+from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 try:
     import yaml
 except ImportError:
-    print("[ERROR] 'pyyaml' 패키지가 설치되어 있지 않습니다.")
+    print("[PMH ERROR] 'pyyaml' 패키지가 설치되어 있지 않습니다.")
     print("터미널에서 'pip install pyyaml' 명령어를 실행한 후 다시 시작해주세요.")
     sys.exit(1)
 
@@ -40,12 +42,12 @@ DEFAULT_CONFIG = {
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        print(f"[CONFIG] YAML 설정 파일이 존재하지 않아 새로 생성합니다: {CONFIG_FILE}")
+        print(f"[PMH CONFIG] YAML 설정 파일이 존재하지 않아 새로 생성합니다: {CONFIG_FILE}")
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         return DEFAULT_CONFIG
     
-    print(f"[CONFIG] 기존 YAML 설정 파일을 불러옵니다: {CONFIG_FILE}")
+    print(f"[PMH CONFIG] 기존 YAML 설정 파일을 불러옵니다: {CONFIG_FILE}")
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
@@ -59,17 +61,26 @@ API_KEY = cfg.get("API_KEY", DEFAULT_CONFIG["API_KEY"])
 PLEX_MATE_URL = cfg.get("PLEX_MATE_URL", DEFAULT_CONFIG["PLEX_MATE_URL"])
 PATH_MAPPINGS = cfg.get("PATH_MAPPINGS", DEFAULT_CONFIG["PATH_MAPPINGS"])
 DISCORD_WEBHOOK = cfg.get("DISCORD_WEBHOOK", DEFAULT_CONFIG["DISCORD_WEBHOOK"])
+
 CORE_FILE_PATH = os.path.join(BASE_DIR, "pmh_core.py")
 if not os.path.exists(CORE_FILE_PATH):
-    print("[BOOTSTRAP] pmh_core.py 가 존재하지 않아 GitHub에서 다운로드합니다...")
+    print("[PMH BOOTSTRAP] pmh_core.py 가 존재하지 않아 GitHub에서 다운로드합니다...")
     try:
         urllib.request.urlretrieve(CORE_URL, CORE_FILE_PATH)
-        print("[BOOTSTRAP] 다운로드 완료.")
+        print("[PMH BOOTSTRAP] 다운로드 완료.")
     except Exception as e:
-        print(f"[BOOTSTRAP ERROR] 코어 모듈 다운로드 실패: {e}")
+        print(f"[PMH BOOTSTRAP ERROR] 코어 모듈 다운로드 실패: {e}")
         sys.exit(1)
 
 import pmh_core
+
+global_conf = {
+    "mate_apikey": API_KEY,
+    "mate_url": PLEX_MATE_URL,
+    "path_mappings": PATH_MAPPINGS,
+    "discord_webhook": DISCORD_WEBHOOK
+}
+pmh_core.start_scheduler_daemon(BASE_DIR, PLEX_DB_PATH, PLEX_URL, PLEX_TOKEN, global_conf)
 
 # ==============================================================================
 # [Flask 앱 초기화]
@@ -85,7 +96,7 @@ def check_api_key():
         return
     provided_key = request.headers.get("X-API-Key")
     if not provided_key or provided_key != API_KEY:
-        print(f"[SECURITY] Unauthorized access attempt blocked. IP: {request.remote_addr}")
+        print(f"[PMH SECURITY] Unauthorized access attempt blocked. IP: {request.remote_addr}")
         return jsonify({"error": "Unauthorized. Invalid API Key."}), 401
 
 # ==============================================================================
@@ -96,13 +107,13 @@ def api_admin_update():
     import threading
     active_workers = [t.name.replace('Worker_', '') for t in threading.enumerate() if t.name.startswith("Worker_")]
     if active_workers:
-        print(f"[UPDATE ERROR] Blocked. Active workers running: {active_workers}")
+        print(f"[PMH UPDATE ERROR] Blocked. Active workers running: {active_workers}")
         return jsonify({
             "status": "error", 
             "message": f"현재 진행 중인 작업({', '.join(active_workers)})이 있습니다. 작업을 중지하거나 완료 후 시도해주세요."
         }), 400
 
-    print("[UPDATE] Update request received. Downloading latest core module...")
+    print("[PMH UPDATE] Update request received. Downloading latest core module...")
     try:
         req = urllib.request.Request(CORE_URL, headers={'Cache-Control': 'no-cache'})
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -114,7 +125,7 @@ def api_admin_update():
         with open(CORE_FILE_PATH, 'w', encoding='utf-8') as f:
             f.write(new_code)
             
-        print("[UPDATE] Core file overwritten. Reloading module in memory...")
+        print("[PMH UPDATE] Core file overwritten. Reloading module in memory...")
         importlib.reload(pmh_core)
         
         try:
@@ -125,10 +136,10 @@ def api_admin_update():
         except:
             pass
 
-        print(f"[UPDATE] Successfully updated and reloaded to v{pmh_core.get_version()} without restarting process.")
+        print(f"[PMH UPDATE] Successfully updated and reloaded to v{pmh_core.get_version()} without restarting process.")
         return jsonify({"status": "success", "version": pmh_core.get_version()})
     except Exception as e:
-        print(f"[UPDATE ERROR] Failed to update core: {str(e)}")
+        print(f"[PMH UPDATE ERROR] Failed to update core: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # ==============================================================================
@@ -138,6 +149,9 @@ def api_admin_update():
 def api_gateway(subpath):
     method = request.method
     args = request.args.to_dict()
+    
+    if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/run')):
+        print(f"[PMH API] {method} /{subpath}")
     
     json_data = None
     if method in ['POST', 'PUT'] and request.is_json:
@@ -164,7 +178,10 @@ def api_gateway(subpath):
     return jsonify(result), status_code
 
 if __name__ == '__main__':
-    print(f">>> PMH API Server (Gateway) initialized.")
-    print(f">>> Core Loaded: v{pmh_core.get_version()}")
-    print(f">>> Listening on port {SERVER_PORT} | Database Path: {PLEX_DB_PATH}")
+    tz_info = time.strftime('%z (%Z)')
+    # 개행이나 \n 등을 제거하여 FF 로거에서 깔끔하게 한 줄씩 출력되도록 처리
+    print("[PMH SYSTEM] >>> PMH API Server (Gateway) initialized.")
+    print(f"[PMH SYSTEM] >>> Core Loaded: v{pmh_core.get_version()}")
+    print(f"[PMH SYSTEM] >>> Server Timezone: {tz_info}")
+    print(f"[PMH SYSTEM] >>> Listening on port {SERVER_PORT} | DB: {PLEX_DB_PATH}")
     app.run(host='0.0.0.0', port=SERVER_PORT)

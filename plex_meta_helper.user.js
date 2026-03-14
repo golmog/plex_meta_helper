@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.46
+// @version      0.7.47
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -150,6 +150,9 @@ GM_addStyle(`
     .pmh-tool-delete-btn { color: rgba(255, 255, 255, 0.4) !important; transition: color 0.2s, transform 0.2s; }
     .pmh-tool-delete-btn:hover { color: #ff6b6b !important; transform: scale(1.1); }
     .pmh-action-icon:hover { transform: scale(1.1); color: #fff !important; }
+
+    .pmh-tool-install-bundle-btn { color: #51a351 !important; transition: color 0.2s, transform 0.2s; opacity: 0.7; }
+    .pmh-tool-install-bundle-btn:hover { opacity: 1.0; transform: scale(1.1); text-shadow: 0 0 5px rgba(81,163,81,0.5); }
 
     #pmh-tool-panel {
         position: fixed; top: 80px; right: 60px; width: 500px; 
@@ -400,15 +403,38 @@ GM_addStyle(`
         return results;
     }
 
-    function fetchLatestVersion() {
+    function fetchLatestVersion(force = false) {
         return new Promise(async (resolve) => {
+            if (!force) {
+                const lastCheck = GM_getValue('pmh_last_update_check', 0);
+                if (Date.now() - lastCheck < 24 * 60 * 60 * 1000) {
+                    log("[Update] Background update check skipped (checked recently).");
+                    
+                    const localPyVers = await pingLocalServer();
+                    let hasServerError = false;
+                    if (AppSettings.SERVERS) {
+                        for (const srv of AppSettings.SERVERS) {
+                            if (!localPyVers[srv.machineIdentifier]) hasServerError = true;
+                        }
+                    }
+                    const wasError = GM_getValue('pmh_server_connection_error', false);
+                    if (wasError !== hasServerError) {
+                        GM_setValue('pmh_server_connection_error', hasServerError);
+                        resolve({ skipped: true, uiNeedsUpdate: true });
+                        return;
+                    }
+                    resolve({ skipped: true, uiNeedsUpdate: false });
+                    return;
+                }
+            }
+
             log("[Update] Fetching latest unified version from info.yaml...");
             const noCacheUrl = `${INFO_YAML_URL}?t=${Date.now()}`;
-
             const localServerVersions = await pingLocalServer();
 
             GM_xmlhttpRequest({
                 method: "GET", url: noCacheUrl,
+                timeout: 5000,
                 onload: (res) => {
                     log(`[Update] info.yaml response status: ${res.status}`);
                     if (res.status === 200) {
@@ -439,87 +465,68 @@ GM_addStyle(`
                             GM_setValue('pmh_bundled_tools', JSON.stringify(bundledTools));
 
                             resolve({
+                                skipped: false,
                                 targetVer: latestVer,
                                 localPyVers: localServerVersions,
                                 msg: "성공", error: false, reqRestart
                             });
                         } else {
                             errorLog("[Update] Failed to parse version from info.yaml");
-                            resolve({ targetVer: null, msg: "버전 정보 형식 오류", error: true });
+                            resolve({ skipped: false, targetVer: null, msg: "버전 정보 형식 오류", error: true });
                         }
                     } else if (res.status === 404) {
                         errorLog("[Update] info.yaml not found (404)");
-                        resolve({ targetVer: null, msg: "info.yaml 없음 (404)", error: true });
+                        resolve({ skipped: false, targetVer: null, msg: "info.yaml 없음 (404)", error: true });
                     } else {
                         errorLog(`[Update] HTTP Error: ${res.status}`);
-                        resolve({ targetVer: null, msg: `서버 응답 오류 (${res.status})`, error: true });
+                        resolve({ skipped: false, targetVer: null, msg: `서버 응답 오류 (${res.status})`, error: true });
                     }
                 },
                 onerror: (err) => {
                     errorLog("[Update] Network error during fetch.", err);
-                    resolve({ targetVer: null, msg: "네트워크 연결 실패", error: true });
+                    resolve({ skipped: false, targetVer: null, msg: "네트워크 연결 실패", error: true });
+                },
+                ontimeout: () => {
+                    errorLog("[Update] Timeout during fetch.");
+                    resolve({ skipped: false, targetVer: null, msg: "응답 지연", error: true });
                 }
             });
         });
     }
 
-    async function checkUpdate() {
-        const lastCheck = GM_getValue('pmh_last_update_check', 0);
-        if (Date.now() - lastCheck > 24 * 60 * 60 * 1000) {
-            log("[Update] Background update check initiated.");
-            const result = await fetchLatestVersion();
-            
-            if (!result.error) {
-                const latestKnownVer = result.targetVer;
-                let needsUpdate = isNewerVersion(CURRENT_VERSION, latestKnownVer);
-                let hasServerError = false;
+    async function checkUpdate(force = false) {
+        const result = await fetchLatestVersion(force);
+        
+        if (result.skipped) {
+            if (result.uiNeedsUpdate) {
+                const ctrl = document.getElementById('pmdv-controls');
+                if (ctrl) { ctrl.remove(); injectControlUI(); }
+            }
+            return null; 
+        }
 
-                if (AppSettings.SERVERS) {
-                    for (const srv of AppSettings.SERVERS) {
-                        const curVer = result.localPyVers[srv.machineIdentifier];
-                        if (curVer) {
-                            if (isNewerVersion(curVer, latestKnownVer)) {
-                                needsUpdate = true;
-                            }
-                        } else {
-                            hasServerError = true;
-                        }
-                    }
-                }
+        if (!result.error) {
+            const latestKnownVer = result.targetVer;
+            let needsUpdate = isNewerVersion(CURRENT_VERSION, latestKnownVer);
+            let hasServerError = false;
 
-                GM_setValue('pmh_server_connection_error', hasServerError);
-
-                if (needsUpdate || hasServerError) {
-                    const ctrl = document.getElementById('pmdv-controls');
-                    if (ctrl) {
-                        ctrl.remove();
-                        injectControlUI();
+            if (AppSettings.SERVERS) {
+                for (const srv of AppSettings.SERVERS) {
+                    const curVer = result.localPyVers[srv.machineIdentifier];
+                    if (curVer) {
+                        if (isNewerVersion(curVer, latestKnownVer)) needsUpdate = true;
+                    } else {
+                        hasServerError = true;
                     }
                 }
             }
-        } else {
-            log("[Update] Background update check skipped (checked recently).");
-            pingLocalServer().then(localPyVers => {
-                let hasServerError = false;
-                if (AppSettings.SERVERS) {
-                    for (const srv of AppSettings.SERVERS) {
-                        if (!localPyVers[srv.machineIdentifier]) {
-                            hasServerError = true;
-                        }
-                    }
-                }
-                
-                const wasError = GM_getValue('pmh_server_connection_error', false);
-                if (wasError !== hasServerError) {
-                    GM_setValue('pmh_server_connection_error', hasServerError);
-                    const ctrl = document.getElementById('pmdv-controls');
-                    if (ctrl) {
-                        ctrl.remove();
-                        injectControlUI();
-                    }
-                }
-            });
+
+            GM_setValue('pmh_server_connection_error', hasServerError);
+
+            const ctrl = document.getElementById('pmdv-controls');
+            if (ctrl) { ctrl.remove(); injectControlUI(); }
         }
+        return result;
     }
 
     async function triggerServerUpdate(showStatusMsg, targetServers) {
@@ -1434,8 +1441,17 @@ GM_addStyle(`
                                 taHtml += `<a href="#" onclick="event.preventDefault(); document.getElementById('pmh_inp_${input.id}').value = decodeURIComponent('${encDef}');" style="color:#2f96b4; font-size:11px; text-decoration:none; padding:2px 6px; background:rgba(47,150,180,0.1); border-radius:3px; transition:0.2s;" onmouseover="this.style.background='rgba(47,150,180,0.3)'; this.style.color='#fff';" onmouseout="this.style.background='rgba(47,150,180,0.1)'; this.style.color='#2f96b4';"><i class="fas fa-undo"></i> 기본값 초기화</a>`;
                             }
                             taHtml += `</div>
-                                        <textarea id="pmh_inp_${input.id}" class="pmh-input-text" style="width:100%; height:130px; resize:vertical; font-family:monospace; font-size:12px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; padding:10px; line-height:1.5; box-sizing:border-box; white-space:pre;" placeholder="${input.placeholder||''}">${cachedVal !== undefined ? cachedVal : ""}</textarea>
-                                       </div>`;
+                                        <textarea id="pmh_inp_${input.id}" class="pmh-input-text" style="width:100%; height:${input.height||130}px; resize:vertical; font-family:monospace; font-size:12px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; padding:10px; line-height:1.5; box-sizing:border-box; white-space:pre;" placeholder="${input.placeholder||''}">${cachedVal !== undefined ? cachedVal : ""}</textarea>
+                                       `;
+                            
+                            if (input.template_vars && input.template_vars.length > 0) {
+                                taHtml += `<div style="margin-top:8px; font-size:11px; color:#aaa;">사용 가능한 변수: `;
+                                input.template_vars.forEach(tv => {
+                                    taHtml += `<span style="background:rgba(255,255,255,0.1); padding:2px 5px; border-radius:3px; margin-right:5px; font-family:monospace; cursor:help;" title="${tv.desc}">{${tv.key}}</span>`;
+                                });
+                                taHtml += `</div>`;
+                            }
+                            taHtml += `</div>`;
                             return taHtml;
 
                         case 'cron':
@@ -1692,6 +1708,11 @@ GM_addStyle(`
 
                     const getFormData = () => {
                         const reqData = { _server_id: serverId };
+                        
+                        if (targetSrv && targetSrv.name) {
+                            reqData._server_name = targetSrv.name;
+                        }
+
                         const allInputs = [ ...(ui.inputs || []), ...(ui.execute_inputs || []), ...(ui.settings_inputs || []) ];
                         allInputs.forEach(i => {
                             if (i.type === 'checkbox_group') {
@@ -1705,7 +1726,6 @@ GM_addStyle(`
                                     reqData[i.id] = checkedEl.value;
                                     savedOptions[i.id] = checkedEl.value;
                                 }
-                            
                             } else if (i.type === 'multi_select') {
                                 const checkedBoxes = document.querySelectorAll(`input[name="pmh_mchk_${i.id}"]:checked`);
                                 const valArr = Array.from(checkedBoxes).map(cb => cb.value);
@@ -2368,7 +2388,7 @@ GM_addStyle(`
 
                             resForm.onclick = (e) => {
                                 const btn = e.target.closest('.pmh_dt_row_action_btn');
-                                if (!btn) return; // 클릭한 곳이 단일 실행 버튼이 아니면 무시
+                                if (!btn) return;
 
                                 e.preventDefault(); e.stopPropagation();
                                 if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하거나 작업을 중지해주세요.");
@@ -2869,8 +2889,15 @@ GM_addStyle(`
             });
         }
 
-const fetchTools = () => {
-            if(!AppSettings.SERVERS || AppSettings.SERVERS.length === 0) return;
+        let pmhToolListCache = null;
+        const fetchTools = () => {
+            if (!AppSettings.SERVERS || AppSettings.SERVERS.length === 0) return;
+
+            if (pmhToolListCache) {
+                renderToolsDropdown(pmhToolListCache);
+                return;
+            }
+
             GM_xmlhttpRequest({
                 method: "GET", url: `${AppSettings.SERVERS[0].pmhServerUrl}/api/tools`,
                 headers: { "X-API-Key": AppSettings.SERVERS[0].plexMateApiKey },
@@ -2894,49 +2921,163 @@ const fetchTools = () => {
                     `;
 
                     if (res.status === 200) {
-                        let toolsData = JSON.parse(res.responseText).tools;
-                        if (!toolsData || toolsData.length === 0) {
-                            html += `<div style="padding:20px 15px; text-align:center; color:#777; font-size:12px;">설치된 툴이 없습니다.</div>`;
-                        } else {
-                            toolsData.sort((a, b) => {
-                                const nameA = (a.name || a.id || "").toLowerCase();
-                                const nameB = (b.name || b.id || "").toLowerCase();
-                                return nameA.localeCompare(nameB);
-                            });
-                            toolsData.forEach(tool => {
-                                html += `
-                                    <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333;" data-id="${tool.id}" data-url="${tool.update_url || ''}" data-ver="${tool.version || '0.0'}">
-                                        <div class="pmh-tool-run-btn" data-id="${tool.id}" style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:pointer;">
-                                            <i class="${tool.icon || 'fas fa-wrench'}"></i><span>${tool.name || tool.id} <span style="color:#777; font-size:10px;">v${tool.version || '1.0'}</span></span>
-                                        </div>
-                                        <div style="display:flex; gap:10px; align-items:center;">
-                                            <span class="pmh-tool-update-btn" data-id="${tool.id}" data-url="${tool.update_url || ''}" style="display:none; color:#51a351; font-size:11px; font-weight:bold; cursor:pointer; margin-left:8px;" title="클릭하여 업데이트 진행"></span>
-                                            <i class="fas fa-trash-alt pmh-tool-delete-btn" data-id="${tool.id}" data-name="${tool.name || tool.id}" style="cursor:pointer; font-size:13px;" title="전체 서버에서 삭제"></i>
-                                        </div>
-                                    </div>`;
-                            });
+                        try {
+                            pmhToolListCache = JSON.parse(res.responseText).tools || [];
+                            renderToolsDropdown(pmhToolListCache);
+                        } catch (e) {
+                            html += `<div style="padding:20px; color:#bd362f; text-align:center;">데이터 파싱 오류</div>`;
+                            dropdown.innerHTML = html;
                         }
-                    } else { html += `<div style="padding:20px 15px; text-align:center; color:#bd362f; font-size:12px;">툴 목록을 가져올 수 없습니다.</div>`; }
-                    dropdown.innerHTML = html;
+                    } else { 
+                        html += `<div style="padding:20px 15px; text-align:center; color:#bd362f; font-size:12px;">툴 목록을 가져올 수 없습니다. (HTTP ${res.status})</div>`; 
+                        dropdown.innerHTML = html;
+                    }
                 },
-                onerror: () => { dropdown.innerHTML = `<div style="padding:20px; color:#bd362f;">서버 통신 오류</div>`; }
+                onerror: () => { 
+                    dropdown.innerHTML = `
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
+                            <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
+                        </div>
+                        <div class="pmh-tool-divider" style="margin:0;"></div>
+                        <div style="padding:20px; color:#bd362f; text-align:center;">서버 통신 오류</div>
+                    `; 
+                }
             });
         };
 
+        const renderToolsDropdown = (installedTools) => {
+            let html = `
+                <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
+                    <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
+                    <div style="display:flex; gap:12px; font-size:13px;">
+                        <span id="pmh-tool-check-update-btn" class="pmh-action-icon" title="전체 툴 업데이트 확인" style="cursor:pointer; color:#aaa; transition:color 0.2s;" onmouseover="this.style.color='#2f96b4'" onmouseout="this.style.color='#aaa'">
+                            <i class="fas fa-cloud-download-alt"></i>
+                        </span>
+                        <span id="pmh-tool-install-btn" class="pmh-action-icon" title="신규 등록 (전체 서버에 설치)" style="cursor:pointer; color:#51a351; transition:0.2s;">
+                            <i class="fas fa-plus"></i>
+                        </span>
+                        <span id="pmh-tool-refresh-btn" class="pmh-action-icon" title="새로고침" style="cursor:pointer; color:#aaa; transition:0.2s;">
+                            <i class="fas fa-sync-alt"></i>
+                        </span>
+                    </div>
+                </div>
+                <div class="pmh-tool-divider" style="margin:0;"></div>
+            `;
+
+            const bundledToolsStr = GM_getValue('pmh_bundled_tools', '[]');
+            let bundledTools = [];
+            try { bundledTools = JSON.parse(bundledToolsStr); } catch(e) {}
+            
+            const processedBundles = bundledTools.map(b => {
+                const nsMatch = b.url.match(/raw\.githubusercontent\.com\/([^\/]+)\//);
+                const ns = nsMatch ? nsMatch[1].replace(/[^a-zA-Z0-9]/g, '').toLowerCase() : '';
+                const expectedId = ns && !b.id.startsWith(ns + '_') ? `${ns}_${b.id}` : b.id;
+                return { ...b, expectedId };
+            });
+
+            if (!installedTools || installedTools.length === 0) {
+                html += `<div style="padding:20px 15px; text-align:center; color:#777; font-size:12px;">설치된 툴이 없습니다.</div>`;
+            } else {
+                installedTools.sort((a, b) => (a.name || a.id || "").toLowerCase().localeCompare((b.name || b.id || "").toLowerCase()));
+                installedTools.forEach(tool => {
+                    html += `
+                        <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333;" data-id="${tool.id}" data-url="${tool.update_url || ''}" data-ver="${tool.version || '0.0'}">
+                            <div class="pmh-tool-run-btn" data-id="${tool.id}" style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:pointer;">
+                                <i class="${tool.icon || 'fas fa-wrench'}"></i><span>${tool.name || tool.id} <span style="color:#777; font-size:10px;">v${tool.version || '1.0'}</span></span>
+                            </div>
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <span class="pmh-tool-update-btn" data-id="${tool.id}" data-url="${tool.update_url || ''}" style="display:none; color:#51a351; font-size:11px; font-weight:bold; cursor:pointer; margin-left:8px;" title="클릭하여 업데이트 진행"></span>
+                                <i class="fas fa-trash-alt pmh-tool-delete-btn" data-id="${tool.id}" data-name="${tool.name || tool.id}" style="cursor:pointer; font-size:13px;" title="전체 서버에서 삭제"></i>
+                            </div>
+                        </div>`;
+                });
+            }
+
+            const uninstalledBundles = processedBundles.filter(b => !installedTools.some(t => t.id === b.expectedId));
+            
+            if (uninstalledBundles.length > 0) {
+                if (installedTools.length > 0) {
+                    html += `<div style="padding: 4px 15px; background: rgba(0,0,0,0.3); font-size: 10px; color: #555; text-align: center; border-bottom: 1px solid #333;">미설치 번들</div>`;
+                }
+                
+                uninstalledBundles.forEach(bundle => {
+                    html += `
+                        <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333; opacity: 0.6;">
+                            <div style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:not-allowed;">
+                                <i class="fas fa-box-open"></i><span>${bundle.id} <span style="color:#555; font-size:10px;">설치 필요</span></span>
+                            </div>
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <span class="pmh-tool-install-bundle-btn" data-id="${bundle.expectedId}" data-url="${bundle.url}" style="cursor:pointer; font-size:13px;" title="이 툴 설치하기">
+                                    <i class="fas fa-download"></i>
+                                </span>
+                            </div>
+                        </div>`;
+                });
+            }
+
+            dropdown.innerHTML = html;
+        };
+
         dropdown.onclick = async (e) => {
-            if (e.target.closest('#pmh-tool-refresh-btn')) { e.preventDefault(); e.stopPropagation(); fetchTools(); return; }
+            if (e.target.closest('#pmh-tool-refresh-btn')) { 
+                e.preventDefault(); e.stopPropagation(); 
+                
+                const refBtn = document.getElementById('pmh-tool-refresh-btn');
+                if(refBtn) refBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                
+                pmhToolListCache = null; 
+                fetchTools(); 
+                return; 
+            }
+            
+            const bundleInstallBtn = e.target.closest('.pmh-tool-install-bundle-btn');
+            if (bundleInstallBtn) {
+                e.preventDefault(); e.stopPropagation();
+                if (bundleInstallBtn.dataset.updating) return;
+
+                const targetId = bundleInstallBtn.dataset.id;
+                const updateUrl = bundleInstallBtn.dataset.url;
+                
+                bundleInstallBtn.dataset.updating = "true";
+                bundleInstallBtn.style.opacity = '1';
+                bundleInstallBtn.style.color = '#e5a00d';
+                bundleInstallBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+
+                let successCount = 0;
+                await Promise.all(AppSettings.SERVERS.map(srv => new Promise(res => {
+                    try {
+                        GM_xmlhttpRequest({
+                            method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
+                            headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
+                            data: JSON.stringify({ url: updateUrl, target_id: targetId }),
+                            timeout: 10000, 
+                            onload: (r) => { if(r.status === 200) successCount++; res(); }, 
+                            onerror: () => res(),
+                            ontimeout: () => res() 
+                        });
+                    } catch(err) { res(); }
+                })));
+
+                if (successCount > 0) {
+                    toastr.success(`[${targetId}] 설치 완료!`);
+                    pmhToolListCache = null; 
+                    fetchTools(); 
+                } else {
+                    toastr.error("설치에 실패했습니다.");
+                    bundleInstallBtn.style.color = '#bd362f';
+                    bundleInstallBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
+                    delete bundleInstallBtn.dataset.updating;
+                }
+                return;
+            }
             
             const updateCheckBtn = e.target.closest('#pmh-tool-check-update-btn');
             if (updateCheckBtn) {
                 e.preventDefault(); e.stopPropagation();
-                if (updateCheckBtn.innerHTML.includes('fa-spin')) {
-                    infoLog("[Tool Update] 이미 업데이트 확인 작업이 진행 중입니다. 무시합니다.");
-                    return;
-                }
-
+                if (updateCheckBtn.innerHTML.includes('fa-spin')) return;
+                
                 updateCheckBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 updateCheckBtn.style.color = '#2f96b4';
-                infoLog("[Tool Update] 전체 툴 일괄 업데이트 확인을 시작합니다.");
                 
                 const toolItems = dropdown.querySelectorAll('.pmh-tool-item');
                 let checkCount = 0; let updateAvailableCount = 0; let hasUrlToCheck = false;
@@ -2961,15 +3102,16 @@ const fetchTools = () => {
 
                     if (updateUrl && updateUrl !== 'undefined') {
                         hasUrlToCheck = true; checkCount++;
+                        
                         GM_xmlhttpRequest({
                             method: "GET", url: `${updateUrl}?t=${Date.now()}`,
+                            timeout: 5000,
                             onload: (res) => {
                                 if (res.status === 200) {
                                     const match = res.responseText.match(/version:\s*['"]?([^'"\r\n]+)['"]?/);
                                     if (match) {
                                         const remoteVer = match[1];
                                         if (isNewerVersion(currentVer, remoteVer)) {
-                                            infoLog(`[Tool Update] 💡 신규 업데이트 발견: [${toolId}] v${currentVer} -> v${remoteVer}`);
                                             updateBtn.style.display = 'inline-block';
                                             updateBtn.innerHTML = `<i class="fas fa-arrow-circle-up"></i> v${remoteVer}`;
                                             updateBtn.dataset.targetVer = remoteVer;
@@ -2979,7 +3121,8 @@ const fetchTools = () => {
                                 }
                                 checkCount--; if (checkCount === 0) finishCheck();
                             },
-                            onerror: () => { checkCount--; if (checkCount === 0) finishCheck(); }
+                            onerror: () => { checkCount--; if (checkCount === 0) finishCheck(); },
+                            ontimeout: () => { checkCount--; if (checkCount === 0) finishCheck(); }
                         });
                     }
                 });
@@ -3001,12 +3144,17 @@ const fetchTools = () => {
 
                 let successCount = 0;
                 await Promise.all(AppSettings.SERVERS.map(srv => new Promise(res => {
-                    GM_xmlhttpRequest({
-                        method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
-                        headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
-                        data: JSON.stringify({ url: updateUrl, target_id: targetId }), 
-                        onload: (r) => { if(r.status === 200) successCount++; res(); }, onerror: () => res()
-                    });
+                    try {
+                        GM_xmlhttpRequest({
+                            method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
+                            headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
+                            data: JSON.stringify({ url: updateUrl, target_id: targetId }),
+                            timeout: 10000,
+                            onload: (r) => { if(r.status === 200) successCount++; res(); }, 
+                            onerror: () => res(),
+                            ontimeout: () => res()
+                        });
+                    } catch(err) { res(); }
                 })));
                 
                 if (successCount > 0) {
@@ -3022,6 +3170,7 @@ const fetchTools = () => {
                         if (titleSpan) titleSpan.innerText = `v${newVer}`;
                         parentItem.style.backgroundColor = "rgba(81, 163, 81, 0.2)";
                         setTimeout(() => parentItem.style.backgroundColor = "transparent", 1000);
+                        pmhToolListCache = null;
                     }
                 } else {
                     toastr.error("업데이트에 실패했습니다.");
@@ -3092,6 +3241,7 @@ const fetchTools = () => {
 
                             GM_xmlhttpRequest({
                                 method: "GET", url: `${url}?t=${Date.now()}`,
+                                timeout: 5000,
                                 onload: (res) => {
                                     btnCheck.innerHTML = '<i class="fas fa-search"></i> 툴 정보 확인';
                                     if (res.status === 200) {
@@ -3108,7 +3258,6 @@ const fetchTools = () => {
                                             
                                             if (!tId) throw new Error("ID 속성 누락");
 
-                                            // [수정됨] 서버가 툴을 설치할 때 사용하는 접두사(Prefix) 결합 방식을 프론트엔드에서도 똑같이 재현하여 검색
                                             let expectedLocalId = tId;
                                             if (verifiedPrefix && !tId.startsWith(verifiedPrefix + "_")) {
                                                 expectedLocalId = `${verifiedPrefix}_${tId}`;
@@ -3118,26 +3267,22 @@ const fetchTools = () => {
                                             let btnText = '<i class="fas fa-download"></i> 설치';
                                             let btnColor = "#51a351";
                                             
-                                            // 접두사가 붙은 ID로 먼저 찾고, 없으면 원본 ID로 재검색하는 이중 안전장치
                                             const existingTool = document.querySelector(`.pmh-tool-item[data-id="${expectedLocalId}"]`) || document.querySelector(`.pmh-tool-item[data-id="${tId}"]`);
                                             
                                             if (existingTool) {
                                                 const existingVer = existingTool.dataset.ver || "0.0";
                                                 
                                                 if (isNewerVersion(existingVer, tVer)) {
-                                                    // 원격이 더 최신일 때 (정상 업데이트)
                                                     installedHtml = `<span style="color:#51a351; border:1px solid #51a351; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;"><i class="fas fa-arrow-up"></i> 업데이트 가능 (현재: v${existingVer})</span>`;
                                                     btnText = '<i class="fas fa-arrow-up"></i> 버전 업데이트';
                                                 } else if (existingVer === tVer) {
-                                                    // 버전이 완전히 같을 때 (재설치/덮어쓰기)
                                                     installedHtml = `<span style="color:#e5a00d; border:1px solid #e5a00d; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;"><i class="fas fa-equals"></i> 이미 최신 버전 (현재: v${existingVer})</span>`;
                                                     btnText = '<i class="fas fa-redo"></i> 덮어쓰기 (재설치)';
-                                                    btnColor = "#e5a00d"; // 주황색 경고
+                                                    btnColor = "#e5a00d"; 
                                                 } else {
-                                                    // 원격이 더 구버전일 때 (다운그레이드)
                                                     installedHtml = `<span style="color:#bd362f; border:1px solid #bd362f; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;"><i class="fas fa-arrow-down"></i> 구버전 주의 (현재: v${existingVer})</span>`;
                                                     btnText = '<i class="fas fa-exclamation-triangle"></i> 강제 다운그레이드';
-                                                    btnColor = "#bd362f"; // 빨간색 경고
+                                                    btnColor = "#bd362f"; 
                                                 }
                                             }
 
@@ -3154,7 +3299,6 @@ const fetchTools = () => {
                                                 <div style="color:#ccc; line-height:1.5; background:rgba(0,0,0,0.2); padding:8px; border-radius:4px;">${tDesc}</div>
                                             `;
                                             
-                                            // 확인 후 버튼 상태 및 텍스트/색상 동적 변경
                                             btnInstall.disabled = false;
                                             btnInstall.innerHTML = btnText;
                                             btnInstall.style.background = btnColor; 
@@ -3172,6 +3316,10 @@ const fetchTools = () => {
                                 onerror: () => {
                                     btnCheck.innerHTML = '<i class="fas fa-search"></i> 툴 정보 확인';
                                     previewDiv.innerHTML = `<div style="color:#bd362f;"><i class="fas fa-times"></i> 네트워크 오류로 주소를 확인할 수 없습니다.</div>`;
+                                },
+                                ontimeout: () => {
+                                    btnCheck.innerHTML = '<i class="fas fa-search"></i> 툴 정보 확인';
+                                    previewDiv.innerHTML = `<div style="color:#bd362f;"><i class="fas fa-times"></i> 확인 시간이 초과되었습니다.</div>`;
                                 }
                             });
                         };
@@ -3191,19 +3339,24 @@ const fetchTools = () => {
                             
                             let successCount = 0;
                             await Promise.all(AppSettings.SERVERS.map(srv => new Promise(res => {
-                                GM_xmlhttpRequest({
-                                    method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
-                                    headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
-                                    data: JSON.stringify({ url: verifiedYamlUrl, prefix: verifiedPrefix }), 
-                                    onload: (r) => { if(r.status === 200) successCount++; res(); }, 
-                                    onerror: () => res()
-                                });
+                                try {
+                                    GM_xmlhttpRequest({
+                                        method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
+                                        headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
+                                        data: JSON.stringify({ url: verifiedYamlUrl, prefix: verifiedPrefix }),
+                                        timeout: 10000,
+                                        onload: (r) => { if(r.status === 200) successCount++; res(); }, 
+                                        onerror: () => res(),
+                                        ontimeout: () => res()
+                                    });
+                                } catch(err) { res(); }
                             })));
                             
                             btnCheck.disabled = false;
                             btnInstall.innerHTML = '<i class="fas fa-check"></i> 설치 완료';
                             
                             if (successCount > 0) { 
+                                pmhToolListCache = null;
                                 msgDiv.innerHTML = `<span style="color:#51a351;"><i class="fas fa-check"></i> ${successCount}/${AppSettings.SERVERS.length}대 서버 설치 완료!</span>`;
                                 setTimeout(() => {
                                     urlInput.value = "";
@@ -3230,11 +3383,16 @@ const fetchTools = () => {
                 if(confirm(`'${delBtn.dataset.name}' 툴을 삭제하시겠습니까?`)) {
                     GM_deleteValue(`pmh_tool_cache_${delBtn.dataset.id}`);
                     await Promise.all(AppSettings.SERVERS.map(srv => new Promise(res => {
-                        GM_xmlhttpRequest({
-                            method: "DELETE", url: `${srv.pmhServerUrl}/api/tools/${delBtn.dataset.id}`,
-                            headers: { "X-API-Key": srv.plexMateApiKey }, onload: () => res(), onerror: () => res()
-                        });
+                        try {
+                            GM_xmlhttpRequest({
+                                method: "DELETE", url: `${srv.pmhServerUrl}/api/tools/${delBtn.dataset.id}`,
+                                headers: { "X-API-Key": srv.plexMateApiKey }, 
+                                timeout: 5000,
+                                onload: () => res(), onerror: () => res(), ontimeout: () => res()
+                            });
+                        } catch(err) { res(); }
                     })));
+                    pmhToolListCache = null;
                     fetchTools();
                 }
                 return;
@@ -3305,28 +3463,33 @@ const fetchTools = () => {
                 }
                 return;
             }
+
             const updateBtn = e.target.closest('#pmh-manual-update-btn');
             if (updateBtn) {
                 e.preventDefault(); 
                 e.stopPropagation();
                 
-                const realBtn = document.getElementById('pmh-manual-update-btn');
-                if (!realBtn) return;
-                
-                const icon = realBtn.querySelector('.pmh-sync-icon');
-                if (!icon || icon.classList.contains('fa-spin')) return;
+                if (updateBtn.dataset.fetching === "true") return;
+                updateBtn.dataset.fetching = "true";
 
                 log("[UI] Manual update check button clicked.");
-                icon.classList.add('fa-spin');
+                
+                const icon = updateBtn.querySelector('.pmh-sync-icon');
+                if (icon) icon.classList.add('fa-spin');
+                
                 showStatusMsg(`업데이트 확인 중...`, '#ccc', 0);
 
-                const result = await fetchLatestVersion();
-                const safeIcon = document.querySelector('#pmh-manual-update-btn .pmh-sync-icon');
-                if (safeIcon) safeIcon.classList.remove('fa-spin');
+                const result = await checkUpdate(true);
+                const liveBtn = document.getElementById('pmh-manual-update-btn');
+                if (liveBtn) {
+                    delete liveBtn.dataset.fetching;
+                    const liveIcon = liveBtn.querySelector('.pmh-sync-icon');
+                    if (liveIcon) liveIcon.classList.remove('fa-spin');
+                }
 
-                if (result.error) {
+                if (result && result.error) {
                     showStatusMsg(result.msg, '#bd362f', 4000);
-                } else {
+                } else if (result) {
                     needsJsUpdate = isNewerVersion(CURRENT_VERSION, result.targetVer);
                     serversToUpdate = [];
 
@@ -3349,6 +3512,8 @@ const fetchTools = () => {
                         defaultMsg = '';
                         defaultColor = '#aaa';
                         showStatusMsg(`최신 버전입니다 (v${CURRENT_VERSION})`, '#51a351', 3000);
+                        
+                        if (typeof pmhToolListCache !== 'undefined') pmhToolListCache = null;
                     }
                 }
             }
