@@ -93,6 +93,15 @@ def check_api_key():
 # ==============================================================================
 @app.route('/api/admin/update', methods=['POST'])
 def api_admin_update():
+    import threading
+    active_workers = [t.name.replace('Worker_', '') for t in threading.enumerate() if t.name.startswith("Worker_")]
+    if active_workers:
+        print(f"[UPDATE ERROR] Blocked. Active workers running: {active_workers}")
+        return jsonify({
+            "status": "error", 
+            "message": f"현재 진행 중인 작업({', '.join(active_workers)})이 있습니다. 작업을 중지하거나 완료 후 시도해주세요."
+        }), 400
+
     print("[UPDATE] Update request received. Downloading latest core module...")
     try:
         req = urllib.request.Request(CORE_URL, headers={'Cache-Control': 'no-cache'})

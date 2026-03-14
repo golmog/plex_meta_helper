@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.45
+// @version      0.7.46
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -152,11 +152,11 @@ GM_addStyle(`
     .pmh-action-icon:hover { transform: scale(1.1); color: #fff !important; }
 
     #pmh-tool-panel {
-        position: fixed; top: 80px; left: 60%; width: 450px; 
+        position: fixed; top: 80px; right: 60px; width: 500px; 
         background-color: rgba(15, 17, 20, 0.98); border: 1px solid #e5a00d; border-radius: 8px;
         z-index: 999999; display: none; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,0.9);
         backdrop-filter: blur(10px); transition: opacity 0.2s ease;
-        min-width: 350px; min-height: 200px;
+        min-width: 500px; min-height: 200px;
         max-width: 95vw; max-height: calc(100vh - 50px);
     }
 
@@ -205,6 +205,22 @@ GM_addStyle(`
     .pmh-check-label { color: #ddd; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0; line-height: 1.3; transition: color 0.2s; }
     .pmh-check-label:hover { color: #fff; }
     .pmh-check-input { margin: 0 !important; width: 14px; height: 14px; cursor: pointer; accent-color: #e5a00d; flex-shrink: 0; }
+
+    /* Multi-Select Dropdown */
+    .pmh-multi-select-wrap { position: relative; width: 100%; user-select: none; }
+    .pmh-multi-select-btn { width: 100%; padding: 5px 12px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; text-align: left; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: border-color 0.2s; }
+    .pmh-multi-select-btn:hover { border-color: #e5a00d; }
+    .pmh-multi-select-dropdown { position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; background: #1a1d21; border: 1px solid #444; border-radius: 4px; z-index: 100; max-height: 250px; overflow-y: auto; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+    .pmh-multi-select-dropdown.open { display: flex; flex-direction: column; }
+    
+    .pmh-multi-select-header { padding: 5px 12px; border-bottom: 1px solid #333; background: rgba(0,0,0,0.3); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 2; }
+    .pmh-multi-toggle-btn { font-size: 11px; color: #2f96b4; cursor: pointer; background: rgba(47,150,180,0.1); padding: 3px 8px; border-radius: 3px; font-weight: bold; }
+    .pmh-multi-toggle-btn:hover { background: rgba(47,150,180,0.3); color: #fff; }
+    
+    .pmh-multi-option { padding: 5px 12px; border-bottom: 1px solid #222; display: flex; align-items: center; gap: 8px; cursor: pointer; transition: background 0.2s; }
+    .pmh-multi-option:hover { background: rgba(255,255,255,0.05); }
+    .pmh-multi-option:last-child { border-bottom: none; }
+    .pmh-multi-chk { margin: 0 !important; width: 14px; height: 14px; accent-color: #e5a00d; cursor: pointer; flex-shrink: 0; }
 `);
 
 (function() {
@@ -411,6 +427,17 @@ GM_addStyle(`
                             GM_setValue('pmh_server_restart_required', reqRestart);
                             GM_setValue('pmh_last_update_check', Date.now());
 
+                            let bundledTools = [];
+                            const bundleMatch = res.responseText.match(/bundled_tools:([\s\S]*?)(?=\n[a-zA-Z0-9_]+:|$)/);
+                            if (bundleMatch) {
+                                const regex = /-\s*id:\s*['"]?([^'"\r\n]+)['"]?[\s\S]*?url:\s*['"]?([^'"\r\n]+)['"]?/g;
+                                let m;
+                                while ((m = regex.exec(bundleMatch[1])) !== null) {
+                                    bundledTools.push({ id: m[1].trim(), url: m[2].trim() });
+                                }
+                            }
+                            GM_setValue('pmh_bundled_tools', JSON.stringify(bundledTools));
+
                             resolve({
                                 targetVer: latestVer,
                                 localPyVers: localServerVersions,
@@ -531,6 +558,9 @@ GM_addStyle(`
                                 try {
                                     const errRes = JSON.parse(res.responseText);
                                     lastErrorMsg = errRes.message || `HTTP ${res.status}`;
+                                    if (res.status === 400) {
+                                        toastr.warning(lastErrorMsg, "업데이트 불가", {timeOut: 8000});
+                                    }
                                 } catch(e) {
                                     lastErrorMsg = `HTTP ${res.status}`;
                                 }
@@ -554,7 +584,7 @@ GM_addStyle(`
         }
 
         if (successCount === 0) {
-            showStatusMsg(`서버 오류: ${lastErrorMsg.substring(0,15)}`, '#bd362f', 4000);
+            showStatusMsg(`업데이트 취소됨`, '#bd362f', 4000);
             return false;
         }
 
@@ -565,9 +595,58 @@ GM_addStyle(`
             return false;
         }
 
-        infoLog(`[Server Update] In-memory update completed for all ${successCount} server(s)!`);
+        const bundledToolsStr = GM_getValue('pmh_bundled_tools', '[]');
+        const bundledTools = JSON.parse(bundledToolsStr);
+
+        if (bundledTools.length > 0) {
+            showStatusMsg('번들 툴 자동 동기화 중...', '#2f96b4', 0);
+            log(`[Bundle Update] Checking ${bundledTools.length} bundled tools for sync...`);
+            
+            for (const srv of targetServers) {
+                try {
+                    const toolsRes = await new Promise(r => {
+                        GM_xmlhttpRequest({
+                            method: "GET", url: `${srv.pmhServerUrl}/api/tools`,
+                            headers: { "X-API-Key": srv.plexMateApiKey },
+                            onload: r, onerror: r
+                        });
+                    });
+
+                    if (toolsRes.status === 200) {
+                        const installedTools = JSON.parse(toolsRes.responseText).tools || [];
+                        
+                        for (const bundle of bundledTools) {
+                            const namespaceMatch = bundle.url.match(/raw\.githubusercontent\.com\/([^\/]+)\//);
+                            const namespace = namespaceMatch ? namespaceMatch[1].replace(/[^a-zA-Z0-9]/g, '').toLowerCase() : '';
+                            
+                            const expectedId = namespace && !bundle.id.startsWith(namespace + '_') 
+                                                ? `${namespace}_${bundle.id}` 
+                                                : bundle.id;
+
+                            const isInstalled = installedTools.some(t => t.id === expectedId);
+                            
+                            if (isInstalled && bundle.url) {
+                                log(`[Bundle Update] Syncing exact matched tool: ${expectedId} on ${srv.name}`);
+                                await new Promise(r => {
+                                    GM_xmlhttpRequest({
+                                        method: "POST", url: `${srv.pmhServerUrl}/api/tools/install`,
+                                        headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
+                                        data: JSON.stringify({ url: bundle.url, target_id: expectedId }), 
+                                        onload: r, onerror: r
+                                    });
+                                });
+                            }
+                        }
+                    }
+                } catch(e) {
+                    errorLog(`[Bundle Update] Failed to sync tools for ${srv.name}`, e);
+                }
+            }
+        }
+
+        infoLog(`[Server Update] In-memory update & Bundle sync completed for all ${successCount} server(s)!`);
         GM_setValue('pmh_last_update_check', 0);
-        showStatusMsg('서버 업데이트 완료!', '#51a351', 3000);
+        showStatusMsg('서버/번들 업데이트 완료!', '#51a351', 3000);
         return true;
     }
 
@@ -1286,6 +1365,46 @@ GM_addStyle(`
                             return html + `</div></div>`;
                         }
 
+                        case 'multi_select': {
+                            let cachedArr = savedOptions[input.id];
+                            if (!Array.isArray(cachedArr)) {
+                                if (input.default === 'all') cachedArr = input.options.map(o => String(o.value));
+                                else if (Array.isArray(input.default)) cachedArr = input.default.map(String);
+                                else cachedArr = [];
+                            }
+                            
+                            let btnText = "선택 안 됨";
+                            const totalCnt = input.options.length;
+                            const chkCnt = cachedArr.length;
+                            if (chkCnt === totalCnt) btnText = "전체 선택됨";
+                            else if (chkCnt > 0) btnText = `${chkCnt}개 선택됨`;
+
+                            let html = `
+                            <div class="pmh-form-group">
+                                <label class="pmh-form-label">${input.label}</label>
+                                <div class="pmh-multi-select-wrap" id="pmh_mwrap_${input.id}">
+                                    <div class="pmh-multi-select-btn pmh-multi-main-btn" data-target="${input.id}">
+                                        <span class="pmh-multi-btn-text" style="color:${chkCnt===0?'#777':'#fff'}; font-weight:${chkCnt===0?'normal':'bold'};">${btnText}</span>
+                                        <i class="fas fa-chevron-down" style="color:#777; font-size:12px;"></i>
+                                    </div>
+                                    <div class="pmh-multi-select-dropdown" id="pmh_mdrop_${input.id}">
+                                        <div class="pmh-multi-select-header">
+                                            <span style="font-size:11px; color:#aaa;">항목 선택</span>
+                                            <span class="pmh-multi-toggle-btn" data-target="${input.id}">전체 토글</span>
+                                        </div>
+                            `;
+
+                            input.options.forEach(opt => {
+                                let isChecked = cachedArr.includes(String(opt.value));
+                                html += `<label class="pmh-multi-option">
+                                            <input type="checkbox" name="pmh_mchk_${input.id}" value="${opt.value}" class="pmh-multi-chk" ${isChecked ? "checked" : ""}>
+                                            <span style="font-size:13px; color:#ddd;">${opt.text || opt.label}</span>
+                                         </label>`;
+                            });
+                            
+                            return html + `</div></div></div>`;
+                        }
+
                         case 'checkbox':
                             return `<div class="pmh-form-group" style="padding:4px 0;">
                                         <label class="pmh-check-label">
@@ -1304,6 +1423,33 @@ GM_addStyle(`
                             return `<div class="pmh-form-group">
                                         <label class="pmh-form-label">${input.label}</label>
                                         <input type="text" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" class="pmh-input-text">
+                                    </div>`;
+
+                        case 'textarea':
+                            let taHtml = `<div class="pmh-form-group">
+                                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:6px;">
+                                                <label class="pmh-form-label" style="margin:0;">${input.label}</label>`;
+                            if (input.default) {
+                                const encDef = encodeURIComponent(input.default);
+                                taHtml += `<a href="#" onclick="event.preventDefault(); document.getElementById('pmh_inp_${input.id}').value = decodeURIComponent('${encDef}');" style="color:#2f96b4; font-size:11px; text-decoration:none; padding:2px 6px; background:rgba(47,150,180,0.1); border-radius:3px; transition:0.2s;" onmouseover="this.style.background='rgba(47,150,180,0.3)'; this.style.color='#fff';" onmouseout="this.style.background='rgba(47,150,180,0.1)'; this.style.color='#2f96b4';"><i class="fas fa-undo"></i> 기본값 초기화</a>`;
+                            }
+                            taHtml += `</div>
+                                        <textarea id="pmh_inp_${input.id}" class="pmh-input-text" style="width:100%; height:130px; resize:vertical; font-family:monospace; font-size:12px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; padding:10px; line-height:1.5; box-sizing:border-box; white-space:pre;" placeholder="${input.placeholder||''}">${cachedVal !== undefined ? cachedVal : ""}</textarea>
+                                       </div>`;
+                            return taHtml;
+
+                        case 'cron':
+                            return `<div class="pmh-form-group">
+                                        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:6px;">
+                                            <label class="pmh-form-label" style="margin:0;">${input.label}</label>
+                                            <a href="https://crontab.guru/" target="_blank" style="color:#2f96b4; font-size:11px; text-decoration:none; display:flex; align-items:center; gap:4px; padding:2px 6px; background:rgba(47,150,180,0.1); border-radius:3px; transition:0.2s;" onmouseover="this.style.background='rgba(47,150,180,0.3)'; this.style.color='#fff';" onmouseout="this.style.background='rgba(47,150,180,0.1)'; this.style.color='#2f96b4';" title="크론탭 문법을 쉽게 만들고 확인할 수 있는 사이트를 엽니다">
+                                                <i class="fas fa-external-link-alt"></i> 문법 도움말
+                                            </a>
+                                        </div>
+                                        <div style="display:flex; align-items:center; gap:10px;">
+                                            <input type="text" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" class="pmh-input-text pmh-cron-input" style="width: 150px; font-family: monospace; text-align: center;">
+                                            <span id="pmh_cron_msg_${input.id}" style="font-size: 11px; font-weight: bold; color: #777;">검사 대기 중...</span>
+                                        </div>
                                     </div>`;
 
                         case 'select': {
@@ -1365,11 +1511,98 @@ GM_addStyle(`
                 window.showPmhToolPanel(toolId, ui.title, formHtml);
 
                 setTimeout(() => {
+                    let hasCronError = false; 
                     let isDestroyed = false;
                     let isTaskRunning = false;
                     let isCancelling = false;
                     let pollTimer = null;
                     let currentTaskStatus = ui.active_task || {};
+
+                    document.querySelectorAll('.pmh-cron-input').forEach(cronInput => {
+                        const cronId = cronInput.id.replace('pmh_inp_', '');
+                        const msgSpan = document.getElementById(`pmh_cron_msg_${cronId}`);
+                        const enableCheckbox = document.getElementById(`pmh_inp_${cronId.replace('_expr', '_enable')}`);
+
+                        const validateCron = () => {
+                            if (enableCheckbox && !enableCheckbox.checked) {
+                                cronInput.disabled = true;
+                                cronInput.style.opacity = "0.4";
+                                msgSpan.style.display = "none";
+                                hasCronError = false;
+                                return;
+                            }
+                            
+                            cronInput.disabled = false;
+                            cronInput.style.opacity = "1";
+                            msgSpan.style.display = "inline-block";
+
+                            const val = cronInput.value;
+                            const trimmed = val.trim();
+                            const parts = trimmed.split(/\s+/);
+                            
+                            if (trimmed === '') {
+                                msgSpan.innerText = "비어있습니다.";
+                                msgSpan.style.color = "#bd362f";
+                                hasCronError = true; return;
+                            } 
+                            
+                            if (parts.length !== 5) {
+                                msgSpan.innerText = `현재 ${parts.length}자리입니다. 띄어쓰기로 구분된 5자리여야 합니다.`;
+                                msgSpan.style.color = "#bd362f";
+                                hasCronError = true; return;
+                            }
+
+                            const invalidCharMatch = trimmed.match(/[^0-9\*\/\-\,\s]/);
+                            if (invalidCharMatch) {
+                                msgSpan.innerText = `잘못된 문자('${invalidCharMatch[0]}') 포함됨.`;
+                                msgSpan.style.color = "#bd362f";
+                                hasCronError = true; return;
+                            }
+
+                            for (let p of parts) {
+                                if (!/^(\*(\/\d+)?|(\d+(-\d+)?)(,\d+(-\d+)?)*(\/\d+)?)$/.test(p)) {
+                                    msgSpan.innerText = "크론 문법(예: */5, 1-3)이 올바르지 않습니다.";
+                                    msgSpan.style.color = "#bd362f";
+                                    hasCronError = true; return;
+                                }
+                            }
+
+                            msgSpan.innerHTML = `<i class="fas fa-check-circle"></i> 올바른 포맷입니다.`;
+                            msgSpan.style.color = "#51a351";
+                            hasCronError = false;
+                        };
+                        
+                        validateCron();
+                        
+                        cronInput.addEventListener('input', validateCron);
+
+                        if (enableCheckbox) {
+                            enableCheckbox.addEventListener('change', validateCron);
+                        }
+                    });
+
+                    document.querySelectorAll('.pmh-multi-select-wrap').forEach(wrap => {
+                        const targetId = wrap.querySelector('.pmh-multi-main-btn').dataset.target;
+                        const btnTextSpan = wrap.querySelector('.pmh-multi-btn-text');
+                        const checkboxes = wrap.querySelectorAll(`input[name="pmh_mchk_${targetId}"]`);
+                        const totalCnt = checkboxes.length;
+                        
+                        checkboxes.forEach(cb => {
+                            cb.addEventListener('change', () => {
+                                const chkCnt = wrap.querySelectorAll(`input[name="pmh_mchk_${targetId}"]:checked`).length;
+                                if (chkCnt === 0) {
+                                    btnTextSpan.innerText = "선택 안 됨";
+                                    btnTextSpan.style.color = "#777"; btnTextSpan.style.fontWeight = "normal";
+                                } else if (chkCnt === totalCnt) {
+                                    btnTextSpan.innerText = "전체 선택됨";
+                                    btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
+                                } else {
+                                    btnTextSpan.innerText = `${chkCnt}개 선택됨`;
+                                    btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
+                                }
+                            });
+                        });
+                    });
 
                     const updateFormTabButtons = (isRunning) => {
                         isTaskRunning = isRunning;
@@ -1472,6 +1705,12 @@ GM_addStyle(`
                                     reqData[i.id] = checkedEl.value;
                                     savedOptions[i.id] = checkedEl.value;
                                 }
+                            
+                            } else if (i.type === 'multi_select') {
+                                const checkedBoxes = document.querySelectorAll(`input[name="pmh_mchk_${i.id}"]:checked`);
+                                const valArr = Array.from(checkedBoxes).map(cb => cb.value);
+                                reqData[i.id] = valArr;
+                                savedOptions[i.id] = valArr;
                             } else {
                                 const el = document.getElementById(`pmh_inp_${i.id}`);
                                 if (el) {
@@ -1507,11 +1746,16 @@ GM_addStyle(`
                         settingsSaveBtn.onclick = (e) => {
                             e.preventDefault(); e.stopPropagation();
                             
+                            if (hasCronError) {
+                                toastr.error("자동 실행 옵션의 크론탭 문법이 올바르지 않거나 비어있습니다.<br>수정 후 다시 시도해 주세요.", "저장 실패", {timeOut: 4000});
+                                return;
+                            }
+                            
                             const origHtml = settingsSaveBtn.innerHTML;
                             settingsSaveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 저장 중...';
                             settingsSaveBtn.style.pointerEvents = 'none';
                             
-                            saveOptionsToServer(); 
+                            saveOptionsToServer();
                             
                             setTimeout(() => {
                                 settingsSaveBtn.innerHTML = '<i class="fas fa-check"></i> 저장 완료';
@@ -1657,6 +1901,40 @@ GM_addStyle(`
                                     setTimeout(() => { tabForm.style.display = 'none'; tabForm.offsetHeight; tabForm.style.display = 'flex'; }, 10);
                                 }
                             }
+                            return;
+                        }
+
+                        const multiMainBtn = e.target.closest('.pmh-multi-main-btn');
+                        if (multiMainBtn) {
+                            e.preventDefault(); e.stopPropagation();
+                            const targetId = multiMainBtn.dataset.target;
+                            const drop = document.getElementById(`pmh_mdrop_${targetId}`);
+                            const icon = multiMainBtn.querySelector('i');
+                            
+                            document.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => {
+                                if(d !== drop) { d.classList.remove('open'); d.previousElementSibling.querySelector('i').className = 'fas fa-chevron-down'; }
+                            });
+                            
+                            if (drop.classList.contains('open')) { drop.classList.remove('open'); icon.className = 'fas fa-chevron-down'; } 
+                            else { drop.classList.add('open'); icon.className = 'fas fa-chevron-up'; }
+                            return;
+                        }
+                        
+                        if (!e.target.closest('.pmh-multi-select-wrap')) {
+                            document.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(drop => {
+                                drop.classList.remove('open');
+                                drop.previousElementSibling.querySelector('i').className = 'fas fa-chevron-down';
+                            });
+                        }
+
+                        const toggleMultiBtn = e.target.closest('.pmh-multi-toggle-btn');
+                        if (toggleMultiBtn) {
+                            e.preventDefault(); e.stopPropagation();
+                            const targetId = toggleMultiBtn.dataset.target;
+                            const checkboxes = document.querySelectorAll(`input[name="pmh_mchk_${targetId}"]`);
+                            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+                            checkboxes.forEach(cb => cb.checked = !allChecked);
+                            if(checkboxes.length > 0) checkboxes[0].dispatchEvent(new Event('change', {bubbles: true}));
                             return;
                         }
 
@@ -2244,7 +2522,9 @@ GM_addStyle(`
                                             const logBox = document.getElementById('pmh_log_container');
                                             if (logBox) logBox.scrollTop = logBox.scrollHeight;
 
-                                            if (isDone && isPreviewing && (statusData.state === 'completed' || statusData.state === 'cancelled')) {
+                                            const isPreviewTool = currentTaskStatus.task_data && currentTaskStatus.task_data._is_preview_tool === true;
+
+                                            if (isDone && isPreviewTool && (statusData.state === 'completed' || statusData.state === 'cancelled')) {
                                                 setTimeout(() => {
                                                     GM_xmlhttpRequest({
                                                         method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
@@ -2260,7 +2540,7 @@ GM_addStyle(`
                                                             }
                                                         }
                                                     });
-                                                }, 500);
+                                                }, 800);
                                                 return; 
                                             }
                                             if (!isDone) pollTimer = setTimeout(pollStatus, 1500); 
@@ -2278,65 +2558,39 @@ GM_addStyle(`
                         mainRunBtn.onmouseout = () => { if(!mainRunBtn.disabled) mainRunBtn.style.backgroundColor = "#e5a00d"; };
                         mainRunBtn.onclick = (e2) => {
                             e2.preventDefault();
-                            if (isTaskRunning) return alert("진행 중인 백그라운드 작업이 있습니다.\n모니터링 탭을 확인하여 작업을 중지하거나 완료를 기다려 주세요.");
-                            const { targetSrv: tSrv, reqData } = getFormData();
-                            reqData.action_type = 'preview'; 
-                            switchTab('tab_form');
-                            const resForm = document.getElementById('pmh_run_res_form');
-                            resForm.style.display = 'block'; 
-                            resForm.innerHTML = `<div style="text-align:center; padding:30px 0;"><i class="fas fa-spinner fa-spin" style="font-size:30px; color:#51a351; margin-bottom:15px;"></i><br>[${tSrv.name}] 서버에서 데이터를 분석하고 있습니다.<br><span style="color:#aaa; font-size:11px; display:inline-block; margin-top:8px;">(시간이 오래 걸릴 경우 모니터링 탭에서 실시간 진행 상황을 확인할 수 있습니다.)</span></div>`;
+                            if (isTaskRunning) return alert("진행 중인 작업이 있습니다.\n모니터링 탭을 확인해 주세요.");
                             
-                            let isFetchingPreview = true;
-                            let previewPollTimer = null;
-                            const pollPreviewLogs = () => {
-                                if (!isFetchingPreview) return;
-                                GM_xmlhttpRequest({
-                                    method: "GET", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/status?server_id=${serverId}`,
-                                    headers: { "X-API-Key": tSrv.plexMateApiKey },
-                                    onload: (pollRes) => {
-                                        if (!isFetchingPreview) return;
-                                        if (pollRes.status === 200) {
-                                            try {
-                                                const statusData = JSON.parse(pollRes.responseText);
-                                                if (statusData.logs && statusData.logs.length > 0) {
-                                                    const resMonitor = document.getElementById('pmh_run_res_monitor');
-                                                    if (resMonitor) {
-                                                        resMonitor.style.display = 'flex'; resMonitor.style.flexDirection = 'column'; resMonitor.style.flexGrow = '1';
-                                                        let logsHtml = statusData.logs.map(l => `<div style="margin-bottom:2px;">${l}</div>`).join('');
-                                                        resMonitor.innerHTML = `
-                                                            <div style="display:flex; flex-direction:column; background:#15181a; border:1px solid #333; border-radius:6px; padding:15px; text-align:left; flex-grow:1; min-height:0;">
-                                                                <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-bottom:15px; flex-shrink:0; border-bottom:1px dashed #333; padding-bottom:8px;">
-                                                                    <span style="font-weight:bold; color:#e5a00d;"><i class="fas fa-spinner fa-spin"></i> 백그라운드 데이터 분석 진행 중...</span>
-                                                                </div>
-                                                                <div id="pmh_log_container_preview" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:8px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; display:flex; flex-direction:column; min-height:0;">
-                                                                    <div>${logsHtml}</div>
-                                                                </div>
-                                                            </div>
-                                                        `;
-                                                        const logBox = document.getElementById('pmh_log_container_preview');
-                                                        if (logBox) logBox.scrollTop = logBox.scrollHeight;
-                                                    }
-                                                }
-                                            } catch(e) {}
-                                        }
-                                        if (isFetchingPreview) previewPollTimer = setTimeout(pollPreviewLogs, 1000);
-                                    }
-                                });
-                            };
-                            previewPollTimer = setTimeout(pollPreviewLogs, 500);
+                            const { targetSrv: tSrv, reqData } = getFormData();
+                            
+                            reqData.action_type = mainRunBtn.dataset.actionType || 'preview'; 
+                            
+                            switchTab('tab_monitor');
+                            if (pollTimer) clearTimeout(pollTimer);
+                            const resMonitor = document.getElementById('pmh_run_res_monitor');
+                            if (resMonitor) {
+                                resMonitor.innerHTML = `<div style="padding:30px; text-align:center; color:#e5a00d;"><i class="fas fa-spinner fa-spin" style="font-size:24px; margin-bottom:15px;"></i><br>작업을 시작합니다...</div>`;
+                            }
 
                             GM_xmlhttpRequest({
                                 method: "POST", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/run`,
                                 headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
                                 data: JSON.stringify(reqData),
                                 onload: (r) => {
-                                    isFetchingPreview = false; if (previewPollTimer) clearTimeout(previewPollTimer);
-                                    try { processAndRenderResult(JSON.parse(r.responseText), parseInt(savedOptions.items_per_page || 10), tSrv); }
-                                    catch(err) { resForm.innerHTML = `<pre style="white-space:pre-wrap; background:#2b1515; padding:12px; border:1px solid #5c2020; border-radius:4px; color:#e06c6c;">${r.responseText}</pre>`; }
+                                    if (r.status === 200) {
+                                        try {
+                                            const resData = JSON.parse(r.responseText);
+                                            processAndRenderResult(resData, parseInt(savedOptions.items_per_page || 10), tSrv);
+                                        } catch(err) {}
+                                    } else {
+                                        switchTab('tab_form');
+                                        const resForm = document.getElementById('pmh_run_res_form');
+                                        if (resForm) resForm.innerHTML = `<div style="padding:15px; color:#bd362f; text-align:center;">오류가 발생했습니다. (HTTP ${r.status})</div>`;
+                                    }
                                 },
                                 onerror: () => {
-                                    isFetchingPreview = false; if (previewPollTimer) clearTimeout(previewPollTimer);
-                                    resForm.innerHTML = `<div style="padding:15px; color:#bd362f; text-align:center;">서버 통신 중 오류가 발생했습니다.</div>`;
+                                    switchTab('tab_form');
+                                    const resForm = document.getElementById('pmh_run_res_form');
+                                    if (resForm) resForm.innerHTML = `<div style="padding:15px; color:#bd362f; text-align:center;">통신 오류가 발생했습니다.</div>`;
                                 }
                             });
                         };
@@ -2675,10 +2929,14 @@ const fetchTools = () => {
             const updateCheckBtn = e.target.closest('#pmh-tool-check-update-btn');
             if (updateCheckBtn) {
                 e.preventDefault(); e.stopPropagation();
-                if (updateCheckBtn.innerHTML.includes('fa-spin')) return;
-                
+                if (updateCheckBtn.innerHTML.includes('fa-spin')) {
+                    infoLog("[Tool Update] 이미 업데이트 확인 작업이 진행 중입니다. 무시합니다.");
+                    return;
+                }
+
                 updateCheckBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 updateCheckBtn.style.color = '#2f96b4';
+                infoLog("[Tool Update] 전체 툴 일괄 업데이트 확인을 시작합니다.");
                 
                 const toolItems = dropdown.querySelectorAll('.pmh-tool-item');
                 let checkCount = 0; let updateAvailableCount = 0; let hasUrlToCheck = false;
@@ -2711,6 +2969,7 @@ const fetchTools = () => {
                                     if (match) {
                                         const remoteVer = match[1];
                                         if (isNewerVersion(currentVer, remoteVer)) {
+                                            infoLog(`[Tool Update] 💡 신규 업데이트 발견: [${toolId}] v${currentVer} -> v${remoteVer}`);
                                             updateBtn.style.display = 'inline-block';
                                             updateBtn.innerHTML = `<i class="fas fa-arrow-circle-up"></i> v${remoteVer}`;
                                             updateBtn.dataset.targetVer = remoteVer;
@@ -4931,141 +5190,150 @@ const fetchTools = () => {
     const API_DEBOUNCE_DELAY = 1000;
 
     let masterObserverTimer = null;
+    let observerPending = false;
+
     const observer = new MutationObserver(() => {
         if (isObserverLocked) return;
 
-        if (masterObserverTimer) clearTimeout(masterObserverTimer);
-        
-        masterObserverTimer = setTimeout(() => {
-            processMatchModal();
+        if (!observerPending) {
+            observerPending = true;
+            requestAnimationFrame(() => {
+                observerPending = false;
 
-            if (!document.getElementById('pmdv-controls')) injectControlUI();
+                if (masterObserverTimer) clearTimeout(masterObserverTimer);
 
-            if (window.location.hash.includes('/details?key=')) {
-                const { serverId, itemId } = extractIds();
-                const currentHash = getDetailStateHash();
-                const guidBox = document.getElementById('plex-guid-box');
+                masterObserverTimer = setTimeout(() => {
+                    processMatchModal();
 
-                if (currentDisplayedItemId === itemId && currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash) {
-                    infoLog(`[Detail-Observer] 🔄 Metadata change detected! (${currentDetailStateHash} -> ${currentHash}). Forcing update.`);
-                    currentDetailStateHash = currentHash; 
-                    
-                    if (serverId && itemId) {
-                        deleteMemoryCache(`D_${serverId}_${itemId}`);
-                        deleteMemoryCache(`F_${serverId}_${itemId}`);
-                        deleteMemoryCache(`L_${serverId}_${itemId}`);
-                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
-                    }
-                    
-                    if (guidBox) guidBox.style.opacity = '0.4';
-                    
-                    if(observer.detailTimer) clearTimeout(observer.detailTimer);
-                    observer.detailTimer = setTimeout(() => { processDetail(true); }, 600);
-                }
-                else if (!guidBox && !isFetchingDetail) {
-                    const target = document.querySelector('div[data-testid="metadata-top-level-items"]')
-                                || document.querySelector('div[data-testid="metadata-starRatings"]')
-                                || document.querySelector('div[data-testid="metadata-ratings"]')
-                                || document.querySelector('button[data-testid="preplay-play"]')
-                                || document.querySelector('span[data-testid="metadata-line2"]');
-                    if (target) {
-                        if(observer.detailTimer) clearTimeout(observer.detailTimer);
-                        observer.detailTimer = setTimeout(() => { processDetail(); }, 200);
-                    }
-                }
-            }
+                    if (!document.getElementById('pmdv-controls')) injectControlUI();
 
-            const allListItems = document.querySelectorAll(`
-                div[data-testid^="cellItem"],
-                div[class*="ListItem-container"],
-                div[class*="MetadataPosterCard-container"]
-            `);
+                    if (window.location.hash.includes('/details?key=')) {
+                        const { serverId, itemId } = extractIds();
+                        const currentHash = getDetailStateHash();
+                        const guidBox = document.getElementById('plex-guid-box');
 
-            let needsRender = false;
-
-            for (const cont of allListItems) {
-                let link = cont.querySelector('a[data-testid="metadataTitleLink"]');
-                if (!link) {
-                    const fallbackLinks = cont.querySelectorAll('a[href*="key="], a[href*="/metadata/"]');
-                    link = fallbackLinks[0];
-                }
-                if (!link) continue;
-
-                let iid = null;
-                try {
-                    const keyParam = new URLSearchParams(link.getAttribute('href').split('?')[1]).get('key');
-                    if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
-                } catch(e) {}
-
-                if (isIgnoredItem(link.getAttribute('href'), iid)) continue;
-
-                if (iid) {
-                    const marker = cont.querySelector('.pmh-render-marker');
-                    let needsDraw = false;
-
-                    if (!marker || marker.getAttribute('data-iid') !== iid) {
-                        needsDraw = true;
-                    } else {
-                        const oldHash = marker.getAttribute('data-state-hash');
-                        const currentHash = getItemStateHash(cont);
-                        
-                        if (oldHash && currentHash && oldHash !== currentHash) {
-                            let logTitle = "Unknown Title";
-                            const hashParts = currentHash.split('|');
-                            let candidateTitle = hashParts.find(p => p && isNaN(p));
-
-                            const targetServerId = link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
-                            const localCache = targetServerId ? getMemoryCache(`L_${targetServerId}_${iid}`) : null;
+                        if (currentDisplayedItemId === itemId && currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash) {
+                            infoLog(`[Detail-Observer] 🔄 Metadata change detected! (${currentDetailStateHash} -> ${currentHash}). Forcing update.`);
+                            currentDetailStateHash = currentHash; 
                             
-                            if (candidateTitle && (candidateTitle.includes('로딩') || candidateTitle.includes('Loading'))) {
-                                logTitle = (localCache && localCache.saved_title) ? localCache.saved_title : "Loading...";
-                            } else if (candidateTitle) {
-                                logTitle = candidateTitle;
-                                if (localCache) {
-                                    localCache.saved_title = logTitle;
-                                    setMemoryCache(`L_${targetServerId}_${iid}`, localCache);
-                                }
+                            if (serverId && itemId) {
+                                deleteMemoryCache(`D_${serverId}_${itemId}`);
+                                deleteMemoryCache(`F_${serverId}_${itemId}`);
+                                deleteMemoryCache(`L_${serverId}_${itemId}`);
+                                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
                             }
-
-                            if (itemApiDebounceTimers.has(iid)) {
-                                clearTimeout(itemApiDebounceTimers.get(iid));
-                            } else {
-                                needsDraw = true;
-                                const now = Date.now();
-                                if (!observerLogCooldown[iid] || now - observerLogCooldown[iid] > 2000) {
-                                    infoLog(`[List-Observer] 🔄 DOM State changed for [${logTitle}] (ID: ${iid}). Immediate update.`);
-                                    observerLogCooldown[iid] = now;
-                                }
-                            }
-
-                            itemApiDebounceTimers.set(iid, setTimeout(() => {
-                                itemApiDebounceTimers.delete(iid);
-                                
-                                if(observer.listTimer) clearTimeout(observer.listTimer);
-                                observer.listTimer = setTimeout(() => { processList(); }, 150);
-                            }, API_DEBOUNCE_DELAY));
-
-                        } else {
-                            const isIgnored = marker.getAttribute('data-ignored') === 'true';
-                            if (!isIgnored) {
-                                if ((state.listTag || state.listPlay) && !cont.querySelector('.pmh-top-right-wrapper')) needsDraw = true;
-                                if ((state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) needsDraw = true;
+                            
+                            if (guidBox) guidBox.style.opacity = '0.4';
+                            
+                            if(observer.detailTimer) clearTimeout(observer.detailTimer);
+                            observer.detailTimer = setTimeout(() => { processDetail(true); }, 600);
+                        }
+                        else if (!guidBox && !isFetchingDetail) {
+                            const target = document.querySelector('div[data-testid="metadata-top-level-items"]')
+                                        || document.querySelector('div[data-testid="metadata-starRatings"]')
+                                        || document.querySelector('div[data-testid="metadata-ratings"]')
+                                        || document.querySelector('button[data-testid="preplay-play"]')
+                                        || document.querySelector('span[data-testid="metadata-line2"]');
+                            if (target) {
+                                if(observer.detailTimer) clearTimeout(observer.detailTimer);
+                                observer.detailTimer = setTimeout(() => { processDetail(); }, 200);
                             }
                         }
                     }
 
-                    if (needsDraw) {
-                        needsRender = true;
+                    const allListItems = document.querySelectorAll(`
+                        div[data-testid^="cellItem"],
+                        div[class*="ListItem-container"],
+                        div[class*="MetadataPosterCard-container"]
+                    `);
+
+                    let needsRender = false;
+
+                    for (const cont of allListItems) {
+                        let link = cont.querySelector('a[data-testid="metadataTitleLink"]');
+                        if (!link) {
+                            const fallbackLinks = cont.querySelectorAll('a[href*="key="], a[href*="/metadata/"]');
+                            link = fallbackLinks[0];
+                        }
+                        if (!link) continue;
+
+                        let iid = null;
+                        try {
+                            const keyParam = new URLSearchParams(link.getAttribute('href').split('?')[1]).get('key');
+                            if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
+                        } catch(e) {}
+
+                        if (isIgnoredItem(link.getAttribute('href'), iid)) continue;
+
+                        if (iid) {
+                            const marker = cont.querySelector('.pmh-render-marker');
+                            let needsDraw = false;
+
+                            if (!marker || marker.getAttribute('data-iid') !== iid) {
+                                needsDraw = true;
+                            } else {
+                                const oldHash = marker.getAttribute('data-state-hash');
+                                const currentHash = getItemStateHash(cont);
+                                
+                                if (oldHash && currentHash && oldHash !== currentHash) {
+                                    let logTitle = "Unknown Title";
+                                    const hashParts = currentHash.split('|');
+                                    let candidateTitle = hashParts.find(p => p && isNaN(p));
+
+                                    const targetServerId = link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
+                                    const localCache = targetServerId ? getMemoryCache(`L_${targetServerId}_${iid}`) : null;
+                                    
+                                    if (candidateTitle && (candidateTitle.includes('로딩') || candidateTitle.includes('Loading'))) {
+                                        logTitle = (localCache && localCache.saved_title) ? localCache.saved_title : "Loading...";
+                                    } else if (candidateTitle) {
+                                        logTitle = candidateTitle;
+                                        if (localCache) {
+                                            localCache.saved_title = logTitle;
+                                            setMemoryCache(`L_${targetServerId}_${iid}`, localCache);
+                                        }
+                                    }
+
+                                    if (itemApiDebounceTimers.has(iid)) {
+                                        clearTimeout(itemApiDebounceTimers.get(iid));
+                                    } else {
+                                        needsDraw = true;
+                                        const now = Date.now();
+                                        if (!observerLogCooldown[iid] || now - observerLogCooldown[iid] > 2000) {
+                                            infoLog(`[List-Observer] 🔄 DOM State changed for [${logTitle}] (ID: ${iid}). Immediate update.`);
+                                            observerLogCooldown[iid] = now;
+                                        }
+                                    }
+
+                                    itemApiDebounceTimers.set(iid, setTimeout(() => {
+                                        itemApiDebounceTimers.delete(iid);
+                                        
+                                        if(observer.listTimer) clearTimeout(observer.listTimer);
+                                        observer.listTimer = setTimeout(() => { processList(); }, 150);
+                                    }, API_DEBOUNCE_DELAY));
+
+                                } else {
+                                    const isIgnored = marker.getAttribute('data-ignored') === 'true';
+                                    if (!isIgnored) {
+                                        if ((state.listTag || state.listPlay) && !cont.querySelector('.pmh-top-right-wrapper')) needsDraw = true;
+                                        if ((state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) needsDraw = true;
+                                    }
+                                }
+                            }
+
+                            if (needsDraw) {
+                                needsRender = true;
+                            }
+                        }
                     }
-                }
-            }
 
-            if (needsRender) {
-                if(observer.listTimer) clearTimeout(observer.listTimer);
-                observer.listTimer = setTimeout(() => { processList(); }, 150);
-            }
+                    if (needsRender) {
+                        if(observer.listTimer) clearTimeout(observer.listTimer);
+                        observer.listTimer = setTimeout(() => { processList(); }, 150);
+                    }
 
-        }, 150);
+                }, 400);
+            });
+        }
     });
 
     const pushState = history.pushState;

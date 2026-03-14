@@ -2,6 +2,7 @@
 
 import sqlite3
 import os
+import sys
 import time
 import re
 import unicodedata
@@ -18,10 +19,173 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.45"
+__version__ = "0.7.46"
 
 def get_version():
     return __version__
+
+# ==============================================================================
+# [코어 경량 크론 스케줄러 (Daemon)]
+# ==============================================================================
+def match_cron(cron_expr, dt):
+    parts = str(cron_expr).strip().split()
+    if len(parts) != 5: return False
+    
+    def match_part(part, val):
+        if part == '*': return True
+        if part.startswith('*/'):
+            try: return val % int(part[2:]) == 0
+            except: return False
+        try:
+            for p in part.split(','):
+                if '-' in p:
+                    start, end = map(int, p.split('-'))
+                    if start <= val <= end: return True
+                elif int(p) == val: return True
+        except: pass
+        return False
+
+    return (match_part(parts[0], dt.minute) and
+            match_part(parts[1], dt.hour) and
+            match_part(parts[2], dt.day) and
+            match_part(parts[3], dt.month) and
+            match_part(parts[4], dt.isoweekday() % 7))
+
+def start_scheduler_daemon(base_dir, db_path, plex_url, plex_token, global_config):
+    thread_name = "PMH_Cron_Scheduler"
+    
+    for t in threading.enumerate():
+        if t.name == thread_name:
+            t.do_run = False 
+
+    def scheduler_loop():
+        t = threading.current_thread()
+        t.do_run = True
+        print("[PMH Daemon] 자동 실행 스케줄러가 백그라운드에서 시작되었습니다.")
+        
+        while getattr(t, "do_run", True):
+            now = datetime.now()
+            if now.second == 0:
+                try:
+                    _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_config, now)
+                except Exception as e:
+                    print(f"[Scheduler Error] {e}")
+                time.sleep(1)
+            time.sleep(0.5)
+
+    st = threading.Thread(target=scheduler_loop, name=thread_name)
+    st.daemon = True
+    st.start()
+
+def _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_config, now):
+    tools_dir = os.path.join(base_dir, 'tools')
+    if not os.path.exists(tools_dir): return
+    
+    server_id = "default"
+    
+    for tool_id in os.listdir(tools_dir):
+        info_path = os.path.join(tools_dir, tool_id, 'info.yaml')
+        if not os.path.isdir(os.path.join(tools_dir, tool_id)) or not os.path.exists(info_path):
+            continue
+            
+        options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
+        opts = options_mgr.load()
+        
+        if not opts.get('cron_enable', False): continue
+        
+        cron_expr = opts.get('cron_expr', '').strip()
+        parts = cron_expr.split()
+        
+        if len(parts) != 5:
+            if now.minute == 0: 
+                print(f"[Scheduler Warning] 툴 '{tool_id}'의 자동실행이 켜져 있으나, 크론탭 문법({cron_expr})이 올바르지 않아 스킵합니다.")
+            continue
+            
+        if not match_cron(cron_expr, now): continue
+
+        # 1. 중복 실행 방지 (이미 돌고 있으면 무시)
+        task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
+        task_state = task_mgr.load()
+        if task_state and task_state.get('state') == 'running':
+            task_mgr.log("[Scheduler] 지정된 시간이 되었으나, 이미 작업이 실행 중이므로 스킵합니다.")
+            continue
+
+        # 2. 실행 조건이 맞으면 툴을 로드하고 Fake Request 전송
+        try:
+            with open(info_path, 'r', encoding='utf-8') as f:
+                entry_file = yaml.safe_load(f).get('entry_file', 'main.py')
+            module = _load_tool_module(tools_dir, tool_id, entry_file)
+            
+            req_data = opts.copy()
+            req_data['action_type'] = 'execute'
+            req_data['_is_cron'] = True
+            
+            data_mgr = CoreDataManager(base_dir, tool_id, server_id)
+            db_api = create_db_api(db_path)
+            
+            def get_plex_instance():
+                from plexapi.server import PlexServer
+                plex = PlexServer(plex_url, plex_token, timeout=120)
+                orig_fetchItem = plex.fetchItem
+                def safe_fetchItem(ekey, *args, **kwargs):
+                    if isinstance(ekey, str) and ekey.strip().isdigit(): ekey = f"/library/metadata/{ekey.strip()}"
+                    elif isinstance(ekey, int): ekey = f"/library/metadata/{ekey}"
+                    return orig_fetchItem(ekey, *args, **kwargs)
+                plex.fetchItem = safe_fetchItem
+                return plex
+                
+            def send_discord_notify(title, message, color_hex="#51a351"):
+                opts = options_mgr.load()
+                if not opts.get('discord_enable', False): return
+                
+                url = opts.get('discord_webhook', '').strip() or (global_config.get('discord_webhook', '').strip() if global_config else '')
+                if not url: return
+                
+                bot_name = opts.get('discord_bot_name', '').strip() or f"PMH - {tool_id}"
+                avatar_url = opts.get('discord_avatar_url', '').strip()
+                
+                color_int = int(color_hex.lstrip('#'), 16) if color_hex.startswith('#') else 5349201
+                payload = {
+                    "username": bot_name,
+                    "embeds": [{
+                        "title": title,
+                        "description": message,
+                        "color": color_int,
+                        "footer": {"text": f"Plex Meta Helper"}
+                    }]
+                }
+                if avatar_url:
+                    payload["avatar_url"] = avatar_url
+                    
+                try:
+                    headers = {
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+                    urllib.request.urlopen(req, timeout=5)
+                except Exception as e:
+                    print(f"[Discord Error] {e}")
+
+            core_api = {
+                "query": db_api["query"], "get_plex": get_plex_instance,
+                "task": task_mgr, "config": global_config or {},
+                "cache": data_mgr, "options": opts, "notify": send_discord_notify
+            }
+
+            res, code = module.run(req_data, core_api)
+            if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
+                t_data = res.get('task_data', {})
+                t_data['_is_cron'] = True
+                task_mgr.init_task(t_data)
+                
+                t = threading.Thread(target=_core_worker_runner, args=(module, t_data, core_api, 0, tool_id))
+                t.daemon = True
+                t.start()
+                task_mgr.log(f"⏰ [스케줄러] '{cron_expr}' 조건에 만족하여 자동 실행을 시작했습니다.")
+                
+        except Exception as e:
+            print(f"[Scheduler Error] Tool {tool_id} execution failed: {e}")
 
 @contextmanager
 def get_db_connection(db_path):
@@ -54,6 +218,18 @@ def is_season_folder(folder_name):
 
 def natural_sort_key(s):
     return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+
+def core_natural_sort(data_list, default_sort):
+    """코어 중앙 자연 정렬 엔진"""
+    if not data_list or not default_sort: return data_list
+    def n_key(s): return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+    rules = default_sort if isinstance(default_sort, list) else [default_sort]
+    # 안정 정렬(Stable Sort)을 위해 역순으로 다중 정렬 적용
+    for rule in reversed(rules):
+        k = rule.get('key')
+        d = rule.get('dir', 'asc').lower()
+        data_list.sort(key=lambda x: n_key(str(x.get(k, ''))), reverse=(d == 'desc'))
+    return data_list
 
 def _get_unique_show_folder_count(cursor, rating_key):
     seen_paths = set()
@@ -323,8 +499,12 @@ class CoreTaskManager:
             if c.fetchone()[0] == 0:
                 c.execute("INSERT INTO task_info (state, progress, total, task_data) VALUES ('completed', 0, 0, '{}')")
 
-    def load(self):
-        """기존 JSON 구조와 100% 동일한 딕셔너리를 반환하여 하위 호환성 유지"""
+    def load(self, include_target_items=False):
+        """
+        [핵심 최적화] 
+        UI 폴링(1.5초 간격) 시에는 include_target_items=False로 호출되어,
+        수만 건이 담긴 target_items 배열을 파싱/전송하지 않아 네트워크와 CPU 부하를 없앱니다.
+        """
         with self._lock:
             if not os.path.exists(self.db_file): return None
             try:
@@ -334,39 +514,36 @@ class CoreTaskManager:
                     row = c.fetchone()
                     if not row: return None
                     
+                    raw_task_data = json.loads(row['task_data'] or '{}')
+                    
+                    if not include_target_items and 'target_items' in raw_task_data:
+                        del raw_task_data['target_items']
+
                     data = {
                         "state": row['state'],
                         "progress": row['progress'],
                         "total": row['total'],
-                        "task_data": json.loads(row['task_data'] or '{}')
+                        "task_data": raw_task_data
                     }
                     
-                    # 가장 최근 로그 50개만 오름차순으로 가져옴
                     c.execute("SELECT log_text FROM (SELECT id, log_text FROM logs ORDER BY id DESC LIMIT 50) sub ORDER BY id ASC")
                     data['logs'] = [l['log_text'] for l in c.fetchall()]
-                    
                     return data
             except: 
                 return None
 
     def save(self, data):
-        """레거시 호환용 저장 함수 (주로 이어서 실행 task_data 덮어쓰기용)"""
         with self._lock:
             self._setup_db()
             try:
                 with self._get_conn() as conn:
                     c = conn.cursor()
-                    state = data.get('state', 'completed')
-                    progress = data.get('progress', 0)
-                    total = data.get('total', 0)
                     task_data_str = json.dumps(data.get('task_data', {}), ensure_ascii=False)
-                    
                     c.execute("UPDATE task_info SET state=?, progress=?, total=?, task_data=?", 
-                              (state, progress, total, task_data_str))
+                              (data.get('state', 'completed'), data.get('progress', 0), data.get('total', 0), task_data_str))
             except: pass
 
     def init_task(self, task_data):
-        """새로운 작업을 시작할 때 DB를 초기화하고 첫 로그를 찍습니다."""
         with self._lock:
             self._setup_db()
             with self._get_conn() as conn:
@@ -377,18 +554,15 @@ class CoreTaskManager:
                 c.execute("INSERT INTO logs (log_text) VALUES ('작업을 시작합니다...')")
 
     def reset(self):
-        """작업 관련 캐시 파일 완전 삭제"""
         with self._lock:
             if os.path.exists(self.db_file):
                 try: os.remove(self.db_file)
                 except: pass
 
     def log(self, msg):
-        """가장 많이 호출되는 함수: 초고속 INSERT로 로그 기록"""
-        print(f"[{self.tool_id}] {msg}")
         stamp = datetime.now().strftime('%H:%M:%S')
         log_line = f"[{stamp}] {msg}"
-        
+        print(f"[{self.tool_id}] {msg}")
         with self._lock:
             self._setup_db()
             with self._get_conn() as conn:
@@ -396,7 +570,7 @@ class CoreTaskManager:
                 c.execute("INSERT INTO logs (log_text) VALUES (?)", (log_line,))
 
     def update_state(self, state, progress=None, total=None):
-        """진행률 및 상태 업데이트"""
+        # 루프 진행 중에는 거대한 task_data를 건드리지 않고 숫자(progress) 1개만 업데이트함 (O(1))
         with self._lock:
             self._setup_db()
             with self._get_conn() as conn:
@@ -409,7 +583,6 @@ class CoreTaskManager:
                     c.execute("UPDATE task_info SET state=?", (state,))
 
     def is_cancelled(self):
-        """취소 상태 확인 (매 루프마다 호출되므로 빠르고 가볍게)"""
         with self._lock:
             if not os.path.exists(self.db_file): return True
             try:
@@ -417,13 +590,12 @@ class CoreTaskManager:
                     c = conn.cursor()
                     c.execute("SELECT state FROM task_info LIMIT 1")
                     row = c.fetchone()
-                    if row:
-                        return row['state'] in ['cancelled', 'error']
+                    if row: return row['state'] in ['cancelled', 'error']
             except: pass
             return True
 
 # ==============================================================================
-# [코어 데이터 캐시 관리자 (SQLite 기반 동적 스키마)]
+# [코어 데이터 캐시 관리자
 # ==============================================================================
 class CoreDataManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
@@ -435,11 +607,8 @@ class CoreDataManager:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.commit()
-            conn.close()
+        try: yield conn
+        finally: conn.commit(); conn.close()
 
     def reset_db(self):
         with self._lock:
@@ -458,17 +627,32 @@ class CoreDataManager:
                 c.execute("INSERT INTO meta (payload) VALUES (?)", (json.dumps(meta_dict, ensure_ascii=False),))
                 
                 data_list = res_data.get('data', [])
+                default_sort = res_data.get('default_sort')
+                
+                # ✨ [핵심] DB 삽입 전에 코어 엔진이 default_sort 규칙에 따라 완벽히 자연 정렬
+                if data_list and default_sort:
+                    data_list = core_natural_sort(data_list, default_sort)
+
                 if data_list:
                     columns = list(data_list[0].keys())
                     col_defs = ", ".join([f'"{col}" TEXT' for col in columns])
                     c.execute(f"CREATE TABLE data (pmh_id INTEGER PRIMARY KEY AUTOINCREMENT, {col_defs}, pmh_status TEXT DEFAULT 'pending')")
                     c.execute("CREATE INDEX idx_status ON data (pmh_status)")
                     
-                    placeholders = ", ".join(["?" for _ in columns])
                     col_names = ", ".join([f'"{col}"' for col in columns])
+                    placeholders = ", ".join(["?" for _ in columns])
                     insert_sql = f"INSERT INTO data ({col_names}) VALUES ({placeholders})"
                     
-                    rows = [[str(row.get(col, '')) if row.get(col) is not None else '' for col in columns] for row in data_list]
+                    rows = []
+                    for row in data_list:
+                        processed_row = []
+                        for col in columns:
+                            val = row.get(col)
+                            if isinstance(val, (list, dict)): processed_row.append(json.dumps(val, ensure_ascii=False))
+                            elif val is not None: processed_row.append(str(val))
+                            else: processed_row.append('')
+                        rows.append(processed_row)
+                        
                     c.executemany(insert_sql, rows)
 
     def load_page(self, page, limit, sort_key=None, sort_dir='asc'):
@@ -491,43 +675,39 @@ class CoreDataManager:
                     
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
                 if c.fetchone()[0] == 0:
-                    result['data'] = []
-                    result['total_items'] = 0
-                    result['total_pages'] = 1
-                    result['page'] = page
+                    result['data'] = []; result['total_items'] = 0; result['total_pages'] = 1; result['page'] = page
                     return result
 
                 where_clause = "WHERE pmh_status != 'done'"
-
                 c.execute(f"SELECT COUNT(*) FROM data {where_clause}")
                 total_items = c.fetchone()[0]
                 
-                order_clause = ""
+                order_clause = "ORDER BY pmh_id ASC"
                 columns_meta = result.get('columns', [])
-                col_map = {c['key']: c for c in columns_meta}
+                col_map = {col['key']: col for col in columns_meta}
                 
-                target_sort_key = sort_key
-                target_sort_dir = sort_dir.upper() if sort_dir in ['asc', 'desc'] else 'ASC'
-                
-                if target_sort_key:
-                    actual_key = col_map.get(target_sort_key, {}).get('sort_key', target_sort_key)
-                    sort_type = col_map.get(target_sort_key, {}).get('sort_type', 'string')
+                if sort_key:
+                    actual_key = col_map.get(sort_key, {}).get('sort_key', sort_key)
+                    sort_type = col_map.get(sort_key, {}).get('sort_type', 'string')
+                    s_dir = sort_dir.upper() if sort_dir in ['asc', 'desc'] else 'ASC'
                     if sort_type == 'number':
-                        order_clause = f"ORDER BY CAST(\"{actual_key}\" AS REAL) {target_sort_dir}"
+                        order_clause = f"ORDER BY CAST(\"{actual_key}\" AS REAL) {s_dir}"
                     else:
-                        order_clause = f"ORDER BY \"{actual_key}\" COLLATE NOCASE {target_sort_dir}"
-                
-                else:
-                    order_clause = "ORDER BY pmh_id ASC"
+                        order_clause = f"ORDER BY \"{actual_key}\" COLLATE NOCASE {s_dir}"
 
                 offset = (page - 1) * limit
-                query = f"SELECT * FROM data {where_clause} {order_clause} LIMIT ? OFFSET ?"
-                c.execute(query, (limit, offset))
+                c.execute(f"SELECT * FROM data {where_clause} {order_clause} LIMIT ? OFFSET ?", (limit, offset))
 
                 data_rows = []
                 for row in c.fetchall():
                     row_dict = dict(row)
                     row_dict.pop('pmh_status', None)
+                    
+                    for k, v in row_dict.items():
+                        if isinstance(v, str) and (v.startswith('[') or v.startswith('{')):
+                            try: row_dict[k] = json.loads(v)
+                            except: pass
+                            
                     data_rows.append(row_dict)
                 
                 result['data'] = data_rows
@@ -538,6 +718,7 @@ class CoreDataManager:
                 return result
 
     def mark_as_done(self, key_column, key_value):
+        """단일 아이템 처리 완료 시 호출. 전체 데이터를 건드리지 않고 해당 Row의 상태만 업데이트 (O(1))"""
         with self._lock:
             if not os.path.exists(self.db_file): return
             with self._get_conn() as conn:
@@ -547,7 +728,6 @@ class CoreDataManager:
                     c.execute(f"UPDATE data SET pmh_status = 'done' WHERE \"{key_column}\" = ?", (str(key_value),))
 
     def load_dashboard(self):
-        """데이터테이블(data) 없이 메타데이터(dashboard)만 저장된 경우 호출"""
         with self._lock:
             if not os.path.exists(self.db_file): return None
             try:
@@ -557,8 +737,7 @@ class CoreDataManager:
                     if c.fetchone()[0] == 0: return None
                     c.execute("SELECT payload FROM meta LIMIT 1")
                     row = c.fetchone()
-                    if row and row[0]:
-                        return json.loads(row[0])
+                    if row and row[0]: return json.loads(row[0])
             except: pass
             return None
 
@@ -841,7 +1020,8 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 "config": global_config or {},
                 "cache": data_mgr,
                 "options": options_mgr.load(),
-                "notify": send_discord_notify
+                "notify": send_discord_notify,
+                "sort": core_natural_sort
             }
 
             if action == 'ui' and method == 'GET':
@@ -937,19 +1117,16 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                                 data_list.sort(key=lambda x: natural_sort_key(str(x.get(actual_k, ''))), reverse=(r_dir == 'desc'))
                     return data_list
 
-                # 1. 초기화 (Reset)
                 if action_type == 'reset':
                     task_mgr.reset()
                     data_mgr.reset_db()
                     options_mgr.reset()
                     return {"status": "success", "message": "초기화 완료"}, 200
 
-                # 1-2. 가벼운 초기화 (현재 서버의 조회된 목록만 비우기)
                 elif action_type == 'clear_data':
                     data_mgr.reset_db()
                     return {"status": "success", "message": "조회 목록이 초기화되었습니다."}, 200
 
-                # 2. 이어서 실행 (Resume)
                 elif action_type == 'resume':
                     saved_task = task_mgr.load()
                     if not saved_task or 'task_data' not in saved_task:
@@ -967,18 +1144,15 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                     t.start()
                     return {"status": "success", "type": "async_task", "task_id": tool_id}, 200
 
-                # 3. 데이터 로드 (페이징/정렬 및 대시보드 반환)
                 elif action_type == 'page':
                     sort_key = data.get('sort_key')
                     sort_dir = data.get('sort_dir', 'asc')
                     page = int(data.get('page', 1))
                     limit = int(data.get('limit', 10))
 
-                    # DB 엔진을 통한 페이징 로드 시도
                     cached = data_mgr.load_page(page, limit, sort_key, sort_dir)
                     
                     if not cached:
-                        # 페이지 로드가 실패했다면, 혹시 대시보드 전용 툴인지 확인
                         cached = data_mgr.load_dashboard()
                         if not cached: return {"error": "캐시된 데이터가 없습니다."}, 404
                     
@@ -998,61 +1172,13 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
                     return cached, 200
 
-                # 4. 백그라운드 조회를 위한 내부 워커
-                def _preview_worker():
-                    try:
-                        threading.current_thread().name = f"Worker_{tool_id}"
-                        task_mgr.log("[Core] 백그라운드 데이터 수집 워커를 시작합니다.")
-                        
-                        res, code = module.run(data, core_api)
-                        
-                        if code == 200 and isinstance(res, dict):
-                            task_mgr.log("[Core] 툴 시스템 로직 처리 완료. 결과 데이터 분석 중...")
-                            
-                            current_logs = []
-                            t_data = task_mgr.load()
-                            if t_data and 'logs' in t_data: current_logs = t_data['logs']
-                            res['logs'] = current_logs
-
-                            if res.get('type') == 'datatable':
-                                task_mgr.log(f"[Core] 총 {len(res.get('data', [])):,}건의 데이터 정렬 및 메모리 캐싱을 준비합니다.")
-                                res['data'] = _apply_sorting(res.get('data', []), res.get('columns', []), default_sort=res.get('default_sort'))
-                                data_mgr.save(res)
-                            elif res.get('type') == 'dashboard':
-                                task_mgr.log("[Core] 대시보드 UI 데이터 패키징을 완료했습니다.")
-                                data_mgr.save(res)
-                            
-                            task_mgr.log("[Core] 모든 처리가 완료되었습니다. 화면으로 복귀합니다.")
-                            
-                            current_state = task_mgr.load().get('state')
-                            if current_state != 'cancelled':
-                                final_total = task_mgr.load().get('total', 1)
-                                task_mgr.update_state('completed', progress=final_total)
-                        else:
-                            task_mgr.update_state('error')
-                            task_mgr.log(f"[Core Error] 데이터 추출 실패 (HTTP {code})")
-                    except Exception as e:
-                        import traceback
-                        task_mgr.log(f"[Core Fatal] 작업 중 치명적 오류 발생: {str(e)}")
-                        traceback.print_exc()
-                        task_mgr.update_state('error')
-
-                # 5. 조회(Preview) 요청 시 비동기 스레드 실행
-                if action_type == 'preview':
-                    task_mgr.reset()
-                    task_mgr.init_task({"mode": "preview", "total": 1})
-                    
-                    t = threading.Thread(target=_preview_worker)
-                    t.daemon = True
-                    t.start()
-                    
-                    return {"status": "success", "type": "async_task", "task_id": tool_id, "is_preview": True}, 200
-
-                # 6. 신규 실행 (Execute)
-                if action_type == 'execute':
+                if action_type in ['execute', 'preview']:
                     res, code = module.run(data, core_api)
                     if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
                         task_data = res.get('task_data', {})
+                        if not task_data.get('_is_cron'):
+                            task_mgr.reset()
+                            
                         task_mgr.init_task(task_data)
                         t = threading.Thread(target=_core_worker_runner, args=(module, task_data, core_api, 0, tool_id))
                         t.daemon = True
@@ -1062,12 +1188,10 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
                 return {"error": "잘못된 접근입니다."}, 400
 
-            # 3. 상태 폴링
             elif action == 'status' and method == 'GET':
                 status_data = task_mgr.load()
                 if not status_data: return {"error": "Task not found"}, 404
                 
-                # 서버 재시작 감지 및 에러 상태 전환
                 if status_data.get('state') == 'running':
                     active_threads = [t.name for t in threading.enumerate()]
                     if f"Worker_{tool_id}" not in active_threads:
@@ -1077,7 +1201,6 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                         
                 return status_data, 200
                 
-            # 4. 작업 취소
             elif action == 'cancel' and method == 'POST':
                 saved_task = task_mgr.load()
                 if saved_task and saved_task.get('state') == 'running':
@@ -1092,3 +1215,18 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
         import traceback
         traceback.print_exc()
         return {"error": str(e)}, 500
+
+# 코어 모듈이 로드될 때 스케줄러 데몬 자동 시작
+if not getattr(sys.modules[__name__], '_SCHEDULER_STARTED', False):
+    import __main__
+
+    p_url = getattr(__main__, 'PLEX_URL', '')
+    p_token = getattr(__main__, 'PLEX_TOKEN', '')
+    g_conf = {
+        "mate_apikey": getattr(__main__, 'API_KEY', ''),
+        "mate_url": getattr(__main__, 'PLEX_MATE_URL', ''),
+        "path_mappings": getattr(__main__, 'PATH_MAPPINGS', []),
+        "discord_webhook": getattr(__main__, 'DISCORD_WEBHOOK', '')
+    }
+    start_scheduler_daemon(getattr(__main__, 'BASE_DIR', '.'), getattr(__main__, 'PLEX_DB_PATH', ''), p_url, p_token, g_conf)
+    setattr(sys.modules[__name__], '_SCHEDULER_STARTED', True)
