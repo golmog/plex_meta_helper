@@ -1,6 +1,6 @@
 id: "library_stats"
 name: "라이브러리 통계 분석"
 description: "내 서버의 미디어 개수, 총 용량, 해상도 및 코덱 분포 등을 시각적으로 요약해 줍니다."
-version: "0.2.2"
+version: "0.7.3"
 icon: "fas fa-chart-pie"
 entry_file: "main.py"
