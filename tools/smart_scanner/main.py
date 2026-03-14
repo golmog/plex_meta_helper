@@ -9,11 +9,8 @@ import re
 import json
 
 # =====================================================================
-# 디스코드 알림 템플릿 및 안전 포맷팅 클래스
+# 디스코드 알림 기본 템플릿
 # =====================================================================
-class SafeDict(dict):
-    def __missing__(self, key): return '{' + key + '}'
-
 DEFAULT_DISCORD_TEMPLATE = """**✅ 스마트 스캐너 작업이 완료되었습니다.**
 
 **[📊 종합 통계]**
@@ -107,9 +104,29 @@ def get_ui(core_api):
             {"id": "s_h2", "type": "header", "label": "<i class='fab fa-discord'></i> 알림 설정"},
             {"id": "discord_enable", "type": "checkbox", "label": "작업 완료 시 디스코드 통계 알림 발송", "default": True},
             {"id": "discord_webhook", "type": "text", "label": "툴 전용 웹훅 URL (비워두면 서버 전역 설정 사용)", "placeholder": "https://discord.com/api/webhooks/..."},
-            {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: PMH 스마트 스캐너"},
+            
+            {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: {server_name}의 봇 (아래의 모든 템플릿 변수 사용 가능)"},
             {"id": "discord_avatar_url", "type": "text", "label": "디스코드 봇 프로필 이미지 URL", "placeholder": "https://.../icon.png"},
-            {"id": "discord_template", "type": "textarea", "label": "알림 메시지 템플릿 편집", "default": DEFAULT_DISCORD_TEMPLATE}
+            
+            {"id": "discord_template", "type": "textarea", "label": "본문 메시지 템플릿 편집", "height": 160, "default": DEFAULT_DISCORD_TEMPLATE, 
+             "template_vars": [
+                 {"key": "total", "desc": "처리된 총 항목 수"},
+                 {"key": "elapsed_time", "desc": "총 소요 시간 (예: 5분 20초)"},
+                 {"key": "cnt_analyze", "desc": "미분석 항목 복구 건수"},
+                 {"key": "cnt_match", "desc": "미매칭 자동 복구 건수"},
+                 {"key": "cnt_refresh", "desc": "유실 메타 갱신 건수"},
+                 {"key": "cnt_yaml_season", "desc": "시즌 YAML 적용 건수"},
+                 {"key": "cnt_yaml_marker", "desc": "마커 YAML 적용 건수"}
+             ]},
+             
+            {"id": "discord_template_footer", "type": "textarea", "label": "푸터(Footer) 템플릿 편집", "height": 50, "default": "Plex Meta Helper - {tool_id} | {server_name}", 
+             "template_vars": [
+                 {"key": "tool_id", "desc": "실행된 툴의 고유 ID (어느 곳에서나 사용 가능)"},
+                 {"key": "server_id", "desc": "실행 대상 서버 식별자 앞 8자리 (어느 곳에서나 사용 가능)"},
+                 {"key": "server_name", "desc": "사용자가 설정한 서버 이름 (어느 곳에서나 사용 가능)"},
+                 {"key": "date", "desc": "현재 날짜 YYYY-MM-DD (어느 곳에서나 사용 가능)"},
+                 {"key": "time", "desc": "현재 시간 HH:MM:SS (어느 곳에서나 사용 가능)"}
+             ]}
         ],
         "button_text": "복구 대상 조회 (Preview)"
     }
@@ -643,18 +660,17 @@ def worker(task_data, core_api, start_index):
         prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
         task.log(f"✅ {prefix}총 {total:,}건의 복구 작업 완료! (소요시간: {elapsed_str})")
         
-        template = opts.get('discord_template', DEFAULT_DISCORD_TEMPLATE)
-        discord_msg = template.format_map(SafeDict(
-            total=f"{total:,}",
-            elapsed_time=elapsed_str,
-            cnt_analyze=f"{actual_fix_counts['analyze']:,}",
-            cnt_match=f"{actual_fix_counts['match']:,}",
-            cnt_refresh=f"{actual_fix_counts['refresh']:,}",
-            cnt_yaml_season=f"{actual_fix_counts['yaml_season']:,}",
-            cnt_yaml_marker=f"{actual_fix_counts['yaml_marker']:,}"
-        ))
+        tool_vars = {
+            "total": f"{total:,}",
+            "elapsed_time": elapsed_str,
+            "cnt_analyze": f"{actual_fix_counts['analyze']:,}",
+            "cnt_match": f"{actual_fix_counts['match']:,}",
+            "cnt_refresh": f"{actual_fix_counts['refresh']:,}",
+            "cnt_yaml_season": f"{actual_fix_counts['yaml_season']:,}",
+            "cnt_yaml_marker": f"{actual_fix_counts['yaml_marker']:,}"
+        }
         
-        core_api['notify']("스마트 스캐너 완료", discord_msg, "#e5a00d")
+        core_api['notify']("스마트 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
         
     elif not task.is_cancelled():
         task.update_state('completed', progress=total)
