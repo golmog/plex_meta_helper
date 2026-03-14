@@ -25,10 +25,9 @@
 import time
 import json
 
-# 👇 [추가]
-class SafeDict(dict):
-    def __missing__(self, key): return '{' + key + '}'
-
+# =====================================================================
+# 디스코드 알림 기본 템플릿
+# =====================================================================
 DEFAULT_DISCORD_TEMPLATE = """**📊 라이브러리 요약 (자동 업데이트)**
 
 **[🎬 컨텐츠 수량]**
@@ -88,9 +87,28 @@ def get_ui(core_api):
             {"id": "s_h2", "type": "header", "label": "<i class='fab fa-discord'></i> 알림 설정"},
             {"id": "discord_enable", "type": "checkbox", "label": "자동 실행 완료 시 디스코드 요약 알림 발송", "default": True},
             {"id": "discord_webhook", "type": "text", "label": "툴 전용 웹훅 URL (비워두면 서버 전역 설정 사용)", "placeholder": "https://discord.com/api/webhooks/..."},
-            {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: PMH 통계 요정"},
+            
+            {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: {server_name} 통계 요정 (템플릿 변수 사용 가능)"},
             {"id": "discord_avatar_url", "type": "text", "label": "디스코드 봇 프로필 이미지 URL", "placeholder": "https://.../icon.png"},
-            {"id": "discord_template", "type": "textarea", "label": "알림 메시지 템플릿 편집", "default": DEFAULT_DISCORD_TEMPLATE}
+            
+            {"id": "discord_template", "type": "textarea", "label": "본문 메시지 템플릿 편집", "height": 160, "default": DEFAULT_DISCORD_TEMPLATE, 
+             "template_vars": [
+                 {"key": "movie_count", "desc": "집계된 영화 개수"},
+                 {"key": "episode_count", "desc": "집계된 에피소드 개수"},
+                 {"key": "music_count", "desc": "집계된 음악 트랙 수"},
+                 {"key": "photo_count", "desc": "집계된 사진 개수"},
+                 {"key": "total_size", "desc": "포맷팅된 총 소모 용량 (예: 1.5 TB)"},
+                 {"key": "total_duration", "desc": "포맷팅된 총 재생 시간 (예: 25.4 일)"}
+             ]},
+             
+            {"id": "discord_template_footer", "type": "textarea", "label": "푸터(Footer) 템플릿 편집", "height": 50, "default": "Plex Meta Helper - {tool_id} | {server_name}", 
+             "template_vars": [
+                 {"key": "tool_id", "desc": "실행된 툴의 고유 ID (어느 곳에서나 사용 가능)"},
+                 {"key": "server_id", "desc": "실행 대상 서버 식별자 앞 8자리 (어느 곳에서나 사용 가능)"},
+                 {"key": "server_name", "desc": "사용자가 설정한 서버 이름 (어느 곳에서나 사용 가능)"},
+                 {"key": "date", "desc": "현재 날짜 YYYY-MM-DD (어느 곳에서나 사용 가능)"},
+                 {"key": "time", "desc": "현재 시간 HH:MM:SS (어느 곳에서나 사용 가능)"}
+             ]}
         ],
         "button_text": "통계 추출 시작"
     }
@@ -223,17 +241,15 @@ def worker(task_data, core_api, start_index):
         music_count, photo_count = counts_map[10], counts_map[13]
 
         if is_cron:
-            opts = core_api.get('options', {})
-            template = opts.get('discord_template', DEFAULT_DISCORD_TEMPLATE)
-            discord_msg = template.format_map(SafeDict(
-                movie_count=f"{movie_count:,}",
-                episode_count=f"{episode_count:,}",
-                music_count=f"{music_count:,}",
-                photo_count=f"{photo_count:,}",
-                total_size=format_size(total_size),
-                total_duration=format_duration(total_duration)
-            ))
-            core_api['notify']("라이브러리 통계", discord_msg, "#2f96b4")
+            tool_vars = {
+                "movie_count": f"{movie_count:,}",
+                "episode_count": f"{episode_count:,}",
+                "music_count": f"{music_count:,}",
+                "photo_count": f"{photo_count:,}",
+                "total_size": format_size(total_size),
+                "total_duration": format_duration(total_duration)
+            }
+            core_api['notify']("라이브러리 통계", DEFAULT_DISCORD_TEMPLATE, "#2f96b4", tool_vars)
             
     except Exception as e:
         task.log(f"DB 통계 추출 오류: {str(e)}")
