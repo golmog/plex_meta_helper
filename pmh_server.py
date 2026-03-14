@@ -115,10 +115,11 @@ def api_admin_update():
 
     print("[PMH UPDATE] Update request received. Downloading latest core module...")
     try:
-        req = urllib.request.Request(CORE_URL, headers={'Cache-Control': 'no-cache'})
+        ts = int(time.time())
+        req = urllib.request.Request(f"{CORE_URL}?t={ts}", headers={'Cache-Control': 'no-cache'})
         with urllib.request.urlopen(req, timeout=10) as response:
             new_code = response.read().decode('utf-8')
-            
+
         if "__version__" not in new_code:
             raise ValueError("Downloaded code seems invalid (missing __version__).")
 
@@ -129,7 +130,7 @@ def api_admin_update():
         importlib.reload(pmh_core)
         
         try:
-            req_svr = urllib.request.Request(SERVER_URL, headers={'Cache-Control': 'no-cache'})
+            req_svr = urllib.request.Request(f"{SERVER_URL}?t={ts}", headers={'Cache-Control': 'no-cache'})
             with urllib.request.urlopen(req_svr, timeout=5) as response_svr:
                 with open(os.path.abspath(__file__), 'w', encoding='utf-8') as f:
                     f.write(response_svr.read().decode('utf-8'))

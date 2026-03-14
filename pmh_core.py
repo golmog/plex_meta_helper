@@ -19,7 +19,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.47"
+__version__ = "0.7.48"
 
 def get_version():
     return __version__
@@ -926,10 +926,11 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             target_id = data.get('target_id', '')
             if not yaml_url: return {"error": "info.yaml URL이 제공되지 않았습니다."}, 400
 
-            req = urllib.request.Request(yaml_url, headers={'Cache-Control': 'no-cache'})
+            ts = int(time.time())
+            req = urllib.request.Request(f"{yaml_url}?t={ts}", headers={'Cache-Control': 'no-cache'})
             with urllib.request.urlopen(req, timeout=10) as response:
                 yaml_content = response.read().decode('utf-8')
-                
+
             tool_info = yaml.safe_load(yaml_content)
             original_id = tool_info.get('id')
             entry_file = tool_info.get('entry_file', 'main.py')
@@ -943,7 +944,8 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             if not tool_info.get('update_url'): tool_info['update_url'] = yaml_url
 
             base_url = yaml_url.rsplit('/', 1)[0]
-            py_req = urllib.request.Request(f"{base_url}/{entry_file}", headers={'Cache-Control': 'no-cache'})
+            py_url = f"{base_url}/{entry_file}?t={ts}"
+            py_req = urllib.request.Request(py_url, headers={'Cache-Control': 'no-cache'})
             with urllib.request.urlopen(py_req, timeout=10) as py_response:
                 py_content = py_response.read().decode('utf-8')
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.47
+// @version      0.7.48
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3449,9 +3449,29 @@ GM_addStyle(`
                 if (updateLinkBtn.dataset.updating) return;
                 updateLinkBtn.dataset.updating = "true";
                 const originalHtml = updateLinkBtn.innerHTML;
-                updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 진행중...`;
+                updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 서버 확인 중...`;
+                
+                const targetVer = updateLinkBtn.dataset.ver;
+                const localPyVers = await pingLocalServer();
+                let actualServersToUpdate = [];
+                if (AppSettings.SERVERS) {
+                    for (const srv of AppSettings.SERVERS) {
+                        const curVer = localPyVers[srv.machineIdentifier];
+                        if (!curVer || isNewerVersion(curVer, targetVer)) {
+                            actualServersToUpdate.push(srv);
+                        }
+                    }
+                }
+                
+                if (actualServersToUpdate.length > 0) {
+                    updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 서버/툴 업데이트 중...`;
+                }
+                
                 let serverSuccess = true;
-                if (serversToUpdate.length > 0) serverSuccess = await triggerServerUpdate(showStatusMsg, serversToUpdate);
+                if (actualServersToUpdate.length > 0) {
+                    serverSuccess = await triggerServerUpdate(showStatusMsg, actualServersToUpdate);
+                }
+
                 if (serverSuccess) {
                     if (needsJsUpdate) {
                         showStatusMsg(`서버 완료! 스크립트를 업데이트합니다...`, '#51a351', 3000);
