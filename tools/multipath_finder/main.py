@@ -31,9 +31,9 @@ import unicodedata
 import json
 from collections import defaultdict
 
-class SafeDict(dict):
-    def __missing__(self, key): return '{' + key + '}'
-
+# =====================================================================
+# 디스코드 알림 기본 템플릿
+# =====================================================================
 DEFAULT_DISCORD_TEMPLATE = """**🔍 다중 경로(병합 오류 의심) 검색 결과**
 
 **[📊 검색 요약]**
@@ -93,9 +93,24 @@ def get_ui(core_api):
             {"id": "s_h2", "type": "header", "label": "<i class='fab fa-discord'></i> 알림 설정"},
             {"id": "discord_enable", "type": "checkbox", "label": "자동 실행 완료 시 디스코드 알림 발송", "default": True},
             {"id": "discord_webhook", "type": "text", "label": "툴 전용 웹훅 URL (비워두면 서버 전역 설정 사용)", "placeholder": "https://discord.com/api/webhooks/..."},
-            {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: PMH 다중경로 탐지기"},
+            
+            {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: {server_name} 탐지기 (템플릿 변수 사용 가능)"},
             {"id": "discord_avatar_url", "type": "text", "label": "디스코드 봇 프로필 이미지 URL", "placeholder": "https://.../icon.png"},
-            {"id": "discord_template", "type": "textarea", "label": "알림 메시지 템플릿 편집", "default": DEFAULT_DISCORD_TEMPLATE}
+            
+            {"id": "discord_template", "type": "textarea", "label": "본문 메시지 템플릿 편집", "height": 130, "default": DEFAULT_DISCORD_TEMPLATE,
+             "template_vars": [
+                 {"key": "total", "desc": "발견된 다중 경로 의심 항목 수"},
+                 {"key": "elapsed_time", "desc": "검색 소요 시간 (예: 15초)"}
+             ]},
+             
+            {"id": "discord_template_footer", "type": "textarea", "label": "푸터(Footer) 템플릿 편집", "height": 50, "default": "Plex Meta Helper - {tool_id} | {server_name}", 
+             "template_vars": [
+                 {"key": "tool_id", "desc": "실행된 툴의 고유 ID (어느 곳에서나 사용 가능)"},
+                 {"key": "server_id", "desc": "실행 대상 서버 식별자 앞 8자리 (어느 곳에서나 사용 가능)"},
+                 {"key": "server_name", "desc": "사용자가 설정한 서버 이름 (어느 곳에서나 사용 가능)"},
+                 {"key": "date", "desc": "현재 날짜 YYYY-MM-DD (어느 곳에서나 사용 가능)"},
+                 {"key": "time", "desc": "현재 시간 HH:MM:SS (어느 곳에서나 사용 가능)"}
+             ]}
         ],
         "button_text": "다중 경로 항목 검색"
     }
@@ -231,13 +246,11 @@ def worker(task_data, core_api, start_index):
         task.log(msg)
         
         if is_cron:
-            opts = core_api.get('options', {})
-            template = opts.get('discord_template', DEFAULT_DISCORD_TEMPLATE)
-            discord_msg = template.format_map(SafeDict(
-                total=f"{len(results):,}",
-                elapsed_time=elapsed_str
-            ))
-            core_api['notify']("다중 경로 검색 (자동)", discord_msg, "#e5a00d")
+            tool_vars = {
+                "total": f"{len(results):,}",
+                "elapsed_time": elapsed_str
+            }
+            core_api['notify']("다중 경로 검색 (자동)", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
         
         # =========================================================================
         # [프론트엔드 반환 포맷: Datatable Schema]
