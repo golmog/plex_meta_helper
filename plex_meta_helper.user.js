@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.48
+// @version      0.7.49
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -597,7 +597,7 @@ GM_addStyle(`
 
         if (successCount < targetServers.length) {
             infoLog(`[Server Update] Partial success. ${successCount}/${targetServers.length} updated.`);
-            GM_setValue('pmh_last_update_check', 0);
+            GM_setValue('pmh_last_update_check', Date.now());
             showStatusMsg(`일부 서버 업데이트 실패`, '#f89406', 4000);
             return false;
         }
@@ -652,7 +652,7 @@ GM_addStyle(`
         }
 
         infoLog(`[Server Update] In-memory update & Bundle sync completed for all ${successCount} server(s)!`);
-        GM_setValue('pmh_last_update_check', 0);
+        GM_setValue('pmh_last_update_check', Date.now());
         showStatusMsg('서버/번들 업데이트 완료!', '#51a351', 3000);
         return true;
     }
@@ -3475,7 +3475,9 @@ GM_addStyle(`
                 if (serverSuccess) {
                     if (needsJsUpdate) {
                         showStatusMsg(`서버 완료! 스크립트를 업데이트합니다...`, '#51a351', 3000);
-                        setTimeout(() => { window.open("https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js", "_blank"); }, 1500);
+                        setTimeout(() => { 
+                            window.open(`https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js?t=${Date.now()}`, "_blank"); 
+                        }, 1500);
                     }
                     defaultMsg = ''; defaultColor = '#aaa';
                 } else {
