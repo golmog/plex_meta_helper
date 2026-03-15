@@ -48,9 +48,6 @@ def get_show_root_dir(file_path):
             break
     return dir_path
 
-def natural_sort_key_local(s):
-    return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
-
 def translate_path(plex_path, mappings):
     if not mappings or not plex_path: return plex_path
     plex_path = plex_path.replace('\\', '/')
@@ -104,10 +101,8 @@ def get_ui(core_api):
             {"id": "s_h2", "type": "header", "label": "<i class='fab fa-discord'></i> 알림 설정"},
             {"id": "discord_enable", "type": "checkbox", "label": "작업 완료 시 디스코드 통계 알림 발송", "default": True},
             {"id": "discord_webhook", "type": "text", "label": "툴 전용 웹훅 URL (비워두면 서버 전역 설정 사용)", "placeholder": "https://discord.com/api/webhooks/..."},
-            
             {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: {server_name}의 봇 (아래의 모든 템플릿 변수 사용 가능)"},
             {"id": "discord_avatar_url", "type": "text", "label": "디스코드 봇 프로필 이미지 URL", "placeholder": "https://.../icon.png"},
-            
             {"id": "discord_template", "type": "textarea", "label": "본문 메시지 템플릿 편집", "height": 160, "default": DEFAULT_DISCORD_TEMPLATE, 
              "template_vars": [
                  {"key": "total", "desc": "처리된 총 항목 수"},
@@ -128,11 +123,24 @@ def get_ui(core_api):
                  {"key": "time", "desc": "현재 시간 HH:MM:SS (어느 곳에서나 사용 가능)"}
              ]}
         ],
-        "button_text": "복구 대상 조회 (Preview)"
+        "buttons": [
+            {
+                "label": "대상 조회 (Preview)", 
+                "action_type": "preview", 
+                "icon": "fas fa-search", 
+                "color": "#2f96b4"
+            },
+            {
+                "label": "즉시 전체 복구 시작", 
+                "action_type": "execute_instant", 
+                "icon": "fas fa-magic", 
+                "color": "#e5a00d"
+            }
+        ]
     }
 
 # =====================================================================
-# 2. 데이터 추출 및 배타적 그룹화 (🔥 작업별 단일 쿼리 최적화 유지)
+# 2. 데이터 추출 및 배타적 그룹화
 # =====================================================================
 def get_target_issues(req_data, core_api, task=None):
     target_sections = req_data.get('target_sections', [])
@@ -155,7 +163,9 @@ def get_target_issues(req_data, core_api, task=None):
         sec_params.extend(target_sections)
     
     target_libs = core_api['query'](sec_query, tuple(sec_params))
-    if not target_libs: return {}
+    if not target_libs: 
+        if task: task.log("⚠️ 선택한 라이브러리를 찾을 수 없습니다.")
+        return {}
 
     lib_map = {str(r['id']): r['name'] for r in target_libs}
     lib_ids_str = ",".join(lib_map.keys())
@@ -192,20 +202,25 @@ def get_target_issues(req_data, core_api, task=None):
     """
 
     tasks_to_run = []
-    if opts['analyze']: tasks_to_run.append(('analyze', '미분석 항목 감지 중...'))
-    if opts['match']: tasks_to_run.append(('match', '미매칭 항목 감지 중...'))
-    if opts['refresh']: tasks_to_run.append(('refresh', '메타데이터 유실 의심 항목 감지 중...'))
-    if opts['yaml_season']: tasks_to_run.append(('yaml_season', '시즌 YAML 미적용 항목 감지 중...'))
-    if opts['yaml_marker']: tasks_to_run.append(('yaml_marker', '마커 누락 항목 감지 중...'))
+    if opts['analyze']: tasks_to_run.append(('analyze', '미분석 파일(해상도/코덱 정보 누락) 감지 중...'))
+    if opts['match']: tasks_to_run.append(('match', '미매칭 항목(GUID 없음) 감지 중...'))
+    if opts['refresh']: tasks_to_run.append(('refresh', '메타데이터 유실(포스터 등 누락) 감지 중...'))
+    if opts['yaml_season']: tasks_to_run.append(('yaml_season', '시즌 번호 3자리 이상 YAML 미적용 감지 중...'))
+    if opts['yaml_marker']: tasks_to_run.append(('yaml_marker', '인트로/크레딧 마커 누락 항목 감지 중...'))
 
     total_steps = len(tasks_to_run)
+    if total_steps == 0:
+        if task: task.log("⚠️ 선택된 복구 옵션이 없습니다.")
+        return targets
 
     for step_idx, (fix_type, msg) in enumerate(tasks_to_run, 1):
         if task and task.is_cancelled(): break
         
-        if task:
-            task.log(f"[{step_idx}/{total_steps}] {msg}")
-            task.update_state('running', progress=int((step_idx / total_steps) * 80), total=100)
+        # 🟢 [핵심] 단계별 시작 로그 출력 및 진행률(Progress) 갱신
+        if task: 
+            progress_pct = int((step_idx / total_steps) * 80)
+            task.log(f"⏳ [{step_idx}/{total_steps}] {msg}")
+            task.update_state('running', progress=progress_pct, total=100)
 
         if fix_type == 'analyze':
             q_a = base_from + "(m.width IS NULL OR m.width = 0) AND mp.file IS NOT NULL AND mi.metadata_type IN (1, 4)"
@@ -275,8 +290,16 @@ def get_target_issues(req_data, core_api, task=None):
                     if r['grandparent_id'] in assigned_grandparents or r['grandparent_id'] in targets: continue
                     add_target(r['grandparent_id'], 2, format_title(r), sec_name, 'yaml_marker', r['file'], parent_rk=r['grandparent_id'])
 
+        # 🟢 [핵심] 단계별 완료 로그 출력
+        if task: 
+            task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
+
     for rk in targets: targets[rk]['files'] = list(targets[rk]['files'])
-    if task: task.update_state('running', progress=90, total=100)
+    
+    if task: 
+        task.log(f"✅ DB 쿼리 수집 완료. (총 {len(targets):,}개 병합됨)")
+        task.update_state('running', progress=90, total=100)
+        
     return targets
 
 # =====================================================================
@@ -285,15 +308,21 @@ def get_target_issues(req_data, core_api, task=None):
 def run(data, core_api):
     action = data.get('action_type', 'preview')
 
+    # [1] Preview (조회)
     if action == 'preview':
         task_data = data.copy()
-        task_data['_is_preview_step'] = True
-        task_data['_is_preview_tool'] = True
+        task_data['_auto_refresh_ui'] = True  
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
+    # [2] 즉시 전체 실행
+    if action == 'execute_instant':
+        task_data = data.copy()
+        return {"status": "success", "type": "async_task", "task_data": task_data}, 200
+
+    # [3] 데이터 테이블 등에서 넘어온 실행 (Execute)
     if action == 'execute':
         
-        # 1. 크론(스케줄러) 실행 분기: 중단된 작업이 있으면 '이어서 하기', 없으면 '새로 조회'
+        # 3-1. 크론(스케줄러)
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
             if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
@@ -302,27 +331,22 @@ def run(data, core_api):
                     items = []
                     for row in cached_page['data']:
                         items.append({
-                            'rating_key': str(row.get('rating_key')),
-                            'title': row.get('title'),
-                            'section': row.get('section'),
-                            'fix_type': row.get('fix_type'),
-                            'm_type': int(row.get('m_type', 1)),
-                            'files': row.get('files', [])
+                            'rating_key': str(row.get('rating_key')), 'title': row.get('title'),
+                            'section': row.get('section'), 'fix_type': row.get('fix_type'),
+                            'm_type': int(row.get('m_type', 1)), 'files': row.get('files', [])
                         })
                     task_data = data.copy()
                     task_data['target_items'] = items
                     task_data['total'] = len(items)
                     task_data['_resume_start_index'] = task_state.get('progress', 0)
-                    task_data['_is_cron'] = True
                     return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             
-            # 진행 중인 작업이 없으면 새로 갱신
+            # 진행 중인 작업이 없으면 크론은 즉시 실행 모드로 우회
             task_data = data.copy()
-            task_data['_cron_needs_fetch'] = True
-            task_data['_is_cron'] = True
+            task_data['action_type'] = 'execute_instant'
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-        # 2. UI에서 단일 항목 (버튼 클릭) 실행
+        # 3-2. 단일 항목 실행
         elif data.get('_is_single'):
             raw_files = data.get('files', [])
             if isinstance(raw_files, str):
@@ -341,10 +365,9 @@ def run(data, core_api):
             task_data = data.copy()
             task_data['target_items'] = items
             task_data['total'] = len(items)
-            task_data['_is_single'] = True
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             
-        # 3. UI에서 전체 실행 (캐시된 데이터 가져오기)
+        # 3-3. UI 조회 목록 일괄 실행
         else:
             cached_page = core_api['cache'].load_page(1, 999999)
             if cached_page and cached_page.get('data'):
@@ -363,25 +386,34 @@ def run(data, core_api):
                 task_data['total'] = len(items)
                 return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             else:
-                return {"status": "error", "message": "캐시된 대상이 없습니다. 다시 조회해주세요."}, 400
+                return {"status": "error", "message": "캐시된 대상이 없습니다. 먼저 조회해주세요."}, 400
 
-    return {"status": "error", "message": "알 수 없는 명령"}, 400
+    return {"status": "error", "message": f"지원하지 않는 명령입니다 ({action})"}, 400
 
 # =====================================================================
 # 4. 백그라운드 워커 
 # =====================================================================
 def worker(task_data, core_api, start_index):
     task = core_api['task']
+    action = task_data.get('action_type')
 
     # -----------------------------------------------------------------
-    # [Preview 모드]
+    # [1] Preview (대상 조회) 액션
     # -----------------------------------------------------------------
-    if task_data.get('_is_preview_step'):
-        task.log("복구 대상(이슈)을 찾기 위해 라이브러리를 검사합니다...")
+    if action == 'preview':
+        task.log("🔍 복구 대상(이슈)을 찾기 위해 라이브러리 검사를 시작합니다...")
         task.update_state('running', progress=0, total=100)
         
+        # 1-1. get_target_issues 호출 (내부적으로 5단계 쿼리를 돌며 task 로그/진행률을 갱신함)
         targets = get_target_issues(task_data, core_api, task)
         
+        if task.is_cancelled(): 
+            task.log("🛑 조회 작업이 사용자에 의해 취소되었습니다.")
+            return
+
+        task.log("📊 검색된 데이터를 기반으로 UI 테이블을 생성합니다...")
+        task.update_state('running', progress=95, total=100)
+
         table_data = []
         total_issues = len(targets)
         fix_counts = {'analyze': 0, 'match': 0, 'refresh': 0, 'yaml_season': 0, 'yaml_marker': 0}
@@ -395,7 +427,6 @@ def worker(task_data, core_api, start_index):
         }
 
         for rk, info in targets.items():
-            if task.is_cancelled(): return
             fix_type = info['fix']
             fix_counts[fix_type] = fix_counts.get(fix_type, 0) + 1
             label_html, sort_score = fix_labels.get(fix_type, ("Unknown", 6))
@@ -408,7 +439,7 @@ def worker(task_data, core_api, start_index):
         sort_rules = [{"key": "sort_score", "dir": "asc"}, {"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}]
 
         chart_items = []
-        chart_labels_kr = {'analyze': '미분석 항목 강제 분석', 'match': '미매칭 항목 자동 매칭', 'refresh': '메타데이터 새로고침', 'yaml_season': '3자리 시즌 YAML 미적용', 'yaml_marker': '마커 누락 YAML 적용'}
+        chart_labels_kr = {'analyze': '미분석 항목 (강제 분석)', 'match': '미매칭 항목 (자동 매칭)', 'refresh': '메타데이터 유실 (새로고침)', 'yaml_season': '시즌 메타 누락 (YAML 적용)', 'yaml_marker': '마커 누락 (YAML 적용)'}
 
         if total_issues > 0:
             for f_type, count in fix_counts.items():
@@ -416,7 +447,12 @@ def worker(task_data, core_api, start_index):
             chart_items.sort(key=lambda x: float(x['percent']), reverse=True)
 
         action_btn = None
-        if len(table_data) > 0: action_btn = {"label": f"<i class='fas fa-magic'></i> 검색된 {len(table_data):,}건 복구 시작", "payload": {"action_type": "execute"}}
+        if len(table_data) > 0: 
+            # 검색된 결과를 일괄 실행(execute)하는 버튼 페이로드 세팅
+            action_btn = {
+                "label": f"<i class='fas fa-magic'></i> 검색된 {total_issues:,}건 복구 시작", 
+                "payload": {"action_type": "execute"} 
+            }
             
         res_payload = {
             "status": "success", "type": "datatable",
@@ -427,73 +463,46 @@ def worker(task_data, core_api, start_index):
             "columns": [
                 {"key": "section", "label": "섹션", "width": "20%", "sortable": True, "header_align": "center"},
                 {"key": "title", "label": "작업 대상(제목)", "width": "50%", "type": "link", "link_key": "rating_key", "sortable": True, "header_align": "center"},
-                {"key": "issues", "label": "작업", "width": "20%", "sortable": True, "sort_key": "sort_score", "sort_type": "number", "header_align": "center", "align": "center"},
-                {"key": "action", "label": "실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn"}
+                {"key": "issues", "label": "필요 작업", "width": "20%", "sortable": True, "sort_key": "sort_score", "sort_type": "number", "header_align": "center", "align": "center"},
+                # 단일 항목을 바로 실행하는 액션 버튼 컬럼
+                {"key": "action", "label": "단일실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn", "action_type": "execute"}
             ],
             "data": table_data
         }
         
+        # 캐시에 UI 데이터를 밀어넣고 100% 완료 처리
         core_api['cache'].save(res_payload)
         task.update_state('completed', progress=100, total=100)
-        task.log(f"조회 완료! 총 {total_issues:,}건의 문제를 찾았습니다.")
+        
+        if total_issues > 0:
+            task.log(f"✅ 조회 완료! 총 {total_issues:,}건의 복구 대상을 찾았습니다.")
+            task.log("   (잠시 후 결과 화면으로 자동 이동합니다...)")
+        else:
+            task.log("✅ 라이브러리 검사 완료. 모든 항목이 정상입니다! (복구 대상 없음)")
+            
         return
 
     # -----------------------------------------------------------------
-    # [Execute 모드]
+    # [Execute / Execute_Instant 모드]
     # -----------------------------------------------------------------
-    
     work_start_time = time.time()
     actual_fix_counts = {'analyze': 0, 'match': 0, 'refresh': 0, 'yaml_season': 0, 'yaml_marker': 0}
 
-    if task_data.get('_resume_start_index') is not None:
-        start_index = task_data['_resume_start_index']
-        items = task_data.get('target_items', [])
-        total = task_data.get('total', len(items))
-        task.update_state('running', progress=start_index, total=total)
-        task.log(f"🤖 [스케줄러] 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
-
-    elif task_data.get('_cron_needs_fetch'):
-        task.log("🤖 [스케줄러] 새로운 복구 대상을 조회합니다...")
+    if action == 'execute_instant':
+        task.log("새로운 복구 대상을 조회하여 즉시 실행을 준비합니다...")
         targets = get_target_issues(task_data, core_api, task)
-        
-        items, table_data = [], []
-        fix_scores = {'analyze': 1, 'match': 2, 'refresh': 3, 'yaml_season': 4, 'yaml_marker': 5}
-        fix_labels = {'analyze': "<span style='color:#2f96b4;'>분석</span>", 'match': "<span style='color:#bd362f;'>매칭</span>", 'refresh': "<span style='color:#51a351;'>새로고침</span>", 'yaml_season': "<span style='color:#e5a00d;'>시즌 YAML</span>", 'yaml_marker': "<span style='color:#e5a00d;'>마커 YAML</span>"}
-
+        items = []
         for rk, info in targets.items():
-            fix_type = info['fix']
-            label_html = fix_labels.get(fix_type, "Unknown")
-            item_data = {"rating_key": str(rk), "section": info['section'], "title": info['title'], "sort_score": fix_scores.get(fix_type, 6), "fix_type": fix_type, "m_type": info['type'], "files": info['files']}
-            items.append(item_data)
-            
-            cache_data = item_data.copy()
-            cache_data['issues'] = label_html
-            table_data.append(cache_data)
-            
-        sort_rules = [{"key": "sort_score", "dir": "asc"}, {"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}]
-        items = core_api['sort'](items, sort_rules)
-        
-        if not items:
-            task.update_state('completed', progress=0, total=0)
-            task.log("실행할 대상 항목이 없습니다. 스케줄링을 종료합니다.")
-            return
-            
-        res_payload = {
-            "status": "success", "type": "datatable", 
-            "action_button": {"label": f"<i class='fas fa-magic'></i> 검색된 {len(items):,}건 복구 시작", "payload": {"action_type": "execute"}},
-            "default_sort": sort_rules,
-            "columns": [
-                {"key": "section", "label": "섹션", "width": "20%", "sortable": True, "header_align": "center"},
-                {"key": "title", "label": "작업 대상(제목)", "width": "55%", "type": "link", "link_key": "rating_key", "sortable": True, "header_align": "center"},
-                {"key": "issues", "label": "작업", "width": "15%", "sortable": True, "sort_key": "sort_score", "sort_type": "number", "header_align": "center", "align": "center"},
-                {"key": "action", "label": "실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn"}
-            ],
-            "data": table_data
-        }
-        core_api['cache'].save(res_payload)
+            items.append({
+                "rating_key": str(rk), "section": info['section'], "title": info['title'], 
+                "fix_type": info['fix'], "m_type": info['type'], "files": info['files']
+            })
         total = len(items)
+        task.log(f"조회 완료. 총 {total:,}건 복구 작업을 시작합니다.")
         task.update_state('running', progress=0, total=total)
-        task.log(f"🤖 [스케줄러] 데이터베이스 갱신 완료. 총 {total:,}건 복구 작업을 시작합니다.")
+        if total == 0:
+            task.update_state('completed', progress=0, total=0)
+            return
 
     else:
         items = task_data.get('target_items', [])
@@ -502,9 +511,12 @@ def worker(task_data, core_api, start_index):
             task.update_state('completed', progress=0, total=0)
             task.log("실행할 대상 항목이 없습니다.")
             return
-            
-        if start_index > 0: task.log(f"중단되었던 {start_index}번째 항목부터 작업을 재개합니다.")
-        else: task.log(f"총 {total:,}건 작업을 시작합니다.")
+
+        if task_data.get('_resume_start_index') is not None:
+            start_index = task_data['_resume_start_index']
+            task.log(f"중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
+        else:
+            task.log(f"총 {total:,}건 작업을 시작합니다.")
     
     opts = core_api.get('options', {})
     try: sleep_time = float(opts.get('sleep_time', 2))
@@ -542,6 +554,7 @@ def worker(task_data, core_api, start_index):
         task.log("⚠️ Plex 작업 큐 대기 시간 초과. 강제로 다음 항목을 진행합니다.")
         return True
 
+    # 본 작업 루프
     for idx, item in enumerate(items[start_index:], start=start_index + 1):
         if task.is_cancelled(): 
             task.log("🛑 취소 명령 감지. 작업을 중단합니다.")
@@ -554,7 +567,7 @@ def worker(task_data, core_api, start_index):
         files = item['files']
 
         task.update_state('running', progress=idx)
-        task.log(f"[{idx}/{total}] '{title}' 복구 진행 중... (작업: {fix_type})")
+        task.log(f"[{idx}/{total}] 🎬 '{title}' 복구 진행 중...")
 
         if not wait_until_stable(): return
         skip_delay = False 
@@ -563,6 +576,9 @@ def worker(task_data, core_api, start_index):
             if fix_type in ['yaml_season', 'yaml_marker']:
                 yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
                 yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
+                
+                log_tag = "시즌 메타" if fix_type == 'yaml_season' else "마커(인트로)"
+                task.log(f"   -> [YAML {log_tag}] 대상 폴더 내 {yaml_filename} 존재 여부 확인 중...")
                 
                 yaml_exists = False
                 if files:
@@ -573,15 +589,17 @@ def worker(task_data, core_api, start_index):
                             yaml_exists = True; break
                 
                 if not yaml_exists:
-                    task.log(f"   -> 대상 폴더에 {yaml_filename} 파일이 없습니다. (작업 패스)")
+                    task.log(f"      ⚠️ 대상 폴더에 {yaml_filename} 파일이 없어 적용을 스킵합니다.")
                     skip_delay = True 
                 elif not mate_url or not mate_apikey:
-                    task.log("   -> YAML 적용 불가 (Plex Mate 설정 누락)")
+                    task.log("      ⚠️ Plex Mate 연결 설정(URL/API Key)이 누락되어 YAML 적용이 불가합니다.")
                     skip_delay = True 
                 else:
-                    task.log("   -> Plex Mate에 YAML 연동 요청")
-                    if call_plexmate_refresh(mate_url, mate_apikey, rk): task.log("      (연동 성공!)")
-                    else: task.log("      (연동 실패)")
+                    task.log("      ✅ YAML 파일 확인 완료. Plex Mate로 동기화 API를 호출합니다...")
+                    if call_plexmate_refresh(mate_url, mate_apikey, rk): 
+                        task.log("         ➔ 🟢 Plex Mate 연동 성공! (YAML 정보가 Plex에 반영됩니다)")
+                    else: 
+                        task.log("         ➔ 🔴 Plex Mate 연동 실패 (서버 응답 오류)")
                         
             else:
                 safe_endpoint = f"/library/metadata/{str(rk).strip()}"
@@ -590,33 +608,43 @@ def worker(task_data, core_api, start_index):
                 if task.is_cancelled(): return
                 
                 if fix_type == 'analyze':
-                    task.log("   -> 미디어 분석(Analyze) 요청")
+                    task.log("   -> [미분석] 해상도/코덱 등 미디어 정보 유실 감지. 강제 분석(Analyze) 호출 중...")
                     plex_item.analyze()
+                    task.log("      ✅ 분석 요청 완료 (Plex 백그라운드에서 파일 스캔 진행)")
+
                 elif fix_type == 'match':
-                    task.log("   -> 자동 매칭(Auto Match) 시도")
+                    task.log("   -> [미매칭] GUID 매칭 누락 감지. Plex 서버에 매칭 후보(Matches) 검색 요청 중...")
                     matches = plex_item.matches()
                     if task.is_cancelled(): return
-                    if matches: plex_item.fixMatch(matches[0])
-                    else: task.log("      (매칭 결과를 찾을 수 없습니다)")
+                    if matches:
+                        best_match = matches[0]
+                        task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (매칭 점수: {best_match.score}점)")
+                        task.log("         ➔ 매칭 데이터 적용 중...")
+                        plex_item.fixMatch(best_match)
+                        task.log("         ➔ 🟢 자동 매칭 완료!")
+                    else: 
+                        task.log("      ⚠️ Plex 서버에서 적절한 매칭 후보를 찾지 못했습니다. 수동 매칭이 필요합니다.")
+
                 elif fix_type == 'refresh':
-                    task.log("   -> 메타데이터 새로고침(Refresh) 진행")
+                    task.log("   -> [메타 유실] 포스터/배경 등 메타데이터 불량 감지. 새로고침(Refresh) 호출 중...")
                     plex_item.refresh()
+                    task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 에이전트 데이터 갱신 진행)")
             
             actual_fix_counts[fix_type] += 1
 
         except Exception as e:
-            task.log(f"   -> ❌ 오류 발생: {e}")
+            task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
             
         if task.is_cancelled(): return
-        if not task_data.get('_is_cron'):
+        
+        # 단일 작업이 아니고, 즉시 전체 실행 모드가 아니라면 화면상에서 '처리완료' 마킹
+        if not task_data.get('_is_single') and action != 'execute_instant':
             core_api['cache'].mark_as_done('rating_key', str(rk))
         
         if sleep_time > 0 and not skip_delay and idx < total:
             loops = max(1, int(sleep_time * 2))
             for _ in range(loops):
-                if task.is_cancelled(): 
-                    task.log("🛑 대기 중 사용자 취소 명령 감지. 작업을 중단합니다.")
-                    return
+                if task.is_cancelled(): return
                 time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -652,8 +680,8 @@ def worker(task_data, core_api, start_index):
             except Exception as e:
                 task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
 
+    if not task.is_cancelled():
         task.update_state('completed', progress=total)
-        
         elapsed_sec = int(time.time() - work_start_time)
         elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
         
@@ -671,7 +699,3 @@ def worker(task_data, core_api, start_index):
         }
         
         core_api['notify']("스마트 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
-        
-    elif not task.is_cancelled():
-        task.update_state('completed', progress=total)
-        task.log("✅ 단일 실행 작업이 정상적으로 완료되었습니다!")

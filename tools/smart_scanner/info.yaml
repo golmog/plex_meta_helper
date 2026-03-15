@@ -1,6 +1,6 @@
 id: "smart_scanner"
 name: "스마트 스캐너"
 description: "라이브러리를 스캔하여 미분석, 미매칭, 포스터 유실 등의 문제를 진단하고 스마트하게 자동 복구합니다."
-version: "0.7.8"
+version: "0.7.9"
 icon: "fas fa-magic"
 entry_file: "main.py"
