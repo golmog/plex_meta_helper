@@ -19,7 +19,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.49"
+__version__ = "0.7.50"
 
 def get_version():
     return __version__
@@ -882,11 +882,20 @@ def _load_tool_module(tools_dir, tool_id, entry_file):
     file_path = os.path.join(tools_dir, tool_id, entry_file)
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Entry file not found: {file_path}")
+    
     module_name = f"pmh_tool_{tool_id}"
+
+    import importlib
+    if module_name in sys.modules:
+        del sys.modules[module_name]
+    importlib.invalidate_caches()
+
     spec = importlib.util.spec_from_file_location(module_name, file_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Failed to load spec for module: {module_name}")
+    
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -1109,27 +1118,39 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
                     return cached, 200
 
-                elif action_type in ['preview', 'execute', 'save_options']:
+                elif action_type == 'save_options':
                     current_opts = options_mgr.load()
                     for k, v in data.items():
                         if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
                             current_opts[k] = v
                     options_mgr.save(current_opts)
 
-                    if action_type == 'save_options':
-                        c_enable = current_opts.get('cron_enable')
-                        c_expr = current_opts.get('cron_expr', '')
-                        if c_enable and str(c_expr).strip():
-                            print(f"[PMH Core] ⏰ '{tool_id}' 툴 스케줄 등록 완료: {c_expr}")
-                        else:
-                            print(f"[PMH Core] ⚙️ '{tool_id}' 툴 설정 저장 완료 (스케줄 비활성)")
-                        return {"status": "success"}, 200
+                    c_enable = current_opts.get('cron_enable')
+                    c_expr = current_opts.get('cron_expr', '')
+                    if c_enable and str(c_expr).strip():
+                        print(f"[PMH Core] ⏰ '{tool_id}' 툴 스케줄 등록 완료: {c_expr}")
+                    else:
+                        print(f"[PMH Core] ⚙️ '{tool_id}' 툴 설정 저장 완료 (스케줄 비활성)")
+                    return {"status": "success"}, 200
 
-                    print(f"[PMH Core] 툴 '{tool_id}' {action_type.upper()} 워커 스레드 시작")
+                # 시스템 예약 액션 외의 모든 툴 커스텀 액션 처리
+                else:
+                    current_opts = options_mgr.load()
+                    for k, v in data.items():
+                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
+                            current_opts[k] = v
+                    options_mgr.save(current_opts)
+
+                    print(f"[PMH Core] 툴 '{tool_id}' 워커 라우팅 시작 (Action: {action_type.upper()})")
                     res, code = module.run(data, core_api)
                     
                     if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
                         task_data = res.get('task_data', {})
+                        
+                        # 워커 스레드에서도 자신이 무슨 액션으로 실행됐는지 알게 보존
+                        if 'action_type' not in task_data:
+                            task_data['action_type'] = action_type
+                            
                         if not task_data.get('_is_cron'):
                             task_mgr.reset()
                             
@@ -1140,8 +1161,6 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                         return {"status": "success", "type": "async_task", "task_id": tool_id}, 200
                         
                     return res, code
-
-                return {"error": "잘못된 접근입니다."}, 400
 
             elif action == 'status' and method == 'GET':
                 status_data = task_mgr.load(include_target_items=False)

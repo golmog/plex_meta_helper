@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.49
+// @version      0.7.50
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1301,7 +1301,7 @@ GM_addStyle(`
         window.showPmhToolPanel(toolId, "로딩 중...", `<div style="text-align:center; padding:30px;"><i class="fas fa-spinner fa-spin" style="font-size:30px; color:#e5a00d; margin-bottom:15px;"></i><br>[${targetSrv.name}] 서버 정보를 불러오는 중...</div>`);
         
         GM_xmlhttpRequest({
-            method: "GET", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/ui?server_id=${serverId}`,
+            method: "GET", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/ui?server_id=${serverId}&_t=${Date.now()}`,
             headers: { "X-API-Key": targetSrv.plexMateApiKey },
             onload: (res) => {
                 if(res.status !== 200) return window.showPmhToolPanel(toolId, "오류 발생", `<p style="color:#bd362f;">UI 스키마 로드 실패 (HTTP ${res.status})</p>`);
@@ -1487,6 +1487,7 @@ GM_addStyle(`
                     }
                 };
 
+                // --- 조회 조건(inputs) 영역 렌더링 ---
                 if (ui.inputs && ui.inputs.length > 0) {
                     formHtml += `<div style="margin-bottom:15px; padding:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;">
                                     <div style="color:#51a351; font-weight:bold; margin-bottom:12px; font-size:12px; border-bottom:1px dashed #444; padding-bottom:6px;"><i class="fas fa-search"></i> 조회 조건 설정</div>`;
@@ -1494,21 +1495,45 @@ GM_addStyle(`
                     formHtml += `</div>`;
                 }
 
-                formHtml += `<div style="text-align:center; margin-top:15px; margin-bottom:10px; flex-shrink:0;">
-                                <button id="pmh_run_btn" style="padding:12px 30px; background:#e5a00d; color:#1f1f1f; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:14px; transition:0.2s;"><i class="fas fa-search"></i> ${ui.button_text || '조회'}</button>
-                             </div>`;
-                formHtml += `</div>`;
-                formHtml += `</div>`;
+                // --- [아키텍처 변경] 다중 동적 버튼(buttons) 렌더링 ---
+                if (ui.buttons && ui.buttons.length > 0) {
+                    formHtml += `<div style="display:flex; justify-content:center; gap:10px; flex-wrap:wrap; margin-top:15px; margin-bottom:10px; flex-shrink:0;">`;
+                    ui.buttons.forEach(btn => {
+                        const color = btn.color || '#e5a00d';
+                        const icon = btn.icon || 'fas fa-play';
+                        formHtml += `<button class="pmh_dynamic_run_btn" data-action="${btn.action_type}" style="padding:12px 20px; background:${color}; color:#fff; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:13px; transition:0.2s;"><i class="${icon}"></i> ${btn.label}</button>`;
+                    });
+                    formHtml += `</div>`;
+                } else {
+                    formHtml += `<div style="text-align:center; padding:15px; margin-top:15px; margin-bottom:10px; background:rgba(189, 54, 47, 0.2); border:1px solid #bd362f; border-radius:4px; color:#fff; flex-shrink:0;">
+                                    <i class="fas fa-exclamation-triangle"></i> <strong>UI 스키마 오류</strong><br>
+                                    <span style="font-size:12px; color:#ccc;">툴(main.py)이 'buttons' 배열을 반환하지 않았습니다.<br>수정 후 Python 서버(PMH)를 재시작하세요.</span>
+                                 </div>`;
+                }
+
+                // --- pmh_tool_form_container 및 wrapper 닫기 (매우 중요) ---
+                formHtml += `</div>`; // pmh_tool_form_container 닫기
+                formHtml += `</div>`; // 컨테이너 바깥쪽 상대 위치(relative) wrapper 닫기
+
+                // --- 접기/펼치기 토글 화살표 영역 ---
                 formHtml += `
                     <div style="text-align:center; margin-top:-20px; margin-bottom:15px; position:relative; z-index:2; height:15px;">
                         <i class="fas ${collapseIcon}" id="pmh_tool_toggle_form" title="옵션 접기/펼치기" style="color:#2f96b4; cursor:pointer; font-size:16px; background:#1a1d21; padding:0 12px; border-radius:10px; border:1px solid #333; transition:0.2s;"></i>
                     </div>
                 `;
 
-                formHtml += `<div id="pmh_run_res_form" style="font-size:13px; display:none; margin-top:5px; flex-grow:1; min-height:0;"></div></div>`;
+                // --- 결과 데이터 테이블 렌더링 영역 (Form 탭 하단) ---
+                formHtml += `<div id="pmh_run_res_form" style="font-size:13px; display:none; margin-top:5px; flex-grow:1; min-height:0;"></div>`;
+                
+                // tab_form (1번 탭) 최종 닫기
+                formHtml += `</div>`; 
+
+                // --- 모니터링 탭 (2번 탭) 영역 ---
                 formHtml += `<div id="pmh_tab_monitor" style="display:none; flex-direction:column; flex-grow:1; min-height:0; padding-right:5px;">`;
                 formHtml += `<div id="pmh_run_res_monitor" style="display:flex; flex-direction:column; flex-grow:1; min-height:0; font-size:13px; color:#aaa; text-align:center; padding:30px 0;"><i class="fas fa-info-circle"></i> 진행 중이거나 완료된 작업이 없습니다.</div>`;
                 formHtml += `</div>`;
+
+                // --- 환경 설정 탭 (3번 탭) 영역 ---
                 formHtml += `<div id="pmh_tab_settings" style="display:none; flex-direction:column; flex-grow:1; min-height:0; overflow-y:auto; padding-right:5px;">`;
                 if (ui.settings_inputs && ui.settings_inputs.length > 0) {
                     formHtml += `<div style="margin-bottom:15px; padding:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;">`;
@@ -1522,7 +1547,10 @@ GM_addStyle(`
                 } else {
                     formHtml += `<div style="padding:30px 0; text-align:center; color:#777; font-size:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;"><i class="fas fa-tools" style="font-size:24px; margin-bottom:10px; color:#555;"></i><br>이 툴은 추가 설정이 없습니다.</div>`;
                 }
-                formHtml += `</div></div>`;
+                formHtml += `</div>`; // tab_settings 최종 닫기
+                
+                // 전체 컨테이너(flex-direction:column) 최종 닫기
+                formHtml += `</div>`;
 
                 window.showPmhToolPanel(toolId, ui.title, formHtml);
 
@@ -1622,7 +1650,7 @@ GM_addStyle(`
 
                     const updateFormTabButtons = (isRunning) => {
                         isTaskRunning = isRunning;
-                        const mainRunBtn = document.getElementById('pmh_run_btn');
+                        const dynamicRunBtns = document.querySelectorAll('.pmh_dynamic_run_btn');
                         const actionBtn = document.getElementById('pmh_dt_action_btn');
                         const resumeBtn = document.getElementById('pmh_resume_btn');
                         const cancelBtns = document.querySelectorAll('.pmh_global_cancel_btn');
@@ -1631,25 +1659,27 @@ GM_addStyle(`
                                           && currentTaskStatus.progress > 0 && currentTaskStatus.total > 0;
 
                         if (isRunning) {
-                            if (mainRunBtn) {
-                                if (!mainRunBtn.dataset.originalHtml) mainRunBtn.dataset.originalHtml = mainRunBtn.innerHTML;
-                                mainRunBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 작업 진행 중...';
-                                mainRunBtn.style.backgroundColor = '#555';
-                                mainRunBtn.style.color = '#aaa';
-                                mainRunBtn.style.cursor = 'not-allowed';
-                                mainRunBtn.disabled = true;
-                            }
+                            dynamicRunBtns.forEach(btn => {
+                                if (!btn.dataset.originalHtml) btn.dataset.originalHtml = btn.innerHTML;
+                                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
+                                btn.style.filter = 'grayscale(80%)';
+                                btn.style.opacity = '0.6';
+                                btn.style.cursor = 'not-allowed';
+                                btn.disabled = true;
+                            });
                             if (actionBtn) actionBtn.style.display = 'none';
                             if (resumeBtn) resumeBtn.style.display = 'none';
                             cancelBtns.forEach(btn => btn.style.display = 'inline-block');
                         } else {
-                            if (mainRunBtn && mainRunBtn.dataset.originalHtml) {
-                                mainRunBtn.innerHTML = mainRunBtn.dataset.originalHtml;
-                                mainRunBtn.style.backgroundColor = '#e5a00d';
-                                mainRunBtn.style.color = '#1f1f1f';
-                                mainRunBtn.style.cursor = 'pointer';
-                                mainRunBtn.disabled = false;
-                            }
+                            dynamicRunBtns.forEach(btn => {
+                                if (btn.dataset.originalHtml) {
+                                    btn.innerHTML = btn.dataset.originalHtml;
+                                    btn.style.filter = 'none';
+                                    btn.style.opacity = '1';
+                                    btn.style.cursor = 'pointer';
+                                    btn.disabled = false;
+                                }
+                            });
                             
                             if (canResume) {
                                 if (resumeBtn) {
@@ -2469,9 +2499,14 @@ GM_addStyle(`
                         }
                         
                         else if (resData.type === 'async_task') {
-                            if (!preventTabSwitch) switchTab('tab_monitor');
                             const taskId = resData.task_id;
-                            const isPreviewing = resData.is_preview === true; 
+                            const taskData = resData.task_data || {};
+                            const isSilent = taskData._silent_task === true;
+                            
+                            // 탭 강제 전환 막기가 없고, 사일런트 모드도 아닐 때만 모니터링 탭으로 이동
+                            if (!preventTabSwitch && !isSilent) {
+                                switchTab('tab_monitor');
+                            }
                             
                             const resMonitor = document.getElementById('pmh_run_res_monitor');
                             if (pollTimer) clearTimeout(pollTimer);
@@ -2542,9 +2577,9 @@ GM_addStyle(`
                                             const logBox = document.getElementById('pmh_log_container');
                                             if (logBox) logBox.scrollTop = logBox.scrollHeight;
 
-                                            const isPreviewTool = currentTaskStatus.task_data && currentTaskStatus.task_data._is_preview_tool === true;
+                                            const autoRefreshUI = currentTaskStatus.task_data && currentTaskStatus.task_data._auto_refresh_ui === true;
 
-                                            if (isDone && isPreviewTool && (statusData.state === 'completed' || statusData.state === 'cancelled')) {
+                                            if (isDone && autoRefreshUI && (statusData.state === 'completed' || statusData.state === 'cancelled')) {
                                                 setTimeout(() => {
                                                     GM_xmlhttpRequest({
                                                         method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
@@ -2572,34 +2607,64 @@ GM_addStyle(`
                         }
                     };
 
-                    const mainRunBtn = document.getElementById('pmh_run_btn');
-                    if (mainRunBtn) {
-                        mainRunBtn.onmouseover = () => { if(!mainRunBtn.disabled) mainRunBtn.style.backgroundColor = "#d4910c"; };
-                        mainRunBtn.onmouseout = () => { if(!mainRunBtn.disabled) mainRunBtn.style.backgroundColor = "#e5a00d"; };
-                        mainRunBtn.onclick = (e2) => {
-                            e2.preventDefault();
+                    document.querySelectorAll('.pmh_dynamic_run_btn').forEach(btn => {
+                        const origBg = btn.style.backgroundColor;
+                        
+                        btn.onmouseover = () => { if(!btn.disabled) btn.style.filter = "brightness(1.2)"; };
+                        btn.onmouseout = () => { if(!btn.disabled) btn.style.filter = "none"; };
+                        
+                        btn.onclick = (e) => {
+                            e.preventDefault();
                             if (isTaskRunning) return alert("진행 중인 작업이 있습니다.\n모니터링 탭을 확인해 주세요.");
                             
                             const { targetSrv: tSrv, reqData } = getFormData();
                             
-                            reqData.action_type = mainRunBtn.dataset.actionType || 'preview'; 
+                            // 클릭한 버튼의 고유 action_type을 주입
+                            reqData.action_type = btn.dataset.action; 
                             
-                            switchTab('tab_monitor');
-                            if (pollTimer) clearTimeout(pollTimer);
-                            const resMonitor = document.getElementById('pmh_run_res_monitor');
-                            if (resMonitor) {
-                                resMonitor.innerHTML = `<div style="padding:30px; text-align:center; color:#e5a00d;"><i class="fas fa-spinner fa-spin" style="font-size:24px; margin-bottom:15px;"></i><br>작업을 시작합니다...</div>`;
-                            }
+                            // 통신 중 버튼 잠금 처리
+                            const origHtml = btn.innerHTML;
+                            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 요청 중...`;
+                            btn.style.opacity = '0.7';
+                            btn.disabled = true;
 
+                            // API 호출
                             GM_xmlhttpRequest({
                                 method: "POST", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/run`,
                                 headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
                                 data: JSON.stringify(reqData),
                                 onload: (r) => {
+                                    // 버튼 상태 원상복구
+                                    btn.innerHTML = origHtml;
+                                    btn.style.opacity = '1';
+                                    btn.disabled = false;
+
                                     if (r.status === 200) {
                                         try {
                                             const resData = JSON.parse(r.responseText);
+                                            
+                                            // 1. 단순 메시지 응답일 경우 (화면 전환 없이 토스트 메시지만 띄움)
+                                            if (resData.type === 'message') {
+                                                toastr.info(resData.message || "명령이 실행되었습니다.", "알림", {timeOut: 4000});
+                                                return;
+                                            }
+                                            
+                                            // 2. 비동기 작업 시작(async_task)일 경우 화면 초기화 표시 (processAndRenderResult가 탭 전환은 알아서 함)
+                                            if (resData.type === 'async_task') {
+                                                const taskData = resData.task_data || {};
+                                                // _silent_task가 아닐 때만 모니터링 화면 초기화 수행
+                                                if (!taskData._silent_task) {
+                                                    if (pollTimer) clearTimeout(pollTimer);
+                                                    const resMonitor = document.getElementById('pmh_run_res_monitor');
+                                                    if (resMonitor) {
+                                                        resMonitor.innerHTML = `<div style="padding:30px; text-align:center; color:#e5a00d;"><i class="fas fa-spinner fa-spin" style="font-size:24px; margin-bottom:15px;"></i><br>작업을 준비하고 있습니다...</div>`;
+                                                    }
+                                                }
+                                            }
+
+                                            // 3. 공통 렌더러 호출 (resData.type 에 따라 자기가 알아서 탭 바꾸고 그림)
                                             processAndRenderResult(resData, parseInt(savedOptions.items_per_page || 10), tSrv);
+
                                         } catch(err) {}
                                     } else {
                                         switchTab('tab_form');
@@ -2608,13 +2673,16 @@ GM_addStyle(`
                                     }
                                 },
                                 onerror: () => {
+                                    btn.innerHTML = origHtml;
+                                    btn.style.opacity = '1';
+                                    btn.disabled = false;
                                     switchTab('tab_form');
                                     const resForm = document.getElementById('pmh_run_res_form');
                                     if (resForm) resForm.innerHTML = `<div style="padding:15px; color:#bd362f; text-align:center;">통신 오류가 발생했습니다.</div>`;
                                 }
                             });
                         };
-                    }
+                    });
                 }, 50); 
             }
         }); 
