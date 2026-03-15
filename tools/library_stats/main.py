@@ -3,24 +3,6 @@
 ====================================================================================
  [PMH Tool Reference Template] - 라이브러리 통계 분석 (즉시 반환형 대시보드)
 ====================================================================================
-
- 이 파일은 PMH(Plex Meta Helper) 커스텀 툴 중 '대시보드(Dashboard)' 형식을 
- 개발하기 위한 교과서/레퍼런스 파일입니다.
-
- 1. [대시보드형 툴의 특징]
-    - 데이터테이블(Datatable)처럼 비동기 워커가 적용됐습니다.
-    - 유저가 [조회]를 누르면 DB를 분석한 뒤 그 결과를 즉시 JSON으로 반환합니다.
-    - 반환된 JSON의 `type`이 `"dashboard"`일 경우, 프론트엔드(JS)가 알아서
-      예쁜 카드(Summary Cards)와 막대 그래프(Bar Charts)를 화면에 그려줍니다.
-
- 2. [안전한 DB 쿼리 (Parameter Binding)]
-    - f-string 포맷팅으로 쿼리 문자열에 변수를 직접 넣으면 SQL 인젝션 공격에 취약해집니다.
-    - `core_api['query'](sql, (param1, param2))` 형태로 파라미터 바인딩을 사용하는 것이 정석입니다.
-
- 3. [동기식 로깅 (Logs 반환)]
-    - 동기식 즉시 반환 툴에서는 `core_api['task'].log()` 대신, 자체적으로 문자열 배열을 
-      만들어 JSON의 `"logs"` 속성으로 넘겨주면, 프론트엔드 모니터 화면에 로그가 출력됩니다.
-====================================================================================
 """
 import time
 import json
@@ -110,17 +92,32 @@ def get_ui(core_api):
                  {"key": "time", "desc": "현재 시간 HH:MM:SS (어느 곳에서나 사용 가능)"}
              ]}
         ],
-        "button_text": "통계 추출 시작"
+        "buttons": [
+            {
+                "label": "통계 추출 시작", 
+                "action_type": "preview", 
+                "icon": "fas fa-chart-pie", 
+                "color": "#9c27b0"
+            }
+        ]
     }
 
 # =====================================================================
 # 2. 메인 실행 라우터 (읽기 전용 일원화)
 # =====================================================================
 def run(data, core_api):
-    # Preview(조회), Execute(다시 집계), Cron 모두 동일하게 백그라운드에서 데이터를 갱신합니다.
-    task_data = data.copy()
-    task_data['_is_preview_tool'] = True 
-    return {"status": "success", "type": "async_task", "task_data": task_data}, 200
+    action = data.get('action_type', 'preview')
+
+    # 프론트엔드 버튼 클릭 또는 크론에서 넘어오는 요청 모두 동일하게 처리
+    if action in ['preview', 'execute']:
+        task_data = data.copy()
+        
+        # 검색(조회)이 끝나면 모니터 탭에서 폼(표/대시보드) 탭으로 자동 복귀하도록 플래그 셋팅
+        task_data['_auto_refresh_ui'] = True 
+        
+        return {"status": "success", "type": "async_task", "task_data": task_data}, 200
+
+    return {"status": "error", "message": f"지원하지 않는 명령입니다 ({action})"}, 400
 
 # =====================================================================
 # 3. 백그라운드 워커 (단일 쿼리 통계 최적화)
@@ -136,12 +133,12 @@ def worker(task_data, core_api, start_index):
     if task_data.get('type_photo', False): type_filters.append(13) # 사진
 
     if not type_filters: 
-        task.log("최소 1개 이상의 미디어 타입을 선택해주세요.")
+        task.log("⚠️ 최소 1개 이상의 미디어 타입을 선택해주세요.")
         task.update_state('error')
         return
 
     prefix = "[자동 실행] " if is_cron else ""
-    task.log(f"{prefix}통계 추출을 시작합니다.")
+    task.log(f"📊 {prefix}통계 추출을 시작합니다.")
     task.update_state('running', progress=0, total=100)
 
     # 1. 타겟 섹션 목록 획득 및 'all' 방어
@@ -157,12 +154,12 @@ def worker(task_data, core_api, start_index):
     try: 
         target_libs = core_api['query'](sec_query, tuple(sec_params))
     except Exception as e:
-        task.log(f"DB 접근 오류: {str(e)}")
+        task.log(f"❌ DB 접근 오류: {str(e)}")
         task.update_state('error')
         return
         
     if not target_libs:
-        task.log("조회 대상 라이브러리가 없습니다.")
+        task.log("⚠️ 조회 대상 라이브러리가 없습니다.")
         task.update_state('completed', progress=100, total=100)
         return
 
@@ -184,7 +181,7 @@ def worker(task_data, core_api, start_index):
         # STEP 1: 미디어 종류별 개수 카운트
         # -----------------------------------------------------------------
         task.update_state('running', progress=20, total=100)
-        task.log("미디어 유형별 항목 수를 집계 중입니다...")
+        task.log("📂 미디어 유형별 항목 수를 집계 중입니다...")
         if task.is_cancelled(): return
         
         for row in core_api['query'](f"SELECT metadata_type, COUNT(*) as cnt FROM metadata_items mi {base_where} GROUP BY metadata_type"):
@@ -194,7 +191,7 @@ def worker(task_data, core_api, start_index):
         # STEP 2: 전체 용량 및 재생 시간 합산
         # -----------------------------------------------------------------
         task.update_state('running', progress=40, total=100)
-        task.log("총 용량 및 재생 시간을 계산 중입니다...")
+        task.log("💾 총 용량 및 재생 시간을 계산 중입니다...")
         if task.is_cancelled(): return
         
         rows_size = core_api['query'](f"SELECT SUM(m.duration) as dur, SUM(mp.size) as sz FROM metadata_items mi JOIN media_items m ON m.metadata_item_id = mi.id JOIN media_parts mp ON mp.media_item_id = m.id {base_where}")
@@ -205,7 +202,7 @@ def worker(task_data, core_api, start_index):
         # STEP 3: 해상도별 비중 그룹화
         # -----------------------------------------------------------------
         task.update_state('running', progress=60, total=100)
-        task.log("비디오 해상도 통계를 추출 중입니다...")
+        task.log("📺 비디오 해상도 통계를 추출 중입니다...")
         if task.is_cancelled(): return
         
         for row in core_api['query'](f"SELECT m.width, COUNT(*) as cnt FROM metadata_items mi JOIN media_items m ON m.metadata_item_id = mi.id {base_where} AND m.width IS NOT NULL AND m.width > 0 GROUP BY m.width"):
@@ -222,7 +219,7 @@ def worker(task_data, core_api, start_index):
         # STEP 4: 오디오/비디오 코덱 그룹화
         # -----------------------------------------------------------------
         task.update_state('running', progress=80, total=100)
-        task.log("코덱 통계를 분석 중입니다...")
+        task.log("🎵 코덱 통계를 분석 중입니다...")
         if task.is_cancelled(): return
         
         for row in core_api['query'](f"SELECT ms.stream_type_id, ms.codec, COUNT(*) as cnt FROM metadata_items mi JOIN media_items m ON m.metadata_item_id = mi.id JOIN media_streams ms ON ms.media_item_id = m.id {base_where} AND ms.codec != '' AND ms.codec IS NOT NULL GROUP BY ms.stream_type_id, ms.codec"):
@@ -235,7 +232,7 @@ def worker(task_data, core_api, start_index):
                 total_a += cnt
 
         task.update_state('running', progress=90, total=100)
-        task.log("데이터 추출 완료. 대시보드 UI를 구성합니다...")
+        task.log("✅ 데이터 추출 완료. 대시보드 UI를 구성합니다... (잠시 후 결과 화면으로 이동합니다)")
         
         movie_count, episode_count = counts_map[1], counts_map[4]
         music_count, photo_count = counts_map[10], counts_map[13]
@@ -252,13 +249,12 @@ def worker(task_data, core_api, start_index):
             core_api['notify']("라이브러리 통계", DEFAULT_DISCORD_TEMPLATE, "#2f96b4", tool_vars)
             
     except Exception as e:
-        task.log(f"DB 통계 추출 오류: {str(e)}")
+        task.log(f"❌ DB 통계 추출 오류: {str(e)}")
         task.update_state('error')
         return
 
     # =========================================================================
     # [프론트엔드 반환 포맷: Dashboard Schema]
-    # JS 프론트엔드가 이 JSON 규격을 읽어 예쁜 카드와 막대 그래프를 그려줍니다.
     # =========================================================================
     resolution_data = [{"label": k, "count": f"{v:,} 개", "percent": round((v / total_res_count) * 100, 1)} for k, v in res_dict.items() if v > 0]
     resolution_data.sort(key=lambda x: x['percent'], reverse=True) 
@@ -287,9 +283,10 @@ def worker(task_data, core_api, start_index):
     res_payload = {
         "status": "success", "type": "dashboard",  
         "summary_cards": cards, "bar_charts": charts,
-        "action_button": {"label": "<i class='fas fa-sync'></i> 다시 집계하기", "payload": {"action_type": "execute"}}
+        # 조회 전용이므로 실행(execute)이 아닌 다시 조회(preview) 버튼으로 매핑
+        "action_button": {"label": "<i class='fas fa-sync'></i> 다시 집계하기", "payload": {"action_type": "preview"}}
     }
     
     core_api['cache'].save(res_payload)
     task.update_state('completed', progress=100, total=100)
-    task.log("모든 집계가 끝났습니다. 화면을 갱신합니다.")
+    task.log("✅ 모든 통계 추출이 완료되었습니다.")
