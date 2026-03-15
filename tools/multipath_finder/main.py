@@ -3,32 +3,12 @@
 ====================================================================================
  [PMH Tool Reference Template] - 다중 경로(병합 오류 의심) 항목 검색
 ====================================================================================
-
- 이 파일은 PMH(Plex Meta Helper) 커스텀 툴을 개발하기 위한 교과서/레퍼런스 파일입니다.
- 툴 개발 시 아래의 핵심 아키텍처 규칙을 숙지하세요.
-
- 1. [실행 흐름]
-    - 프론트엔드 UI에서 [조회] 버튼 클릭 -> 백엔드로 `action_type: 'preview'` 요청 전달.
-    - 코어(`pmh_core.py`)가 이 요청을 가로채어 백그라운드 스레드를 생성하고 이 파일의 `run()`을 실행합니다.
-    - `run()` 함수는 무거운 작업을 수행하며 `task.log()`로 진행 상황을 실시간으로 브로드캐스트합니다.
-    - 작업이 끝나고 전체 데이터 배열을 반환하면, 코어가 알아서 SQLite 메모리에 캐싱하고 정렬을 적용합니다.
-    - 프론트엔드는 캐시된 데이터를 코어에 10개/20개 단위로 페이징(Paging) 요청하여 화면에 그립니다.
-
- 2. [DB 쿼리 최적화 (N+1 문제 주의)]
-    - `core_api['query']`는 보안을 위해 호출 시마다 DB 커넥션을 열고 닫는 읽기 전용(SELECT) 샌드박스입니다.
-    - 루프(for문) 안에서 쿼리를 수만 번 호출하면 속도가 매우 느려집니다!
-    - 따라서, JOIN 문을 활용하여 한 번의 쿼리로 데이터를 대량으로 가져와 파이썬 딕셔너리로 가공하는 것이 정석입니다.
-
- 3. [데이터테이블 반환]
-    - 반환 딕셔너리의 `type`을 `"datatable"`로 지정하면 코어와 프론트엔드가 알아서 표(Table) UI를 그려줍니다.
-====================================================================================
 """
 
 import os
 import re
 import time
 import unicodedata
-import json
 from collections import defaultdict
 
 # =====================================================================
@@ -112,17 +92,32 @@ def get_ui(core_api):
                  {"key": "time", "desc": "현재 시간 HH:MM:SS (어느 곳에서나 사용 가능)"}
              ]}
         ],
-        "button_text": "다중 경로 항목 검색"
+        "buttons": [
+            {
+                "label": "대상 목록 검색", 
+                "action_type": "preview", 
+                "icon": "fas fa-search", 
+                "color": "#2f96b4"
+            }
+        ]
     }
 
 # =====================================================================
 # 2. 메인 실행 라우터 (읽기 전용 툴 최적화)
 # =====================================================================
 def run(data, core_api):
-    # 조회 전용 툴이므로 preview든 execute이든 동일하게 최신 데이터로 목록을 갱신합니다.
-    task_data = data.copy()
-    task_data['_is_preview_tool'] = True 
-    return {"status": "success", "type": "async_task", "task_data": task_data}, 200
+    action = data.get('action_type', 'preview')
+
+    # 프론트엔드 버튼 클릭 또는 크론에서 넘어오는 요청 모두 동일하게 처리
+    if action in ['preview', 'execute']:
+        task_data = data.copy()
+        
+        # 검색(조회)이 끝나면 모니터 탭에서 폼(표) 탭으로 자동 복귀하도록 플래그 셋팅
+        task_data['_auto_refresh_ui'] = True 
+        
+        return {"status": "success", "type": "async_task", "task_data": task_data}, 200
+
+    return {"status": "error", "message": f"지원하지 않는 명령입니다 ({action})"}, 400
 
 # =====================================================================
 # 3. 백그라운드 워커 (단일 쿼리 최적화)
@@ -134,7 +129,7 @@ def worker(task_data, core_api, start_index):
     work_start_time = time.time()
     
     prefix = "[자동 실행] " if is_cron else ""
-    task.log(f"{prefix}다중 경로 검색 시작")
+    task.log(f"🔍 {prefix}다중 경로(병합 오류 의심) 검색을 시작합니다...")
     task.update_state('running', progress=0, total=100)
     
     items_map = defaultdict(lambda: {"title": "", "section": "", "paths": set()})
@@ -146,7 +141,6 @@ def worker(task_data, core_api, start_index):
         sec_query = "SELECT id, name, section_type FROM library_sections"
         sec_params = []
         
-        # 'all' 방어 코드 적용
         if target_sections and 'all' not in target_sections:
             placeholders = ",".join("?" for _ in target_sections)
             sec_query += f" WHERE id IN ({placeholders})"
@@ -154,11 +148,10 @@ def worker(task_data, core_api, start_index):
         
         target_libs = core_api['query'](sec_query, tuple(sec_params))
         if not target_libs:
-            task.log("검색할 대상 섹션이 없습니다.")
+            task.log("⚠️ 검색할 대상 섹션이 없습니다.")
             task.update_state('completed', progress=100, total=100)
             return
             
-        # 섹션 타입별로 ID 분리 및 이름 매핑
         lib_map = {str(r['id']): r['name'] for r in target_libs}
         movie_lib_ids = [str(r['id']) for r in target_libs if r['section_type'] == 1]
         show_lib_ids = [str(r['id']) for r in target_libs if r['section_type'] == 2]
@@ -167,7 +160,7 @@ def worker(task_data, core_api, start_index):
         # STEP 2: 단일 쿼리로 영화 라이브러리 일괄 조회
         # -----------------------------------------------------------------
         if movie_lib_ids:
-            task.log("영화 라이브러리 파일 경로를 분석 중입니다...")
+            task.log("🎬 영화 라이브러리 파일 경로를 분석 중입니다...")
             task.update_state('running', progress=30, total=100)
             if task.is_cancelled(): return
             
@@ -190,7 +183,7 @@ def worker(task_data, core_api, start_index):
         # STEP 3: 단일 쿼리로 TV 쇼 라이브러리 일괄 조회
         # -----------------------------------------------------------------
         if show_lib_ids:
-            task.log("TV 쇼 라이브러리 파일 경로를 분석 중입니다...")
+            task.log("📺 TV 쇼 라이브러리 파일 경로를 분석 중입니다...")
             task.update_state('running', progress=60, total=100)
             if task.is_cancelled(): return
             
@@ -215,7 +208,7 @@ def worker(task_data, core_api, start_index):
         # STEP 4: 다중 경로 항목 필터링 및 데이터 가공
         # -----------------------------------------------------------------
         task.update_state('running', progress=90, total=100)
-        task.log("데이터 수집 완료. 병합 오류 의심 항목 필터링 중...")
+        task.log("📊 데이터 수집 완료. 병합 오류 의심 항목을 필터링합니다...")
 
         results = []
         for rk_id, data_dict in items_map.items():
@@ -229,8 +222,6 @@ def worker(task_data, core_api, start_index):
                     "raw_count": path_count
                 })
 
-        # ✨ 정렬 삭제 -> 코어 위임
-        # 코어가 이 규칙(default_sort)을 보고 DB 삽입 직전에 완벽하게 정렬해줍니다.
         sort_rules = [
             {"key": "section", "dir": "asc"},
             {"key": "raw_count", "dir": "desc"},
@@ -242,9 +233,12 @@ def worker(task_data, core_api, start_index):
         elapsed_sec = int(time.time() - work_start_time)
         elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
         
-        msg = f"검색 완료! 총 {len(results):,}건의 의심 항목이 발견되었습니다. (소요시간: {elapsed_str})"
-        task.log(msg)
+        if len(results) > 0:
+            task.log(f"✅ 검색 완료! 총 {len(results):,}건의 의심 항목이 발견되었습니다. (잠시 후 결과 화면으로 돌아갑니다...)")
+        else:
+            task.log(f"✅ 라이브러리 검사 완료. 의심되는 항목이 없습니다! (소요시간: {elapsed_str})")
         
+        # 크론(스케줄러)인 경우에만 디스코드 알림 발송 (UI 사용자가 켰을 때는 스킵 가능)
         if is_cron:
             tool_vars = {
                 "total": f"{len(results):,}",
@@ -267,13 +261,14 @@ def worker(task_data, core_api, start_index):
                 {"key": "count_html", "label": "병합 수", "width": "15%", "align": "center", "header_align": "center", "sortable": True, "sort_key": "raw_count", "sort_type": "number"}
             ],
             "data": results,
-            "action_button": {"label": "<i class='fas fa-sync'></i> 목록 다시 검색", "payload": {"action_type": "execute"}}
+            # 조회 전용이므로 실행(execute)이 아닌 다시 조회(preview) 버튼으로 매핑
+            "action_button": {"label": "<i class='fas fa-sync'></i> 목록 다시 검색", "payload": {"action_type": "preview"}} if results else None
         }
         
-        # 캐시에 저장하면 프론트엔드가 이를 읽어 화면에 표시합니다.
+        # 캐시에 저장하면 프론트엔드가 이를 읽어 화면에 표시
         core_api['cache'].save(res_payload)
         
     except Exception as e:
-        task.log(f"처리 중 오류 발생: {str(e)}")
+        task.log(f"❌ 처리 중 오류 발생: {str(e)}")
         task.update_state('error')
         return
