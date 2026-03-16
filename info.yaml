@@ -1,5 +1,5 @@
 title: "Plex Meta Helper(PMH)"
-version: "0.7.50-server"
+version: "0.7.51-server"
 package_name: "plex_meta_helper"
 developer: "golmog"
 description: "Plex Web UI 개선 스크립트"

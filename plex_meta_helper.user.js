@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.50
+// @version      0.7.51
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1421,9 +1421,26 @@ GM_addStyle(`
                                     </div>`;
 
                         case 'number':
-                            return `<div class="pmh-input-number-wrap">
-                                        <label class="pmh-input-number-label">${input.label}</label>
-                                        <input type="number" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" step="any" class="pmh-input-number">
+                            let layoutStyle = input.layout === 'plain' 
+                                ? 'display: flex; align-items: center; gap: 10px; margin-bottom: 12px;' 
+                                : 'display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.1); padding: 8px 10px; border-radius: 4px; border: 1px solid #333; margin-bottom: 12px;';
+                            
+                            let labelHtml = `<label class="pmh-input-number-label" style="${input.layout === 'plain' ? 'margin:0;' : ''}">${input.label}</label>`;
+                            let inputHtml = `<input type="number" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" step="any" class="pmh-input-number" style="${input.width ? `width:${input.width};` : ''}">`;
+
+                            if (input.align === 'left') {
+                                return `<div style="${layoutStyle}">${inputHtml}${labelHtml}</div>`;
+                            } else {
+                                return `<div style="${layoutStyle}">${labelHtml}${inputHtml}</div>`;
+                            }
+
+                        case 'sub_action':
+                            return `<div class="pmh-form-group" style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+                                        <button class="pmh-sub-action-btn" data-action="${input.action_type}" data-target="${input.id}" style="padding:6px 12px; background:${input.color || '#2f96b4'}; color:#fff; border:none; border-radius:4px; font-size:12px; cursor:pointer; transition:0.2s; font-weight:bold;">
+                                            <i class="${input.icon || 'fas fa-play'}"></i> ${input.label}
+                                        </button>
+                                        <span id="pmh_sub_msg_${input.id}" style="font-size:12px; color:#aaa; flex-grow:1;">${cachedVal ? '<i class="fas fa-check" style="color:#51a351;"></i> 임시 데이터가 적용되어 있습니다.' : ''}</span>
+                                        <input type="hidden" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ''}">
                                     </div>`;
 
                         case 'text':
@@ -2006,6 +2023,60 @@ GM_addStyle(`
                                 headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
                                 data: JSON.stringify({ task_id: toolId, _server_id: serverId })
                             });
+                        }
+                        
+                        const subActionBtn = e.target.closest('.pmh-sub-action-btn');
+                        if (subActionBtn && document.getElementById('pmh-tool-panel')?.contains(subActionBtn)) {
+                            e.preventDefault(); e.stopPropagation();
+                            if (subActionBtn.disabled) return;
+                            
+                            const actionType = subActionBtn.dataset.action;
+                            const targetId = subActionBtn.dataset.target;
+                            const msgSpan = document.getElementById(`pmh_sub_msg_${targetId}`);
+                            const hiddenInput = document.getElementById(`pmh_inp_${targetId}`);
+                            
+                            const originalHtml = subActionBtn.innerHTML;
+                            subActionBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 실행 중...`;
+                            subActionBtn.disabled = true;
+                            subActionBtn.style.opacity = '0.7';
+                            if (msgSpan) msgSpan.innerHTML = `<span style="color:#aaa;">요청을 처리하고 있습니다...</span>`;
+
+                            const { targetSrv, reqData } = getFormData();
+                            reqData.action_type = actionType;
+
+                            GM_xmlhttpRequest({
+                                method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                data: JSON.stringify(reqData),
+                                onload: (r) => {
+                                    subActionBtn.innerHTML = originalHtml;
+                                    subActionBtn.disabled = false;
+                                    subActionBtn.style.opacity = '1';
+                                    
+                                    if (r.status === 200) {
+                                        try {
+                                            const res = JSON.parse(r.responseText);
+                                            if(msgSpan) msgSpan.innerHTML = `<span style="color:${res.status === 'success' ? '#51a351' : '#bd362f'}; font-weight:bold;">${res.message || '완료되었습니다.'}</span>`;
+                                            
+                                            if(hiddenInput && res.value !== undefined) {
+                                                hiddenInput.value = res.value;
+                                                savedOptions[targetId] = res.value;
+                                            }
+                                        } catch(err) {
+                                            if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;">응답 처리 오류</span>`;
+                                        }
+                                    } else {
+                                        if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;">서버 오류 (HTTP ${r.status})</span>`;
+                                    }
+                                },
+                                onerror: () => {
+                                    subActionBtn.innerHTML = originalHtml;
+                                    subActionBtn.disabled = false;
+                                    subActionBtn.style.opacity = '1';
+                                    if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;">통신 실패</span>`;
+                                }
+                            });
+                            return;
                         }
                     };
                     

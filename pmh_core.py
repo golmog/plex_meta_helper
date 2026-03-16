@@ -13,13 +13,16 @@ import inspect
 import json
 import yaml
 import threading
+import subprocess
+import csv
+import io
 from datetime import datetime
 from contextlib import contextmanager
 
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.50"
+__version__ = "0.7.51"
 
 def get_version():
     return __version__
@@ -244,7 +247,8 @@ def _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_con
                 req_data['_is_cron'] = True
                 
                 data_mgr = CoreDataManager(base_dir, tool_id, server_id)
-                db_api = create_db_api(db_path)
+                sqlite_bin_path = global_config.get('plex_sqlite_bin') if global_config else None
+                db_api = create_db_api(db_path, sqlite_bin_path)
                 
                 def get_plex_instance():
                     from plexapi.server import PlexServer
@@ -258,9 +262,13 @@ def _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_con
                     return plex
                     
                 core_api = {
-                    "query": db_api["query"], "get_plex": get_plex_instance,
-                    "task": task_mgr, "config": global_config or {},
-                    "cache": data_mgr, "options": opts, 
+                    "query": db_api["query"],
+                    "execute": db_api["execute"],
+                    "get_plex": get_plex_instance,
+                    "task": task_mgr,
+                    "config": global_config or {},
+                    "cache": data_mgr,
+                    "options": opts, 
                     "notify": create_discord_notifier(base_dir, tool_id, server_id, global_config),
                     "sort": core_natural_sort
                 }
@@ -864,16 +872,67 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id):
         traceback.print_exc()
         core_api['task'].update_state('error')
 
-def create_db_api(db_path):
-    def safe_query(query, params=()):
+def create_db_api(db_path, sqlite_bin=None):
+    def _run_cli_query(query, params=(), is_select=False):
+        if not sqlite_bin or not os.path.exists(sqlite_bin):
+            raise FileNotFoundError(f"Plex SQLite 바이너리를 찾을 수 없습니다. (경로: {sqlite_bin})\npmh_config.yaml의 PLEX_SQLITE_BIN 경로를 확인하세요.")
+        
+        formatted_query = query
+        for p in params:
+            if p is None:
+                val = "NULL"
+            elif isinstance(p, (int, float)):
+                val = str(p)
+            else:
+                val = "'" + str(p).replace("'", "''") + "'"
+            formatted_query = formatted_query.replace('?', val, 1)
+
+        if is_select:
+            final_script = f".mode csv\n.header on\n{formatted_query};\n"
+        else:
+            final_script = f"BEGIN IMMEDIATE;\n{formatted_query};\nCOMMIT;\n"
+        
+        cmd = [sqlite_bin, db_path]
+        try:
+            result = subprocess.run(cmd, input=final_script.encode('utf-8'), capture_output=True, check=True)
+            output = result.stdout.decode('utf-8').strip()
+            
+            if is_select:
+                if not output: return []
+                reader = csv.DictReader(io.StringIO(output))
+                return [dict(row) for row in reader]
+            else:
+                return True, output
+                
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr.decode('utf-8')
+            raise Exception(f"Plex SQLite 실행 실패: {error_msg}")
+
+    def smart_query(query, params=()):
         if not query.strip().upper().startswith("SELECT"):
-            raise ValueError("Security Error: Only SELECT queries are allowed in PMH Tools.")
-        with get_db_connection(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            columns = [col[0] for col in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
-    return {"query": safe_query}
+            raise ValueError("Security Error: 'query' API는 SELECT 문만 허용합니다. 쓰기 작업은 'execute'를 사용하세요.")
+            
+        wal_path = f"{db_path}-wal"
+        
+        if os.path.exists(wal_path):
+            with get_db_connection(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+                columns = [col[0] for col in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                
+        else:
+            print("[PMH DB] Plex 서버 종료 감지. 안전을 위해 Plex SQLite 바이너리로 SELECT 쿼리를 우회 실행합니다.")
+            return _run_cli_query(query, params, is_select=True)
+
+    def execute_via_bin(query, params=()):
+        """쓰기(UPDATE/INSERT/DELETE) 작업 전용 API (항상 Plex SQLite 바이너리 사용)"""
+        return _run_cli_query(query, params, is_select=False)
+
+    return {
+        "query": smart_query, 
+        "execute": execute_via_bin
+    }
 
 # ==============================================================================
 # [플러그인 도구(Tool) 관리 및 중앙 라우터]
@@ -999,7 +1058,8 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             except Exception as load_err: return {"error": f"툴 로드 실패: {load_err}"}, 500
 
             if data is None: data = {}
-            db_api = create_db_api(db_path)
+            sqlite_bin_path = global_config.get('plex_sqlite_bin') if global_config else None
+            db_api = create_db_api(db_path, sqlite_bin_path)
             server_id = args.get('server_id', data.get('_server_id', 'default')) if data else args.get('server_id', 'default')
             
             task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
@@ -1024,6 +1084,7 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
             core_api = {
                 "query": db_api["query"],
+                "execute": db_api["execute"],
                 "get_plex": get_plex_instance,
                 "task": task_mgr,
                 "config": global_config or {},
@@ -1121,7 +1182,7 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 elif action_type == 'save_options':
                     current_opts = options_mgr.load()
                     for k, v in data.items():
-                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
+                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token'] and not str(k).startswith('tmp_'):
                             current_opts[k] = v
                     options_mgr.save(current_opts)
 
@@ -1137,7 +1198,7 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 else:
                     current_opts = options_mgr.load()
                     for k, v in data.items():
-                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
+                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token'] and not str(k).startswith('tmp_'):
                             current_opts[k] = v
                     options_mgr.save(current_opts)
 

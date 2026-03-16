@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
     "API_KEY": "YOUR_PLEX_MATE_API_KEY_HERE",
     "PLEX_MATE_URL": "http://127.0.0.1:9999",
     "DISCORD_WEBHOOK": "",
+    "PLEX_SQLITE_BIN": "/usr/lib/plexmediaserver/Plex SQLite",
     "PATH_MAPPINGS": [
         "/mnt/gds/|/mnt/gds/"
     ]
@@ -61,6 +62,7 @@ API_KEY = cfg.get("API_KEY", DEFAULT_CONFIG["API_KEY"])
 PLEX_MATE_URL = cfg.get("PLEX_MATE_URL", DEFAULT_CONFIG["PLEX_MATE_URL"])
 PATH_MAPPINGS = cfg.get("PATH_MAPPINGS", DEFAULT_CONFIG["PATH_MAPPINGS"])
 DISCORD_WEBHOOK = cfg.get("DISCORD_WEBHOOK", DEFAULT_CONFIG["DISCORD_WEBHOOK"])
+PLEX_SQLITE_BIN = cfg.get("PLEX_SQLITE_BIN", DEFAULT_CONFIG["PLEX_SQLITE_BIN"])
 
 CORE_FILE_PATH = os.path.join(BASE_DIR, "pmh_core.py")
 if not os.path.exists(CORE_FILE_PATH):
@@ -78,7 +80,8 @@ global_conf = {
     "mate_apikey": API_KEY,
     "mate_url": PLEX_MATE_URL,
     "path_mappings": PATH_MAPPINGS,
-    "discord_webhook": DISCORD_WEBHOOK
+    "discord_webhook": DISCORD_WEBHOOK,
+    "plex_sqlite_bin": PLEX_SQLITE_BIN
 }
 pmh_core.start_scheduler_daemon(BASE_DIR, PLEX_DB_PATH, PLEX_URL, PLEX_TOKEN, global_conf)
 

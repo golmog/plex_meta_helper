@@ -10,6 +10,9 @@
 #   Linux/Docker: "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
 PLEX_DB_PATH: "/path/to/your/com.plexapp.plugins.library.db"
 
+# Plex 서버가 꺼져 있거나, DB에 쓰기 작업이 필요한 경우 사용할 Plex SQLite 바이너리의 절대 경로를 입력하세요.
+PLEX_SQLITE_BIN: "/usr/lib/plexmediaserver/Plex SQLite"
+
 # 서버가 접근할 Plex URL과 토큰을 입력하세요.
 PLEX_URL: "http://plex:32400"
 PLEX_TOKEN: "YOUR_PLEX_TOKEN"
