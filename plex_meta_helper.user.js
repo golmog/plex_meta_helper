@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.52
+// @version      0.7.53
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2996,62 +2996,99 @@ GM_addStyle(`
                         }
                     };
 
-                    document.querySelectorAll('.pmh_dynamic_run_btn').forEach(btn => {
-                        btn.onclick = (e) => {
-                            e.preventDefault();
-                            if (window._pmh_task_running_states[toolId]) return alert("진행 중인 작업이 있습니다.\n모니터링 탭을 확인해 주세요.");
-                            
-                            const { targetSrv: tSrv, reqData } = getFormData();
-                            reqData.action_type = btn.dataset.action; 
-                            
-                            const origHtml = btn.innerHTML;
-                            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> <span>요청 중...</span>`;
-                            btn.disabled = true;
+                    document.removeEventListener('click', window._pmhDynamicRunBtnHandler);
+                    
+                    window._pmhDynamicRunBtnHandler = (e) => {
+                        // 클릭된 요소가 동적 실행 버튼(pmh_dynamic_run_btn)인지 확인
+                        const btn = e.target.closest('.pmh_dynamic_run_btn');
+                        if (!btn) return;
+                        
+                        // 현재 툴 패널 내부에서 눌린 버튼인지 확인 (다른 툴 창 간섭 방지)
+                        if (!document.getElementById('pmh-tool-panel')?.contains(btn)) return;
 
-                            GM_xmlhttpRequest({
-                                method: "POST", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/run`,
-                                headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
-                                data: JSON.stringify(reqData),
-                                onload: (r) => {
-                                    btn.innerHTML = origHtml;
-                                    btn.disabled = false;
+                        e.preventDefault();
+                        e.stopPropagation();
 
-                                    if (r.status === 200) {
-                                        try {
-                                            const resData = JSON.parse(r.responseText);
-                                            
-                                            if (resData.status === 'error') {
-                                                toastr.error(resData.message || "작업을 시작할 수 없습니다.", "실행 거부", {timeOut: 6000});
-                                                return;
-                                            }
-                                            if (resData.type === 'message') {
-                                                toastr.info(resData.message || "명령이 실행되었습니다.", "알림", {timeOut: 4000});
-                                                return;
-                                            }
-                                            if (resData.type === 'async_task') {
-                                                const taskData = resData.task_data || {};
-                                                if (!taskData._silent_task) {
-                                                    if (pollTimer) clearTimeout(pollTimer);
-                                                    const resMonitor = document.getElementById('pmh_run_res_monitor');
-                                                    if (resMonitor) {
-                                                        resMonitor.innerHTML = `<div style="padding:30px; text-align:center; color:#e5a00d;"><i class="fas fa-spinner fa-spin" style="font-size:24px; margin-bottom:15px;"></i><br>작업을 준비하고 있습니다...</div>`;
-                                                    }
+                        // 버튼이 잠겨있으면 무시
+                        if (btn.disabled || btn.style.pointerEvents === 'none') return;
+                        
+                        // 진행 중인 작업이 있으면 경고 후 차단
+                        if (window._pmh_task_running_states[toolId]) {
+                            return alert("진행 중인 작업이 있습니다.\n모니터링 탭을 확인해 주세요.");
+                        }
+                        
+                        // 폼 데이터 수집 및 버튼에 지정된 action_type 강제 주입
+                        const { targetSrv: tSrv, reqData } = getFormData();
+                        reqData.action_type = btn.dataset.action; 
+                        
+                        console.log(`[PMH] Dynamic Run Button Clicked -> Action: ${reqData.action_type}`);
+
+                        // 버튼 상태 변경 (스피너)
+                        const origHtml = btn.innerHTML;
+                        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> <span>요청 중...</span>`;
+                        btn.disabled = true;
+                        btn.style.opacity = '0.7';
+
+                        // API 요청 전송
+                        GM_xmlhttpRequest({
+                            method: "POST", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                            headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
+                            data: JSON.stringify(reqData),
+                            onload: (r) => {
+                                // 버튼 복구
+                                btn.innerHTML = origHtml;
+                                btn.disabled = false;
+                                btn.style.opacity = '1';
+
+                                if (r.status === 200) {
+                                    try {
+                                        const resData = JSON.parse(r.responseText);
+                                        console.log(`[PMH] Dynamic Run Response:`, resData);
+                                        
+                                        // 1. 에러 반환 시
+                                        if (resData.status === 'error') {
+                                            toastr.error(resData.message || "작업을 시작할 수 없습니다.", "실행 거부", {timeOut: 6000});
+                                            return;
+                                        }
+                                        // 2. 단순 메시지 반환 시
+                                        if (resData.type === 'message') {
+                                            toastr.info(resData.message || "명령이 실행되었습니다.", "알림", {timeOut: 4000});
+                                            return;
+                                        }
+                                        // 3. 비동기 작업(async_task) 반환 시 (모니터링 화면 초기화)
+                                        if (resData.type === 'async_task') {
+                                            const taskData = resData.task_data || {};
+                                            if (!taskData._silent_task) {
+                                                if (window._pmh_active_pollers && window._pmh_active_pollers[toolId]) {
+                                                    clearTimeout(window._pmh_active_pollers[toolId]);
+                                                }
+                                                const resMonitor = document.getElementById('pmh_run_res_monitor');
+                                                if (resMonitor) {
+                                                    resMonitor.innerHTML = `<div style="padding:30px; text-align:center; color:#e5a00d;"><i class="fas fa-spinner fa-spin" style="font-size:24px; margin-bottom:15px;"></i><br>작업을 준비하고 있습니다...</div>`;
                                                 }
                                             }
-                                            processAndRenderResult(resData, parseInt(savedOptions.items_per_page || 10), tSrv);
-                                        } catch(err) {}
-                                    } else {
-                                        toastr.error(`서버 통신 오류 (HTTP ${r.status})`, "통신 실패", {timeOut: 4000});
+                                        }
+                                        
+                                        // 💡 공통 렌더러 호출 (UI/데이터 테이블 갱신 및 탭 전환)
+                                        processAndRenderResult(resData, parseInt(savedOptions.items_per_page || 10), tSrv);
+                                        
+                                    } catch(err) {
+                                        console.error("[PMH] JSON Parse Error on Dynamic Run:", err);
+                                        toastr.error("서버 응답을 처리할 수 없습니다.", "오류", {timeOut: 4000});
                                     }
-                                },
-                                onerror: () => {
-                                    btn.innerHTML = origHtml;
-                                    btn.disabled = false;
-                                    toastr.error("서버에 연결할 수 없습니다.", "통신 실패", {timeOut: 4000});
+                                } else {
+                                    toastr.error(`서버 통신 오류 (HTTP ${r.status})`, "통신 실패", {timeOut: 4000});
                                 }
-                            });
-                        };
-                    });
+                            },
+                            onerror: () => {
+                                btn.innerHTML = origHtml;
+                                btn.disabled = false;
+                                btn.style.opacity = '1';
+                                toastr.error("서버에 연결할 수 없습니다.", "통신 실패", {timeOut: 4000});
+                            }
+                        });
+                    };
+                    document.addEventListener('click', window._pmhDynamicRunBtnHandler);
                 }, 50); 
             }
         }); 
