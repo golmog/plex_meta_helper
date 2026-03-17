@@ -6,7 +6,6 @@ import logging
 import urllib.request
 import importlib
 import time
-from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 

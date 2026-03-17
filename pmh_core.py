@@ -8,7 +8,6 @@ import re
 import unicodedata
 import shutil
 import urllib.request
-import importlib.util
 import inspect
 import json
 import yaml
@@ -22,10 +21,16 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.51"
+__version__ = "0.7.52"
 
 def get_version():
     return __version__
+
+GLOBAL_DASHBOARD_CACHE = {
+    "running": [],
+    "cron": [],
+    "last_updated": 0
+}
 
 # ==============================================================================
 # [코어 중앙 자연 정렬 엔진]
@@ -98,8 +103,10 @@ def create_discord_notifier(base_dir, tool_id, server_id, global_config):
             embed["footer"] = {"text": final_footer.strip()}
             
         payload = {"embeds": [embed]}
-        if final_bot_name: payload["username"] = final_bot_name
-        if avatar_url: payload["avatar_url"] = avatar_url
+        extra_data = {}
+        if final_bot_name: extra_data["username"] = final_bot_name
+        if avatar_url: extra_data["avatar_url"] = avatar_url
+        payload.update(extra_data)
         
         try:
             headers = {'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -138,63 +145,83 @@ def match_cron(cron_expr, dt):
             match_part(parts[3], dt.month) and
             match_part(parts[4], dt.isoweekday() % 7))
 
+_SCHEDULER_STATES = {}
+
 def start_scheduler_daemon(base_dir, db_path, plex_url, plex_token, global_config):
     thread_name = "PMH_Cron_Scheduler"
     
-    for t in threading.enumerate():
-        if t.name == thread_name:
-            t.do_run = False 
-
+    _SCHEDULER_STATES[thread_name] = False
+    
     def scheduler_loop():
-        t = threading.current_thread()
-        t.do_run = True
         tz_info = time.strftime('%z (%Z)')
-        
-        # 글로벌 웹훅 연결 상태 체크
-        g_webhook = global_config.get('discord_webhook', '')
-        webhook_status = "설정됨" if g_webhook else "비어있음"
-        
         print(f"[PMH Daemon] 자동 실행 스케줄러 시작. (현재 타임존: {tz_info})")
-        print(f"[PMH Daemon] 전역 디스코드 웹훅 상태: {webhook_status}")
         
-        # 부팅 시 저장된 옵션 DB를 순회하며 툴 스케줄 대기 현황 출력
+        _SCHEDULER_STATES[thread_name] = True
+        
         tools_dir = os.path.join(base_dir, 'tools')
         task_logs_dir = os.path.join(base_dir, 'task_logs')
-        if os.path.exists(tools_dir) and os.path.exists(task_logs_dir):
-            for file in os.listdir(task_logs_dir):
-                if file.endswith('_options.db'):
-                    base_name = file.replace('_options.db', '')
-                    
-                    matched_tool = None
-                    server_id = "default"  # 기본값 할당 (안전 장치)
-                    
-                    for tool_id in os.listdir(tools_dir):
-                        if base_name.startswith(tool_id + '_'):
-                            matched_tool = tool_id
-                            # ✨ [수정됨] 스코프 밖에서도 안전하게 사용할 수 있도록 추출
-                            server_id = base_name[len(tool_id)+1:]
-                            break
-                            
-                    if matched_tool:
-                        mgr = CoreOptionsManager(base_dir, matched_tool, server_id)
-                        opts = mgr.load()
-                        if opts.get('cron_enable') and opts.get('cron_expr'):
-                            print(f"[PMH Daemon] ⏰ '{matched_tool}' (서버:{server_id[:8]}) 스케줄 대기 중: {opts.get('cron_expr')}")
+        last_cache_update = 0
 
-        # 메인 크론 확인 루프
-        while getattr(t, "do_run", True):
+        while _SCHEDULER_STATES.get(thread_name, False):
             now = datetime.now()
+            
             if now.second == 0:
                 try:
                     _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_config, now)
                 except Exception as e:
                     print(f"[PMH Scheduler Error] {e}")
                 time.sleep(1)
+                
+            current_time = time.time()
+            if current_time - last_cache_update >= 5.0:
+                try:
+                    _update_dashboard_cache(tools_dir, task_logs_dir, base_dir)
+                    last_cache_update = current_time
+                except Exception as e:
+                    pass
+                    
             time.sleep(0.5)
 
     st = threading.Thread(target=scheduler_loop, name=thread_name)
     st.daemon = True
     st.start()
+
+def _update_dashboard_cache(tools_dir, task_logs_dir, base_dir):
+    global GLOBAL_DASHBOARD_CACHE
+    if not os.path.exists(tools_dir) or not os.path.exists(task_logs_dir): return
+    
+    running_list = []
+    cron_list = []
+    
+    for f_name in os.listdir(task_logs_dir):
+        if f_name.endswith('_task.db'):
+            # 파일명 구조: {tool_id}_{server_id}_task.db
+            parts = f_name[:-8].rsplit('_', 1)
+            if len(parts) == 2:
+                t_id, s_id = parts
+                mgr = CoreTaskManager(base_dir, t_id, s_id)
+                t_state = mgr.load(include_target_items=False)
+                if t_state and t_state.get('state') == 'running':
+                    running_list.append({
+                        "tool_id": t_id, "server_id": s_id,
+                        "progress": t_state.get('progress', 0), "total": t_state.get('total', 0)
+                    })
+                    
+        elif f_name.endswith('_options.db'):
+            # 파일명 구조: {tool_id}_{server_id}_options.db
+            parts = f_name[:-11].rsplit('_', 1)
+            if len(parts) == 2:
+                t_id, s_id = parts
+                mgr = CoreOptionsManager(base_dir, t_id, s_id)
+                opts = mgr.load()
+                if opts.get('cron_enable') and opts.get('cron_expr'):
+                    cron_list.append({
+                        "tool_id": t_id, "server_id": s_id, "expr": opts.get('cron_expr')
+                    })
+                    
+    GLOBAL_DASHBOARD_CACHE["running"] = running_list
+    GLOBAL_DASHBOARD_CACHE["cron"] = cron_list
+    GLOBAL_DASHBOARD_CACHE["last_updated"] = time.time()
 
 def _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_config, now):
     tools_dir = os.path.join(base_dir, 'tools')
@@ -945,6 +972,7 @@ def _load_tool_module(tools_dir, tool_id, entry_file):
     module_name = f"pmh_tool_{tool_id}"
 
     import importlib
+    import importlib.util
     if module_name in sys.modules:
         del sys.modules[module_name]
     importlib.invalidate_caches()
@@ -986,7 +1014,15 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                             installed_tools.append(tool_info)
                     except Exception as e:
                         print(f"[PMH TOOL ERROR] Could not read {info_path}: {e}")
-            return {"tools": installed_tools}, 200
+                        
+            global GLOBAL_DASHBOARD_CACHE
+            return {
+                "tools": installed_tools, 
+                "dashboard": {
+                    "running": GLOBAL_DASHBOARD_CACHE.get("running", []),
+                    "cron": GLOBAL_DASHBOARD_CACHE.get("cron", [])
+                }
+            }, 200
 
         elif subpath == 'tools/install' and method == 'POST':
             yaml_url = data.get('url')
@@ -1058,27 +1094,58 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             except Exception as load_err: return {"error": f"툴 로드 실패: {load_err}"}, 500
 
             if data is None: data = {}
-            sqlite_bin_path = global_config.get('plex_sqlite_bin') if global_config else None
-            db_api = create_db_api(db_path, sqlite_bin_path)
             server_id = args.get('server_id', data.get('_server_id', 'default')) if data else args.get('server_id', 'default')
+            
+            options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
+            current_opts = options_mgr.load()
+            
+            # 1. Plex DB 경로 폴백
+            if not current_opts.get('db_path'):
+                current_opts['db_path'] = db_path
+                
+            # 2. Plex SQLite 바이너리 경로 폴백
+            if not current_opts.get('sqlite_bin'):
+                cfg_sqlite_bin = global_config.get('plex_sqlite_bin') if global_config else None
+                if not cfg_sqlite_bin:
+                    cfg_sqlite_bin = "/usr/lib/plexmediaserver/Plex SQLite"
+                current_opts['sqlite_bin'] = cfg_sqlite_bin
+
+            # 3. DB 소유권(UID:GID) 자동 추출 폴백
+            if not current_opts.get('uid_gid'):
+                try:
+                    target_for_stat = current_opts['db_path']
+                    # 파일이 없으면 부모 디렉토리 검사 시도
+                    if not os.path.exists(target_for_stat):
+                        target_for_stat = os.path.dirname(target_for_stat)
+                    
+                    if os.path.exists(target_for_stat):
+                        stat_info = os.stat(target_for_stat)
+                        current_opts['uid_gid'] = f"{stat_info.st_uid}:{stat_info.st_gid}"
+                except Exception as e:
+                    print(f"[PMH Core] UID:GID 자동 감지 실패: {e}")
+
+            db_api = create_db_api(current_opts['db_path'], current_opts['sqlite_bin'])
             
             task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
             data_mgr = CoreDataManager(base_dir, tool_id, server_id)
-            options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
-
             final_url = plex_url if str(plex_url).strip() else data.get('_plex_url', '')
             final_token = plex_token if str(plex_token).strip() else data.get('_plex_token', '')
-            for key in ['_plex_url', '_plex_token', 'plex_url', 'plex_token']: data.pop(key, None)
+            
+            merged_config = global_config.copy() if global_config else {}
+            merged_config['PLEX_URL'] = final_url
+            merged_config['PLEX_TOKEN'] = final_token
 
             def get_plex_instance():
                 from plexapi.server import PlexServer
                 if not final_url or not final_token: raise ValueError("Plex 서버 정보가 누락되었습니다.")
                 plex = PlexServer(final_url, final_token, timeout=120)
                 orig_fetchItem = plex.fetchItem
-                def safe_fetchItem(ekey, **kwargs):
-                    if isinstance(ekey, str) and ekey.strip().isdigit(): ekey = f"/library/metadata/{ekey.strip()}"
-                    elif isinstance(ekey, int): ekey = f"/library/metadata/{ekey}"
-                    return orig_fetchItem(ekey, **kwargs)
+                def safe_fetchItem(ekey, *args, **kwargs):
+                    if isinstance(ekey, str) and ekey.strip().isdigit(): 
+                        ekey = f"/library/metadata/{ekey.strip()}"
+                    elif isinstance(ekey, int): 
+                        ekey = f"/library/metadata/{ekey}"
+                    return orig_fetchItem(ekey, *args, **kwargs)
                 plex.fetchItem = safe_fetchItem
                 return plex
 
@@ -1087,9 +1154,9 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 "execute": db_api["execute"],
                 "get_plex": get_plex_instance,
                 "task": task_mgr,
-                "config": global_config or {},
+                "config": merged_config,
                 "cache": data_mgr,
-                "options": options_mgr.load(),
+                "options": current_opts,
                 "notify": create_discord_notifier(base_dir, tool_id, server_id, global_config),
                 "sort": core_natural_sort
             }
@@ -1182,9 +1249,11 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 elif action_type == 'save_options':
                     current_opts = options_mgr.load()
                     for k, v in data.items():
-                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token'] and not str(k).startswith('tmp_'):
+                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
                             current_opts[k] = v
-                    options_mgr.save(current_opts)
+                            
+                    db_save_opts = {k: v for k, v in current_opts.items() if not str(k).startswith('tmp_')}
+                    options_mgr.save(db_save_opts)
 
                     c_enable = current_opts.get('cron_enable')
                     c_expr = current_opts.get('cron_expr', '')
@@ -1194,21 +1263,23 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                         print(f"[PMH Core] ⚙️ '{tool_id}' 툴 설정 저장 완료 (스케줄 비활성)")
                     return {"status": "success"}, 200
 
-                # 시스템 예약 액션 외의 모든 툴 커스텀 액션 처리
                 else:
                     current_opts = options_mgr.load()
                     for k, v in data.items():
-                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token'] and not str(k).startswith('tmp_'):
+                        if k not in ['action_type', '_server_id', '_plex_url', '_plex_token']:
                             current_opts[k] = v
-                    options_mgr.save(current_opts)
+                            
+                    db_save_opts = {k: v for k, v in current_opts.items() if not str(k).startswith('tmp_')}
+                    options_mgr.save(db_save_opts)
 
-                    print(f"[PMH Core] 툴 '{tool_id}' 워커 라우팅 시작 (Action: {action_type.upper()})")
+                    if action_type in ['preview', 'execute']:
+                        print(f"[PMH Core] 툴 '{tool_id}' 메인 워커 작업 라우팅 (Action: {action_type.upper()})")
+
                     res, code = module.run(data, core_api)
-                    
+
                     if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
                         task_data = res.get('task_data', {})
                         
-                        # 워커 스레드에서도 자신이 무슨 액션으로 실행됐는지 알게 보존
                         if 'action_type' not in task_data:
                             task_data['action_type'] = action_type
                             

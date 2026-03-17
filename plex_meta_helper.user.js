@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.51
+// @version      0.7.52
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -139,13 +139,15 @@ GM_addStyle(`
     /* PMH 툴박스 드롭다운 */
     #pmh-tool-dropdown {
         position: absolute; background-color: rgba(25, 28, 32, 0.98); border: 1px solid #444;
-        border-radius: 6px; min-width: 250px; z-index: 99999;
+        border-radius: 6px; min-width: 280px; max-width: 450px; z-index: 99999;
         box-shadow: 0 8px 20px rgba(0,0,0,0.7); display: none; backdrop-filter: blur(5px);
     }
     .pmh-tool-item {
         color: #ccc; font-size: 12px; transition: 0.2s; border-bottom: 1px solid #333;
     }
     .pmh-tool-item:last-child { border-bottom: none; }
+    .pmh-tool-item:hover { background-color: rgba(255, 255, 255, 0.08) !important; }
+    .pmh-tool-item.pmh-running-tool:hover { background-color: rgba(229, 160, 13, 0.15) !important; }
     .pmh-tool-run-btn:hover { color: #e5a00d; font-weight: bold; cursor: pointer; }
     .pmh-tool-delete-btn { color: rgba(255, 255, 255, 0.4) !important; transition: color 0.2s, transform 0.2s; }
     .pmh-tool-delete-btn:hover { color: #ff6b6b !important; transform: scale(1.1); }
@@ -224,6 +226,59 @@ GM_addStyle(`
     .pmh-multi-option:hover { background: rgba(255,255,255,0.05); }
     .pmh-multi-option:last-child { border-bottom: none; }
     .pmh-multi-chk { margin: 0 !important; width: 14px; height: 14px; accent-color: #e5a00d; cursor: pointer; flex-shrink: 0; }
+
+    /* 툴 패널 탭 버튼 */
+    .pmh-tab-btn {
+        padding: 10px 15px; cursor: pointer; color: #777; font-weight: normal;
+        border-bottom: 2px solid transparent; transition: color 0.2s, border-bottom-color 0.2s;
+    }
+    .pmh-tab-btn:hover { color: #fff; }
+    .pmh-tab-btn.active { color: #e5a00d; font-weight: bold; border-bottom-color: #e5a00d; }
+
+    /* 서브 액션 버튼 */
+    .pmh-sub-action-btn {
+        color: #fff; border: none; border-radius: 4px; cursor: pointer; 
+        transition: filter 0.2s, opacity 0.2s; font-weight: bold; box-sizing: border-box; 
+        flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    }
+    .pmh-sub-action-btn:disabled { cursor: not-allowed !important; opacity: 0.6; }
+    .pmh-sub-action-btn:not(:disabled):hover { filter: brightness(1.15); }
+
+    /* 동적 실행 메인 버튼 */
+    .pmh-dynamic-run-btn {
+        color: #fff; border: none; font-weight: bold; cursor: pointer; 
+        border-radius: 4px; font-size: 13px; transition: filter 0.2s, opacity 0.2s;
+        padding: 12px 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); display: flex; align-items: center; gap: 6px;
+    }
+    .pmh-dynamic-run-btn:disabled { cursor: not-allowed !important; opacity: 0.6; filter: grayscale(80%); }
+    .pmh-dynamic-run-btn:not(:disabled):hover { filter: brightness(1.2); }
+
+    /* 데이터 테이블 행 Hover */
+    .pmh-dt-row {
+        border-bottom: 1px solid #333; transition: background-color 0.2s;
+    }
+    .pmh-dt-row:hover { background-color: rgba(255,255,255,0.05); }
+
+    /* 스몰 액션 아이콘 링크 */
+    .pmh-action-link {
+        font-size: 12px; text-decoration: none; display: flex; align-items: center; gap: 4px; 
+        padding: 2px 6px; border-radius: 4px; transition: background 0.2s, color 0.2s;
+    }
+
+    .pmh-page-btn {
+        min-width: 26px; height: 26px; padding: 0 6px; display: flex; justify-content: center; align-items: center; 
+        border-radius: 4px; font-family: monospace; font-size: 13px; cursor: pointer;
+        background: #222; color: #ccc; border: 1px solid #444; transition: background 0.2s, color 0.2s, filter 0.2s;
+    }
+    .pmh-page-btn:not(:disabled):not(.active):hover {
+        background: #333; color: #fff; border-color: #555;
+    }
+    .pmh-page-btn:disabled {
+        background: #111; color: #555; border-color: #222; cursor: not-allowed;
+    }
+    .pmh-page-btn.active {
+        background: #e5a00d; color: #1f1f1f; border-color: #e5a00d; font-weight: bold; cursor: default;
+    }
 `);
 
 (function() {
@@ -251,7 +306,7 @@ GM_addStyle(`
                         if (guid) pmhMatchResultsCache.push(guid);
                     });
                 } catch (e) {
-                    console.error("[PMH] XML Parse Error during match extraction", e);
+                    errorLog("[XML Parse] Error during match extraction", e);
                 }
             }
         });
@@ -1282,17 +1337,36 @@ GM_addStyle(`
     // 5-1. Tool UI 렌더링 및 모니터링
     // ==========================================
     function openPmhToolUI(toolId, forceSrvIdx = null) {
-        const globalCache = JSON.parse(GM_getValue(`pmh_tool_cache_global_${toolId}`, "{}"));
+        const globalCacheStr = GM_getValue(`pmh_tool_cache_global_${toolId}`, "{}");
+        let globalCache = {};
+        try { globalCache = JSON.parse(globalCacheStr); } catch(e) {}
+        
         const currentSrvId = window.location.hash.match(/\/server\/([a-f0-9]+)\//)?.[1];
         
+        let availableServerIndices = (window._pmh_tool_server_map?.[toolId] || []).map(Number);
+        if (availableServerIndices.length === 0) {
+            availableServerIndices = AppSettings.SERVERS.map((_, i) => i);
+        }
+
         let srvIdx = 0;
-        if (forceSrvIdx !== null) srvIdx = forceSrvIdx;
-        else if (globalCache['target_server_idx'] !== undefined) srvIdx = parseInt(globalCache['target_server_idx']);
-        else if (currentSrvId) {
+        
+        if (forceSrvIdx !== null && forceSrvIdx !== undefined) {
+            srvIdx = Number(forceSrvIdx);
+        } else if (globalCache['target_server_idx'] !== undefined && globalCache['target_server_idx'] !== null) {
+            srvIdx = Number(globalCache['target_server_idx']);
+        } else if (currentSrvId) {
             const matchIdx = AppSettings.SERVERS.findIndex(s => s.machineIdentifier === currentSrvId);
             if (matchIdx !== -1) srvIdx = matchIdx;
         }
+
+        if (!availableServerIndices.includes(srvIdx)) {
+            console.warn(`[PMH] 툴 '${toolId}'가 서버(인덱스 ${srvIdx})에 없어, 유효 서버(인덱스 ${availableServerIndices[0]})로 전환합니다.`);
+            srvIdx = availableServerIndices.length > 0 ? availableServerIndices[0] : 0; 
+        }
         
+        globalCache['target_server_idx'] = srvIdx;
+        GM_setValue(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
+
         const targetSrv = AppSettings.SERVERS[srvIdx];
         if (!targetSrv) return toastr.error("서버 설정이 유효하지 않습니다.");
         
@@ -1304,10 +1378,59 @@ GM_addStyle(`
             method: "GET", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/ui?server_id=${serverId}&_t=${Date.now()}`,
             headers: { "X-API-Key": targetSrv.plexMateApiKey },
             onload: (res) => {
-                if(res.status !== 200) return window.showPmhToolPanel(toolId, "오류 발생", `<p style="color:#bd362f;">UI 스키마 로드 실패 (HTTP ${res.status})</p>`);
-                
+                if(res.status !== 200) {
+                    let fallbackHtml = `
+                        <div style="display:flex; justify-content:space-between; padding-bottom:10px; margin-bottom:15px; border-bottom:1px solid #444;">
+                            <span style="color:#bd362f; font-weight:bold;"><i class="fas fa-exclamation-triangle"></i> 로드 실패</span>
+                            <i class="fas fa-bomb" id="pmh_tool_reset_cache" title="설정 초기화" style="color:#777; cursor:pointer;" onmouseover="this.style.color='#bd362f'" onmouseout="this.style.color='#777'"></i>
+                        </div>
+                    `;
+                    if (AppSettings.SERVERS.length > 1) {
+                        fallbackHtml += `<div style="margin-bottom: 15px;"><label style="display:block; color:#aaa; font-size:12px; margin-bottom:6px;">서버 전환 시도</label>
+                                         <select id="pmh_target_server_idx_error" style="width:100%; padding:8px; background:#111; color:#fff; border:1px solid #444; border-radius:4px;">`;
+                        AppSettings.SERVERS.forEach((srv, idx) => {
+                            if (availableServerIndices.includes(idx)) {
+                                fallbackHtml += `<option value="${idx}" ${idx === srvIdx ? "selected" : ""}>${srv.name}</option>`;
+                            }
+                        });
+                        fallbackHtml += `</select></div>`;
+                    }
+                    fallbackHtml += `<div style="color:#bd362f; background:rgba(189,54,47,0.1); padding:15px; border-radius:4px; border:1px solid #bd362f;">UI 스키마 로드 실패 (HTTP ${res.status})<br><br>해당 서버에 툴이 없거나 권한 문제가 있습니다.</div>`;
+                    
+                    window.showPmhToolPanel(toolId, "오류 발생", fallbackHtml);
+                    
+                    setTimeout(() => {
+                        const srvSelectElError = document.getElementById('pmh_target_server_idx_error');
+                        if (srvSelectElError) {
+                            srvSelectElError.addEventListener('change', (e) => {
+                                openPmhToolUI(toolId, Number(e.target.value));
+                            });
+                        }
+                        const resetBtn = document.getElementById('pmh_tool_reset_cache');
+                        if (resetBtn) {
+                            resetBtn.onclick = () => {
+                                GM_deleteValue(`pmh_panel_geo_${toolId}`);
+                                GM_deleteValue(`pmh_tool_cache_${toolId}`);
+                                GM_deleteValue(`pmh_tool_cache_global_${toolId}`);
+                                document.getElementById('pmh-tool-panel').style.display = 'none';
+                                toastr.success("설정이 초기화되었습니다.");
+                            };
+                        }
+                    }, 50);
+                    return;
+                }
+
                 const ui = JSON.parse(res.responseText);
                 const savedOptions = ui.saved_options || {};
+                
+                window._pmh_tmp_options = window._pmh_tmp_options || {};
+                Object.keys(window._pmh_tmp_options).forEach(k => {
+                    if (k.startsWith(toolId + "_tmp_")) {
+                        const originKey = k.substring(toolId.length + 1);
+                        savedOptions[originKey] = window._pmh_tmp_options[k];
+                    }
+                });
+
                 const isFormCollapsed = savedOptions._form_collapsed === true;
                 const collapseIcon = isFormCollapsed ? 'fa-chevron-down' : 'fa-chevron-up';
                 const formDisplay = isFormCollapsed ? 'none' : 'block';
@@ -1316,9 +1439,9 @@ GM_addStyle(`
                     <div style="display:flex; flex-direction:column; height:100%;">
                         <div style="display:flex; border-bottom:1px solid #444; margin-bottom:15px; flex-shrink:0; justify-content:space-between; align-items:flex-end;">
                             <div style="display:flex;">
-                                <div class="pmh-tab-btn active" data-tab="tab_form" style="padding:10px 15px; cursor:pointer; color:#e5a00d; font-weight:bold; border-bottom:2px solid #e5a00d;"><i class="fas fa-search"></i> 조회 및 설정</div>
-                                <div class="pmh-tab-btn" data-tab="tab_monitor" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-desktop"></i> 실행 모니터링</div>
-                                <div class="pmh-tab-btn" data-tab="tab_settings" style="padding:10px 15px; cursor:pointer; color:#777; border-bottom:2px solid transparent; transition:0.2s;"><i class="fas fa-cog"></i> 환경 설정</div>
+                                <div class="pmh-tab-btn active" data-tab="tab_form"><i class="fas fa-search"></i> 조회 및 설정</div>
+                                <div class="pmh-tab-btn" data-tab="tab_monitor"><i class="fas fa-desktop"></i> 실행 모니터링</div>
+                                <div class="pmh-tab-btn" data-tab="tab_settings"><i class="fas fa-cog"></i> 환경 설정</div>
                             </div>
                             <div style="display:flex; gap:12px; padding-bottom:10px; padding-right:5px; align-items:center;">
                                 <i class="fas fa-broom" id="pmh_tool_clear_data" title="조회된 데이터 목록 비우기 (설정 유지)" style="color:#2f96b4; cursor:pointer; font-size:14px; transition:0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'"></i>
@@ -1334,7 +1457,9 @@ GM_addStyle(`
                                     <label style="display:block; color:#2f96b4; font-size:12px; margin-bottom:6px; font-weight:bold;"><i class="fas fa-server"></i> 대상 서버 선택</label>
                                     <select id="pmh_target_server_idx" style="width:100%; padding:8px; background:#1a2327; border:1px solid #2f96b4; color:#fff; border-radius:4px; font-size:13px; font-weight:bold; cursor:pointer;">`;
                     AppSettings.SERVERS.forEach((srv, idx) => {
-                        formHtml += `<option value="${idx}" ${idx === srvIdx ? "selected" : ""}>${srv.name} (${srv.machineIdentifier.substring(0,8)}...)</option>`;
+                        if (availableServerIndices.includes(idx)) {
+                            formHtml += `<option value="${idx}" ${idx === srvIdx ? "selected" : ""}>${srv.name} (${srv.machineIdentifier.substring(0,8)}...)</option>`;
+                        }
                     });
                     formHtml += `</select></div>`;
                 }
@@ -1348,7 +1473,12 @@ GM_addStyle(`
 
                 const renderInput = (input) => {
                     let cachedVal = savedOptions[input.id];
-                    if (cachedVal === undefined && input.default !== undefined) cachedVal = input.default;
+                    if (cachedVal === undefined || cachedVal === null || cachedVal === '') {
+                        if (input.default !== undefined && input.default !== null) {
+                            cachedVal = input.default;
+                            savedOptions[input.id] = cachedVal;
+                        }
+                    }
 
                     switch (input.type) {
                         case 'header':
@@ -1435,13 +1565,42 @@ GM_addStyle(`
                             }
 
                         case 'sub_action':
-                            return `<div class="pmh-form-group" style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-                                        <button class="pmh-sub-action-btn" data-action="${input.action_type}" data-target="${input.id}" style="padding:6px 12px; background:${input.color || '#2f96b4'}; color:#fff; border:none; border-radius:4px; font-size:12px; cursor:pointer; transition:0.2s; font-weight:bold;">
-                                            <i class="${input.icon || 'fas fa-play'}"></i> ${input.label}
-                                        </button>
-                                        <span id="pmh_sub_msg_${input.id}" style="font-size:12px; color:#aaa; flex-grow:1;">${cachedVal ? '<i class="fas fa-check" style="color:#51a351;"></i> 임시 데이터가 적용되어 있습니다.' : ''}</span>
-                                        <input type="hidden" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ''}">
-                                    </div>`;
+                            const btnWidth = input.width ? `width:${input.width};` : '';
+                            const btnHeight = input.height ? `height:${input.height};` : '';
+                            const fontSize = input.font_size ? `font-size:${input.font_size};` : 'font-size:12px;';
+                            const lineHeight = input.line_height ? `line-height:${input.line_height};` : 'line-height:1.4;';
+                            const textAlign = input.align ? `text-align:${input.align};` : 'text-align:center;';
+                            const valign = input.valign ? `display:flex; justify-content:${input.align === 'left' ? 'flex-start' : input.align === 'right' ? 'flex-end' : 'center'}; align-items:${input.valign === 'top' ? 'flex-start' : input.valign === 'bottom' ? 'flex-end' : 'center'};` : '';
+                            
+                            const btnStyle = `background:${input.color || '#2f96b4'}; width:100%; height:100%; padding:6px 12px; ${fontSize} ${lineHeight} ${textAlign} ${valign}`;
+
+                            const safeLabel = (input.label || '').replace(/\n/g, '<br>');
+                            const btnHtml = `
+                                <div class="pmh-sub-btn-wrapper" style="position:relative; flex-shrink:0; ${btnWidth} ${btnHeight}">
+                                    <button type="button" class="pmh-sub-action-btn" data-action="${input.action_type}" data-target="${input.id}" style="${btnStyle}">
+                                        <i class="${input.icon || 'fas fa-play'}" style="margin-right:4px;"></i><span>${safeLabel}</span>
+                                    </button>
+                                    <div class="pmh-sub-overlay" style="position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); border-radius:4px; display:none; align-items:center; justify-content:center; color:#fff; font-size:16px; z-index:2;">
+                                        <i class="fas fa-spinner fa-spin"></i>
+                                    </div>
+                                </div>
+                            `;
+
+                            const cachedText = (cachedVal !== undefined && cachedVal !== '') ? `<i class="fas fa-check" style="color:#51a351;"></i> 이전에 적용되었습니다.` : '';
+                            const msgHtml = `<span id="pmh_sub_msg_${input.id}" style="font-size:12px; color:#aaa; line-height:1.4; flex-grow:1; box-sizing:border-box; ${input.msg_style || ''}">${cachedText}</span>`;
+                            const hiddenHtml = `<input type="hidden" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ''}">`;
+
+                            const msgPos = input.msg_pos || 'right';
+                            
+                            if (msgPos === 'right') {
+                                return `<div class="pmh-form-group" style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">${btnHtml}${msgHtml}${hiddenHtml}</div>`;
+                            } else if (msgPos === 'left') {
+                                return `<div class="pmh-form-group" style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">${msgHtml}${btnHtml}${hiddenHtml}</div>`;
+                            } else if (msgPos === 'bottom') {
+                                return `<div class="pmh-form-group" style="display:flex; flex-direction:column; align-items:stretch; gap:6px; margin-bottom:12px;"><div style="display:flex; justify-content:center;">${btnHtml}</div>${msgHtml}${hiddenHtml}</div>`;
+                            } else {
+                                return `<div class="pmh-form-group" style="display:flex; flex-direction:column; align-items:stretch; gap:6px; margin-bottom:12px;">${msgHtml}<div style="display:flex; justify-content:center;">${btnHtml}</div>${hiddenHtml}</div>`;
+                            }
 
                         case 'text':
                             return `<div class="pmh-form-group">
@@ -1518,7 +1677,7 @@ GM_addStyle(`
                     ui.buttons.forEach(btn => {
                         const color = btn.color || '#e5a00d';
                         const icon = btn.icon || 'fas fa-play';
-                        formHtml += `<button class="pmh_dynamic_run_btn" data-action="${btn.action_type}" style="padding:12px 20px; background:${color}; color:#fff; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:13px; transition:0.2s;"><i class="${icon}"></i> ${btn.label}</button>`;
+                        formHtml += `<button class="pmh-dynamic-run-btn pmh_dynamic_run_btn" data-action="${btn.action_type}" style="background:${color};"><i class="${icon}"></i> <span>${btn.label}</span></button>`;
                     });
                     formHtml += `</div>`;
                 } else {
@@ -1528,7 +1687,6 @@ GM_addStyle(`
                                  </div>`;
                 }
 
-                // --- pmh_tool_form_container 및 wrapper 닫기 (매우 중요) ---
                 formHtml += `</div>`; // pmh_tool_form_container 닫기
                 formHtml += `</div>`; // 컨테이너 바깥쪽 상대 위치(relative) wrapper 닫기
 
@@ -1571,12 +1729,48 @@ GM_addStyle(`
 
                 window.showPmhToolPanel(toolId, ui.title, formHtml);
 
+                const savedGeoStr = GM_getValue(`pmh_panel_geo_${toolId}`);
+                let isManuallyResized = false;
+                if (savedGeoStr) {
+                    try { 
+                        const geo = JSON.parse(savedGeoStr); 
+                        if (geo.height && geo.height !== 'auto') {
+                            isManuallyResized = true; 
+                        }
+                    } catch(e){}
+                }
+
+                const applyMaxHeight = () => {
+                    if (isManuallyResized) return;
+                    
+                    const panel = document.getElementById('pmh-tool-panel');
+                    if (panel) {
+                        const maxAllowedHeight = window.innerHeight - 80;
+                        if (panel.offsetHeight >= maxAllowedHeight || panel.scrollHeight >= maxAllowedHeight) {
+                            panel.style.height = maxAllowedHeight + 'px';
+                        }
+                    }
+                };
+
+                requestAnimationFrame(() => {
+                    applyMaxHeight();
+                    setTimeout(applyMaxHeight, 100);
+                    setTimeout(applyMaxHeight, 300); 
+                });
+
                 setTimeout(() => {
                     let hasCronError = false; 
                     let isDestroyed = false;
-                    let isTaskRunning = false;
+                    window._pmh_task_running_states = window._pmh_task_running_states || {};
+                    window._pmh_task_running_states[toolId] = false;
+
+                    window._pmh_active_pollers = window._pmh_active_pollers || {};
+                    Object.values(window._pmh_active_pollers).forEach(timer => {
+                        if (timer) clearTimeout(timer);
+                    });
+                    window._pmh_active_pollers = {};
+                    
                     let isCancelling = false;
-                    let pollTimer = null;
                     let currentTaskStatus = ui.active_task || {};
 
                     document.querySelectorAll('.pmh-cron-input').forEach(cronInput => {
@@ -1666,7 +1860,10 @@ GM_addStyle(`
                     });
 
                     const updateFormTabButtons = (isRunning) => {
-                        isTaskRunning = isRunning;
+                        window._pmh_task_running_states[toolId] = isRunning;
+                        const panel = document.getElementById('pmh-tool-panel');
+                        if (!panel) return;
+
                         const dynamicRunBtns = document.querySelectorAll('.pmh_dynamic_run_btn');
                         const actionBtn = document.getElementById('pmh_dt_action_btn');
                         const resumeBtn = document.getElementById('pmh_resume_btn');
@@ -1742,13 +1939,18 @@ GM_addStyle(`
                     const srvSelectEl = document.getElementById('pmh_target_server_idx');
                     if (srvSelectEl) {
                         srvSelectEl.addEventListener('change', (e) => {
-                            isDestroyed = true;
-
-                            const newIdx = parseInt(e.target.value);
-                            globalCache['target_server_idx'] = newIdx;
-                            GM_setValue(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
+                            const newIdx = Number(e.target.value);
+                            console.log(`[PMH] UI 드롭다운에서 서버 변경 감지 -> 인덱스: ${newIdx}`);
                             
-                            if (pollTimer) clearTimeout(pollTimer);
+                            isDestroyed = true;
+                            if (window._pmh_active_pollers && window._pmh_active_pollers[toolId]) {
+                                clearTimeout(window._pmh_active_pollers[toolId]);
+                            }
+                            
+                            const newCache = JSON.parse(GM_getValue(`pmh_tool_cache_global_${toolId}`, "{}"));
+                            newCache['target_server_idx'] = newIdx;
+                            GM_setValue(`pmh_tool_cache_global_${toolId}`, JSON.stringify(newCache));
+                            
                             openPmhToolUI(toolId, newIdx); 
                         });
                     }
@@ -1760,34 +1962,54 @@ GM_addStyle(`
                             reqData._server_name = targetSrv.name;
                         }
 
-                        const allInputs = [ ...(ui.inputs || []), ...(ui.execute_inputs || []), ...(ui.settings_inputs || []) ];
-                        allInputs.forEach(i => {
-                            if (i.type === 'checkbox_group') {
-                                i.options.forEach(opt => {
-                                    const el = document.getElementById(`pmh_inp_${opt.id}`);
-                                    if (el) { reqData[opt.id] = el.checked; savedOptions[opt.id] = el.checked; }
-                                });
-                            } else if (i.type === 'radio_group') {
+                        const allInputs = document.querySelectorAll('[id^="pmh_inp_"]');
+                        window._pmh_tmp_options = window._pmh_tmp_options || {};
+                        
+                        allInputs.forEach(el => {
+                            const rawId = el.id.replace('pmh_inp_', '');
+                            
+                            if (el.type === 'checkbox') {
+                                reqData[rawId] = el.checked;
+                                savedOptions[rawId] = el.checked;
+                            } else if (el.tagName.toLowerCase() === 'select') {
+                                reqData[rawId] = el.value;
+                                savedOptions[rawId] = el.value;
+                            } else {
+                                reqData[rawId] = el.value;
+                                if (!rawId.startsWith('tmp_')) {
+                                    savedOptions[rawId] = el.value;
+                                } else {
+                                    savedOptions[rawId] = el.value;
+                                    window._pmh_tmp_options[toolId + "_" + rawId] = el.value;
+                                }
+                            }
+                        });
+
+                        const allInputsSchema = [ ...(ui.inputs || []), ...(ui.execute_inputs || []), ...(ui.settings_inputs || []) ];
+                        allInputsSchema.forEach(i => {
+                            if (i.type === 'radio_group') {
                                 const checkedEl = document.querySelector(`input[name="pmh_rad_${i.id}"]:checked`);
                                 if (checkedEl) {
                                     reqData[i.id] = checkedEl.value;
-                                    savedOptions[i.id] = checkedEl.value;
+                                    if (!i.id.startsWith('tmp_')) savedOptions[i.id] = checkedEl.value;
                                 }
                             } else if (i.type === 'multi_select') {
                                 const checkedBoxes = document.querySelectorAll(`input[name="pmh_mchk_${i.id}"]:checked`);
                                 const valArr = Array.from(checkedBoxes).map(cb => cb.value);
                                 reqData[i.id] = valArr;
-                                savedOptions[i.id] = valArr;
-                            } else {
-                                const el = document.getElementById(`pmh_inp_${i.id}`);
-                                if (el) {
-                                    const val = (i.type === 'checkbox') ? el.checked : el.value;
-                                    reqData[i.id] = val; savedOptions[i.id] = val; 
-                                }
+                                if (!i.id.startsWith('tmp_')) savedOptions[i.id] = valArr;
                             }
                         });
-                        const plexInfo = extractPlexServerInfo(serverId);
-                        if (plexInfo) { reqData['_plex_url'] = plexInfo.url; reqData['_plex_token'] = plexInfo.token; }
+
+                        const plexInfo = extractPlexServerInfo(targetSrv.machineIdentifier);
+                        if (plexInfo) { 
+                            reqData['_plex_url'] = plexInfo.url; 
+                            reqData['_plex_token'] = plexInfo.token;
+                            reqData['_machine_id'] = targetSrv.machineIdentifier;
+                        } else {
+                            reqData['_machine_id'] = targetSrv.machineIdentifier || '';
+                        }
+                        
                         return { targetSrv, reqData };
                     };
 
@@ -1842,7 +2064,19 @@ GM_addStyle(`
 
                     const switchTab = (targetId) => {
                         const panel = document.getElementById('pmh-tool-panel');
-                        if (panel && panel.style.height === 'auto') panel.style.height = panel.offsetHeight + 'px'; 
+                        
+                        let currentlyManuallyResized = false;
+                        const currentGeoStr = GM_getValue(`pmh_panel_geo_${toolId}`);
+                        if (currentGeoStr) {
+                            try { 
+                                const geo = JSON.parse(currentGeoStr); 
+                                if (geo.height && geo.height !== 'auto') currentlyManuallyResized = true; 
+                            } catch(e){}
+                        }
+
+                        if (panel && !currentlyManuallyResized) {
+                            panel.style.height = 'auto'; 
+                        }
 
                         document.querySelectorAll('.pmh-tab-btn').forEach(btn => {
                             if (btn.dataset.tab === targetId) {
@@ -1861,18 +2095,15 @@ GM_addStyle(`
                         if (tabForm) tabForm.style.display = targetId === 'tab_form' ? 'flex' : 'none';
                         if (tabMonitor) tabMonitor.style.display = targetId === 'tab_monitor' ? 'flex' : 'none';
                         if (tabSettings) tabSettings.style.display = targetId === 'tab_settings' ? 'flex' : 'none';
-                        
-                        if (targetId === 'tab_form' && panel) {
-                            const savedGeoStr = GM_getValue(`pmh_panel_geo_${toolId}`);
-                            let isManuallyResized = false;
-                            if (savedGeoStr) {
-                                try { const geo = JSON.parse(savedGeoStr); if (geo.height && geo.height !== 'auto') isManuallyResized = true; } catch(e){}
+
+                        setTimeout(() => {
+                            if (panel && !currentlyManuallyResized) {
+                                const maxAllowedHeight = window.innerHeight - 80;
+                                if (panel.offsetHeight >= maxAllowedHeight) {
+                                    panel.style.height = maxAllowedHeight + 'px';
+                                }
                             }
-                            if (!isManuallyResized && tabForm) {
-                                panel.style.height = 'auto';
-                                setTimeout(() => { tabForm.style.display = 'none'; tabForm.offsetHeight; tabForm.style.display = 'flex'; }, 10);
-                            }
-                        }
+                        }, 50);
 
                         if (targetId === 'tab_form') {
                             GM_xmlhttpRequest({
@@ -1893,7 +2124,7 @@ GM_addStyle(`
                     const clearDataBtn = document.getElementById('pmh_tool_clear_data');
                     if (clearDataBtn) {
                         clearDataBtn.onclick = () => {
-                            if(isTaskRunning) return alert("진행 중인 작업을 먼저 중단해 주세요.");
+                            if (window._pmh_task_running_states[toolId]) return alert("진행 중인 작업을 먼저 중단해 주세요.");
                             if(confirm(`[${targetSrv.name}] 서버의 조회된 데이터 목록을 비우시겠습니까?\n(환경 설정과 작업 진행 상태는 유지됩니다)`)) {
                                 GM_xmlhttpRequest({
                                     method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
@@ -1914,10 +2145,17 @@ GM_addStyle(`
                     const resetBtn = document.getElementById('pmh_tool_reset_cache');
                     if(resetBtn) {
                         resetBtn.onclick = () => {
-                            if(isTaskRunning) return alert("진행 중인 작업을 먼저 중단해 주세요.");
+                            if (window._pmh_task_running_states[toolId]) return alert("진행 중인 작업을 먼저 중단해 주세요.");
                             if(confirm(`[${targetSrv.name}] 서버에 저장된 옵션과 결과, 작업 기록을 모두 초기화하시겠습니까?`)) {
                                 GM_deleteValue(`pmh_panel_geo_${toolId}`);
                                 GM_deleteValue(`pmh_tool_cache_${toolId}`);
+                                
+                                if (window._pmh_tmp_options) {
+                                    Object.keys(window._pmh_tmp_options).forEach(k => {
+                                        if (k.startsWith(toolId + "_")) delete window._pmh_tmp_options[k];
+                                    });
+                                }
+
                                 GM_xmlhttpRequest({
                                     method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
                                     headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
@@ -1931,11 +2169,17 @@ GM_addStyle(`
                                             resMonitor.style.display = 'flex'; resMonitor.style.justifyContent = 'center'; resMonitor.style.alignItems = 'center';
                                         }
                                         const panel = document.getElementById('pmh-tool-panel');
-                                        if (panel) { panel.style.top = '80px'; panel.style.left = '60%'; panel.style.width = '450px'; panel.style.height = 'auto'; }
+                                        if (panel) { 
+                                            panel.style.top = '80px'; 
+                                            panel.style.left = '60%'; 
+                                            panel.style.width = '450px'; 
+                                            panel.style.height = 'auto';
+                                        }
                                         currentTaskStatus = {};
                                         isCancelling = false;
                                         toastr.success("설정 및 데이터 캐시가 초기화되었습니다.");
                                         switchTab('tab_form'); 
+                                        
                                         openPmhToolUI(toolId, srvIdx);
                                     }
                                 });
@@ -2023,63 +2267,93 @@ GM_addStyle(`
                                 headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
                                 data: JSON.stringify({ task_id: toolId, _server_id: serverId })
                             });
+                            return;
                         }
                         
                         const subActionBtn = e.target.closest('.pmh-sub-action-btn');
                         if (subActionBtn && document.getElementById('pmh-tool-panel')?.contains(subActionBtn)) {
                             e.preventDefault(); e.stopPropagation();
+                            
                             if (subActionBtn.disabled) return;
+                            
+                            const wrapper = subActionBtn.closest('.pmh-sub-btn-wrapper');
+                            const overlay = wrapper ? wrapper.querySelector('.pmh-sub-overlay') : null;
                             
                             const actionType = subActionBtn.dataset.action;
                             const targetId = subActionBtn.dataset.target;
                             const msgSpan = document.getElementById(`pmh_sub_msg_${targetId}`);
                             const hiddenInput = document.getElementById(`pmh_inp_${targetId}`);
                             
-                            const originalHtml = subActionBtn.innerHTML;
-                            subActionBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 실행 중...`;
                             subActionBtn.disabled = true;
-                            subActionBtn.style.opacity = '0.7';
-                            if (msgSpan) msgSpan.innerHTML = `<span style="color:#aaa;">요청을 처리하고 있습니다...</span>`;
+                            if (overlay) overlay.style.display = 'flex';
+                            
+                            if (msgSpan) {
+                                msgSpan.innerHTML = `<span style="color:#aaa;"><i class="fas fa-circle-notch fa-spin"></i> 요청을 처리하고 있습니다...</span>`;
+                            }
 
-                            const { targetSrv, reqData } = getFormData();
-                            reqData.action_type = actionType;
-
-                            GM_xmlhttpRequest({
-                                method: "POST", url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
-                                headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
-                                data: JSON.stringify(reqData),
-                                onload: (r) => {
-                                    subActionBtn.innerHTML = originalHtml;
-                                    subActionBtn.disabled = false;
-                                    subActionBtn.style.opacity = '1';
-                                    
-                                    if (r.status === 200) {
-                                        try {
-                                            const res = JSON.parse(r.responseText);
-                                            if(msgSpan) msgSpan.innerHTML = `<span style="color:${res.status === 'success' ? '#51a351' : '#bd362f'}; font-weight:bold;">${res.message || '완료되었습니다.'}</span>`;
-                                            
-                                            if(hiddenInput && res.value !== undefined) {
-                                                hiddenInput.value = res.value;
-                                                savedOptions[targetId] = res.value;
-                                            }
-                                        } catch(err) {
-                                            if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;">응답 처리 오류</span>`;
-                                        }
-                                    } else {
-                                        if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;">서버 오류 (HTTP ${r.status})</span>`;
-                                    }
-                                },
-                                onerror: () => {
-                                    subActionBtn.innerHTML = originalHtml;
-                                    subActionBtn.disabled = false;
-                                    subActionBtn.style.opacity = '1';
-                                    if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;">통신 실패</span>`;
+                            try {
+                                const { targetSrv, reqData } = getFormData();
+                                reqData.action_type = actionType;
+                                
+                                const plexInfo = extractPlexServerInfo(targetSrv.machineIdentifier);
+                                if (plexInfo) {
+                                    reqData['_plex_token'] = plexInfo.token;
+                                    reqData['_machine_id'] = targetSrv.machineIdentifier;
+                                } else {
+                                    reqData['_machine_id'] = targetSrv.machineIdentifier || '';
                                 }
-                            });
+                                log(`[Sub-Action] Sending request (Action: ${actionType})`);
+
+                                GM_xmlhttpRequest({
+                                    method: "POST", 
+                                    url: `${targetSrv.pmhServerUrl}/api/tool/${toolId}/run`,
+                                    headers: { "Content-Type": "application/json", "X-API-Key": targetSrv.plexMateApiKey },
+                                    data: JSON.stringify(reqData),
+                                    onload: (r) => {
+                                        subActionBtn.disabled = false;
+                                        if (overlay) overlay.style.display = 'none';
+                                        
+                                        if (r.status === 200) {
+                                            try {
+                                                const res = JSON.parse(r.responseText);
+                                                if(msgSpan) {
+                                                    const color = res.status === 'success' ? '#51a351' : '#bd362f';
+                                                    const icon = res.status === 'success' ? 'fa-check' : 'fa-times';
+                                                    msgSpan.innerHTML = `<span style="color:${color}; font-weight:bold;"><i class="fas ${icon}"></i> ${res.message || '완료되었습니다.'}</span>`;
+                                                }
+                                                if(hiddenInput && res.value !== undefined) {
+                                                    hiddenInput.value = res.value;
+                                                    savedOptions[targetId] = res.value;
+                                                    
+                                                    window._pmh_tmp_options = window._pmh_tmp_options || {};
+                                                    window._pmh_tmp_options[toolId + "_" + targetId] = res.value;
+                                                }
+                                            } catch(err) {
+                                                errorLog(`[Sub-Action] Response parsing error.`, err);
+                                                if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-exclamation-triangle"></i> 응답 처리 오류</span>`;
+                                            }
+                                        } else {
+                                            errorLog(`[Sub-Action] Server Error (HTTP ${r.status})`);
+                                            if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-exclamation-triangle"></i> 서버 오류 (HTTP ${r.status})</span>`;
+                                        }
+                                    },
+                                    onerror: () => {
+                                        errorLog(`[Sub-Action] Network communication failed.`);
+                                        subActionBtn.disabled = false;
+                                        if (overlay) overlay.style.display = 'none';
+                                        if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-wifi"></i> 통신 실패</span>`;
+                                    }
+                                });
+                            } catch (error) {
+                                errorLog("[Sub-Action] Client runtime error:", error);
+                                subActionBtn.disabled = false;
+                                if (overlay) overlay.style.display = 'none';
+                                if(msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-exclamation-triangle"></i> 클라이언트 오류 발생</span>`;
+                            }
                             return;
                         }
                     };
-                    
+
                     document.removeEventListener('click', window._pmhGlobalClickHandler);
                     window._pmhGlobalClickHandler = handleGlobalClick;
                     document.addEventListener('click', window._pmhGlobalClickHandler);
@@ -2140,11 +2414,20 @@ GM_addStyle(`
                             let finalHtml = ``;
 
                             if (resData.summary_cards || resData.bar_charts) {
-                                finalHtml += `<div style="padding-bottom:15px; margin-bottom:15px; border-bottom:1px solid #333;">`;
+                                const defContainerStyle = "padding-bottom:15px; margin-bottom:15px; border-bottom:1px solid #333;";
+                                const customContainerStyle = resData.dashboard_style?.container_style || "";
+                                finalHtml += `<div style="${defContainerStyle} ${customContainerStyle}">`;
+                                
                                 if (resData.summary_cards && resData.summary_cards.length > 0) {
-                                    finalHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:15px;">`;
+                                    const defGridStyle = "display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:15px;";
+                                    const customGridStyle = resData.dashboard_style?.card_grid_style || "";
+                                    finalHtml += `<div style="${defGridStyle} ${customGridStyle}">`;
+                                    
                                     resData.summary_cards.forEach(card => {
-                                        finalHtml += `<div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px;">
+                                        const defCardStyle = "background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px;";
+                                        const customCardStyle = card.style || resData.dashboard_style?.card_style || "";
+                                        
+                                        finalHtml += `<div style="${defCardStyle} ${customCardStyle}">
                                                         <div style="font-size:24px; color:${card.color||'#e5a00d'}; width:30px; text-align:center;"><i class="${card.icon||'fas fa-info-circle'}"></i></div>
                                                         <div style="flex-grow:1; min-width:0;">
                                                             <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
@@ -2154,10 +2437,17 @@ GM_addStyle(`
                                     });
                                     finalHtml += `</div>`;
                                 }
+                                
                                 if (resData.bar_charts && resData.bar_charts.length > 0) {
-                                    finalHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;">`;
+                                    const defChartGridStyle = "display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;";
+                                    const customChartGridStyle = resData.dashboard_style?.chart_grid_style || "";
+                                    finalHtml += `<div style="${defChartGridStyle} ${customChartGridStyle}">`;
+                                    
                                     resData.bar_charts.forEach(chart => {
-                                        finalHtml += `<div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;">
+                                        const defChartStyle = "background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;";
+                                        const customChartStyle = chart.style || resData.dashboard_style?.chart_style || "";
+                                        
+                                        finalHtml += `<div style="${defChartStyle} ${customChartStyle}">
                                                         <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">${chart.title}</div>`;
                                         chart.items.forEach(item => {
                                             finalHtml += `<div style="margin-bottom:8px;">
@@ -2187,18 +2477,24 @@ GM_addStyle(`
 
                             const createPagingHtml = (p, tPages) => {
                                 let html = `<div style="display:flex; justify-content:center; align-items:center; gap:5px; font-size:12px;">`;
-                                const btnStyle = `min-width:26px; height:26px; padding:0 6px; display:flex; justify-content:center; align-items:center; border-radius:4px; font-family:monospace; font-size:13px; background:#222; color:#ccc; border:1px solid #444; cursor:pointer;`;
-                                const actStyle = `min-width:26px; height:26px; padding:0 6px; display:flex; justify-content:center; align-items:center; border-radius:4px; font-family:monospace; font-size:13px; background:#e5a00d; color:#1f1f1f; border:1px solid #e5a00d; font-weight:bold; cursor:default;`;
-                                const disStyle = `min-width:26px; height:26px; padding:0 6px; display:flex; justify-content:center; align-items:center; border-radius:4px; font-family:monospace; font-size:13px; background:#111; color:#555; border:1px solid #222; cursor:not-allowed;`;
 
-                                html += `<button class="pmh-page-btn" data-p="1" style="${p > 1 ? btnStyle : disStyle}" ${p > 1 ? '' : 'disabled'}><i class="fas fa-angle-double-left"></i></button>`;
-                                html += `<button class="pmh-page-btn" data-p="${p-1}" style="${p > 1 ? btnStyle : disStyle}" ${p > 1 ? '' : 'disabled'}><i class="fas fa-angle-left"></i></button>`;
-                                let startP = Math.max(1, p - 2); let endP = Math.min(tPages, p + 2);
+                                html += `<button class="pmh-page-btn" data-p="1" ${p > 1 ? '' : 'disabled'}><i class="fas fa-angle-double-left"></i></button>`;
+                                html += `<button class="pmh-page-btn" data-p="${p-1}" ${p > 1 ? '' : 'disabled'}><i class="fas fa-angle-left"></i></button>`;
+                                
+                                let startP = Math.max(1, p - 2); 
+                                let endP = Math.min(tPages, p + 2);
+                                
                                 for (let i = startP; i <= endP; i++) {
-                                    html += (i === p) ? `<button style="${actStyle}">${i}</button>` : `<button class="pmh-page-btn" data-p="${i}" style="${btnStyle}">${i}</button>`;
+                                    if (i === p) {
+                                        html += `<button class="pmh-page-btn active">${i}</button>`;
+                                    } else {
+                                        html += `<button class="pmh-page-btn" data-p="${i}">${i}</button>`;
+                                    }
                                 }
-                                html += `<button class="pmh-page-btn" data-p="${Math.min(tPages, p+1)}" style="${p < tPages ? btnStyle : disStyle}" ${p < tPages ? '' : 'disabled'}><i class="fas fa-angle-right"></i></button>`;
-                                html += `<button class="pmh-page-btn" data-p="${tPages}" style="${p < tPages ? btnStyle : disStyle}" ${p < tPages ? '' : 'disabled'}><i class="fas fa-angle-double-right"></i></button></div>`;
+                                
+                                html += `<button class="pmh-page-btn" data-p="${Math.min(tPages, p+1)}" ${p < tPages ? '' : 'disabled'}><i class="fas fa-angle-right"></i></button>`;
+                                html += `<button class="pmh-page-btn" data-p="${tPages}" ${p < tPages ? '' : 'disabled'}><i class="fas fa-angle-double-right"></i></button></div>`;
+                                
                                 return html;
                             };
 
@@ -2211,7 +2507,7 @@ GM_addStyle(`
                                         <div style="color:#51a351; font-weight:bold; font-size:13px;">
                                             <i class="fas fa-list"></i> 남은 항목: ${total_items}건
                                         </div>
-                                        <a href="#" id="pmh_dt_refresh_btn" style="color:#2f96b4; font-size:12px; text-decoration:none; display:flex; align-items:center; gap:4px; padding:2px 6px; background:rgba(47,150,180,0.1); border:1px solid rgba(47,150,180,0.3); border-radius:4px; transition:0.2s;" title="실시간 DB 새로고침" onmouseover="this.style.background='rgba(47,150,180,0.3)'" onmouseout="this.style.background='rgba(47,150,180,0.1)'">
+                                        <a href="#" id="pmh_dt_refresh_btn" class="pmh-action-link" style="color:#2f96b4; background:rgba(47,150,180,0.1); border:1px solid rgba(47,150,180,0.3);" onmouseover="this.style.background='rgba(47,150,180,0.3)'" onmouseout="this.style.background='rgba(47,150,180,0.1)'" title="실시간 DB 새로고침">
                                             <i class="fas fa-sync-alt"></i> 목록 갱신
                                         </a>
                                         <a href="#" id="pmh_dt_default_sort_btn" style="color:#e5a00d; font-size:12px; text-decoration:none; display:flex; align-items:center; gap:4px; padding:2px 6px; background:rgba(229,160,13,0.1); border:1px solid rgba(229,160,13,0.3); border-radius:4px; transition:0.2s;" title="작업 실행 순서(작업종류 ➔ 섹션 ➔ 제목)로 되돌리기" onmouseover="this.style.background='rgba(229,160,13,0.3)'" onmouseout="this.style.background='rgba(229,160,13,0.1)'">
@@ -2247,7 +2543,7 @@ GM_addStyle(`
                                 const currentHashBase = window.location.hash.startsWith('#!') ? '#!' : window.location.hash.split('?')[0].split('/server/')[0] || '#!';
 
                                 pageData.forEach(row => {
-                                    dtHtml += `<tr style="border-bottom:1px solid #333; transition:background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">`;
+                                    dtHtml += `<tr class="pmh-dt-row">`;
                                     (columns || []).forEach(col => {
                                         let val = row[col.key] !== undefined && row[col.key] !== null ? row[col.key] : '-';
                                         let displayHtml = val;
@@ -2307,7 +2603,7 @@ GM_addStyle(`
                                 }
                                 resForm.innerHTML = finalHtml; 
                                 
-                                updateFormTabButtons(isTaskRunning);
+                                updateFormTabButtons(window._pmh_task_running_states[toolId]);
                             }
 
                             setTimeout(() => {
@@ -2434,7 +2730,7 @@ GM_addStyle(`
                                 resumeBtn.onmouseout = () => resumeBtn.style.backgroundColor = "#2f96b4";
                                 resumeBtn.onclick = (e) => {
                                     e.preventDefault();
-                                    if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
+                                    if (window._pmh_task_running_states[toolId]) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
                                     
                                     const origHtml = resumeBtn.innerHTML;
                                     resumeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
@@ -2462,7 +2758,7 @@ GM_addStyle(`
                                 actionBtn.onmouseover = () => actionBtn.style.backgroundColor = "#5ebf5e";
                                 actionBtn.onmouseout = () => actionBtn.style.backgroundColor = "#51a351";
                                 actionBtn.onclick = () => {
-                                    if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
+                                    if (window._pmh_task_running_states[toolId]) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
                                     
                                     const origHtml = actionBtn.innerHTML;
                                     actionBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
@@ -2492,7 +2788,7 @@ GM_addStyle(`
                                 if (!btn) return;
 
                                 e.preventDefault(); e.stopPropagation();
-                                if (isTaskRunning) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하거나 작업을 중지해주세요.");
+                                if (window._pmh_task_running_states[toolId]) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하거나 작업을 중지해주세요.");
                                 
                                 const origHtml = btn.innerHTML;
                                 btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
@@ -2522,11 +2818,20 @@ GM_addStyle(`
                             const resForm = document.getElementById('pmh_run_res_form');
                             resForm.style.display = 'block';
 
-                            let dashHtml = `<div style="padding:5px;">`;
+                            const defContainerStyle = "padding:5px;";
+                            const customContainerStyle = resData.dashboard_style?.container_style || "";
+                            let dashHtml = `<div style="${defContainerStyle} ${customContainerStyle}">`;
+                            
                             if (resData.summary_cards && resData.summary_cards.length > 0) {
-                                dashHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:20px;">`;
+                                const defGridStyle = "display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:20px;";
+                                const customGridStyle = resData.dashboard_style?.card_grid_style || "";
+                                dashHtml += `<div style="${defGridStyle} ${customGridStyle}">`;
+                                
                                 resData.summary_cards.forEach(card => {
-                                    dashHtml += `<div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px;">
+                                    const defCardStyle = "background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px;";
+                                    const customCardStyle = card.style || resData.dashboard_style?.card_style || "";
+                                    
+                                    dashHtml += `<div style="${defCardStyle} ${customCardStyle}">
                                                     <div style="font-size:24px; color:${card.color||'#e5a00d'}; width:30px; text-align:center;"><i class="${card.icon||'fas fa-info-circle'}"></i></div>
                                                     <div style="flex-grow:1; min-width:0;">
                                                         <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
@@ -2537,9 +2842,15 @@ GM_addStyle(`
                                 dashHtml += `</div>`;
                             }
                             if (resData.bar_charts && resData.bar_charts.length > 0) {
-                                dashHtml += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;">`;
+                                const defChartGridStyle = "display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;";
+                                const customChartGridStyle = resData.dashboard_style?.chart_grid_style || "";
+                                dashHtml += `<div style="${defChartGridStyle} ${customChartGridStyle}">`;
+                                
                                 resData.bar_charts.forEach(chart => {
-                                    dashHtml += `<div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;">
+                                    const defChartStyle = "background:#15181a; border:1px solid #222; border-radius:6px; padding:15px;";
+                                    const customChartStyle = chart.style || resData.dashboard_style?.chart_style || "";
+                                    
+                                    dashHtml += `<div style="${defChartStyle} ${customChartStyle}">
                                                     <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">${chart.title}</div>`;
                                     chart.items.forEach(item => {
                                         dashHtml += `<div style="margin-bottom:8px;">
@@ -2574,23 +2885,28 @@ GM_addStyle(`
                             const taskData = resData.task_data || {};
                             const isSilent = taskData._silent_task === true;
                             
-                            // 탭 강제 전환 막기가 없고, 사일런트 모드도 아닐 때만 모니터링 탭으로 이동
                             if (!preventTabSwitch && !isSilent) {
                                 switchTab('tab_monitor');
                             }
                             
                             const resMonitor = document.getElementById('pmh_run_res_monitor');
-                            if (pollTimer) clearTimeout(pollTimer);
+                            if (window._pmh_active_pollers[toolId]) {
+                                clearTimeout(window._pmh_active_pollers[toolId]);
+                            }
+                            
                             resMonitor.style.display = 'flex'; resMonitor.style.flexDirection = 'column'; resMonitor.style.flexGrow = '1';
                             
                             const pollStatus = () => {
-                                if (!document.getElementById('pmh_run_res_monitor')) return;
+                                if (isDestroyed || window.pmhCurrentToolId !== toolId || !document.getElementById('pmh_run_res_monitor')) {
+                                    console.log(`[PMH Polling] Stop polling for ${toolId} (Panel changed or closed)`);
+                                    return;
+                                }
 
                                 GM_xmlhttpRequest({
                                     method: "GET", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/status?task_id=${taskId}&server_id=${serverId}`,
                                     headers: { "X-API-Key": renderSrv.plexMateApiKey },
                                     onload: (pollRes) => {
-                                        if (isDestroyed) return;
+                                        if (isDestroyed || window.pmhCurrentToolId !== toolId) return;
 
                                         if (pollRes.status === 404) {
                                             resMonitor.innerHTML = `<div style="color:#bd362f; padding:10px; background:#111; border-radius:4px; text-align:center;"><i class="fas fa-exclamation-triangle"></i> 작업을 찾을 수 없습니다.</div>`;
@@ -2669,7 +2985,9 @@ GM_addStyle(`
                                                 }, 800);
                                                 return; 
                                             }
-                                            if (!isDone) pollTimer = setTimeout(pollStatus, 1500); 
+                                            if (!isDone) {
+                                                window._pmh_active_pollers[toolId] = setTimeout(pollStatus, 1500); 
+                                            }
                                         }
                                     }
                                 });
@@ -2679,51 +2997,39 @@ GM_addStyle(`
                     };
 
                     document.querySelectorAll('.pmh_dynamic_run_btn').forEach(btn => {
-                        const origBg = btn.style.backgroundColor;
-                        
-                        btn.onmouseover = () => { if(!btn.disabled) btn.style.filter = "brightness(1.2)"; };
-                        btn.onmouseout = () => { if(!btn.disabled) btn.style.filter = "none"; };
-                        
                         btn.onclick = (e) => {
                             e.preventDefault();
-                            if (isTaskRunning) return alert("진행 중인 작업이 있습니다.\n모니터링 탭을 확인해 주세요.");
+                            if (window._pmh_task_running_states[toolId]) return alert("진행 중인 작업이 있습니다.\n모니터링 탭을 확인해 주세요.");
                             
                             const { targetSrv: tSrv, reqData } = getFormData();
-                            
-                            // 클릭한 버튼의 고유 action_type을 주입
                             reqData.action_type = btn.dataset.action; 
                             
-                            // 통신 중 버튼 잠금 처리
                             const origHtml = btn.innerHTML;
-                            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 요청 중...`;
-                            btn.style.opacity = '0.7';
+                            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> <span>요청 중...</span>`;
                             btn.disabled = true;
 
-                            // API 호출
                             GM_xmlhttpRequest({
                                 method: "POST", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/run`,
                                 headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
                                 data: JSON.stringify(reqData),
                                 onload: (r) => {
-                                    // 버튼 상태 원상복구
                                     btn.innerHTML = origHtml;
-                                    btn.style.opacity = '1';
                                     btn.disabled = false;
 
                                     if (r.status === 200) {
                                         try {
                                             const resData = JSON.parse(r.responseText);
                                             
-                                            // 1. 단순 메시지 응답일 경우 (화면 전환 없이 토스트 메시지만 띄움)
+                                            if (resData.status === 'error') {
+                                                toastr.error(resData.message || "작업을 시작할 수 없습니다.", "실행 거부", {timeOut: 6000});
+                                                return;
+                                            }
                                             if (resData.type === 'message') {
                                                 toastr.info(resData.message || "명령이 실행되었습니다.", "알림", {timeOut: 4000});
                                                 return;
                                             }
-                                            
-                                            // 2. 비동기 작업 시작(async_task)일 경우 화면 초기화 표시 (processAndRenderResult가 탭 전환은 알아서 함)
                                             if (resData.type === 'async_task') {
                                                 const taskData = resData.task_data || {};
-                                                // _silent_task가 아닐 때만 모니터링 화면 초기화 수행
                                                 if (!taskData._silent_task) {
                                                     if (pollTimer) clearTimeout(pollTimer);
                                                     const resMonitor = document.getElementById('pmh_run_res_monitor');
@@ -2732,24 +3038,16 @@ GM_addStyle(`
                                                     }
                                                 }
                                             }
-
-                                            // 3. 공통 렌더러 호출 (resData.type 에 따라 자기가 알아서 탭 바꾸고 그림)
                                             processAndRenderResult(resData, parseInt(savedOptions.items_per_page || 10), tSrv);
-
                                         } catch(err) {}
                                     } else {
-                                        switchTab('tab_form');
-                                        const resForm = document.getElementById('pmh_run_res_form');
-                                        if (resForm) resForm.innerHTML = `<div style="padding:15px; color:#bd362f; text-align:center;">오류가 발생했습니다. (HTTP ${r.status})</div>`;
+                                        toastr.error(`서버 통신 오류 (HTTP ${r.status})`, "통신 실패", {timeOut: 4000});
                                     }
                                 },
                                 onerror: () => {
                                     btn.innerHTML = origHtml;
-                                    btn.style.opacity = '1';
                                     btn.disabled = false;
-                                    switchTab('tab_form');
-                                    const resForm = document.getElementById('pmh_run_res_form');
-                                    if (resForm) resForm.innerHTML = `<div style="padding:15px; color:#bd362f; text-align:center;">통신 오류가 발생했습니다.</div>`;
+                                    toastr.error("서버에 연결할 수 없습니다.", "통신 실패", {timeOut: 4000});
                                 }
                             });
                         };
@@ -2838,6 +3136,13 @@ GM_addStyle(`
             return btn;
         };
 
+        const createDivider = () => {
+            const div = document.createElement('span');
+            div.style.cssText = "opacity: 0.3; color: #adb5bd; margin: 0 8px; font-size: 14px; user-select: none;";
+            div.textContent = "|";
+            return div;
+        };
+
         const forceReRenderAll = () => {
             clearMemoryCache();
             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear(); 
@@ -2906,10 +3211,7 @@ GM_addStyle(`
 
         ctrl.appendChild(uiToggleBtn);
 
-        const toolDivider = document.createElement('span');
-        toolDivider.style.cssText = "opacity: 0.3; color: #adb5bd; margin: 0 8px; font-size: 14px; user-select: none;";
-        toolDivider.textContent = "|";
-        ctrl.appendChild(toolDivider);
+        ctrl.appendChild(createDivider());
 
         if (!window.showPmhToolPanel) {
             window.pmhCurrentToolId = 'default';
@@ -2990,7 +3292,7 @@ GM_addStyle(`
                     window.makeDraggable(panel, document.getElementById('pmh-panel-header'));
                     window.makeResizable(panel);
                 }
-                
+
                 panel.style.top = '80px'; panel.style.left = '60%'; panel.style.width = '450px'; panel.style.height = 'auto';
                 const savedGeoStr = GM_getValue(`pmh_panel_geo_${toolId}`);
                 if (savedGeoStr) {
@@ -3017,6 +3319,8 @@ GM_addStyle(`
         toolMenuBtn.addEventListener('mouseleave', () => { toolMenuBtn.style.color = '#adb5bd'; });
         ctrl.appendChild(toolMenuBtn);
 
+        ctrl.appendChild(createDivider());
+
         let dropdown = document.getElementById('pmh-tool-dropdown');
         if (!dropdown) {
             dropdown = document.createElement('div'); dropdown.id = 'pmh-tool-dropdown'; document.body.appendChild(dropdown);
@@ -3029,62 +3333,9 @@ GM_addStyle(`
         }
 
         let pmhToolListCache = null;
-        const fetchTools = () => {
+        const fetchTools = async () => {
             if (!AppSettings.SERVERS || AppSettings.SERVERS.length === 0) return;
 
-            if (pmhToolListCache) {
-                renderToolsDropdown(pmhToolListCache);
-                return;
-            }
-
-            GM_xmlhttpRequest({
-                method: "GET", url: `${AppSettings.SERVERS[0].pmhServerUrl}/api/tools`,
-                headers: { "X-API-Key": AppSettings.SERVERS[0].plexMateApiKey },
-                onload: (res) => {
-                    let html = `
-                        <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
-                            <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
-                            <div style="display:flex; gap:12px; font-size:13px;">
-                                <span id="pmh-tool-check-update-btn" class="pmh-action-icon" title="전체 툴 업데이트 확인" style="cursor:pointer; color:#aaa; transition:color 0.2s;" onmouseover="this.style.color='#2f96b4'" onmouseout="this.style.color='#aaa'">
-                                    <i class="fas fa-cloud-download-alt"></i>
-                                </span>
-                                <span id="pmh-tool-install-btn" class="pmh-action-icon" title="신규 등록 (전체 서버에 설치)" style="cursor:pointer; color:#51a351; transition:0.2s;">
-                                    <i class="fas fa-plus"></i>
-                                </span>
-                                <span id="pmh-tool-refresh-btn" class="pmh-action-icon" title="새로고침" style="cursor:pointer; color:#aaa; transition:0.2s;">
-                                    <i class="fas fa-sync-alt"></i>
-                                </span>
-                            </div>
-                        </div>
-                        <div class="pmh-tool-divider" style="margin:0;"></div>
-                    `;
-
-                    if (res.status === 200) {
-                        try {
-                            pmhToolListCache = JSON.parse(res.responseText).tools || [];
-                            renderToolsDropdown(pmhToolListCache);
-                        } catch (e) {
-                            html += `<div style="padding:20px; color:#bd362f; text-align:center;">데이터 파싱 오류</div>`;
-                            dropdown.innerHTML = html;
-                        }
-                    } else { 
-                        html += `<div style="padding:20px 15px; text-align:center; color:#bd362f; font-size:12px;">툴 목록을 가져올 수 없습니다. (HTTP ${res.status})</div>`; 
-                        dropdown.innerHTML = html;
-                    }
-                },
-                onerror: () => { 
-                    dropdown.innerHTML = `
-                        <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
-                            <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
-                        </div>
-                        <div class="pmh-tool-divider" style="margin:0;"></div>
-                        <div style="padding:20px; color:#bd362f; text-align:center;">서버 통신 오류</div>
-                    `; 
-                }
-            });
-        };
-
-        const renderToolsDropdown = (installedTools) => {
             let html = `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
                     <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
@@ -3100,7 +3351,93 @@ GM_addStyle(`
                         </span>
                     </div>
                 </div>
-                <div class="pmh-tool-divider" style="margin:0;"></div>
+            `;
+
+            const fetchPromises = AppSettings.SERVERS.map(srv => {
+                return new Promise((resolve) => {
+                    GM_xmlhttpRequest({
+                        method: "GET", 
+                        url: `${srv.pmhServerUrl}/api/tools`,
+                        headers: { "X-API-Key": srv.plexMateApiKey },
+                        timeout: 5000,
+                        onload: (res) => {
+                            if (res.status === 200) {
+                                try {
+                                    resolve({ server: srv, data: JSON.parse(res.responseText) });
+                                } catch (e) {
+                                    resolve({ server: srv, error: "Parsing Error" });
+                                }
+                            } else {
+                                resolve({ server: srv, error: `HTTP ${res.status}` });
+                            }
+                        },
+                        onerror: () => resolve({ server: srv, error: "Network Error" }),
+                        ontimeout: () => resolve({ server: srv, error: "Timeout" })
+                    });
+                });
+            });
+
+            const results = await Promise.all(fetchPromises);
+            
+            let mergedToolsMap = {}; 
+            let mergedDashboard = { running: [], cron: [] };
+            let successCount = 0;
+            let errorMessages = [];
+
+            window._pmh_tool_server_map = {};
+
+            results.forEach((result, idx) => {
+                if (result.error) {
+                    errorMessages.push(`[${result.server.name}] 통신 실패`);
+                } else if (result.data) {
+                    successCount++;
+                    
+                    const tools = result.data.tools || [];
+                    tools.forEach(t => {
+                        if (!mergedToolsMap[t.id]) mergedToolsMap[t.id] = t;
+                        
+                        if (!window._pmh_tool_server_map[t.id]) window._pmh_tool_server_map[t.id] = [];
+                        window._pmh_tool_server_map[t.id].push(idx);
+                    });
+                    
+                    const dash = result.data.dashboard;
+                    if (dash) {
+                        if (dash.running) mergedDashboard.running.push(...dash.running);
+                        if (dash.cron) mergedDashboard.cron.push(...dash.cron);
+                    }
+                }
+            });
+
+            const mergedToolsArray = Object.values(mergedToolsMap);
+
+            if (successCount === 0) {
+                dropdown.innerHTML = html + `<div style="padding:20px; color:#bd362f; text-align:center;">모든 서버와의 통신에 실패했습니다.<br><span style="font-size:10px; color:#aaa;">서버가 꺼져 있거나 설정이 잘못되었습니다.</span></div>`;
+            } else {
+                if (errorMessages.length > 0) {
+                    html += `<div style="padding:6px 15px; background:rgba(189, 54, 47, 0.2); font-size:11px; color:#bd362f; text-align:center; border-bottom:1px solid #333;"><i class="fas fa-exclamation-triangle"></i> 일부 서버 통신 실패 (${errorMessages.length}대)</div>`;
+                }
+                
+                renderToolsDropdown(mergedToolsArray, mergedDashboard, html);
+            }
+        };
+
+        const renderToolsDropdown = (installedTools, dashboard, baseHtml) => {
+            let html = baseHtml;
+            
+            const runCnt = dashboard.running.length;
+            const cronCnt = dashboard.cron.length;
+            
+            html += `
+                <div style="display:flex; padding:10px 15px; background:#111; gap:10px; border-bottom:1px solid #333;">
+                   <div style="flex:1; background:rgba(229,160,13,0.1); border:1px solid rgba(229,160,13,0.3); padding:8px; border-radius:4px; text-align:center;">
+                       <div style="font-size:10px; color:#aaa; margin-bottom:2px;"><i class="fas fa-running" style="color:#e5a00d;"></i> 실행 중</div>
+                       <div style="font-size:16px; font-weight:bold; color:${runCnt > 0 ? '#e5a00d' : '#777'};">${runCnt}건</div>
+                   </div>
+                   <div style="flex:1; background:rgba(81,163,81,0.1); border:1px solid rgba(81,163,81,0.3); padding:8px; border-radius:4px; text-align:center;">
+                       <div style="font-size:10px; color:#aaa; margin-bottom:2px;"><i class="fas fa-clock" style="color:#51a351;"></i> 자동 스케줄</div>
+                       <div style="font-size:16px; font-weight:bold; color:${cronCnt > 0 ? '#51a351' : '#777'};">${cronCnt}건</div>
+                   </div>
+                </div>
             `;
 
             const bundledToolsStr = GM_getValue('pmh_bundled_tools', '[]');
@@ -3118,42 +3455,74 @@ GM_addStyle(`
                 html += `<div style="padding:20px 15px; text-align:center; color:#777; font-size:12px;">설치된 툴이 없습니다.</div>`;
             } else {
                 installedTools.sort((a, b) => (a.name || a.id || "").toLowerCase().localeCompare((b.name || b.id || "").toLowerCase()));
+                
+                const serverNameMap = {};
+                if (AppSettings.SERVERS) {
+                    AppSettings.SERVERS.forEach(s => {
+                        serverNameMap[s.machineIdentifier] = s.name || s.machineIdentifier.substring(0,8);
+                    });
+                }
+
                 installedTools.forEach(tool => {
+                    const myRunning = dashboard.running.filter(r => r.tool_id === tool.id);
+                    const myCron = dashboard.cron.filter(c => c.tool_id === tool.id);
+                    
+                    const isRunning = myRunning.length > 0;
+                    const hasCron = myCron.length > 0;
+                    
+                    const bgStyle = isRunning ? 'background-color: rgba(229,160,13,0.05); border-left: 3px solid #e5a00d;' : 'background-color: transparent; border-left: 3px solid transparent;';
+                    const nameColor = isRunning ? '#e5a00d' : '#ccc';
+                    const statusIcon = isRunning ? `<i class="fas fa-spinner fa-spin" style="color:#e5a00d; margin-left:6px; font-size:12px;" title="현재 작업 진행 중"></i>` : '';
+                    
+                    const runningClass = isRunning ? 'pmh-running-tool' : '';
+
+                    let serverBadgesHtml = '';
+                    myCron.forEach(c => {
+                        const sName = serverNameMap[c.server_id] || c.server_id.substring(0,8);
+                        serverBadgesHtml += `<span style="display:inline-block; margin-top:4px; margin-right:4px; padding:1px 5px; background:rgba(81,163,81,0.15); border:1px solid rgba(81,163,81,0.4); border-radius:3px; font-size:10px; color:#51a351; font-weight:normal;" title="스케줄: ${c.expr}"><i class="fas fa-clock"></i> ${sName}</span>`;
+                    });
+                    myRunning.forEach(r => {
+                        const sName = serverNameMap[r.server_id] || r.server_id.substring(0,8);
+                        let progressText = r.total > 0 ? ` (${Math.floor((r.progress/r.total)*100)}%)` : '';
+                        serverBadgesHtml += `<span style="display:inline-block; margin-top:4px; margin-right:4px; padding:1px 5px; background:rgba(229,160,13,0.15); border:1px solid rgba(229,160,13,0.4); border-radius:3px; font-size:10px; color:#e5a00d; font-weight:bold;" title="진행률: ${r.progress}/${r.total}"><i class="fas fa-running"></i> ${sName}${progressText}</span>`;
+                    });
+                    
                     html += `
-                        <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333;" data-id="${tool.id}" data-url="${tool.update_url || ''}" data-ver="${tool.version || '0.0'}">
-                            <div class="pmh-tool-run-btn" data-id="${tool.id}" style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:pointer;">
-                                <i class="${tool.icon || 'fas fa-wrench'}"></i><span>${tool.name || tool.id} <span style="color:#777; font-size:10px;">v${tool.version || '1.0'}</span></span>
+                        <div class="pmh-tool-item ${runningClass}" style="display:flex; justify-content:space-between; padding:10px 15px; ${bgStyle}" data-id="${tool.id}" data-url="${tool.update_url || ''}" data-ver="${tool.version || '0.0'}">
+                            <div class="pmh-tool-run-btn" data-id="${tool.id}" style="display:flex; align-items:flex-start; gap:8px; flex-grow:1; min-width:0; cursor:pointer;">
+                                <i class="${tool.icon || 'fas fa-wrench'}" style="color:${nameColor}; margin-top:2px; flex-shrink:0;"></i>
+                                <div style="display:flex; flex-direction:column; min-width:0; width:100%;">
+                                    <span style="color:${nameColor}; font-weight:${isRunning ? 'bold' : 'normal'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
+                                        ${tool.name || tool.id} 
+                                        <span style="color:#777; font-size:10px; font-weight:normal;">v${tool.version || '1.0'}</span>
+                                        ${statusIcon}
+                                    </span>
+                                    <div style="display:flex; flex-wrap:wrap;">
+                                        ${serverBadgesHtml}
+                                    </div>
+                                </div>
                             </div>
-                            <div style="display:flex; gap:10px; align-items:center;">
-                                <span class="pmh-tool-update-btn" data-id="${tool.id}" data-url="${tool.update_url || ''}" style="display:none; color:#51a351; font-size:11px; font-weight:bold; cursor:pointer; margin-left:8px;" title="클릭하여 업데이트 진행"></span>
-                                <i class="fas fa-trash-alt pmh-tool-delete-btn" data-id="${tool.id}" data-name="${tool.name || tool.id}" style="cursor:pointer; font-size:13px;" title="전체 서버에서 삭제"></i>
+                            <div style="display:flex; align-items:center; padding-left:10px; flex-shrink:0;">
+                                <span class="pmh-tool-update-btn" data-id="${tool.id}" data-url="${tool.update_url || ''}" style="display:none; color:#51a351; font-size:11px; font-weight:bold; cursor:pointer; margin-right:10px;" title="클릭하여 업데이트 진행"></span>
+                                <i class="fas fa-trash-alt pmh-tool-delete-btn" data-id="${tool.id}" data-name="${tool.name || tool.id}" style="cursor:pointer; font-size:13px; color:rgba(255,255,255,0.4);" title="전체 서버에서 삭제"></i>
                             </div>
                         </div>`;
                 });
             }
 
             const uninstalledBundles = processedBundles.filter(b => !installedTools.some(t => t.id === b.expectedId));
-            
             if (uninstalledBundles.length > 0) {
-                if (installedTools.length > 0) {
-                    html += `<div style="padding: 4px 15px; background: rgba(0,0,0,0.3); font-size: 10px; color: #555; text-align: center; border-bottom: 1px solid #333;">미설치 번들</div>`;
-                }
-                
+                if (installedTools.length > 0) html += `<div style="padding: 4px 15px; background: rgba(0,0,0,0.3); font-size: 10px; color: #555; text-align: center; border-bottom: 1px solid #333;">미설치 번들 툴</div>`;
                 uninstalledBundles.forEach(bundle => {
                     html += `
                         <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333; opacity: 0.6;">
                             <div style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:not-allowed;">
                                 <i class="fas fa-box-open"></i><span>${bundle.id} <span style="color:#555; font-size:10px;">설치 필요</span></span>
                             </div>
-                            <div style="display:flex; gap:10px; align-items:center;">
-                                <span class="pmh-tool-install-bundle-btn" data-id="${bundle.expectedId}" data-url="${bundle.url}" style="cursor:pointer; font-size:13px;" title="이 툴 설치하기">
-                                    <i class="fas fa-download"></i>
-                                </span>
-                            </div>
+                            <span class="pmh-tool-install-bundle-btn" data-id="${bundle.expectedId}" data-url="${bundle.url}" style="cursor:pointer; font-size:13px;" title="이 툴 설치하기"><i class="fas fa-download"></i></span>
                         </div>`;
                 });
             }
-
             dropdown.innerHTML = html;
         };
 
@@ -5741,7 +6110,7 @@ GM_addStyle(`
                 }
             });
         } catch (e) {
-            errorLog("[PMH] Match Modal 처리 중 오류:", e);
+            errorLog("[Match Modal] 처리 중 오류:", e);
         } finally {
             isProcessingMatchModal = false;
         }
