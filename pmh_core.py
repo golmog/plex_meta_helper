@@ -21,7 +21,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.53"
+__version__ = "0.7.54"
 
 def get_version():
     return __version__
@@ -31,6 +31,17 @@ GLOBAL_DASHBOARD_CACHE = {
     "cron": [],
     "last_updated": 0
 }
+
+_TOOL_SERVER_LOCKS = {}
+_TOOL_SERVER_LOCKS_GUARD = threading.Lock()
+
+def get_tool_lock(tool_id, server_id):
+    """특정 툴과 서버 조합에 대한 고유한 Lock 객체를 반환합니다."""
+    lock_key = f"{tool_id}_{server_id}"
+    with _TOOL_SERVER_LOCKS_GUARD:
+        if lock_key not in _TOOL_SERVER_LOCKS:
+            _TOOL_SERVER_LOCKS[lock_key] = threading.Lock()
+        return _TOOL_SERVER_LOCKS[lock_key]
 
 # ==============================================================================
 # [코어 중앙 자연 정렬 엔진]
@@ -147,15 +158,41 @@ def match_cron(cron_expr, dt):
 
 _SCHEDULER_STATES = {}
 
-def start_scheduler_daemon(base_dir, db_path, plex_url, plex_token, global_config):
+def start_scheduler_daemon(global_config):
     thread_name = "PMH_Cron_Scheduler"
+    base_dir = global_config.get("base_dir")
     
     _SCHEDULER_STATES[thread_name] = False
     
+    try:
+        task_logs_dir = os.path.join(base_dir, 'task_logs')
+        if os.path.exists(task_logs_dir):
+            ghost_count = 0
+            for f_name in os.listdir(task_logs_dir):
+                if f_name.endswith('_task.db'):
+                    db_file = os.path.join(task_logs_dir, f_name)
+                    try:
+                        with sqlite3.connect(db_file, timeout=2.0) as conn:
+                            c = conn.cursor()
+                            c.execute("UPDATE task_info SET state='error' WHERE state='running' OR state='pending'")
+                            if c.rowcount > 0:
+                                tool_server = f_name[:-8]
+                                print(f"[PMH Cleanup] 부팅 중 유령 작업 감지됨! '{tool_server}' 상태를 'error'로 초기화했습니다.")
+                                
+                                stamp = datetime.now().strftime('%H:%M:%S')
+                                c.execute("INSERT INTO logs (log_text) VALUES (?)", (f"[{stamp}] [System] 서버 강제 종료(재시작)가 감지되어 이전 작업을 중단 상태(Error)로 변경했습니다.",))
+                                ghost_count += 1
+                            conn.commit()
+                    except: pass
+            if ghost_count > 0:
+                print(f"[PMH Cleanup] 총 {ghost_count}개의 중단된 작업을 정리했습니다.")
+    except Exception as cleanup_err:
+        print(f"[PMH Cleanup Error] 유령 작업 정리 중 오류: {cleanup_err}")
+
     def scheduler_loop():
         tz_info = time.strftime('%z (%Z)')
         print(f"[PMH Daemon] 자동 실행 스케줄러 시작. (현재 타임존: {tz_info})")
-        
+
         _SCHEDULER_STATES[thread_name] = True
         
         tools_dir = os.path.join(base_dir, 'tools')
@@ -167,7 +204,7 @@ def start_scheduler_daemon(base_dir, db_path, plex_url, plex_token, global_confi
             
             if now.second == 0:
                 try:
-                    _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_config, now)
+                    _execute_scheduled_tasks(global_config, now)
                 except Exception as e:
                     print(f"[PMH Scheduler Error] {e}")
                 time.sleep(1)
@@ -223,7 +260,13 @@ def _update_dashboard_cache(tools_dir, task_logs_dir, base_dir):
     GLOBAL_DASHBOARD_CACHE["cron"] = cron_list
     GLOBAL_DASHBOARD_CACHE["last_updated"] = time.time()
 
-def _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_config, now):
+def _execute_scheduled_tasks(global_config, now):
+    base_dir = global_config.get("base_dir")
+    db_path = global_config.get("plex_db_path")
+    sqlite_bin = global_config.get("plex_sqlite_bin")
+    plex_url = global_config.get("plex_url")
+    plex_token = global_config.get("plex_token")
+
     tools_dir = os.path.join(base_dir, 'tools')
     task_logs_dir = os.path.join(base_dir, 'task_logs')
     if not os.path.exists(tools_dir) or not os.path.exists(task_logs_dir): return
@@ -274,8 +317,8 @@ def _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_con
                 req_data['_is_cron'] = True
                 
                 data_mgr = CoreDataManager(base_dir, tool_id, server_id)
-                sqlite_bin_path = global_config.get('plex_sqlite_bin') if global_config else None
-                db_api = create_db_api(db_path, sqlite_bin_path)
+                
+                db_api = create_db_api(db_path, sqlite_bin)
                 
                 def get_plex_instance():
                     from plexapi.server import PlexServer
@@ -292,23 +335,35 @@ def _execute_scheduled_tasks(base_dir, db_path, plex_url, plex_token, global_con
                     "query": db_api["query"],
                     "execute": db_api["execute"],
                     "get_plex": get_plex_instance,
-                    "task": task_mgr,
-                    "config": global_config or {},
-                    "cache": data_mgr,
-                    "options": opts, 
+                    "task": task_mgr, "config": global_config or {},
+                    "cache": data_mgr, "options": opts, 
                     "notify": create_discord_notifier(base_dir, tool_id, server_id, global_config),
                     "sort": core_natural_sort
                 }
 
                 res, code = module.run(req_data, core_api)
+                
                 if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
                     t_data = res.get('task_data', {})
                     t_data['_is_cron'] = True
-                    task_mgr.init_task(t_data)
                     
-                    t = threading.Thread(target=_core_worker_runner, args=(module, t_data, core_api, 0, tool_id))
-                    t.daemon = True
-                    t.start()
+                    tool_lock = get_tool_lock(tool_id, server_id)
+                    if not tool_lock.acquire(blocking=False):
+                        print(f"[PMH Scheduler] '{tool_id}' (서버:{server_id[:8]}) 이전 작업이 진행 중이어서 이번 스케줄은 건너뜁니다.")
+                        continue
+                    
+                    try:
+                        task_mgr.init_task(t_data)
+                        target_thread_name = f"Worker_{tool_id}_{server_id}"
+                        
+                        t = threading.Thread(target=_core_worker_runner, 
+                                             args=(module, t_data, core_api, 0, tool_id, server_id),
+                                             name=target_thread_name)
+                        t.daemon = True
+                        t.start()
+                    except Exception as start_err:
+                        tool_lock.release()
+                        raise start_err
                     
             except Exception as e:
                 print(f"[PMH Scheduler Error] Tool {tool_id} execution failed: {e}")
@@ -715,6 +770,22 @@ class CoreDataManager:
                 try: os.remove(self.db_file)
                 except: pass
 
+    @contextmanager
+    def transaction_session(self):
+        with self._lock:
+            conn = sqlite3.connect(self.db_file, timeout=10.0)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            try:
+                conn.execute("BEGIN IMMEDIATE;")
+                yield conn
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise e
+            finally:
+                conn.close()
+
     def save(self, res_data):
         self.reset_db()
         with self._lock:
@@ -795,12 +866,15 @@ class CoreDataManager:
                         order_clause = f"ORDER BY \"{actual_key}\" COLLATE NOCASE {s_dir}"
 
                 offset = (page - 1) * limit
-                c.execute(f"SELECT * FROM data {where_clause} {order_clause} LIMIT ? OFFSET ?", (limit, offset))
+                c.execute(f"SELECT *, pmh_status as _pmh_status_val FROM data {where_clause} {order_clause} LIMIT ? OFFSET ?", (limit, offset))
 
                 data_rows = []
                 for row in c.fetchall():
                     row_dict = dict(row)
+                    status_val = row_dict.pop('_pmh_status_val', 'pending')
+                    row_dict['_pmh_status'] = status_val
                     row_dict.pop('pmh_status', None)
+                    
                     for k, v in row_dict.items():
                         if isinstance(v, str) and (v.startswith('[') or v.startswith('{')):
                             try: row_dict[k] = json.loads(v)
@@ -822,6 +896,15 @@ class CoreDataManager:
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
                 if c.fetchone()[0] == 1:
                     c.execute(f"UPDATE data SET pmh_status = 'done' WHERE \"{key_column}\" = ?", (str(key_value),))
+
+    def mark_as_error(self, key_column, key_value):
+        with self._lock:
+            if not os.path.exists(self.db_file): return
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
+                if c.fetchone()[0] == 1:
+                    c.execute(f"UPDATE data SET pmh_status = 'error' WHERE \"{key_column}\" = ?", (str(key_value),))
 
     def load_dashboard(self):
         with self._lock:
@@ -886,10 +969,14 @@ class CoreOptionsManager:
                 try: os.remove(self.db_file)
                 except: pass
 
-def _core_worker_runner(module, task_data, core_api, start_progress, tool_id):
-    threading.current_thread().name = f"Worker_{tool_id}"
+def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, server_id="default"):
+    threading.current_thread().name = f"Worker_{tool_id}_{server_id}"
+    
+    tool_lock = get_tool_lock(tool_id, server_id)
+    
     try:
-        if hasattr(module, 'worker'): module.worker(task_data, core_api, start_progress)
+        if hasattr(module, 'worker'): 
+            module.worker(task_data, core_api, start_progress)
         else:
             core_api['task'].log("오류: 툴에 worker 함수가 구현되어 있지 않습니다.")
             core_api['task'].update_state('error')
@@ -898,6 +985,11 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id):
         core_api['task'].log(f"[System Error] 작업 중 치명적 오류 발생: {str(e)}")
         traceback.print_exc()
         core_api['task'].update_state('error')
+    finally:
+        try:
+            tool_lock.release()
+        except RuntimeError:
+            pass
 
 def create_db_api(db_path, sqlite_bin=None):
     def _run_cli_query(query, params=(), is_select=False):
@@ -986,7 +1078,64 @@ def _load_tool_module(tools_dir, tool_id, entry_file):
     spec.loader.exec_module(module)
     return module
 
-def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_size=1000, plex_url="", plex_token="", global_config=None):
+def check_update_readiness(base_dir, force_update=False):
+    active_workers = [t for t in threading.enumerate() if t.name.startswith("Worker_")]
+    
+    if not active_workers:
+        return True, 0, "진행 중인 작업이 없습니다."
+        
+    if not force_update:
+        return False, len(active_workers), f"현재 진행 중인 작업({len(active_workers)}건)이 있습니다."
+        
+    print(f"[PMH Core] Force update requested. Stopping {len(active_workers)} workers gracefully...")
+    
+    logs_dir = os.path.join(base_dir, 'task_logs')
+    for worker_thread in active_workers:
+        parts = worker_thread.name.split('_', 2)
+        if len(parts) >= 3:
+            tool_id = parts[1]
+            server_id = parts[2]
+        else:
+            tool_id = parts[1] if len(parts) > 1 else "unknown"
+            server_id = "default"
+            
+        setattr(worker_thread, 'do_run', False)
+        
+        if os.path.exists(logs_dir):
+            db_file = os.path.join(logs_dir, f"{tool_id}_{server_id}_task.db")
+            if os.path.exists(db_file):
+                try:
+                    with sqlite3.connect(db_file, timeout=5.0) as conn:
+                        c = conn.cursor()
+                        c.execute("UPDATE task_info SET state='cancelled' WHERE state='running' OR state='pending'")
+                        conn.commit()
+                    print(f"[PMH Core] Cancel signal sent to DB: {tool_id} on {server_id[:8]}")
+                except Exception as db_err:
+                    print(f"[PMH Core] Failed to send cancel signal to DB: {db_err}")
+                    
+    print("[PMH Core] Waiting for worker threads to physically terminate...")
+    max_wait_seconds = 15
+    waited = 0
+    while waited < max_wait_seconds:
+        still_running = [t for t in threading.enumerate() if t.name.startswith("Worker_")]
+        if not still_running:
+            print(f"[PMH Core] All workers successfully terminated after {waited} seconds.")
+            return True, 0, "모든 작업이 안전하게 종료되었습니다."
+            
+        time.sleep(1.0)
+        waited += 1
+        
+    remaining = [t.name for t in threading.enumerate() if t.name.startswith("Worker_")]
+    print(f"[PMH Core Error] Timeout! Following threads did not terminate: {remaining}")
+    print("[PMH Core Error] Update aborted to prevent database corruption or incomplete state.")
+    
+    return False, len(remaining), f"15초 대기 후에도 {len(remaining)}개의 작업이 종료되지 않았습니다. 서버 로그를 확인하거나 수동으로 중지해 주세요."
+
+def dispatch_request(subpath, method, args, data, global_config):
+    base_dir = global_config.get("base_dir")
+    db_path = global_config.get("plex_db_path")
+    max_batch_size = global_config.get("max_batch_size", 1000)
+
     tools_dir = os.path.join(base_dir, 'tools')
     os.makedirs(tools_dir, exist_ok=True)
 
@@ -1128,8 +1277,12 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
             
             task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
             data_mgr = CoreDataManager(base_dir, tool_id, server_id)
-            final_url = plex_url if str(plex_url).strip() else data.get('_plex_url', '')
-            final_token = plex_token if str(plex_token).strip() else data.get('_plex_token', '')
+
+            cfg_plex_url = global_config.get("plex_url", "")
+            cfg_plex_token = global_config.get("plex_token", "")
+            
+            final_url = cfg_plex_url if str(cfg_plex_url).strip() else data.get('_plex_url', '')
+            final_token = cfg_plex_token if str(cfg_plex_token).strip() else data.get('_plex_token', '')
             
             merged_config = global_config.copy() if global_config else {}
             merged_config['PLEX_URL'] = final_url
@@ -1169,13 +1322,6 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
                     saved_task = task_mgr.load(include_target_items=False)
                     if saved_task:
-                        if saved_task.get('state') == 'running':
-                            active_threads = [t.name for t in threading.enumerate()]
-                            if f"Worker_{tool_id}" not in active_threads:
-                                task_mgr.update_state('error')
-                                task_mgr.log("[System] 강제 종료(재시작)가 감지되어 이전 작업을 중단 상태(Error)로 변경했습니다.")
-                                saved_task = task_mgr.load(include_target_items=False)
-
                         ui_data['active_task'] = {
                             "task_id": tool_id,
                             "state": saved_task.get('state', 'unknown'),
@@ -1212,11 +1358,24 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                             saved_task['task_data'][k] = v
                     task_mgr.save(saved_task) 
 
-                    task_mgr.update_state('running')
-                    task_mgr.log("최신 설정값을 적용하여 작업을 재개합니다...")
-                    t = threading.Thread(target=_core_worker_runner, args=(module, saved_task['task_data'], core_api, saved_task.get('progress', 0), tool_id))
-                    t.daemon = True
-                    t.start()
+                    tool_lock = get_tool_lock(tool_id, server_id)
+                    if not tool_lock.acquire(blocking=False):
+                        return {"status": "error", "message": "이전 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도해 주세요."}, 400
+
+                    try:
+                        task_mgr.update_state('running')
+                        task_mgr.log("최신 설정값을 적용하여 작업을 재개합니다...")
+                        
+                        target_thread_name = f"Worker_{tool_id}_{server_id}"
+                        t = threading.Thread(target=_core_worker_runner, 
+                                             args=(module, saved_task['task_data'], core_api, saved_task.get('progress', 0), tool_id, server_id),
+                                             name=target_thread_name)
+                        t.daemon = True
+                        t.start()
+                    except Exception as e:
+                        tool_lock.release()
+                        raise e
+                        
                     return {"status": "success", "type": "async_task", "task_id": tool_id}, 200
 
                 elif action_type == 'page':
@@ -1279,17 +1438,28 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
 
                     if code == 200 and isinstance(res, dict) and res.get('type') == 'async_task':
                         task_data = res.get('task_data', {})
-                        
                         if 'action_type' not in task_data:
                             task_data['action_type'] = action_type
                             
-                        if not task_data.get('_is_cron'):
-                            task_mgr.reset()
+                        tool_lock = get_tool_lock(tool_id, server_id)
+                        if not tool_lock.acquire(blocking=False):
+                            return {"status": "error", "message": "이전 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도해 주세요."}, 400
+
+                        try:
+                            if not task_data.get('_is_cron'):
+                                task_mgr.reset()
+                            task_mgr.init_task(task_data)
                             
-                        task_mgr.init_task(task_data)
-                        t = threading.Thread(target=_core_worker_runner, args=(module, task_data, core_api, 0, tool_id))
-                        t.daemon = True
-                        t.start()
+                            target_thread_name = f"Worker_{tool_id}_{server_id}"
+                            t = threading.Thread(target=_core_worker_runner, 
+                                                 args=(module, task_data, core_api, 0, tool_id, server_id),
+                                                 name=target_thread_name)
+                            t.daemon = True
+                            t.start()
+                        except Exception as e:
+                            tool_lock.release()
+                            raise e
+                            
                         return {"status": "success", "type": "async_task", "task_id": tool_id}, 200
                         
                     return res, code
@@ -1298,13 +1468,6 @@ def dispatch_request(subpath, method, args, data, db_path, base_dir, max_batch_s
                 status_data = task_mgr.load(include_target_items=False)
                 if not status_data: return {"error": "Task not found"}, 404
                 
-                if status_data.get('state') == 'running':
-                    active_threads = [t.name for t in threading.enumerate()]
-                    if f"Worker_{tool_id}" not in active_threads:
-                        task_mgr.update_state('error')
-                        task_mgr.log("[System] 서버 재시작이 감지되어 작업이 중지되었습니다.")
-                        status_data = task_mgr.load(include_target_items=False)
-                        
                 return status_data, 200
                 
             elif action == 'cancel' and method == 'POST':

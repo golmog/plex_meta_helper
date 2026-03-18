@@ -63,6 +63,19 @@ PATH_MAPPINGS = cfg.get("PATH_MAPPINGS", DEFAULT_CONFIG["PATH_MAPPINGS"])
 DISCORD_WEBHOOK = cfg.get("DISCORD_WEBHOOK", DEFAULT_CONFIG["DISCORD_WEBHOOK"])
 PLEX_SQLITE_BIN = cfg.get("PLEX_SQLITE_BIN", DEFAULT_CONFIG["PLEX_SQLITE_BIN"])
 
+global_conf = {
+    "base_dir": BASE_DIR,
+    "plex_db_path": PLEX_DB_PATH,
+    "plex_url": PLEX_URL,
+    "plex_token": PLEX_TOKEN,
+    "plex_sqlite_bin": PLEX_SQLITE_BIN,
+    "max_batch_size": MAX_BATCH_SIZE,
+    "mate_apikey": API_KEY,
+    "mate_url": PLEX_MATE_URL,
+    "path_mappings": PATH_MAPPINGS,
+    "discord_webhook": DISCORD_WEBHOOK
+}
+
 CORE_FILE_PATH = os.path.join(BASE_DIR, "pmh_core.py")
 if not os.path.exists(CORE_FILE_PATH):
     print("[PMH BOOTSTRAP] pmh_core.py 가 존재하지 않아 GitHub에서 다운로드합니다...")
@@ -74,15 +87,7 @@ if not os.path.exists(CORE_FILE_PATH):
         sys.exit(1)
 
 import pmh_core
-
-global_conf = {
-    "mate_apikey": API_KEY,
-    "mate_url": PLEX_MATE_URL,
-    "path_mappings": PATH_MAPPINGS,
-    "discord_webhook": DISCORD_WEBHOOK,
-    "plex_sqlite_bin": PLEX_SQLITE_BIN
-}
-pmh_core.start_scheduler_daemon(BASE_DIR, PLEX_DB_PATH, PLEX_URL, PLEX_TOKEN, global_conf)
+pmh_core.start_scheduler_daemon(global_conf)
 
 # ==============================================================================
 # [Flask 앱 초기화]
@@ -106,14 +111,25 @@ def check_api_key():
 # ==============================================================================
 @app.route('/api/admin/update', methods=['POST'])
 def api_admin_update():
-    import threading
-    active_workers = [t.name.replace('Worker_', '') for t in threading.enumerate() if t.name.startswith("Worker_")]
-    if active_workers:
-        print(f"[PMH UPDATE ERROR] Blocked. Active workers running: {active_workers}")
-        return jsonify({
-            "status": "error", 
-            "message": f"현재 진행 중인 작업({', '.join(active_workers)})이 있습니다. 작업을 중지하거나 완료 후 시도해주세요."
-        }), 400
+    req_data = request.get_json() if request.is_json else {}
+    force_update = req_data.get('force', False)
+    
+    try:
+        is_ready, running_count, msg = pmh_core.check_update_readiness(BASE_DIR, force_update)
+        
+        if not is_ready:
+            print(f"[PMH UPDATE ERROR] Blocked by Core. {msg}")
+            return jsonify({
+                "status": "error", 
+                "running_count": running_count,
+                "message": msg
+            }), 400
+            
+    except AttributeError:
+        print("[PMH UPDATE WARNING] 'check_update_readiness' not found in current core. Proceeding update blindly.")
+    except Exception as e:
+        print(f"[PMH UPDATE ERROR] Core readiness check failed: {e}")
+        return jsonify({"status": "error", "message": f"코어 상태 확인 실패: {e}"}), 500
 
     print("[PMH UPDATE] Update request received. Downloading latest core module...")
     try:
@@ -131,6 +147,8 @@ def api_admin_update():
         print("[PMH UPDATE] Core file overwritten. Reloading module in memory...")
         importlib.reload(pmh_core)
         
+        pmh_core.start_scheduler_daemon(global_conf)
+
         try:
             req_svr = urllib.request.Request(f"{SERVER_URL}?t={ts}", headers={'Cache-Control': 'no-cache'})
             with urllib.request.urlopen(req_svr, timeout=5) as response_svr:
@@ -161,28 +179,17 @@ def api_gateway(subpath):
         json_data = request.get_json()
 
     result, status_code = pmh_core.dispatch_request(
-        subpath=subpath, 
-        method=method, 
-        args=args, 
-        data=json_data, 
-        db_path=PLEX_DB_PATH,
-        base_dir=BASE_DIR,
-        max_batch_size=MAX_BATCH_SIZE,
-        plex_url=PLEX_URL,
-        plex_token=PLEX_TOKEN,
-        global_config={
-            "mate_apikey": API_KEY,
-            "mate_url": PLEX_MATE_URL,
-            "path_mappings": PATH_MAPPINGS,
-            "discord_webhook": DISCORD_WEBHOOK
-        }
+        subpath=subpath,
+        method=method,
+        args=args,
+        data=json_data,
+        global_config=global_conf
     )
     
     return jsonify(result), status_code
 
 if __name__ == '__main__':
     tz_info = time.strftime('%z (%Z)')
-    # 개행이나 \n 등을 제거하여 FF 로거에서 깔끔하게 한 줄씩 출력되도록 처리
     print("[PMH SYSTEM] >>> PMH API Server (Gateway) initialized.")
     print(f"[PMH SYSTEM] >>> Core Loaded: v{pmh_core.get_version()}")
     print(f"[PMH SYSTEM] >>> Server Timezone: {tz_info}")

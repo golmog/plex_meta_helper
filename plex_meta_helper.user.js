@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.53
+// @version      0.7.54
 // @description  Plex Web UI 개선 스크립트
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -584,32 +584,36 @@ GM_addStyle(`
         return result;
     }
 
-    async function triggerServerUpdate(showStatusMsg, targetServers) {
+    async function triggerServerUpdate(showStatusMsg, targetServers, force = false) {
         if (!targetServers || targetServers.length === 0) return true;
 
-        log(`[Server Update] Triggering in-memory updates for ${targetServers.length} server(s)...`);
+        log(`[Server Update] Triggering updates for ${targetServers.length} server(s)... (Force: ${force})`);
         showStatusMsg('서버 업데이트 요청 중...', '#ccc', 0);
 
         let successCount = 0;
         let lastErrorMsg = '';
+        let needsForcePrompt = false;
+        let runningCount = 0;
 
         for (const srv of targetServers) {
             log(`[Server Update] Sending update POST request to: ${srv.name}`);
             try {
                 await new Promise((resolve) => {
                     GM_xmlhttpRequest({
-                        method: "POST", url: `${srv.pmhServerUrl}/api/admin/update`,
-                        headers: { "X-API-Key": srv.plexMateApiKey },
-                        timeout: 8000,
+                        method: "POST", 
+                        url: `${srv.pmhServerUrl}/api/admin/update`,
+                        headers: { "Content-Type": "application/json", "X-API-Key": srv.plexMateApiKey },
+                        data: JSON.stringify({ force: force }),
+                        timeout: 10000,
                         onload: (res) => {
                             if (res.status === 200) {
                                 try {
                                     const jsonRes = JSON.parse(res.responseText);
                                     if (jsonRes.status === "success") {
-                                        log(`[Server Update] Success for ${srv.name}. New Version: ${jsonRes.version}`);
+                                        infoLog(`[Server Update] Success for ${srv.name}. New Version: ${jsonRes.version}`);
                                         successCount++;
                                     } else {
-                                        lastErrorMsg = jsonRes.message || "Unknown error inside 200 response";
+                                        lastErrorMsg = jsonRes.message || "Unknown error";
                                         errorLog(`[Server Update] Update rejected by ${srv.name}: ${lastErrorMsg}`);
                                     }
                                 } catch(e) {
@@ -620,7 +624,11 @@ GM_addStyle(`
                                 try {
                                     const errRes = JSON.parse(res.responseText);
                                     lastErrorMsg = errRes.message || `HTTP ${res.status}`;
-                                    if (res.status === 400) {
+                                    
+                                    if (res.status === 400 && errRes.running_count) {
+                                        needsForcePrompt = true;
+                                        runningCount += parseInt(errRes.running_count) || 0;
+                                    } else if (res.status === 400) {
                                         toastr.warning(lastErrorMsg, "업데이트 불가", {timeOut: 8000});
                                     }
                                 } catch(e) {
@@ -645,15 +653,22 @@ GM_addStyle(`
             } catch(e) {}
         }
 
-        if (successCount === 0) {
-            showStatusMsg(`업데이트 취소됨`, '#bd362f', 4000);
-            return false;
+        if (needsForcePrompt && !force) {
+            showStatusMsg(`작업 중이라 일시 정지됨`, '#f89406', 4000);
+            
+            const userConfirmed = confirm(`현재 실행중인 작업 ${runningCount}개가 있습니다.\n모두 중단하고 업데이트 하시겠습니까?`);
+            if (userConfirmed) {
+                infoLog(`[Server Update] User confirmed force update. Restarting update process with force=true`);
+                return await triggerServerUpdate(showStatusMsg, targetServers, true);
+            } else {
+                infoLog(`[Server Update] User cancelled the update due to running tasks.`);
+                showStatusMsg(`업데이트 취소됨`, '#bd362f', 4000);
+                return false;
+            }
         }
 
-        if (successCount < targetServers.length) {
-            infoLog(`[Server Update] Partial success. ${successCount}/${targetServers.length} updated.`);
-            GM_setValue('pmh_last_update_check', Date.now());
-            showStatusMsg(`일부 서버 업데이트 실패`, '#f89406', 4000);
+        if (successCount === 0 && !needsForcePrompt) {
+            showStatusMsg(`업데이트 실패`, '#bd362f', 4000);
             return false;
         }
 
@@ -1940,7 +1955,7 @@ GM_addStyle(`
                     if (srvSelectEl) {
                         srvSelectEl.addEventListener('change', (e) => {
                             const newIdx = Number(e.target.value);
-                            console.log(`[PMH] UI 드롭다운에서 서버 변경 감지 -> 인덱스: ${newIdx}`);
+                            log(`[ServSelect] UI 드롭다운에서 서버 변경 감지 -> 인덱스: ${newIdx}`);
                             
                             isDestroyed = true;
                             if (window._pmh_active_pollers && window._pmh_active_pollers[toolId]) {
@@ -2543,7 +2558,18 @@ GM_addStyle(`
                                 const currentHashBase = window.location.hash.startsWith('#!') ? '#!' : window.location.hash.split('?')[0].split('/server/')[0] || '#!';
 
                                 pageData.forEach(row => {
-                                    dtHtml += `<tr class="pmh-dt-row">`;
+                                    const isErrorRow = row['_pmh_status'] === 'error';
+                                    
+                                    let rowStyle = isErrorRow 
+                                        ? `background:rgba(189,54,47,0.15); border-bottom:1px solid #bd362f;` 
+                                        : `border-bottom:1px solid #333; transition:background 0.2s;`;
+                                        
+                                    let rowHover = isErrorRow 
+                                        ? `title="⚠️ 이전에 작업이 실패(에러)한 항목입니다. Plex에서 파일을 확인하거나 수동으로 조치해 주세요."` 
+                                        : `onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'"`;
+
+                                    dtHtml += `<tr class="pmh-dt-row" style="${rowStyle}" ${rowHover}>`;
+                                    
                                     (columns || []).forEach(col => {
                                         let val = row[col.key] !== undefined && row[col.key] !== null ? row[col.key] : '-';
                                         let displayHtml = val;
@@ -2554,12 +2580,19 @@ GM_addStyle(`
                                         if (col.type === 'link' && actualMachineId && row[col.link_key]) {
                                             const ratingKey = row[col.link_key];
                                             const href = `${currentHashBase}/server/${actualMachineId}/details?key=${encodeURIComponent('/library/metadata/' + ratingKey)}&context=home%3Ahub.continueWatching`;
-                                            displayHtml = `<a href="${href}" style="color:#2f96b4; text-decoration:none;" title="${safeTitle}" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${val}</a>`;
+                                            const linkColor = isErrorRow ? '#ff6b6b' : '#2f96b4';
+                                            displayHtml = `<a href="${href}" style="color:${linkColor}; text-decoration:none; font-weight:${isErrorRow?'bold':'normal'};" title="${safeTitle}" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${val}</a>`;
                                         }
                                         else if (col.type === 'action_btn') {
                                             const btnPayload = JSON.stringify({ action_type: col.action_type || 'execute', _is_single: true, ...row }).replace(/"/g, '&quot;');
                                             
-                                            displayHtml = `<a href="#" class="pmh_dt_row_action_btn" data-payload="${btnPayload}" style="color:#e5a00d; font-size:14px; text-decoration:none; transition:0.2s; display:inline-block;" onmouseover="this.style.color='#ffc107'; this.style.transform='scale(1.2)';" onmouseout="this.style.color='#e5a00d'; this.style.transform='scale(1)';" title="이 항목만 단독 실행"><i class="${col.icon || 'fas fa-play'}"></i></a>`;
+                                            if (isErrorRow) {
+                                                displayHtml = `<span style="color:#bd362f; margin-right:6px;" title="이전 작업 실패"><i class="fas fa-exclamation-triangle"></i></span>`;
+                                            } else {
+                                                displayHtml = ``;
+                                            }
+                                            
+                                            displayHtml += `<a href="#" class="pmh_dt_row_action_btn" data-payload="${btnPayload}" style="color:#e5a00d; font-size:14px; text-decoration:none; transition:0.2s; display:inline-block;" onmouseover="this.style.color='#ffc107'; this.style.transform='scale(1.2)';" onmouseout="this.style.color='#e5a00d'; this.style.transform='scale(1)';" title="이 항목만 단독 실행(재시도)"><i class="${col.icon || 'fas fa-play'}"></i></a>`;
                                         }
 
                                         dtHtml += `<td style="padding:8px 6px; ${alignStr} white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${safeTitle}">${displayHtml}</td>`;
@@ -2898,7 +2931,7 @@ GM_addStyle(`
                             
                             const pollStatus = () => {
                                 if (isDestroyed || window.pmhCurrentToolId !== toolId || !document.getElementById('pmh_run_res_monitor')) {
-                                    console.log(`[PMH Polling] Stop polling for ${toolId} (Panel changed or closed)`);
+                                    log(`[Polling] Stop polling for ${toolId} (Panel changed or closed)`);
                                     return;
                                 }
 
@@ -2999,43 +3032,35 @@ GM_addStyle(`
                     document.removeEventListener('click', window._pmhDynamicRunBtnHandler);
                     
                     window._pmhDynamicRunBtnHandler = (e) => {
-                        // 클릭된 요소가 동적 실행 버튼(pmh_dynamic_run_btn)인지 확인
                         const btn = e.target.closest('.pmh_dynamic_run_btn');
                         if (!btn) return;
                         
-                        // 현재 툴 패널 내부에서 눌린 버튼인지 확인 (다른 툴 창 간섭 방지)
                         if (!document.getElementById('pmh-tool-panel')?.contains(btn)) return;
 
                         e.preventDefault();
                         e.stopPropagation();
 
-                        // 버튼이 잠겨있으면 무시
                         if (btn.disabled || btn.style.pointerEvents === 'none') return;
                         
-                        // 진행 중인 작업이 있으면 경고 후 차단
                         if (window._pmh_task_running_states[toolId]) {
                             return alert("진행 중인 작업이 있습니다.\n모니터링 탭을 확인해 주세요.");
                         }
                         
-                        // 폼 데이터 수집 및 버튼에 지정된 action_type 강제 주입
                         const { targetSrv: tSrv, reqData } = getFormData();
                         reqData.action_type = btn.dataset.action; 
                         
-                        console.log(`[PMH] Dynamic Run Button Clicked -> Action: ${reqData.action_type}`);
+                        log(`[DynamicRun] Clicked -> Action: ${reqData.action_type}`);
 
-                        // 버튼 상태 변경 (스피너)
                         const origHtml = btn.innerHTML;
                         btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> <span>요청 중...</span>`;
                         btn.disabled = true;
                         btn.style.opacity = '0.7';
 
-                        // API 요청 전송
                         GM_xmlhttpRequest({
                             method: "POST", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/run`,
                             headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
                             data: JSON.stringify(reqData),
                             onload: (r) => {
-                                // 버튼 복구
                                 btn.innerHTML = origHtml;
                                 btn.disabled = false;
                                 btn.style.opacity = '1';
@@ -3043,19 +3068,16 @@ GM_addStyle(`
                                 if (r.status === 200) {
                                     try {
                                         const resData = JSON.parse(r.responseText);
-                                        console.log(`[PMH] Dynamic Run Response:`, resData);
+                                        infoLog(`[DynamicRun] Response Received (Action: ${reqData.action_type})`);
                                         
-                                        // 1. 에러 반환 시
                                         if (resData.status === 'error') {
                                             toastr.error(resData.message || "작업을 시작할 수 없습니다.", "실행 거부", {timeOut: 6000});
                                             return;
                                         }
-                                        // 2. 단순 메시지 반환 시
                                         if (resData.type === 'message') {
                                             toastr.info(resData.message || "명령이 실행되었습니다.", "알림", {timeOut: 4000});
                                             return;
                                         }
-                                        // 3. 비동기 작업(async_task) 반환 시 (모니터링 화면 초기화)
                                         if (resData.type === 'async_task') {
                                             const taskData = resData.task_data || {};
                                             if (!taskData._silent_task) {
@@ -3069,11 +3091,10 @@ GM_addStyle(`
                                             }
                                         }
                                         
-                                        // 💡 공통 렌더러 호출 (UI/데이터 테이블 갱신 및 탭 전환)
                                         processAndRenderResult(resData, parseInt(savedOptions.items_per_page || 10), tSrv);
                                         
                                     } catch(err) {
-                                        console.error("[PMH] JSON Parse Error on Dynamic Run:", err);
+                                        errorLog("[DynamicRun] JSON Parse Error:", err);
                                         toastr.error("서버 응답을 처리할 수 없습니다.", "오류", {timeOut: 4000});
                                     }
                                 } else {
