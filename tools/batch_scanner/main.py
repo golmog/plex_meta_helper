@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-====================================================================================
- [PMH Tool Reference Template] - 배치 스캐너
-====================================================================================
-"""
 
 import time
 import os
@@ -106,10 +101,17 @@ def get_target_items(req_data, core_api, task=None):
         sec_params.extend(target_sections)
     
     target_libs = core_api['query'](sec_query, tuple(sec_params))
-    if not target_libs: return []
+    if not target_libs: return [], 0
 
     lib_map = {str(r['id']): r['name'] for r in target_libs}
     lib_ids_str = ",".join(lib_map.keys())
+
+    total_scanned = 0
+    try:
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4)"
+        count_res = core_api['query'](count_q)
+        if count_res: total_scanned = count_res[0]['cnt']
+    except Exception: pass
 
     base_select = f"""
         SELECT mi.id, mi.title, mi.guid, mp.file, mi.metadata_type, mi.library_section_id,
@@ -123,6 +125,7 @@ def get_target_items(req_data, core_api, task=None):
         WHERE mi.library_section_id IN ({lib_ids_str}) AND 
     """
 
+    query = ""
     if mode in ['refresh', 'rematch']: 
         query = base_select + " mi.metadata_type IN (1, 2) GROUP BY mi.id"
     elif mode == 'analyze':
@@ -156,64 +159,55 @@ def get_target_items(req_data, core_api, task=None):
 
     if task: task.update_state('running', progress=90, total=100)
     
-    return items
+    return items, total_scanned
 
 # =====================================================================
 # 3. 메인 라우터
 # =====================================================================
 def run(data, core_api):
     action = data.get('action_type')
+    current_mode = data.get('mode', 'refresh')
 
-    # [1] Preview (대상 목록 조회)
     if action == 'preview':
         task_data = data.copy()
-        # 조회 완료 후 모니터 탭에서 폼(표) 탭으로 자동 복귀
         task_data['_auto_refresh_ui'] = True
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-    # [2] 즉시 전체 실행
     if action == 'execute_instant':
         task_data = data.copy()
-        # 모니터링 탭에 그대로 남아 로그를 확인함 (기본값 False)
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-    # [3] UI (데이터 테이블 등)에서 넘어온 실행 요청
     if action == 'execute':
         
-        # 3-1. 크론(스케줄러) 실행 분기
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
             if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
                 cached_page = core_api['cache'].load_page(1, 999999)
                 if cached_page and cached_page.get('data'):
                     items = [{'id': str(row['rating_key']), 'title': row['title']} for row in cached_page['data']]
-                    task_data = {"mode": data.get('mode', 'refresh'), "target_items": items, "total": len(items)}
+                    task_data = {"mode": current_mode, "target_items": items, "total": len(items)}
                     task_data['_resume_start_index'] = task_state.get('progress', 0)
                     task_data['_is_cron'] = True
                     return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             
-            # 진행 중인 작업이 없으면 크론은 즉시 실행 모드로 우회
             task_data = data.copy()
             task_data['action_type'] = 'execute_instant'
             task_data['_is_cron'] = True
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-        # 3-2. 단일 항목 실행 (표 안에서 개별 플레이 버튼 클릭)
         elif data.get('_is_single'):
             items = [{'id': str(data.get('rating_key')), 'title': data.get('title', '단일 실행 항목')}]
-            task_data = {"mode": data.get('mode', 'refresh'), "target_items": items, "total": len(items)}
+            task_data = {"mode": current_mode, "target_items": items, "total": len(items)}
             task_data['_is_single'] = True
-            # 조용히 실행하고 끝나면 표 갱신
             task_data['_silent_task'] = True
             task_data['_auto_refresh_ui'] = True
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
         
-        # 3-3. UI 조회 목록 일괄 실행 (표 아래의 전체 시작 버튼)
         else:
             cached_page = core_api['cache'].load_page(1, 999999)
             if cached_page and cached_page.get('data'):
                 items = [{'id': str(row['rating_key']), 'title': row['title']} for row in cached_page['data']]
-                task_data = {"mode": data.get('mode', 'refresh'), "target_items": items, "total": len(items)}
+                task_data = {"mode": current_mode, "target_items": items, "total": len(items)}
                 return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             else:
                 return {"status": "error", "message": "캐시된 대상이 없습니다. 다시 조회해주세요."}, 400
@@ -234,11 +228,25 @@ def worker(task_data, core_api, start_index):
     if action == 'preview':
         task.log("🔍 조회 대상을 찾기 위해 라이브러리를 검사합니다...")
         task.update_state('running', progress=0, total=100)
-        items = get_target_items(task_data, core_api, task)
+        items, total_scanned = get_target_items(task_data, core_api, task)
         
         if task.is_cancelled():
             task.log("🛑 조회 작업이 사용자에 의해 취소되었습니다.")
             return
+
+        summary_cards = []
+        if total_scanned > 0:
+            summary_cards.append({"label": "총 검사 항목 수", "value": f"{total_scanned:,} 건", "icon": "fas fa-search", "color": "#2f96b4"})
+            
+        if len(items) > 0:
+            summary_cards.append({"label": "작업 대상 항목", "value": f"{len(items):,} 건", "icon": "fas fa-list-ol", "color": "#e5a00d"})
+
+        action_btn = None
+        if len(items) > 0:
+            action_btn = {
+                "label": f"<i class='fas fa-rocket'></i> 검색된 {len(items):,}건 전체 작업 시작", 
+                "payload": {"action_type": "execute", "mode": task_data.get('mode', 'refresh')}
+            }
 
         task.log("📊 검색된 데이터를 바탕으로 결과 테이블을 생성합니다...")
         task.update_state('running', progress=95, total=100)
@@ -247,18 +255,22 @@ def worker(task_data, core_api, start_index):
         
         action_btn = None
         if len(items) > 0:
-            action_btn = {"label": f"<i class='fas fa-rocket'></i> 검색된 {len(items):,}건 전체 작업 시작", "payload": {"action_type": "execute"}}
+            action_btn = {
+                "label": f"<i class='fas fa-rocket'></i> 검색된 {len(items):,}건 전체 작업 시작", 
+                "payload": {"action_type": "execute", "mode": task_data.get('mode', 'refresh')}
+            }
             
         sort_rules = [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}]
 
         res_payload = {
             "status": "success", "type": "datatable", "action_button": action_btn,
+            "summary_cards": summary_cards,
             "default_sort": sort_rules,
             "columns": [
                 {"key": "section", "label": "섹션", "width": "20%", "align": "center", "header_align": "center", "sortable": True},
                 {"key": "title", "label": "대상 항목 (제목)", "width": "45%", "align": "left", "header_align": "center", "type": "link", "link_key": "rating_key", "sortable": True},
                 {"key": "guid", "label": "에이전트", "width": "25%", "align": "center", "header_align": "center", "sortable": True},
-                {"key": "action", "label": "단일실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn", "action_type": "execute"}
+                {"key": "action", "label": "단일실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn", "action_type": "execute", "payload": {"mode": task_data.get('mode', 'refresh')}}
             ],
             "data": table_data
         }
@@ -279,7 +291,7 @@ def worker(task_data, core_api, start_index):
 
     if action == 'execute_instant':
         task.log(f"🔍 '{mode}' 작업을 위한 대상 항목 조회를 즉시 시작합니다...")
-        items = get_target_items(task_data, core_api, task)
+        items, _ = get_target_items(task_data, core_api, task)
         total = len(items)
         task.log(f"✅ 조회 완료. 총 {total:,}건의 항목에 대해 복구 작업을 시작합니다.")
         task.update_state('running', progress=0, total=total)
@@ -316,7 +328,6 @@ def worker(task_data, core_api, start_index):
     except Exception as e:
         task.update_state('error'); task.log(f"❌ Plex 연결 실패: {str(e)}"); return
 
-    # 안정성 대기 로직
     def wait_until_stable_idle(max_wait_seconds=30):
         stable_count = 0
         waited_time = 0
@@ -338,16 +349,23 @@ def worker(task_data, core_api, start_index):
         task.log("⚠️ Plex 작업 큐 대기 시간 초과. 강제로 다음 항목을 진행합니다.")
         return True
 
-    # ✨ 원자성(Atomicity)이 보장된 단일 항목 처리 루프
+    BATCH_SIZE = 10
+    processed_in_batch = 0
+    completed_keys_buffer = []
+
     for idx, item in enumerate(items[start_index:], start=start_index + 1):
         
         if task.is_cancelled(): 
             task.log("🛑 사용자 요청에 의해 작업을 중단합니다.")
+            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                for rk_to_done in completed_keys_buffer:
+                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
+            if processed_in_batch > 0:
+                task.update_state('running', progress=idx - 1)
             return 
 
         mid, title = item['id'], item['title']
         
-        task.update_state('running', progress=idx)
         task.log(f"[{idx}/{total}] 🎬 '{title}' 처리 중...")
         
         if not wait_until_stable_idle(): return
@@ -383,21 +401,83 @@ def worker(task_data, core_api, start_index):
                 plex_item.analyze()
                 task.log("      ✅ 분석 요청 완료 (Plex 백그라운드에서 진행)")
                 
+            completed_keys_buffer.append(str(mid))
+                
         except Exception as e:
-            task.log(f"   -> ❌ 처리 오류 발생: {e}")
+            task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
+            if not task_data.get('_is_single') and action != 'execute_instant':
+                core_api['cache'].mark_as_error('rating_key', str(mid))
             
-        if task.is_cancelled(): return
+        processed_in_batch += 1
+            
+        if task.is_cancelled():
+            task.log("🛑 사용자 취소 명령 감지. 진행 중인 항목까지만 완료하고 작업을 중단합니다.")
+            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                for rk_to_done in completed_keys_buffer:
+                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
+            if processed_in_batch > 0:
+                task.update_state('running', progress=idx)
+            return
         
-        if not task_data.get('_is_cron') and action != 'execute_instant':
-            core_api['cache'].mark_as_done('rating_key', str(mid))
+        if processed_in_batch >= BATCH_SIZE or idx == total:
+            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                for rk_to_done in completed_keys_buffer:
+                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
+                    
+            task.update_state('running', progress=idx)
+            
+            processed_in_batch = 0
+            completed_keys_buffer = []
         
         if sleep_time > 0 and idx < total:
             loops = max(1, int(sleep_time * 2))
             for _ in range(loops):
                 if task.is_cancelled(): 
-                    task.log("🛑 대기 중 사용자 취소 명령 감지. 진행 중인 항목까지만 완료하고 작업을 중단합니다.")
+                    task.log("🛑 사용자 취소 명령 감지. 진행 중인 항목까지만 완료하고 작업을 중단합니다.")
+                    if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                        for rk_to_done in completed_keys_buffer:
+                            core_api['cache'].mark_as_done('rating_key', rk_to_done)
+                    if processed_in_batch > 0:
+                        task.update_state('running', progress=idx)
                     return
                 time.sleep(0.5)
+
+    # -------------------------------------------------------------
+    # 💡 [일괄 검증 및 종료 처리]
+    # -------------------------------------------------------------
+    if mode == 'analyze' and not task.is_cancelled() and not task_data.get('_is_single'):
+        analyze_rks = [str(item['id']) for item in items]
+        if analyze_rks:
+            task.log("🔍 분석 작업 완료. Plex DB 갱신 상태를 일괄 검증합니다...")
+            time.sleep(2)
+            
+            try:
+                corrupt_titles = []
+                for i in range(0, len(analyze_rks), 500):
+                    chunk = analyze_rks[i:i+500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    check_q = f"SELECT metadata_item_id FROM media_items WHERE metadata_item_id IN ({placeholders}) AND (width IS NULL OR width = 0)"
+                    for r in core_api['query'](check_q, tuple(chunk)):
+                        fail_rk_str = str(r['metadata_item_id'])
+                        fail_title = f"Unknown Title (ID:{fail_rk_str})"
+                        
+                        for item in items:
+                            if str(item['id']) == fail_rk_str:
+                                fail_title = item['title']
+                                break
+                        corrupt_titles.append(fail_title)
+                        
+                        core_api['cache'].mark_as_error('rating_key', fail_rk_str)
+                
+                if corrupt_titles:
+                    task.log("=" * 45)
+                    task.log(f"🚨 [분석 실패 (파일 손상, 읽기 권한, 클라우드 마운트 해제 의심): 총 {len(corrupt_titles):,}건]")
+                    for c_title in corrupt_titles: task.log(f"   > {c_title}")
+                    task.log("=" * 45)
+                else: 
+                    task.log("✅ 모든 분석 항목이 정상적으로 갱신(해상도 정보 등록)되었습니다.")
+            except Exception as e:
+                task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
 
     # -----------------------------------------------------------------
     # 처리 완료 및 디스코드 알림
