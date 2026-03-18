@@ -191,7 +191,7 @@ def run(data, core_api):
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
             if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
-                cached_page = core_api['cache'].load_page(1, 999999)
+                cached_page = core_api['cache'].load_page(1, 99999999)
                 if cached_page and cached_page.get('data'):
                     items = [{'id': str(row['rating_key']), 'title': row['title']} for row in cached_page['data']]
                     task_data = {"mode": current_mode, "target_items": items, "total": len(items)}
@@ -213,7 +213,7 @@ def run(data, core_api):
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
         
         else:
-            cached_page = core_api['cache'].load_page(1, 999999)
+            cached_page = core_api['cache'].load_page(1, 99999999)
             if cached_page and cached_page.get('data'):
                 items = [{'id': str(row['rating_key']), 'title': row['title']} for row in cached_page['data']]
                 task_data = {"mode": current_mode, "target_items": items, "total": len(items)}
