@@ -122,14 +122,21 @@ def get_target_items(req_data, core_api, task=None):
         FROM metadata_items mi
         LEFT JOIN media_items m ON m.metadata_item_id = mi.id
         LEFT JOIN media_parts mp ON mp.media_item_id = m.id
-        WHERE mi.library_section_id IN ({lib_ids_str}) AND 
+        WHERE mi.library_section_id IN ({lib_ids_str}) AND
     """
 
-    query = ""
-    if mode in ['refresh', 'rematch']: 
-        query = base_select + " mi.metadata_type IN (1, 2) GROUP BY mi.id"
+    if mode in ['refresh', 'rematch']:
+        query = base_select + " mi.metadata_type IN (1, 4, 10) GROUP BY mi.id"
+        
     elif mode == 'analyze':
-        query = base_select + " mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0) AND mp.file IS NOT NULL GROUP BY mi.id"
+        query = base_select + """
+            mp.file IS NOT NULL AND (
+                (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0))
+                OR
+                (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
+            )
+            GROUP BY mi.id
+        """
 
     if task: 
         task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 대상을 일괄 조회 중입니다...")
@@ -456,9 +463,19 @@ def worker(task_data, core_api, start_index):
                 for i in range(0, len(analyze_rks), 500):
                     chunk = analyze_rks[i:i+500]
                     placeholders = ",".join("?" for _ in chunk)
-                    check_q = f"SELECT metadata_item_id FROM media_items WHERE metadata_item_id IN ({placeholders}) AND (width IS NULL OR width = 0)"
+                    
+                    check_q = f"""
+                        SELECT mi.id, mi.metadata_type 
+                        FROM metadata_items mi
+                        JOIN media_items m ON m.metadata_item_id = mi.id
+                        WHERE mi.id IN ({placeholders}) AND (
+                            (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0))
+                            OR
+                            (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
+                        )
+                    """
                     for r in core_api['query'](check_q, tuple(chunk)):
-                        fail_rk_str = str(r['metadata_item_id'])
+                        fail_rk_str = str(r['id'])
                         fail_title = f"Unknown Title (ID:{fail_rk_str})"
                         
                         for item in items:
@@ -475,7 +492,7 @@ def worker(task_data, core_api, start_index):
                     for c_title in corrupt_titles: task.log(f"   > {c_title}")
                     task.log("=" * 45)
                 else: 
-                    task.log("✅ 모든 분석 항목이 정상적으로 갱신(해상도 정보 등록)되었습니다.")
+                    task.log("✅ 모든 분석 항목이 정상적으로 갱신(미디어 정보 등록)되었습니다.")
             except Exception as e:
                 task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
 
