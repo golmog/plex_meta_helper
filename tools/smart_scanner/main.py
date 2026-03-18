@@ -172,7 +172,7 @@ def get_target_issues(req_data, core_api, task=None):
 
     total_scanned = 0
     try:
-        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4)"
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4, 10)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception as e:
@@ -197,12 +197,13 @@ def get_target_issues(req_data, core_api, task=None):
             return f"{base_title} ({year})" if year else base_title
 
     base_from = f"""
-        SELECT mi.id, mi.metadata_type, mi.title, mp.file, mi.year, mi.parent_id, mi.guid, mi.library_section_id,
-               (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
-               (SELECT title FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
-               (SELECT year FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
-               (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
-               mi."index" as e_idx
+        SELECT 
+            mi.id, mi.metadata_type, mi.title, mp.file, mi.year, mi.parent_id, mi.guid, mi.library_section_id,
+            (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
+            (SELECT title FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
+            (SELECT year FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
+            (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
+            mi."index" as e_idx
         FROM metadata_items mi
         LEFT JOIN media_items m ON m.metadata_item_id = mi.id
         LEFT JOIN media_parts mp ON mp.media_item_id = m.id
@@ -239,15 +240,16 @@ def get_target_issues(req_data, core_api, task=None):
             """
             for r in core_api['query'](q_a):
                 sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
-                if r['metadata_type'] == 1:
+                
+                if r['metadata_type'] == 1: 
                     add_target(r['id'], 1, format_title(r), sec_name, 'analyze', r['file'], parent_rk=r['id'])
-                elif r['metadata_type'] == 4:
+                elif r['metadata_type'] == 4: 
                     add_target(r['id'], 4, format_title(r, is_episode=True), sec_name, 'analyze', r['file'], parent_rk=r['grandparent_id'])
                 elif r['metadata_type'] == 10:
-                    add_target(r['id'], 10, format_title(r), sec_name, 'analyze', r['file'], parent_rk=r['id'])
+                    add_target(r['id'], 10, format_title(r, is_episode=True), sec_name, 'analyze', r['file'], parent_rk=r['grandparent_id'])
 
         elif fix_type == 'match':
-            q_m = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2)"
+            q_m = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2, 10)"
             for r in core_api['query'](q_m):
                 if r['id'] in assigned_grandparents or r['id'] in targets: continue
                 sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
@@ -256,14 +258,14 @@ def get_target_issues(req_data, core_api, task=None):
         elif fix_type == 'refresh':
             q_r = base_from + """
                 (
-                    (mi.metadata_type IN (1, 2) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                    (mi.metadata_type IN (1, 2, 10) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                     OR
                     (mi.metadata_type = 4 AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                 )
             """
             for r in core_api['query'](q_r):
                 sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
-                if r['metadata_type'] in (1, 2):
+                if r['metadata_type'] in (1, 2, 10):
                     if r['id'] in assigned_grandparents or r['id'] in targets: continue
                     add_target(r['id'], r['metadata_type'], format_title(r), sec_name, 'refresh', parent_rk=r['id'])
                 elif r['metadata_type'] == 4 and r['grandparent_id']:
