@@ -165,10 +165,18 @@ def get_target_issues(req_data, core_api, task=None):
     target_libs = core_api['query'](sec_query, tuple(sec_params))
     if not target_libs: 
         if task: task.log("⚠️ 선택한 라이브러리를 찾을 수 없습니다.")
-        return {}
+        return {}, 0
 
     lib_map = {str(r['id']): r['name'] for r in target_libs}
     lib_ids_str = ",".join(lib_map.keys())
+
+    total_scanned = 0
+    try:
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4)"
+        count_res = core_api['query'](count_q)
+        if count_res: total_scanned = count_res[0]['cnt']
+    except Exception as e:
+        pass
 
     def add_target(rk, m_type, title, sec_name, fix_type, file_path=None, parent_rk=None):
         if rk not in targets:
@@ -216,7 +224,6 @@ def get_target_issues(req_data, core_api, task=None):
     for step_idx, (fix_type, msg) in enumerate(tasks_to_run, 1):
         if task and task.is_cancelled(): break
         
-        # 🟢 [핵심] 단계별 시작 로그 출력 및 진행률(Progress) 갱신
         if task: 
             progress_pct = int((step_idx / total_steps) * 80)
             task.log(f"⏳ [{step_idx}/{total_steps}] {msg}")
@@ -290,7 +297,6 @@ def get_target_issues(req_data, core_api, task=None):
                     if r['grandparent_id'] in assigned_grandparents or r['grandparent_id'] in targets: continue
                     add_target(r['grandparent_id'], 2, format_title(r), sec_name, 'yaml_marker', r['file'], parent_rk=r['grandparent_id'])
 
-        # 🟢 [핵심] 단계별 완료 로그 출력
         if task: 
             task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
 
@@ -300,7 +306,7 @@ def get_target_issues(req_data, core_api, task=None):
         task.log(f"✅ DB 쿼리 수집 완료. (총 {len(targets):,}개 병합됨)")
         task.update_state('running', progress=90, total=100)
         
-    return targets
+    return targets, total_scanned
 
 # =====================================================================
 # 3. 메인 라우터
@@ -404,8 +410,8 @@ def worker(task_data, core_api, start_index):
         task.log("🔍 복구 대상(이슈)을 찾기 위해 라이브러리 검사를 시작합니다...")
         task.update_state('running', progress=0, total=100)
         
-        # 1-1. get_target_issues 호출 (내부적으로 5단계 쿼리를 돌며 task 로그/진행률을 갱신함)
-        targets = get_target_issues(task_data, core_api, task)
+        # 1-1. get_target_issues 호출
+        targets, total_scanned = get_target_issues(task_data, core_api, task)
         
         if task.is_cancelled(): 
             task.log("🛑 조회 작업이 사용자에 의해 취소되었습니다.")
@@ -446,6 +452,13 @@ def worker(task_data, core_api, start_index):
                 if count > 0: chart_items.append({"label": chart_labels_kr[f_type], "count": f"{count}건", "percent": round((count / total_issues) * 100, 1)})
             chart_items.sort(key=lambda x: float(x['percent']), reverse=True)
 
+        summary_cards = []
+        if total_scanned > 0:
+            summary_cards.append({"label": "총 검사 항목 수", "value": f"{total_scanned:,} 건", "icon": "fas fa-search", "color": "#2f96b4"})
+            
+        if total_issues > 0:
+            summary_cards.append({"label": "복구 필요 항목", "value": f"{total_issues:,} 건", "icon": "fas fa-exclamation-triangle", "color": "#bd362f"})
+
         action_btn = None
         if len(table_data) > 0: 
             # 검색된 결과를 일괄 실행(execute)하는 버튼 페이로드 세팅
@@ -456,7 +469,7 @@ def worker(task_data, core_api, start_index):
             
         res_payload = {
             "status": "success", "type": "datatable",
-            "summary_cards": [{"label": "총 복구 대상", "value": f"{total_issues:,} 건", "icon": "fas fa-exclamation-triangle", "color": "#bd362f"}] if total_issues > 0 else [],
+            "summary_cards": summary_cards,
             "bar_charts": [{"title": "<i class='fas fa-chart-pie'></i> 작업 유형별 비중 통계", "color": "#2f96b4", "items": chart_items}] if chart_items else [],
             "action_button": action_btn,
             "default_sort": sort_rules,
@@ -490,7 +503,7 @@ def worker(task_data, core_api, start_index):
 
     if action == 'execute_instant':
         task.log("새로운 복구 대상을 조회하여 즉시 실행을 준비합니다...")
-        targets = get_target_issues(task_data, core_api, task)
+        targets, _ = get_target_issues(task_data, core_api, task)
         items = []
         for rk, info in targets.items():
             items.append({
@@ -554,10 +567,20 @@ def worker(task_data, core_api, start_index):
         task.log("⚠️ Plex 작업 큐 대기 시간 초과. 강제로 다음 항목을 진행합니다.")
         return True
 
+    BATCH_SIZE = 10
+    processed_in_batch = 0
+    completed_keys_buffer = []
+
     # 본 작업 루프
     for idx, item in enumerate(items[start_index:], start=start_index + 1):
         if task.is_cancelled(): 
             task.log("🛑 취소 명령 감지. 작업을 중단합니다.")
+            
+            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                for rk_to_done in completed_keys_buffer:
+                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
+            if processed_in_batch > 0:
+                task.update_state('running', progress=idx - 1)
             return
 
         rk = item['rating_key']
@@ -566,12 +589,11 @@ def worker(task_data, core_api, start_index):
         m_type = item['m_type']
         files = item['files']
 
-        task.update_state('running', progress=idx)
         task.log(f"[{idx}/{total}] 🎬 '{title}' 복구 진행 중...")
 
         if not wait_until_stable(): return
         skip_delay = False 
-        
+
         try:
             if fix_type in ['yaml_season', 'yaml_marker']:
                 yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
@@ -631,20 +653,46 @@ def worker(task_data, core_api, start_index):
                     task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 에이전트 데이터 갱신 진행)")
             
             actual_fix_counts[fix_type] += 1
+            
+            completed_keys_buffer.append(str(rk))
 
         except Exception as e:
             task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
+            if not task_data.get('_is_single') and action != 'execute_instant':
+                core_api['cache'].mark_as_error('rating_key', str(rk))
             
-        if task.is_cancelled(): return
+        processed_in_batch += 1
         
-        # 단일 작업이 아니고, 즉시 전체 실행 모드가 아니라면 화면상에서 '처리완료' 마킹
-        if not task_data.get('_is_single') and action != 'execute_instant':
-            core_api['cache'].mark_as_done('rating_key', str(rk))
+        if task.is_cancelled():
+            task.log("🛑 사용자 취소 명령 감지. 진행 중인 항목까지만 완료하고 작업을 중단합니다.")
+            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                for rk_to_done in completed_keys_buffer:
+                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
+            if processed_in_batch > 0:
+                task.update_state('running', progress=idx)
+            return
+        
+        if processed_in_batch >= BATCH_SIZE or idx == total:
+            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                for rk_to_done in completed_keys_buffer:
+                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
+                    
+            task.update_state('running', progress=idx)
+            
+            processed_in_batch = 0
+            completed_keys_buffer = []
         
         if sleep_time > 0 and not skip_delay and idx < total:
             loops = max(1, int(sleep_time * 2))
             for _ in range(loops):
-                if task.is_cancelled(): return
+                if task.is_cancelled():
+                    task.log("🛑 사용자 취소 명령 감지. 진행 중인 항목까지만 완료하고 작업을 중단합니다.")
+                    if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                        for rk_to_done in completed_keys_buffer:
+                            core_api['cache'].mark_as_done('rating_key', rk_to_done)
+                    if processed_in_batch > 0:
+                        task.update_state('running', progress=idx)
+                    return
                 time.sleep(0.5)
 
     # -------------------------------------------------------------
