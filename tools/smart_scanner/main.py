@@ -230,11 +230,21 @@ def get_target_issues(req_data, core_api, task=None):
             task.update_state('running', progress=progress_pct, total=100)
 
         if fix_type == 'analyze':
-            q_a = base_from + "(m.width IS NULL OR m.width = 0) AND mp.file IS NOT NULL AND mi.metadata_type IN (1, 4)"
+            q_a = base_from + """
+                mp.file IS NOT NULL AND (
+                    (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0))
+                    OR
+                    (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
+                )
+            """
             for r in core_api['query'](q_a):
                 sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
-                if r['metadata_type'] == 1: add_target(r['id'], 1, format_title(r), sec_name, 'analyze', r['file'], parent_rk=r['id'])
-                elif r['metadata_type'] == 4: add_target(r['id'], 4, format_title(r, is_episode=True), sec_name, 'analyze', r['file'], parent_rk=r['grandparent_id'])
+                if r['metadata_type'] == 1:
+                    add_target(r['id'], 1, format_title(r), sec_name, 'analyze', r['file'], parent_rk=r['id'])
+                elif r['metadata_type'] == 4:
+                    add_target(r['id'], 4, format_title(r, is_episode=True), sec_name, 'analyze', r['file'], parent_rk=r['grandparent_id'])
+                elif r['metadata_type'] == 10:
+                    add_target(r['id'], 10, format_title(r), sec_name, 'analyze', r['file'], parent_rk=r['id'])
 
         elif fix_type == 'match':
             q_m = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2)"
@@ -709,22 +719,37 @@ def worker(task_data, core_api, start_index):
                 for i in range(0, len(analyze_rks), 500):
                     chunk = analyze_rks[i:i+500]
                     placeholders = ",".join("?" for _ in chunk)
-                    check_q = f"SELECT metadata_item_id FROM media_items WHERE metadata_item_id IN ({placeholders}) AND (width IS NULL OR width = 0)"
+                    
+                    check_q = f"""
+                        SELECT mi.id, mi.metadata_type 
+                        FROM metadata_items mi
+                        JOIN media_items m ON m.metadata_item_id = mi.id
+                        WHERE mi.id IN ({placeholders}) AND (
+                            (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0))
+                            OR
+                            (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
+                        )
+                    """
                     for r in core_api['query'](check_q, tuple(chunk)):
-                        fail_rk_str = str(r['metadata_item_id'])
+                        fail_rk_str = str(r['id'])
                         fail_title = f"Unknown Title (ID:{fail_rk_str})"
+                        
                         for item in items:
                             if str(item['rating_key']) == fail_rk_str:
                                 fail_title = item['title']
                                 break
+                                
                         corrupt_titles.append(fail_title)
+                        
+                        core_api['cache'].mark_as_error('rating_key', fail_rk_str)
                 
                 if corrupt_titles:
                     task.log("=" * 45)
                     task.log(f"🚨 [분석 실패 (파일 손상, 읽기 권한, 클라우드 마운트 해제 의심): 총 {len(corrupt_titles):,}건]")
                     for c_title in corrupt_titles: task.log(f"   > {c_title}")
                     task.log("=" * 45)
-                else: task.log("모든 분석 항목이 정상적으로 갱신되었습니다.")
+                else: 
+                    task.log("모든 분석 항목이 정상적으로 갱신(미디어 정보 등록)되었습니다.")
             except Exception as e:
                 task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
 
