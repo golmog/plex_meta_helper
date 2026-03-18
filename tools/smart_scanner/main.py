@@ -344,7 +344,7 @@ def run(data, core_api):
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
             if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
-                cached_page = core_api['cache'].load_page(1, 999999)
+                cached_page = core_api['cache'].load_page(1, 99999999)
                 if cached_page and cached_page.get('data'):
                     items = []
                     for row in cached_page['data']:
@@ -387,7 +387,7 @@ def run(data, core_api):
             
         # 3-3. UI 조회 목록 일괄 실행
         else:
-            cached_page = core_api['cache'].load_page(1, 999999)
+            cached_page = core_api['cache'].load_page(1, 99999999)
             if cached_page and cached_page.get('data'):
                 items = []
                 for row in cached_page['data']:
