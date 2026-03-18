@@ -108,21 +108,23 @@ def get_target_items(req_data, core_api, task=None):
 
     total_scanned = 0
     try:
-        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4)"
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4, 10)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception: pass
 
     base_select = f"""
-        SELECT mi.id, mi.title, mi.guid, mp.file, mi.metadata_type, mi.library_section_id,
-               (SELECT title FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) as show_title,
-               (SELECT year FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) as show_year,
-               (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as season_index,
-               mi."index" as episode_index
+        SELECT 
+            mi.id, mi.metadata_type, mi.title, mp.file, mi.year, mi.parent_id, mi.guid, mi.library_section_id,
+            (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
+            (SELECT title FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
+            (SELECT year FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
+            (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
+            mi."index" as e_idx
         FROM metadata_items mi
         LEFT JOIN media_items m ON m.metadata_item_id = mi.id
         LEFT JOIN media_parts mp ON mp.media_item_id = m.id
-        WHERE mi.library_section_id IN ({lib_ids_str}) AND
+        WHERE mi.library_section_id IN ({lib_ids_str}) AND 
     """
 
     if mode in ['refresh', 'rematch']:
@@ -154,8 +156,8 @@ def get_target_items(req_data, core_api, task=None):
         if r.get('metadata_type') == 4: 
             s_title = r.get('show_title') or "Unknown Show"
             s_year = f" ({r.get('show_year')})" if r.get('show_year') else ""
-            s_idx = f"S{int(r.get('season_index')):02d}" if r.get('season_index') is not None else "S01"
-            e_idx = f"E{int(r.get('episode_index')):02d}" if r.get('episode_index') is not None else "E01"
+            s_idx = f"S{int(r.get('s_idx')):02d}" if r.get('s_idx') is not None else "S01"
+            e_idx = f"E{int(r.get('e_idx')):02d}" if r.get('e_idx') is not None else "E01"
             ep_title = r.get('title') or "Episode"
             display_title = f"{s_title}{s_year} / {s_idx}{e_idx} / {ep_title}"
         else:
