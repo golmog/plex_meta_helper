@@ -21,7 +21,7 @@ from contextlib import contextmanager
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.54"
+__version__ = "0.7.55"
 
 def get_version():
     return __version__
@@ -160,6 +160,7 @@ _SCHEDULER_STATES = {}
 
 def start_scheduler_daemon(global_config):
     thread_name = "PMH_Cron_Scheduler"
+    
     base_dir = global_config.get("base_dir")
     
     _SCHEDULER_STATES[thread_name] = False
@@ -174,18 +175,19 @@ def start_scheduler_daemon(global_config):
                     try:
                         with sqlite3.connect(db_file, timeout=2.0) as conn:
                             c = conn.cursor()
-                            c.execute("UPDATE task_info SET state='error' WHERE state='running' OR state='pending'")
-                            if c.rowcount > 0:
-                                tool_server = f_name[:-8]
-                                print(f"[PMH Cleanup] 부팅 중 유령 작업 감지됨! '{tool_server}' 상태를 'error'로 초기화했습니다.")
+                            c.execute("SELECT count(*) FROM task_info WHERE state IN ('running', 'pending')")
+                            if c.fetchone()[0] > 0:
+                                c.execute("UPDATE task_info SET state='error' WHERE state IN ('running', 'pending')")
                                 
                                 stamp = datetime.now().strftime('%H:%M:%S')
                                 c.execute("INSERT INTO logs (log_text) VALUES (?)", (f"[{stamp}] [System] 서버 강제 종료(재시작)가 감지되어 이전 작업을 중단 상태(Error)로 변경했습니다.",))
+                                
                                 ghost_count += 1
-                            conn.commit()
-                    except: pass
+                                conn.commit()
+                    except Exception: pass
+                    
             if ghost_count > 0:
-                print(f"[PMH Cleanup] 총 {ghost_count}개의 중단된 작업을 정리했습니다.")
+                print(f"[PMH Cleanup] 총 {ghost_count}개의 툴에서 중단된 유령 작업(Ghost Tasks)을 정리했습니다.")
     except Exception as cleanup_err:
         print(f"[PMH Cleanup Error] 유령 작업 정리 중 오류: {cleanup_err}")
 
@@ -558,46 +560,114 @@ def handle_media_detail(rating_key, db_path):
                     return {"error": "Item not found"}, 404
                 m_type, guid, lib_section_id = meta_row
                 
-                if m_type in (2, 3):
+                if m_type in (2, 3, 8):
                     folder_paths, seen_paths = [], set()
+                    
                     if m_type == 2:
                         query = """SELECT mp.file FROM metadata_items ep JOIN metadata_items sea ON ep.parent_id = sea.id JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE sea.parent_id = ? AND ep.metadata_type = 4 ORDER BY m.width DESC, m.bitrate DESC"""
                         cursor.execute(query, (rating_key,))
-                        for row in cursor.fetchall():
-                            if row and row[0]:
-                                raw_file = unicodedata.normalize('NFC', row[0])
-                                dir_path_original = os.path.dirname(raw_file)
-                                dir_key = os.path.normpath(dir_path_original).replace('\\', '/').lower()
-                                
-                                if dir_key not in seen_paths:
-                                    seen_paths.add(dir_key)
-                                    folder_paths.append(dir_path_original)
-                                    
-                                if is_season_folder(os.path.basename(dir_path_original)):
-                                    parent_path_original = os.path.dirname(dir_path_original)
-                                    parent_key = os.path.normpath(parent_path_original).replace('\\', '/').lower()
-                                    if parent_key not in seen_paths:
-                                        seen_paths.add(parent_key)
-                                        folder_paths.append(parent_path_original)
-
                     elif m_type == 3:
                         query = """SELECT mp.file FROM metadata_items ep JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE ep.parent_id = ? AND ep.metadata_type = 4 ORDER BY m.width DESC, m.bitrate DESC"""
                         cursor.execute(query, (rating_key,))
-                        for row in cursor.fetchall():
-                            if row and row[0]:
-                                raw_file = unicodedata.normalize('NFC', row[0])
-                                target_path_original = os.path.dirname(raw_file)
-                                target_key = os.path.normpath(target_path_original).replace('\\', '/').lower()
+                    elif m_type == 8:
+                        query = """SELECT mp.file FROM metadata_items track JOIN metadata_items album ON track.parent_id = album.id JOIN media_items m ON m.metadata_item_id = track.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE album.parent_id = ? AND track.metadata_type = 10 GROUP BY album.id"""
+                        cursor.execute(query, (rating_key,))
+
+                    for row in cursor.fetchall():
+                        if row and row[0]:
+                            raw_file = unicodedata.normalize('NFC', row[0])
+                            
+                            if m_type == 8:
+                                album_dir = os.path.dirname(raw_file)
+                                artist_dir = os.path.dirname(album_dir)
                                 
-                                if target_key not in seen_paths:
-                                    seen_paths.add(target_key)
-                                    folder_paths.append(target_path_original)
+                                if re.match(r'^cd\s*\d+', os.path.basename(album_dir).lower()):
+                                    artist_dir = os.path.dirname(artist_dir)
+                                
+                                target_dir = artist_dir
+                            else:
+                                target_dir = os.path.dirname(raw_file)
+                                
+                            dir_key = os.path.normpath(target_dir).replace('\\', '/').lower()
+                            
+                            if dir_key not in seen_paths:
+                                seen_paths.add(dir_key)
+                                folder_paths.append(target_dir)
+                                
+                            if m_type in (2, 3) and is_season_folder(os.path.basename(target_dir)):
+                                parent_path_original = os.path.dirname(target_dir)
+                                parent_key = os.path.normpath(parent_path_original).replace('\\', '/').lower()
+                                if parent_key not in seen_paths:
+                                    seen_paths.add(parent_key)
+                                    folder_paths.append(parent_path_original)
 
                     folder_paths.sort(key=natural_sort_key)
                     versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
                     return { "type": "directory", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions }, 200
 
-                query_media = """SELECT m.id, m.width, m.height, (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 1 LIMIT 1) as v_bitrate, (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE media_item_id = m.id AND stream_type_id = 1) as raw_stream_data, m.video_codec, m.audio_codec, m.duration, (SELECT channels FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as audio_ch, (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate, mp.id, mp.file FROM media_items m LEFT JOIN media_parts mp ON mp.media_item_id = m.id WHERE m.metadata_item_id = ? ORDER BY m.width DESC, m.bitrate DESC"""
+                if m_type == 9:
+                    tracks = []
+                    
+                    query = """
+                        SELECT 
+                            track.id as t_id, 
+                            track."index" as t_num, 
+                            track.title as t_title,
+                            m.audio_codec, 
+                            (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate,
+                            mp.file,
+                            mp.id as part_id,
+                            (SELECT COUNT(*) FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 3) as has_lyric,
+                            (SELECT "index" FROM metadata_items WHERE id = track.parent_id) as disc_num
+                        FROM metadata_items track 
+                        JOIN media_items m ON m.metadata_item_id = track.id 
+                        JOIN media_parts mp ON mp.media_item_id = m.id 
+                        WHERE track.metadata_type = 10 AND (
+                            track.parent_id = ? OR 
+                            track.parent_id IN (SELECT id FROM metadata_items WHERE parent_id = ? AND metadata_type = 9)
+                        )
+                        ORDER BY disc_num ASC, track."index" ASC
+                    """
+                    cursor.execute(query, (rating_key, rating_key))
+                    
+                    folder_paths, seen_paths = [], set()
+                    for row in cursor.fetchall():
+                        t_id, t_num, t_title, a_codec, a_bitrate, f_path, part_id, has_lyric, disc_num = row
+                        
+                        if f_path:
+                            raw_file = unicodedata.normalize('NFC', f_path)
+                            dir_path_original = os.path.dirname(raw_file)
+                            dir_key = os.path.normpath(dir_path_original).replace('\\', '/').lower()
+                            if dir_key not in seen_paths:
+                                seen_paths.add(dir_key)
+                                folder_paths.append(dir_path_original)
+                        
+                        track_display_num = f"{disc_num}-{t_num}" if disc_num and disc_num > 1 else str(t_num or 0)
+                        
+                        tracks.append({
+                            "t_id": t_id, "t_num": track_display_num, "t_title": t_title or "Unknown Track",
+                            "a_codec": (a_codec or "").upper(), "a_bitrate": a_bitrate or 0,
+                            "file": f_path or "", "part_id": part_id, "has_lyric": has_lyric > 0
+                        })
+                        
+                    folder_paths.sort(key=natural_sort_key)
+                    versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
+                    
+                    return { "type": "album", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions, "tracks": tracks }, 200
+
+                query_media = """
+                    SELECT m.id, m.width, m.height, 
+                           (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 1 LIMIT 1) as v_bitrate, 
+                           (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE media_item_id = m.id AND stream_type_id = 1) as raw_stream_data, 
+                           m.video_codec, m.audio_codec, m.duration, 
+                           (SELECT channels FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as audio_ch, 
+                           (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate, 
+                           mp.id, mp.file 
+                    FROM media_items m 
+                    LEFT JOIN media_parts mp ON mp.media_item_id = m.id 
+                    WHERE m.metadata_item_id = ? 
+                    ORDER BY m.width DESC, m.bitrate DESC
+                """
                 cursor.execute(query_media, (rating_key,))
                 versions, duration = [], 0
                 seen_files = set() 
@@ -612,6 +682,7 @@ def handle_media_detail(rating_key, db_path):
                         seen_files.add(file_key)
                         
                     if dur: duration = dur
+                    
                     hdr_badges = set()
                     if raw_data:
                         raw_upper = raw_data.upper()
@@ -621,7 +692,13 @@ def handle_media_detail(rating_key, db_path):
 
                     cursor.execute("SELECT id, language, codec, url FROM media_streams WHERE media_part_id = ? AND stream_type_id = 3", (part_id,))
                     subs = [{"id": s[0], "languageCode": (s[1] or "und").lower()[:3], "codec": s[2] or "unknown", "key": s[3], "format": s[2] or "unknown"} for s in cursor.fetchall()]
-                    versions.append({"part_id": part_id, "file": file_path, "width": width or 0, "v_bitrate": v_bitrate or 0, "video_extra": video_extra, "v_codec": v_codec or "", "a_codec": a_codec or "", "a_ch": a_ch or "", "a_bitrate": a_bitrate or 0, "subs": subs, "parts": [{"id": part_id, "path": file_path}]})
+                    
+                    versions.append({
+                        "part_id": part_id, "file": file_path, "width": width or 0, "v_bitrate": v_bitrate or 0, 
+                        "video_extra": video_extra, "v_codec": v_codec or "", "a_codec": a_codec or "", 
+                        "a_ch": a_ch or "", "a_bitrate": a_bitrate or 0, "subs": subs, "parts": [{"id": part_id, "path": file_path}],
+                        "m_type": m_type
+                    })
                 
                 cursor.execute("SELECT text, time_offset, end_time_offset FROM taggings WHERE metadata_item_id = ? AND text IN ('intro', 'credits')", (rating_key,))
                 markers = {tag_text: {"start": start_offset, "end": end_offset} for tag_text, start_offset, end_offset in cursor.fetchall() if tag_text and start_offset is not None and end_offset is not None}
@@ -629,7 +706,11 @@ def handle_media_detail(rating_key, db_path):
             finally:
                 cursor.close()
                 
-        return { "type": "video", "itemId": rating_key, "guid": guid, "duration": duration, "librarySectionID": lib_section_id, "versions": versions, "markers": markers }, 200
+        return { 
+            "type": "audio" if m_type == 10 else "video", 
+            "itemId": rating_key, "guid": guid, "duration": duration, 
+            "librarySectionID": lib_section_id, "versions": versions, "markers": markers 
+        }, 200
     except Exception as e:
         print(f"[PMH DETAIL ERROR] Failed processing item {rating_key}: {str(e)}")
         return {"error": str(e)}, 500
@@ -796,34 +877,43 @@ class CoreDataManager:
                 c.execute("CREATE TABLE meta (payload TEXT)")
                 c.execute("INSERT INTO meta (payload) VALUES (?)", (json.dumps(meta_dict, ensure_ascii=False),))
                 
-                data_list = res_data.get('data', [])
+                data_list = res_data.get('data')
+                if not data_list:
+                    return
+
                 default_sort = res_data.get('default_sort')
-                
-                # DB 삽입 전 코어가 직접 자연 정렬 수행
-                if data_list and default_sort:
+                if default_sort:
                     data_list = core_natural_sort(data_list, default_sort)
 
-                if data_list:
-                    columns = list(data_list[0].keys())
-                    col_defs = ", ".join([f'"{col}" TEXT' for col in columns])
-                    c.execute(f"CREATE TABLE data (pmh_id INTEGER PRIMARY KEY AUTOINCREMENT, {col_defs}, pmh_status TEXT DEFAULT 'pending')")
-                    c.execute("CREATE INDEX idx_status ON data (pmh_status)")
+                columns = list(data_list[0].keys())
+                col_defs = ", ".join([f'"{col}" TEXT' for col in columns])
+                c.execute(f"CREATE TABLE data (pmh_id INTEGER PRIMARY KEY AUTOINCREMENT, {col_defs}, pmh_status TEXT DEFAULT 'pending')")
+                c.execute("CREATE INDEX idx_status ON data (pmh_status)")
+                
+                col_names = ", ".join([f'"{col}"' for col in columns])
+                placeholders = ", ".join(["?" for _ in columns])
+                insert_sql = f"INSERT INTO data ({col_names}) VALUES ({placeholders})"
+                
+                CHUNK_SIZE = 10000
+                buffer = []
+                
+                for row_dict in data_list:
+                    processed_row = []
+                    for col in columns:
+                        val = row_dict.get(col)
+                        if isinstance(val, (list, dict)): processed_row.append(json.dumps(val, ensure_ascii=False))
+                        elif val is not None: processed_row.append(str(val))
+                        else: processed_row.append('')
+                    buffer.append(processed_row)
                     
-                    col_names = ", ".join([f'"{col}"' for col in columns])
-                    placeholders = ", ".join(["?" for _ in columns])
-                    insert_sql = f"INSERT INTO data ({col_names}) VALUES ({placeholders})"
-                    
-                    rows = []
-                    for row in data_list:
-                        processed_row = []
-                        for col in columns:
-                            val = row.get(col)
-                            if isinstance(val, (list, dict)): processed_row.append(json.dumps(val, ensure_ascii=False))
-                            elif val is not None: processed_row.append(str(val))
-                            else: processed_row.append('')
-                        rows.append(processed_row)
-                        
-                    c.executemany(insert_sql, rows)
+                    if len(buffer) >= CHUNK_SIZE:
+                        c.executemany(insert_sql, buffer)
+                        conn.commit()
+                        buffer.clear()
+                
+                if buffer:
+                    c.executemany(insert_sql, buffer)
+                    conn.commit()
 
     def load_page(self, page, limit, sort_key=None, sort_dir='asc'):
         with self._lock:
@@ -845,35 +935,43 @@ class CoreDataManager:
                     
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
                 if c.fetchone()[0] == 0:
-                    result['data'] = []; result['total_items'] = 0; result['total_pages'] = 1; result['page'] = page
+                    result['data'] = []
+                    result['total_items'] = 0
+                    result['total_pages'] = 1
+                    result['page'] = page
                     return result
 
-                where_clause = "WHERE pmh_status != 'done'"
-                c.execute(f"SELECT COUNT(*) FROM data {where_clause}")
+                where_clause = "WHERE pmh_status IN ('pending', 'error')"
+                
+                c.execute(f"SELECT COUNT(pmh_id) FROM data INDEXED BY idx_status {where_clause}")
                 total_items = c.fetchone()[0]
                 
                 order_clause = "ORDER BY pmh_id ASC"
-                columns_meta = result.get('columns', [])
-                col_map = {col['key']: col for col in columns_meta}
                 
                 if sort_key:
+                    columns_meta = result.get('columns', [])
+                    col_map = {col['key']: col for col in columns_meta}
                     actual_key = col_map.get(sort_key, {}).get('sort_key', sort_key)
                     sort_type = col_map.get(sort_key, {}).get('sort_type', 'string')
-                    s_dir = sort_dir.upper() if sort_dir in ['asc', 'desc'] else 'ASC'
+                    s_dir = sort_dir.upper() if sort_dir in ['ASC', 'DESC'] else 'ASC'
+                    
                     if sort_type == 'number':
                         order_clause = f"ORDER BY CAST(\"{actual_key}\" AS REAL) {s_dir}"
                     else:
                         order_clause = f"ORDER BY \"{actual_key}\" COLLATE NOCASE {s_dir}"
 
                 offset = (page - 1) * limit
-                c.execute(f"SELECT *, pmh_status as _pmh_status_val FROM data {where_clause} {order_clause} LIMIT ? OFFSET ?", (limit, offset))
+                
+                query = f"SELECT *, pmh_status as _pmh_status_val FROM data INDEXED BY idx_status {where_clause} {order_clause} LIMIT ? OFFSET ?"
+                
+                c.execute(query, (limit, offset))
 
                 data_rows = []
                 for row in c.fetchall():
                     row_dict = dict(row)
                     status_val = row_dict.pop('_pmh_status_val', 'pending')
                     row_dict['_pmh_status'] = status_val
-                    row_dict.pop('pmh_status', None)
+                    row_dict.pop('pmh_status', None) 
                     
                     for k, v in row_dict.items():
                         if isinstance(v, str) and (v.startswith('[') or v.startswith('{')):

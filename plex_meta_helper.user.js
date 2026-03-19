@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.54
-// @description  Plex Web UI 개선 스크립트
+// @version      0.7.55
+// @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
 // @updateURL    https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js
@@ -235,23 +235,50 @@ GM_addStyle(`
     .pmh-tab-btn:hover { color: #fff; }
     .pmh-tab-btn.active { color: #e5a00d; font-weight: bold; border-bottom-color: #e5a00d; }
 
+    /* 모든 버튼의 오버레이(로딩) 공통 스타일 */
+    .pmh-btn-wrapper {
+        position: relative; display: inline-block; flex-shrink: 0;
+    }
+    .pmh-btn-overlay {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+        background: rgba(0,0,0,0.6); border-radius: 4px; 
+        display: none; align-items: center; justify-content: center; 
+        color: #fff; font-size: 16px; z-index: 2;
+    }
+
     /* 서브 액션 버튼 */
     .pmh-sub-action-btn {
-        color: #fff; border: none; border-radius: 4px; cursor: pointer; 
+        color: #1f1f1f !important; border: none; border-radius: 4px; cursor: pointer; 
         transition: filter 0.2s, opacity 0.2s; font-weight: bold; box-sizing: border-box; 
         flex-shrink: 0; display: flex; align-items: center; justify-content: center;
     }
     .pmh-sub-action-btn:disabled { cursor: not-allowed !important; opacity: 0.6; }
     .pmh-sub-action-btn:not(:disabled):hover { filter: brightness(1.15); }
 
-    /* 동적 실행 메인 버튼 */
+    /* 동적 실행 메인 버튼 (.pmh-dynamic-run-btn) */
     .pmh-dynamic-run-btn {
-        color: #fff; border: none; font-weight: bold; cursor: pointer; 
+        background-color: var(--btn-bg, #e5a00d); 
+        color: #1f1f1f; 
+        border: none; font-weight: bold; cursor: pointer; 
         border-radius: 4px; font-size: 13px; transition: filter 0.2s, opacity 0.2s;
         padding: 12px 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); display: flex; align-items: center; gap: 6px;
     }
     .pmh-dynamic-run-btn:disabled { cursor: not-allowed !important; opacity: 0.6; filter: grayscale(80%); }
     .pmh-dynamic-run-btn:not(:disabled):hover { filter: brightness(1.2); }
+
+    /* 데이터 테이블 하단 액션 버튼 공통 스타일 (.pmh-dt-action-btn) */
+    .pmh-dt-action-btn {
+        padding: 10px 20px; color: #1f1f1f; border: none; border-radius: 4px; font-weight: bold; min-height: 40px;
+        cursor: pointer; font-size: 13px; transition: filter 0.2s, opacity 0.2s;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.3); white-space: nowrap; display: flex; align-items: center; gap: 6px;
+    }
+    .pmh-dt-action-btn:not(:disabled):hover { filter: brightness(1.2); }
+    .pmh-dt-action-btn:disabled { opacity: 0.6; cursor: not-allowed; filter: grayscale(80%); }
+
+    /* 각 버튼별 고유 배경색 */
+    .pmh-btn-resume { background-color: #2f96b4; }
+    .pmh-btn-execute { background-color: #51a351; }
+    .pmh-btn-cancel { background-color: #bd362f; color: #fff; }
 
     /* 데이터 테이블 행 Hover */
     .pmh-dt-row {
@@ -781,19 +808,79 @@ GM_addStyle(`
     }
 
     // ==========================================
-    // 2. 인메모리(In-Memory) LRU 캐시
+    // 2. 하이브리드(In-Memory + Storage) LRU 캐시
     // ==========================================
     const MAX_CACHE_SIZE = AppSettings.MAX_CACHE_SIZE || 5000;
+    const INDEX_KEY = 'pmh_cache_idx';
+    const DATA_PREFIX = 'pmhc_';
+
     const memoryCache = new Map();
+    const dirtyKeys = new Set();
+    const deletedKeys = new Set();
+
+    try {
+        const storedIdx = GM_getValue(INDEX_KEY, null);
+        let indexArray = storedIdx ? JSON.parse(storedIdx) : [];
+
+        if (indexArray.length > MAX_CACHE_SIZE) {
+            const keysToRemove = indexArray.slice(0, indexArray.length - MAX_CACHE_SIZE);
+            indexArray = indexArray.slice(-MAX_CACHE_SIZE);
+            keysToRemove.forEach(k => GM_deleteValue(DATA_PREFIX + k));
+            GM_setValue(INDEX_KEY, JSON.stringify(indexArray));
+        }
+
+        indexArray.forEach(k => {
+            const data = GM_getValue(DATA_PREFIX + k, null);
+            if (data) memoryCache.set(k, JSON.parse(data));
+        });
+        infoLog(`[MemCache] Loaded ${memoryCache.size} individual items from storage.`);
+    } catch(e) {
+        errorLog("[MemCache] Failed to load persistent cache", e);
+    }
+
+    let saveCacheTimer = null;
+    function saveCacheToStorage() {
+        if (saveCacheTimer) clearTimeout(saveCacheTimer);
+        
+        saveCacheTimer = setTimeout(() => {
+            try {
+                if (dirtyKeys.size === 0 && deletedKeys.size === 0) return;
+
+                GM_setValue(INDEX_KEY, JSON.stringify(Array.from(memoryCache.keys())));
+
+                dirtyKeys.forEach(k => {
+                    const val = memoryCache.get(k);
+                    if (val !== undefined) GM_setValue(DATA_PREFIX + k, JSON.stringify(val));
+                });
+
+                deletedKeys.forEach(k => GM_deleteValue(DATA_PREFIX + k));
+
+                log(`[MemCache] Storage Synced (Saved: ${dirtyKeys.size}, Deleted: ${deletedKeys.size})`);
+                
+                dirtyKeys.clear();
+                deletedKeys.clear();
+            } catch(e) {
+                errorLog("[MemCache] Failed to sync to storage", e);
+            }
+        }, 2000);
+    }
 
     function setMemoryCache(key, data) {
         if (memoryCache.has(key)) memoryCache.delete(key);
+        
         memoryCache.set(key, data);
+        dirtyKeys.add(key);
+        deletedKeys.delete(key);
+
         if (memoryCache.size > MAX_CACHE_SIZE) {
             const oldestKey = memoryCache.keys().next().value;
             memoryCache.delete(oldestKey);
+            dirtyKeys.delete(oldestKey);
+            deletedKeys.add(oldestKey);
             log(`[MemCache] GC Evicted: ${oldestKey}`);
         }
+        
+        saveCacheToStorage();
     }
 
     function getMemoryCache(key) {
@@ -801,13 +888,30 @@ GM_addStyle(`
     }
 
     function deleteMemoryCache(key) {
-        memoryCache.delete(key);
-        log(`[MemCache] Deleted key: ${key}`);
+        if (memoryCache.has(key)) {
+            memoryCache.delete(key);
+            dirtyKeys.delete(key);
+            deletedKeys.add(key);
+            log(`[MemCache] Deleted key: ${key}`);
+            saveCacheToStorage();
+        }
     }
 
     function clearMemoryCache() {
         memoryCache.clear();
-        infoLog("[MemCache] All cache cleared by user.");
+        dirtyKeys.clear();
+        deletedKeys.clear();
+        
+        const storedIdx = GM_getValue(INDEX_KEY, null);
+        if (storedIdx) {
+            try {
+                const indexArray = JSON.parse(storedIdx);
+                indexArray.forEach(k => GM_deleteValue(DATA_PREFIX + k));
+            } catch(e){}
+        }
+        GM_deleteValue(INDEX_KEY);
+        
+        infoLog("[MemCache] All memory and persistent cache cleared by user.");
     }
 
     // ==========================================
@@ -1574,30 +1678,29 @@ GM_addStyle(`
                             let inputHtml = `<input type="number" id="pmh_inp_${input.id}" value="${cachedVal !== undefined ? cachedVal : ""}" placeholder="${input.placeholder||''}" step="any" class="pmh-input-number" style="${input.width ? `width:${input.width};` : ''}">`;
 
                             if (input.align === 'left') {
-                                return `<div style="${layoutStyle}">${inputHtml}${labelHtml}</div>`;
+                                return `<div class="pmh-form-group" style="${layoutStyle}">${inputHtml}${labelHtml}</div>`;
                             } else {
-                                return `<div style="${layoutStyle}">${labelHtml}${inputHtml}</div>`;
+                                return `<div class="pmh-form-group" style="${layoutStyle}">${labelHtml}${inputHtml}</div>`;
                             }
 
                         case 'sub_action':
                             const btnWidth = input.width ? `width:${input.width};` : '';
                             const btnHeight = input.height ? `height:${input.height};` : '';
-                            const fontSize = input.font_size ? `font-size:${input.font_size};` : 'font-size:12px;';
-                            const lineHeight = input.line_height ? `line-height:${input.line_height};` : 'line-height:1.4;';
-                            const textAlign = input.align ? `text-align:${input.align};` : 'text-align:center;';
-                            const valign = input.valign ? `display:flex; justify-content:${input.align === 'left' ? 'flex-start' : input.align === 'right' ? 'flex-end' : 'center'}; align-items:${input.valign === 'top' ? 'flex-start' : input.valign === 'bottom' ? 'flex-end' : 'center'};` : '';
+                            const fontSize = input.font_size ? `font-size:${input.font_size};` : '';
+                            const lineHeight = input.line_height ? `line-height:${input.line_height};` : '';
+                            const textAlign = input.align ? `text-align:${input.align};` : '';
+                            const valign = input.valign ? `justify-content:${input.align === 'left' ? 'flex-start' : input.align === 'right' ? 'flex-end' : 'center'}; align-items:${input.valign === 'top' ? 'flex-start' : input.valign === 'bottom' ? 'flex-end' : 'center'};` : '';
                             
-                            const btnStyle = `background:${input.color || '#2f96b4'}; width:100%; height:100%; padding:6px 12px; ${fontSize} ${lineHeight} ${textAlign} ${valign}`;
-
+                            const btnStyle = `${btnWidth} ${btnHeight} ${fontSize} ${lineHeight} ${textAlign} ${valign}`;
+                            
                             const safeLabel = (input.label || '').replace(/\n/g, '<br>');
+                            
                             const btnHtml = `
-                                <div class="pmh-sub-btn-wrapper" style="position:relative; flex-shrink:0; ${btnWidth} ${btnHeight}">
-                                    <button type="button" class="pmh-sub-action-btn" data-action="${input.action_type}" data-target="${input.id}" style="${btnStyle}">
+                                <div class="pmh-btn-wrapper pmh-sub-btn-wrapper" style="flex-shrink:0;">
+                                    <button type="button" class="pmh-sub-action-btn" data-action="${input.action_type}" data-target="${input.id}" style="--btn-bg: ${input.color || '#2f96b4'}; ${btnStyle}">
                                         <i class="${input.icon || 'fas fa-play'}" style="margin-right:4px;"></i><span>${safeLabel}</span>
                                     </button>
-                                    <div class="pmh-sub-overlay" style="position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); border-radius:4px; display:none; align-items:center; justify-content:center; color:#fff; font-size:16px; z-index:2;">
-                                        <i class="fas fa-spinner fa-spin"></i>
-                                    </div>
+                                    <div class="pmh-btn-overlay pmh-sub-overlay"><i class="fas fa-spinner fa-spin"></i></div>
                                 </div>
                             `;
 
@@ -1686,15 +1789,24 @@ GM_addStyle(`
                     formHtml += `</div>`;
                 }
 
-                // --- [아키텍처 변경] 다중 동적 버튼(buttons) 렌더링 ---
+                // --- 다중 동적 버튼(buttons) 렌더링 ---
                 if (ui.buttons && ui.buttons.length > 0) {
                     formHtml += `<div style="display:flex; justify-content:center; gap:10px; flex-wrap:wrap; margin-top:15px; margin-bottom:10px; flex-shrink:0;">`;
                     ui.buttons.forEach(btn => {
                         const color = btn.color || '#e5a00d';
                         const icon = btn.icon || 'fas fa-play';
-                        formHtml += `<button class="pmh-dynamic-run-btn pmh_dynamic_run_btn" data-action="${btn.action_type}" style="background:${color};"><i class="${icon}"></i> <span>${btn.label}</span></button>`;
+                        
+                        formHtml += `
+                            <div class="pmh-btn-wrapper pmh-dynamic-wrapper">
+                                <button class="pmh-dynamic-run-btn pmh_dynamic_run_btn" data-action="${btn.action_type}" style="--btn-bg: ${color};">
+                                    <i class="${icon}"></i> <span>${btn.label}</span>
+                                </button>
+                                <div class="pmh-btn-overlay"><i class="fas fa-spinner fa-spin"></i></div>
+                            </div>
+                        `;
                     });
                     formHtml += `</div>`;
+
                 } else {
                     formHtml += `<div style="text-align:center; padding:15px; margin-top:15px; margin-bottom:10px; background:rgba(189, 54, 47, 0.2); border:1px solid #bd362f; border-radius:4px; color:#fff; flex-shrink:0;">
                                     <i class="fas fa-exclamation-triangle"></i> <strong>UI 스키마 오류</strong><br>
@@ -1732,7 +1844,10 @@ GM_addStyle(`
                     });
                     formHtml += `</div>`;
                     formHtml += `<div style="text-align:center; margin-top:10px; margin-bottom:15px;">
-                                    <button id="pmh_settings_save_btn" style="padding:10px 30px; background:#e5a00d; color:#1f1f1f; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:13px; transition:0.2s;"><i class="fas fa-save"></i> 설정 적용</button>
+                                    <div class="pmh-btn-wrapper">
+                                        <button id="pmh_settings_save_btn" style="padding:10px 30px; background:#e5a00d; color:#1f1f1f; border:none; font-weight:bold; cursor:pointer; border-radius:4px; font-size:13px; transition:0.2s;"><i class="fas fa-save"></i> <span>설정 적용</span></button>
+                                        <div class="pmh-btn-overlay"><i class="fas fa-spinner fa-spin"></i></div>
+                                    </div>
                                  </div>`;
                 } else {
                     formHtml += `<div style="padding:30px 0; text-align:center; color:#777; font-size:12px; background:rgba(0,0,0,0.2); border:1px solid #333; border-radius:4px;"><i class="fas fa-tools" style="font-size:24px; margin-bottom:10px; color:#555;"></i><br>이 툴은 추가 설정이 없습니다.</div>`;
@@ -1743,6 +1858,77 @@ GM_addStyle(`
                 formHtml += `</div>`;
 
                 window.showPmhToolPanel(toolId, ui.title, formHtml);
+
+                const initialResFormEl = document.getElementById('pmh_run_res_form');
+                if (initialResFormEl) {
+                    initialResFormEl.style.display = 'block';
+                    initialResFormEl.innerHTML = `
+                        <div style="padding: 40px 15px; text-align: center; color: #adb5bd; background: rgba(0,0,0,0.2); border: 1px dashed #444; border-radius: 4px;">
+                            <i class="fas fa-spinner fa-spin" style="font-size: 24px; color: #e5a00d; margin-bottom: 12px;"></i>
+                            <div style="font-size: 13px; font-weight: bold;">데이터 목록을 불러오는 중입니다...</div>
+                            <div style="font-size: 11px; color: #777; margin-top: 6px;">서버 부하가 높을 경우 시간이 다소 소요될 수 있습니다.</div>
+                        </div>
+                    `;
+                }
+
+                const evaluateShowIf = () => {
+                    const allInputsSchema = [ ...(ui.inputs || []), ...(ui.execute_inputs || []), ...(ui.settings_inputs || []) ];
+                    
+                    allInputsSchema.forEach(input => {
+                        if (input.show_if) {
+                            const container = document.getElementById(`pmh_inp_${input.id}`)?.closest('.pmh-form-group') 
+                                           || document.getElementById(`pmh_mwrap_${input.id}`)?.closest('.pmh-form-group');
+                            
+                            if (!container) return;
+                            
+                            let shouldShow = true;
+                            for (const [depId, depVal] of Object.entries(input.show_if)) {
+                                const depEl = document.getElementById(`pmh_inp_${depId}`);
+                                if (depEl) {
+                                    if (depEl.value !== depVal) { shouldShow = false; break; }
+                                } else {
+                                    const depRadio = document.querySelector(`input[name="pmh_rad_${depId}"]:checked`);
+                                    if (depRadio && depRadio.value !== depVal) { shouldShow = false; break; }
+                                }
+                            }
+                            
+                            if (shouldShow) {
+                                container.style.display = container.dataset.originalDisplay || 'block';
+                                container.classList.add('pmh-is-visible');
+                            } else {
+                                if (container.style.display !== 'none') {
+                                    container.dataset.originalDisplay = container.style.display;
+                                    container.style.display = 'none';
+                                }
+                                container.classList.remove('pmh-is-visible');
+                            }
+                        } else {
+                            const container = document.getElementById(`pmh_inp_${input.id}`)?.closest('.pmh-form-group');
+                            if (container) container.classList.add('pmh-is-visible');
+                        }
+                    });
+
+                    const execFrame = document.getElementById('pmh_execute_inputs_frame');
+                    if (execFrame && ui.execute_inputs && ui.execute_inputs.length > 0) {
+                        const visibleInputs = Array.from(execFrame.querySelectorAll('.pmh-form-group')).filter(c => c.classList.contains('pmh-is-visible'));
+                        
+                        if (visibleInputs.length === 0) {
+                            execFrame.style.display = 'none';
+                        } else {
+                            execFrame.style.display = 'block';
+                        }
+                    }
+                };
+
+                setTimeout(evaluateShowIf, 50);
+                const formContainerEl = document.getElementById('pmh_tool_form_container');
+                if (formContainerEl) formContainerEl.addEventListener('change', evaluateShowIf);
+
+                const resFormEl = document.getElementById('pmh_run_res_form');
+                if (resFormEl) {
+                    resFormEl.addEventListener('change', evaluateShowIf);
+                    new MutationObserver(() => evaluateShowIf()).observe(resFormEl, { childList: true, subtree: true });
+                }
 
                 const savedGeoStr = GM_getValue(`pmh_panel_geo_${toolId}`);
                 let isManuallyResized = false;
@@ -1880,8 +2066,8 @@ GM_addStyle(`
                         if (!panel) return;
 
                         const dynamicRunBtns = document.querySelectorAll('.pmh_dynamic_run_btn');
-                        const actionBtn = document.getElementById('pmh_dt_action_btn');
-                        const resumeBtn = document.getElementById('pmh_resume_btn');
+                        const actionWrap = document.getElementById('pmh_dt_action_wrapper');
+                        const resumeWrap = document.getElementById('pmh_resume_wrapper');
                         const cancelBtns = document.querySelectorAll('.pmh_global_cancel_btn');
 
                         const canResume = (currentTaskStatus.state === 'cancelled' || currentTaskStatus.state === 'error') 
@@ -1890,14 +2076,12 @@ GM_addStyle(`
                         if (isRunning) {
                             dynamicRunBtns.forEach(btn => {
                                 if (!btn.dataset.originalHtml) btn.dataset.originalHtml = btn.innerHTML;
-                                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
-                                btn.style.filter = 'grayscale(80%)';
+                                btn.disabled = true;
                                 btn.style.opacity = '0.6';
                                 btn.style.cursor = 'not-allowed';
-                                btn.disabled = true;
                             });
-                            if (actionBtn) actionBtn.style.display = 'none';
-                            if (resumeBtn) resumeBtn.style.display = 'none';
+                            if (actionWrap) actionWrap.style.display = 'none';
+                            if (resumeWrap) resumeWrap.style.display = 'none';
                             cancelBtns.forEach(btn => btn.style.display = 'inline-block');
                         } else {
                             dynamicRunBtns.forEach(btn => {
@@ -1911,14 +2095,15 @@ GM_addStyle(`
                             });
                             
                             if (canResume) {
-                                if (resumeBtn) {
-                                    resumeBtn.style.display = 'inline-block';
-                                    resumeBtn.innerHTML = `<i class="fas fa-step-forward"></i> 이어서 계속하기 (${currentTaskStatus.progress} / ${currentTaskStatus.total})`;
+                                if (resumeWrap) {
+                                    resumeWrap.style.display = 'inline-block';
+                                    const rBtn = document.getElementById('pmh_resume_btn');
+                                    if(rBtn) rBtn.innerHTML = `<i class="fas fa-step-forward"></i> 이어서 계속하기 (${currentTaskStatus.progress} / ${currentTaskStatus.total})`;
                                 }
-                                if (actionBtn) actionBtn.style.display = 'none';
+                                if (actionWrap) actionWrap.style.display = 'none';
                             } else {
-                                if (resumeBtn) resumeBtn.style.display = 'none';
-                                if (actionBtn) actionBtn.style.display = 'inline-block';
+                                if (resumeWrap) resumeWrap.style.display = 'none';
+                                if (actionWrap) actionWrap.style.display = 'inline-block';
                             }
                             
                             cancelBtns.forEach(btn => {
@@ -2055,14 +2240,18 @@ GM_addStyle(`
                                 return;
                             }
                             
-                            const origHtml = settingsSaveBtn.innerHTML;
-                            settingsSaveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 저장 중...';
-                            settingsSaveBtn.style.pointerEvents = 'none';
+                            const wrapper = settingsSaveBtn.closest('.pmh-btn-wrapper');
+                            const overlay = wrapper ? wrapper.querySelector('.pmh-btn-overlay') : null;
+                            
+                            settingsSaveBtn.disabled = true;
+                            if (overlay) overlay.style.display = 'flex';
                             
                             saveOptionsToServer();
                             
                             setTimeout(() => {
-                                settingsSaveBtn.innerHTML = '<i class="fas fa-check"></i> 저장 완료';
+                                if (overlay) overlay.style.display = 'none';
+                                const origHtml = settingsSaveBtn.innerHTML;
+                                settingsSaveBtn.innerHTML = '<span><i class="fas fa-check"></i> 설정 적용됨</span>';
                                 settingsSaveBtn.style.backgroundColor = "#51a351"; 
                                 settingsSaveBtn.style.color = "#fff"; 
                                 toastr.success("설정이 성공적으로 적용되었습니다.");
@@ -2071,7 +2260,7 @@ GM_addStyle(`
                                     settingsSaveBtn.innerHTML = origHtml;
                                     settingsSaveBtn.style.backgroundColor = "#e5a00d"; 
                                     settingsSaveBtn.style.color = "#1f1f1f"; 
-                                    settingsSaveBtn.style.pointerEvents = 'auto';
+                                    settingsSaveBtn.disabled = false;
                                 }, 1500);
                             }, 400);
                         };
@@ -2482,7 +2671,7 @@ GM_addStyle(`
                             }
 
                             if (total_items > 0 && ui.execute_inputs && ui.execute_inputs.length > 0) {
-                                finalHtml += `<div style="margin-bottom:15px; padding:15px; background:rgba(60,20,20,0.1); border:1px solid #4a2121; border-radius:4px;">
+                                finalHtml += `<div id="pmh_execute_inputs_frame" style="margin-bottom:15px; padding:15px; background:rgba(60,20,20,0.1); border:1px solid #4a2121; border-radius:4px;">
                                                 <div style="color:#e06c6c; font-weight:bold; margin-bottom:12px; font-size:12px; border-bottom:1px dashed #5c2020; padding-bottom:6px;">
                                                     <i class="fas fa-cogs"></i> 작업 실행 옵션 설정
                                                 </div>`;
@@ -2626,11 +2815,27 @@ GM_addStyle(`
                                     const payloadStr = JSON.stringify(action_button.payload || {}).replace(/"/g, '&quot;');
                                     finalHtml += `<div style="text-align:center; margin-top:20px; padding-top:15px; border-top:1px dashed #444; display:flex; flex-wrap:wrap; justify-content:center; gap:10px;">`;
                                     
-                                    let btnLabel = action_button.label || "<i class='fas fa-rocket'></i> 작업 실행";
+                                    let btnLabel = action_button.label || "<span><i class='fas fa-rocket'></i> 작업 실행</span>";
                                     
-                                    finalHtml += `<button id="pmh_resume_btn" style="display:none; padding:10px 20px; background:#2f96b4; color:#1f1f1f; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:13px; transition:0.2s; box-shadow:0 4px 10px rgba(0,0,0,0.3); white-space:nowrap;"><i class="fas fa-step-forward"></i> 이어서 계속하기</button>`;
-                                    finalHtml += `<button id="pmh_dt_action_btn" data-payload="${payloadStr}" style="display:none; padding:10px 20px; background:#51a351; color:#1f1f1f; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:13px; transition:0.2s; box-shadow:0 4px 10px rgba(0,0,0,0.3); white-space:nowrap;">${btnLabel}</button>`;
-                                    finalHtml += `<button class="pmh_global_cancel_btn" style="display:none; padding:10px 20px; background:#bd362f; color:#fff; border:none; border-radius:4px; font-weight:bold; cursor:pointer; font-size:13px; transition:0.2s; box-shadow:0 4px 10px rgba(0,0,0,0.3); white-space:nowrap;"><i class="fas fa-stop"></i> 작업 중단</button>`;
+                                    finalHtml += `
+                                        <div class="pmh-btn-wrapper" id="pmh_resume_wrapper" style="display:none;">
+                                            <button id="pmh_resume_btn" class="pmh-dt-action-btn pmh-btn-resume">
+                                                <i class="fas fa-step-forward"></i> <span>이어서 계속하기</span>
+                                            </button>
+                                            <div class="pmh-btn-overlay"><i class="fas fa-spinner fa-spin"></i></div>
+                                        </div>
+                                        
+                                        <div class="pmh-btn-wrapper" id="pmh_dt_action_wrapper" style="display:none;">
+                                            <button id="pmh_dt_action_btn" class="pmh-dt-action-btn pmh-btn-execute" data-payload="${payloadStr}">
+                                                ${btnLabel}
+                                            </button>
+                                            <div class="pmh-btn-overlay"><i class="fas fa-spinner fa-spin"></i></div>
+                                        </div>
+                                        
+                                        <button class="pmh_global_cancel_btn pmh-dt-action-btn pmh-btn-cancel" style="display:none;">
+                                            <i class="fas fa-stop"></i> <span>작업 중단</span>
+                                        </button>
+                                    `;
                                     
                                     finalHtml += `</div>`;
                                 }
@@ -2759,16 +2964,15 @@ GM_addStyle(`
                             const actionBtn = document.getElementById('pmh_dt_action_btn');
 
                             if (resumeBtn) {
-                                resumeBtn.onmouseover = () => resumeBtn.style.backgroundColor = "#52a5bd";
-                                resumeBtn.onmouseout = () => resumeBtn.style.backgroundColor = "#2f96b4";
                                 resumeBtn.onclick = (e) => {
                                     e.preventDefault();
-                                    if (window._pmh_task_running_states[toolId]) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
+                                    if (window._pmh_task_running_states[toolId]) return alert("현재 진행 중인 작업이 있습니다.");
                                     
-                                    const origHtml = resumeBtn.innerHTML;
-                                    resumeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
-                                    resumeBtn.style.pointerEvents = 'none';
-                                    resumeBtn.style.opacity = '0.7';
+                                    const wrapper = resumeBtn.closest('.pmh-btn-wrapper');
+                                    const overlay = wrapper ? wrapper.querySelector('.pmh-btn-overlay') : null;
+                                    
+                                    resumeBtn.disabled = true;
+                                    if (overlay) overlay.style.display = 'flex';
                                     
                                     const resumeData = getFormData().reqData; resumeData.action_type = 'resume';
                                     
@@ -2776,11 +2980,12 @@ GM_addStyle(`
                                         method: "POST", url: `${renderSrv.pmhServerUrl}/api/tool/${toolId}/run`,
                                         headers: { "Content-Type": "application/json", "X-API-Key": renderSrv.plexMateApiKey },
                                         data: JSON.stringify(resumeData),
-                                        onload: (r) => { processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv); },
-                                        onerror: () => { 
-                                            resumeBtn.innerHTML = origHtml; 
-                                            resumeBtn.style.pointerEvents = 'auto'; 
-                                            resumeBtn.style.opacity = '1';
+                                        onload: (r) => { 
+                                            processAndRenderResult(JSON.parse(r.responseText), itemsPerPage, renderSrv); 
+                                        },
+                                        onerror: () => {
+                                            if (overlay) overlay.style.display = 'none';
+                                            resumeBtn.disabled = false;
                                             toastr.error("서버 연결에 실패했습니다."); 
                                         }
                                     });
@@ -2793,10 +2998,11 @@ GM_addStyle(`
                                 actionBtn.onclick = () => {
                                     if (window._pmh_task_running_states[toolId]) return alert("현재 진행 중인 작업이 있습니다. 모니터링 탭을 확인하세요.");
                                     
-                                    const origHtml = actionBtn.innerHTML;
-                                    actionBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
-                                    actionBtn.style.pointerEvents = 'none';
-                                    actionBtn.style.opacity = '0.7';
+                                    const wrapper = actionBtn.closest('.pmh-btn-wrapper');
+                                    const overlay = wrapper ? wrapper.querySelector('.pmh-btn-overlay') : null;
+                                    
+                                    actionBtn.disabled = true;
+                                    if (overlay) overlay.style.display = 'flex';
                                     
                                     const executeData = getFormData().reqData; executeData.action_type = 'execute';
                                     try { Object.assign(executeData, JSON.parse(actionBtn.dataset.payload || "{}")); } catch(e){}
@@ -3051,19 +3257,19 @@ GM_addStyle(`
                         
                         log(`[DynamicRun] Clicked -> Action: ${reqData.action_type}`);
 
-                        const origHtml = btn.innerHTML;
-                        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> <span>요청 중...</span>`;
+                        const wrapper = btn.closest('.pmh-btn-wrapper');
+                        const overlay = wrapper ? wrapper.querySelector('.pmh-btn-overlay') : null;
+
                         btn.disabled = true;
-                        btn.style.opacity = '0.7';
+                        if (overlay) overlay.style.display = 'flex';
 
                         GM_xmlhttpRequest({
                             method: "POST", url: `${tSrv.pmhServerUrl}/api/tool/${toolId}/run`,
                             headers: { "Content-Type": "application/json", "X-API-Key": tSrv.plexMateApiKey },
                             data: JSON.stringify(reqData),
                             onload: (r) => {
-                                btn.innerHTML = origHtml;
                                 btn.disabled = false;
-                                btn.style.opacity = '1';
+                                if (overlay) overlay.style.display = 'none';
 
                                 if (r.status === 200) {
                                     try {
@@ -3102,7 +3308,6 @@ GM_addStyle(`
                                 }
                             },
                             onerror: () => {
-                                btn.innerHTML = origHtml;
                                 btn.disabled = false;
                                 btn.style.opacity = '1';
                                 toastr.error("서버에 연결할 수 없습니다.", "통신 실패", {timeOut: 4000});
@@ -3233,14 +3438,23 @@ GM_addStyle(`
                 forceReRenderAll(); showStatusMsg(`GUID 길이 ${nl} 적용 완료`, '#51a351');
             }
         });
+        
         const clearCacheBtn = document.createElement('button');
-        clearCacheBtn.textContent = '메모리 초기화'; clearCacheBtn.style.marginLeft = '10px';
+        clearCacheBtn.textContent = '캐시 초기화'; clearCacheBtn.style.marginLeft = '10px';
         clearCacheBtn.addEventListener('click', () => {
-            clearMemoryCache(); showStatusMsg("캐시 초기화 완료", "#51a351"); forceReRenderAll();
-            if(document.getElementById('plex-guid-box')) { currentDisplayedItemId = null; processDetail(true); }
+            if (confirm("전체 캐시를 삭제하고 초기화하시겠습니까?")) {
+                clearMemoryCache(); 
+                showStatusMsg("캐시 초기화 완료", "#51a351"); 
+                forceReRenderAll();
+                if(document.getElementById('plex-guid-box')) { 
+                    currentDisplayedItemId = null; 
+                    processDetail(true); 
+                }
+            }
         });
 
         settingsWrapper.appendChild(lenInp); settingsWrapper.appendChild(lenBtn); settingsWrapper.appendChild(clearCacheBtn);
+
         ctrl.appendChild(settingsWrapper);
 
         const uiToggleBtn = document.createElement('a');
@@ -4709,6 +4923,21 @@ GM_addStyle(`
                             srvConfig.plexMateApiKey
                         );
 
+                        const isDataEqual = (a, b) => {
+                            if (!a || !b) return false;
+                            if (a.ignored !== b.ignored) return false;
+                            if (a.g !== b.g || a.raw_g !== b.raw_g || a.p !== b.p || a.path_count !== b.path_count) return false;
+                            if (a.part_id !== b.part_id || a.sub_id !== b.sub_id || a.sub_url !== b.sub_url) return false;
+                            
+                            const tagsA = a.tags || [];
+                            const tagsB = b.tags || [];
+                            if (tagsA.length !== tagsB.length) return false;
+                            for (let i = 0; i < tagsA.length; i++) {
+                                if (tagsA[i] !== tagsB[i]) return false;
+                            }
+                            return true;
+                        };
+
                         idsToFetch.forEach(id => {
                             sessionRevalidated.add(id);
                             const oldCache = getMemoryCache(`L_${serverId}_${id}`);
@@ -4727,13 +4956,12 @@ GM_addStyle(`
                                 newData.saved_title = oldCache.saved_title || '';
                             }
                             
-                            if (!oldCache || JSON.stringify(oldCache) !== JSON.stringify(newData)) {
+                            if (!oldCache || !isDataEqual(oldCache, newData)) {
                                 setMemoryCache(`L_${serverId}_${id}`, newData);
+                                
                                 pendingItems.filter(p => p.sid === serverId && p.iid === id).forEach(item => {
                                     item.poster.querySelector('.pmh-render-marker')?.remove();
                                 });
-                            } else {
-                                setMemoryCache(`L_${serverId}_${id}`, oldCache);
                             }
                         });
                     } catch (e) {}
@@ -4968,7 +5196,7 @@ GM_addStyle(`
         }
 
         const { serverId, itemId } = extractIds();
-        if (isIgnoredItem(null, itemId)) return; // VOD 필터
+        if (isIgnoredItem(null, itemId)) return;
         if (!serverId || !itemId) return;
 
         if (!isManualRefresh && currentDisplayedItemId === itemId && document.getElementById('plex-guid-box')) return;
@@ -5122,7 +5350,7 @@ GM_addStyle(`
             return `${val} bps`;
         };
 
-        if (data.type === 'directory' && data.versions && data.versions.length > 0) {
+        if ((data.type === 'directory' || data.type === 'album') && data.versions && data.versions.length > 0) {
             let paths = data.versions.map(v => v.file).filter(Boolean);
             let roots = [];
             let childrenMap = {};
@@ -5190,7 +5418,6 @@ GM_addStyle(`
 
             versionsHtml = roots.map(rootPath => {
                 const treeContentHtml = buildTreeLines(rootPath, 0, false);
-
                 return `
                 <div class="media-version-block" style="border: 0; margin-bottom: 6px;">
                     <div class="media-info-line" style="display: block; grid-template-columns: none; padding: 6px 10px;">
@@ -5198,6 +5425,55 @@ GM_addStyle(`
                     </div>
                 </div>`;
             }).join('');
+
+            if (data.type === 'album' && data.tracks && data.tracks.length > 0) {
+                versionsHtml += `<div style="margin: 10px 0; border-top: 1px dashed #444; padding-top: 10px;">
+                                    <div style="font-size: 12px; color: #a3a3a3; font-weight: bold; margin-bottom: 8px;"><i class="fas fa-list-ol"></i> 수록곡 목록 (${data.tracks.length} 트랙)</div>`;
+                
+                data.tracks.forEach(t => {
+                    let playExtBtn = `<span style="color:#555;" title="지원하지 않음"><i class="fas fa-play"></i></span>`;
+                    let streamBtn = `<span style="color:#555;" title="지원하지 않음"><i class="fas fa-wifi"></i></span>`;
+                    
+                    if (srvConfig && t.file) {
+                        const ePath = encodeURIComponent(getLocalPath(t.file).replace(/\\/g, '/')).replace(/\(/g, '%28').replace(/\)/g, '%29');
+                        const btnStyle = "display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:4px; background:rgba(0,0,0,0.2); border:1px solid rgba(255,255,255,0.05); transition:0.2s;";
+                        
+                        playExtBtn = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" style="${btnStyle} color:#2f96b4;" title="로컬 재생" onmouseover="this.style.background='rgba(47,150,180,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-play"></i></a>`;
+                        
+                        if (t.part_id && plexSrv) {
+                            const vUrl = `${plexSrv.url}/library/parts/${t.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${data.itemId}`;
+                            let justFileName = "Unknown_Audio.mp3";
+                            const pathParts = t.file.split(/[\\/]/);
+                            justFileName = pathParts[pathParts.length - 1];
+                            
+                            const streamPayload = encodeURIComponent(vUrl) + '%7C%7C' + encodeURIComponent(justFileName);
+                            
+                            streamBtn = `<a href="plexstream://${streamPayload}" class="plex-guid-action plex-play-stream" style="${btnStyle} color:#e5a00d;" title="스트리밍" onmouseover="this.style.background='rgba(229,160,13,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-wifi"></i></a>`;
+                        }
+                    }
+
+                    const bitTxt = formatBitrate(t.a_bitrate);
+                    let infoTags = [];
+                    if (t.a_codec) infoTags.push(t.a_codec);
+                    if (bitTxt) infoTags.push(bitTxt);
+                    if (t.has_lyric) infoTags.push(`<span style="color:#51a351;"><i class="fas fa-comment-alt"></i> 가사</span>`);
+                    const infoStr = infoTags.length > 0 ? ` <span style="color:#777; font-size:11px; margin-left:6px;">(${infoTags.join(' / ')})</span>` : '';
+
+                    versionsHtml += `
+                        <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.05);">
+                            <div style="display:flex; gap:6px; flex-shrink:0;">
+                                ${playExtBtn} ${streamBtn}
+                            </div>
+                            <div style="font-size:12px; color:#ccc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex-grow:1; min-width:0;">
+                                <span style="display:inline-block; width:22px; text-align:right; color:#777; margin-right:6px;">${t.t_num}.</span>
+                                <span style="color:#fff;">${t.t_title}</span>
+                                ${infoStr}
+                            </div>
+                        </div>
+                    `;
+                });
+                versionsHtml += `</div>`;
+            }
 
         } else if (data.type === 'video') {
             versionsHtml = data.versions.map(v => {
