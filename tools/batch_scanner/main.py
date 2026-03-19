@@ -448,7 +448,7 @@ def worker(task_data, core_api, start_index):
         stable_count = 0
         waited_time = 0
         while waited_time < max_wait_seconds:
-            if task.is_cancelled(): return False # 취소 감지 시 루프 탈출
+            if task.is_cancelled(): return False
             try:
                 if len(plex.query('/activities').findall('Activity')) == 0:
                     stable_count += 1
@@ -472,7 +472,6 @@ def worker(task_data, core_api, start_index):
     idx = start_index
 
     try:
-        # 💡 [루프 시작] 이제 중간에 취소(is_cancelled)를 만나면 고민 없이 그냥 return만 때리면 됩니다!
         for idx, item in enumerate(items[start_index:], start=start_index + 1):
             
             if task.is_cancelled(): 
@@ -531,7 +530,6 @@ def worker(task_data, core_api, start_index):
                         else: 
                             task.log("      ⚠️ 매칭 후보를 찾을 수 없어 리매칭을 건너뜁니다.")
                             
-                # 성공한 항목을 메모리에 쌓음
                 completed_keys_buffer.append(str(mid))
                     
             except Exception as e:
@@ -544,7 +542,6 @@ def worker(task_data, core_api, start_index):
                 
             if task.is_cancelled(): return
             
-            # [정상 배치 커밋] 10개 완료 시 디스크에 플러시
             if processed_in_batch >= BATCH_SIZE or idx == total:
                 if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
@@ -555,14 +552,12 @@ def worker(task_data, core_api, start_index):
                 processed_in_batch = 0
                 completed_keys_buffer = []
             
-            # [슬립 대기] 0.5초 단위로 취소 감지
             if sleep_time > 0 and idx < total:
                 loops = max(1, int(sleep_time * 2))
                 for _ in range(loops):
                     if task.is_cancelled(): return
                     time.sleep(0.5)
 
-        # 💡 [정상 루프 종료] (취소나 에러 없이 끝까지 돌았을 때만 실행됨)
         task.update_state('completed', progress=total)
         
         if task_data.get('_is_single'):
@@ -577,19 +572,14 @@ def worker(task_data, core_api, start_index):
             core_api['notify']("배치 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#51a351", tool_vars)
 
     finally:
-        # 💡 [가장 우아한 해결책] 스레드가 정상 종료되든, return으로 죽든, Exception으로 죽든
-        # 항상 마지막으로 이곳을 거쳐갑니다. 남아있는 찌꺼기 버퍼(10개 미만)를 싹 털어주고, 
-        # 최종 진행률(progress)을 DB에 단 1번만! 확정해 줍니다.
         if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
             key_name = 'id' if mode == 'path_scan' else 'rating_key'
             for rk_to_done in completed_keys_buffer:
                 core_api['cache'].mark_as_done(key_name, rk_to_done)
                 
-        # 현재 DB에 기록된 진짜 상태(cancelled, error 등)를 가져와서 덮어쓰지 않고 진척도 숫자만 올려줍니다.
         current_state = core_api['task'].load(include_target_items=False)
         if current_state:
             real_state = current_state.get('state', 'running')
-            # 이미 100% 완료된 상태(completed)면 건드리지 않음
             if real_state != 'completed':
                 task.update_state(real_state, progress=idx)
 
