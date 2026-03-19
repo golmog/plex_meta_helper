@@ -151,18 +151,23 @@ def get_target_issues(req_data, core_api, task=None):
         'yaml_season': req_data.get('opt_yaml_season', True),
         'yaml_marker': req_data.get('opt_yaml_marker', True)
     }
+    
     targets = {}
     assigned_grandparents = set()
 
     sec_query = "SELECT id, name FROM library_sections"
     sec_params = []
-    
     if target_sections and 'all' not in target_sections:
         placeholders = ",".join("?" for _ in target_sections)
         sec_query += f" WHERE id IN ({placeholders})"
         sec_params.extend(target_sections)
     
-    target_libs = core_api['query'](sec_query, tuple(sec_params))
+    try:
+        target_libs = core_api['query'](sec_query, tuple(sec_params))
+    except Exception as e:
+        if task: task.log(f"❌ 라이브러리 섹션 조회 실패: {e}")
+        return {}, 0
+
     if not target_libs: 
         if task: task.log("⚠️ 선택한 라이브러리를 찾을 수 없습니다.")
         return {}, 0
@@ -175,26 +180,13 @@ def get_target_issues(req_data, core_api, task=None):
         count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4, 10)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
-    except Exception as e:
-        pass
+    except Exception: pass
 
     def add_target(rk, m_type, title, sec_name, fix_type, file_path=None, parent_rk=None):
         if rk not in targets:
             targets[rk] = {"title": title, "section": sec_name, "type": m_type, "fix": fix_type, "files": set()}
         if file_path: targets[rk]["files"].add(file_path)
         if parent_rk: assigned_grandparents.add(parent_rk)
-
-    def format_title(r, is_episode=False):
-        if is_episode:
-            s_title = r['show_title'] or "Unknown Show"
-            sy_str = f" ({r['show_year']})" if r['show_year'] else ""
-            s_num = f"S{int(r['s_idx']):02d}" if r['s_idx'] is not None else "S01"
-            e_num = f"E{int(r['e_idx']):02d}" if r['e_idx'] is not None else "E01"
-            return f"{s_title}{sy_str} / {s_num}{e_num} / {r['title']}"
-        else:
-            base_title = r['show_title'] if r['metadata_type'] in (3, 4) else r['title']
-            year = r['show_year'] if r['metadata_type'] in (3, 4) else r['year']
-            return f"{base_title} ({year})" if year else base_title
 
     base_from = f"""
         SELECT 
@@ -210,6 +202,21 @@ def get_target_issues(req_data, core_api, task=None):
         WHERE mi.library_section_id IN ({lib_ids_str}) AND 
     """
 
+    def format_title(r, is_episode=False):
+        if is_episode:
+            s_title = r[9] or "Unknown" # show_title (index 9)
+            if r[1] == 10: # 음악 트랙
+                s_num = f"Disc {int(r[11]):02d}" if r[11] is not None else "Disc 01"
+                e_num = f"Track {int(r[12]):02d}" if r[12] is not None else "Track 01"
+            else:
+                s_num = f"S{int(r[11]):02d}" if r[11] is not None else "S01"
+                e_num = f"E{int(r[12]):02d}" if r[12] is not None else "E01"
+            return f"{s_title} / {s_num} / {e_num} - {r[2]}"
+        else:
+            base_title = r[9] if r[1] in (3, 4, 10) else r[2]
+            year = r[10] if r[1] in (3, 4, 10) else r[4]
+            return f"{base_title} ({year})" if year else base_title
+
     tasks_to_run = []
     if opts['analyze']: tasks_to_run.append(('analyze', '미분석 파일(해상도/코덱 정보 누락) 감지 중...'))
     if opts['match']: tasks_to_run.append(('match', '미매칭 항목(GUID 없음) 감지 중...'))
@@ -220,97 +227,75 @@ def get_target_issues(req_data, core_api, task=None):
     total_steps = len(tasks_to_run)
     if total_steps == 0:
         if task: task.log("⚠️ 선택된 복구 옵션이 없습니다.")
-        return targets
+        return targets, total_scanned
 
-    for step_idx, (fix_type, msg) in enumerate(tasks_to_run, 1):
-        if task and task.is_cancelled(): break
+    plex_db_path = core_api['config'].get('plex_db_path', '')
+    import sqlite3
+    plex_conn = None
+    try:
+        plex_conn = sqlite3.connect(f'file:{plex_db_path}?mode=ro', uri=True, timeout=10.0)
+        plex_c = plex_conn.cursor()
         
-        if task: 
-            progress_pct = int((step_idx / total_steps) * 80)
-            task.log(f"⏳ [{step_idx}/{total_steps}] {msg}")
-            task.update_state('running', progress=progress_pct, total=100)
+        for step_idx, (fix_type, msg) in enumerate(tasks_to_run, 1):
+            if task and task.is_cancelled(): break
+            
+            if task: 
+                progress_pct = int((step_idx / total_steps) * 80)
+                task.log(f"⏳ [{step_idx}/{total_steps}] {msg}")
+                task.update_state('running', progress=progress_pct, total=100)
 
-        if fix_type == 'analyze':
-            q_a = base_from + """
-                mp.file IS NOT NULL AND (
-                    (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0))
-                    OR
-                    (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
-                )
-            """
-            for r in core_api['query'](q_a):
-                sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
+            query = ""
+            if fix_type == 'analyze':
+                query = base_from + """
+                    mp.file IS NOT NULL AND (
+                        (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0)) OR
+                        (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
+                    )
+                """
+            elif fix_type == 'match':
+                query = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2)"
+            elif fix_type == 'refresh':
+                query = base_from + """
+                    (
+                        (mi.metadata_type IN (1, 2) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                        OR
+                        (mi.metadata_type = 4 AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                    )
+                """
+            elif fix_type == 'yaml_season':
+                query = base_from + "mi.metadata_type = 4 AND (SELECT \"index\" FROM metadata_items WHERE id = mi.parent_id) >= 100 AND (mi.guid LIKE 'local://%' OR mi.guid = '' OR mi.guid IS NULL) AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) NOT LIKE 'local://%' AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) NOT LIKE 'none://%'"
+            elif fix_type == 'yaml_marker':
+                query = base_from + """
+                    (
+                        (mi.metadata_type = 1 AND mi.id NOT IN (SELECT metadata_item_id FROM taggings WHERE text IN ('intro', 'credits')) AND mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != '')
+                        OR
+                        (mi.metadata_type = 4 AND mi.id NOT IN (SELECT metadata_item_id FROM taggings WHERE text IN ('intro', 'credits')) AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) NOT LIKE 'local://%' AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) NOT LIKE 'none://%' AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) != '')
+                    )
+                """
+
+            plex_c.execute(query)
+            while True:
+                rows = plex_c.fetchmany(10000)
+                if not rows: break
+                if task and task.is_cancelled(): break
                 
-                if r['metadata_type'] == 1: 
-                    add_target(r['id'], 1, format_title(r), sec_name, 'analyze', r['file'], parent_rk=r['id'])
-                elif r['metadata_type'] == 4: 
-                    add_target(r['id'], 4, format_title(r, is_episode=True), sec_name, 'analyze', r['file'], parent_rk=r['grandparent_id'])
-                elif r['metadata_type'] == 10:
-                    add_target(r['id'], 10, format_title(r, is_episode=True), sec_name, 'analyze', r['file'], parent_rk=r['grandparent_id'])
+                for r in rows:
+                    rk, m_type, title, f_path, parent_id, grandparent_id = r[0], r[1], r[2], r[3], r[5], r[8]
+                    sec_name = lib_map.get(str(r[7]), 'Unknown')
+                    
+                    if m_type == 1: 
+                        add_target(rk, 1, format_title(r), sec_name, fix_type, f_path, parent_rk=rk)
+                    elif m_type in (4, 10): 
+                        add_target(rk, m_type, format_title(r, is_episode=True), sec_name, fix_type, f_path, parent_rk=grandparent_id or parent_id)
+                        
+            if task: task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
 
-        elif fix_type == 'match':
-            q_m = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2, 10)"
-            for r in core_api['query'](q_m):
-                if r['id'] in assigned_grandparents or r['id'] in targets: continue
-                sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
-                add_target(r['id'], r['metadata_type'], format_title(r), sec_name, 'match', parent_rk=r['id'])
-
-        elif fix_type == 'refresh':
-            q_r = base_from + """
-                (
-                    (mi.metadata_type IN (1, 2, 10) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
-                    OR
-                    (mi.metadata_type = 4 AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
-                )
-            """
-            for r in core_api['query'](q_r):
-                sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
-                if r['metadata_type'] in (1, 2, 10):
-                    if r['id'] in assigned_grandparents or r['id'] in targets: continue
-                    add_target(r['id'], r['metadata_type'], format_title(r), sec_name, 'refresh', parent_rk=r['id'])
-                elif r['metadata_type'] == 4 and r['grandparent_id']:
-                    if r['grandparent_id'] in assigned_grandparents or r['grandparent_id'] in targets: continue
-                    add_target(r['grandparent_id'], 2, format_title(r), sec_name, 'refresh', parent_rk=r['grandparent_id'])
-
-        elif fix_type == 'yaml_season':
-            q_ys = base_from + """
-                mi.metadata_type = 4 
-                AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) >= 100
-                AND (mi.guid LIKE 'local://%' OR mi.guid = '' OR mi.guid IS NULL)
-                AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) NOT LIKE 'local://%'
-                AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) NOT LIKE 'none://%'
-            """
-            for r in core_api['query'](q_ys):
-                if r['grandparent_id']:
-                    if r['grandparent_id'] in assigned_grandparents or r['grandparent_id'] in targets: continue
-                    sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
-                    add_target(r['grandparent_id'], 2, format_title(r), sec_name, 'yaml_season', r['file'])
-
-        elif fix_type == 'yaml_marker':
-            q_ym = base_from + """
-                (
-                    (mi.metadata_type = 1 
-                     AND mi.id NOT IN (SELECT metadata_item_id FROM taggings WHERE text IN ('intro', 'credits'))
-                     AND mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != '')
-                    OR
-                    (mi.metadata_type = 4 
-                     AND mi.id NOT IN (SELECT metadata_item_id FROM taggings WHERE text IN ('intro', 'credits'))
-                     AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) NOT LIKE 'local://%'
-                     AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) NOT LIKE 'none://%'
-                     AND (SELECT guid FROM metadata_items WHERE id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id)) != '')
-                )
-            """
-            for r in core_api['query'](q_ym):
-                sec_name = lib_map.get(str(r['library_section_id']), 'Unknown')
-                if r['metadata_type'] == 1:
-                    if r['id'] in assigned_grandparents or r['id'] in targets: continue
-                    add_target(r['id'], 1, format_title(r), sec_name, 'yaml_marker', r['file'])
-                elif r['metadata_type'] == 4 and r['grandparent_id']:
-                    if r['grandparent_id'] in assigned_grandparents or r['grandparent_id'] in targets: continue
-                    add_target(r['grandparent_id'], 2, format_title(r), sec_name, 'yaml_marker', r['file'], parent_rk=r['grandparent_id'])
-
-        if task: 
-            task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
+    except Exception as e:
+        if task: task.log(f"❌ Plex DB 연결 또는 쿼리 실패: {e}")
+    finally:
+        if plex_conn:
+            try: plex_conn.close()
+            except: pass
 
     for rk in targets: targets[rk]['files'] = list(targets[rk]['files'])
     
@@ -473,7 +458,6 @@ def worker(task_data, core_api, start_index):
 
         action_btn = None
         if len(table_data) > 0: 
-            # 검색된 결과를 일괄 실행(execute)하는 버튼 페이로드 세팅
             action_btn = {
                 "label": f"<i class='fas fa-magic'></i> 검색된 {total_issues:,}건 복구 시작", 
                 "payload": {"action_type": "execute"} 
@@ -489,13 +473,11 @@ def worker(task_data, core_api, start_index):
                 {"key": "section", "label": "섹션", "width": "20%", "sortable": True, "header_align": "center"},
                 {"key": "title", "label": "작업 대상(제목)", "width": "50%", "type": "link", "link_key": "rating_key", "sortable": True, "header_align": "center"},
                 {"key": "issues", "label": "필요 작업", "width": "20%", "sortable": True, "sort_key": "sort_score", "sort_type": "number", "header_align": "center", "align": "center"},
-                # 단일 항목을 바로 실행하는 액션 버튼 컬럼
-                {"key": "action", "label": "단일실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn", "action_type": "execute"}
+                {"key": "action", "label": "실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn", "action_type": "execute"}
             ],
             "data": table_data
         }
         
-        # 캐시에 UI 데이터를 밀어넣고 100% 완료 처리
         core_api['cache'].save(res_payload)
         task.update_state('completed', progress=100, total=100)
         
@@ -582,195 +564,181 @@ def worker(task_data, core_api, start_index):
     BATCH_SIZE = 10
     processed_in_batch = 0
     completed_keys_buffer = []
+    idx = start_index
 
     # 본 작업 루프
-    for idx, item in enumerate(items[start_index:], start=start_index + 1):
-        if task.is_cancelled(): 
-            task.log("🛑 취소 명령 감지. 작업을 중단합니다.")
+    try:
+        for idx, item in enumerate(items[start_index:], start=start_index + 1):
             
-            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-                for rk_to_done in completed_keys_buffer:
-                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
-            if processed_in_batch > 0:
-                task.update_state('running', progress=idx - 1)
-            return
+            if task.is_cancelled(): 
+                task.log("🛑 취소 명령 감지. 작업을 중단합니다.")
+                return
 
-        rk = item['rating_key']
-        fix_type = item['fix_type']
-        title = item['title']
-        m_type = item['m_type']
-        files = item['files']
+            rk = item['rating_key']
+            fix_type = item['fix_type']
+            title = item['title']
+            m_type = item['m_type']
+            files = item['files']
 
-        task.log(f"[{idx}/{total}] 🎬 '{title}' 복구 진행 중...")
+            task.log(f"[{idx}/{total}] 🎬 '{title}' 복구 진행 중...")
 
-        if not wait_until_stable(): return
-        skip_delay = False 
+            if not wait_until_stable(): return
+            skip_delay = False 
 
-        try:
-            if fix_type in ['yaml_season', 'yaml_marker']:
-                yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
-                yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
-                
-                log_tag = "시즌 메타" if fix_type == 'yaml_season' else "마커(인트로)"
-                task.log(f"   -> [YAML {log_tag}] 대상 폴더 내 {yaml_filename} 존재 여부 확인 중...")
-                
-                yaml_exists = False
-                if files:
-                    for f in files:
-                        local_path = translate_path(f, path_mappings)
-                        target_dir = get_show_root_dir(local_path)
-                        if os.path.exists(os.path.join(target_dir, yaml_filename)) or os.path.exists(os.path.join(target_dir, yml_filename)):
-                            yaml_exists = True; break
-                
-                if not yaml_exists:
-                    task.log(f"      ⚠️ 대상 폴더에 {yaml_filename} 파일이 없어 적용을 스킵합니다.")
-                    skip_delay = True 
-                elif not mate_url or not mate_apikey:
-                    task.log("      ⚠️ Plex Mate 연결 설정(URL/API Key)이 누락되어 YAML 적용이 불가합니다.")
-                    skip_delay = True 
-                else:
-                    task.log("      ✅ YAML 파일 확인 완료. Plex Mate로 동기화 API를 호출합니다...")
-                    if call_plexmate_refresh(mate_url, mate_apikey, rk): 
-                        task.log("         ➔ 🟢 Plex Mate 연동 성공! (YAML 정보가 Plex에 반영됩니다)")
-                    else: 
-                        task.log("         ➔ 🔴 Plex Mate 연동 실패 (서버 응답 오류)")
-                        
-            else:
-                safe_endpoint = f"/library/metadata/{str(rk).strip()}"
-                plex_item = plex.fetchItem(safe_endpoint)
-                
-                if task.is_cancelled(): return
-                
-                if fix_type == 'analyze':
-                    task.log("   -> [미분석] 해상도/코덱 등 미디어 정보 유실 감지. 강제 분석(Analyze) 호출 중...")
-                    plex_item.analyze()
-                    task.log("      ✅ 분석 요청 완료 (Plex 백그라운드에서 파일 스캔 진행)")
-
-                elif fix_type == 'match':
-                    task.log("   -> [미매칭] GUID 매칭 누락 감지. Plex 서버에 매칭 후보(Matches) 검색 요청 중...")
-                    matches = plex_item.matches()
-                    if task.is_cancelled(): return
-                    if matches:
-                        best_match = matches[0]
-                        task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (매칭 점수: {best_match.score}점)")
-                        task.log("         ➔ 매칭 데이터 적용 중...")
-                        plex_item.fixMatch(best_match)
-                        task.log("         ➔ 🟢 자동 매칭 완료!")
-                    else: 
-                        task.log("      ⚠️ Plex 서버에서 적절한 매칭 후보를 찾지 못했습니다. 수동 매칭이 필요합니다.")
-
-                elif fix_type == 'refresh':
-                    task.log("   -> [메타 유실] 포스터/배경 등 메타데이터 불량 감지. 새로고침(Refresh) 호출 중...")
-                    plex_item.refresh()
-                    task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 에이전트 데이터 갱신 진행)")
-            
-            actual_fix_counts[fix_type] += 1
-            
-            completed_keys_buffer.append(str(rk))
-
-        except Exception as e:
-            task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
-            if not task_data.get('_is_single') and action != 'execute_instant':
-                core_api['cache'].mark_as_error('rating_key', str(rk))
-            
-        processed_in_batch += 1
-        
-        if task.is_cancelled():
-            task.log("🛑 사용자 취소 명령 감지. 진행 중인 항목까지만 완료하고 작업을 중단합니다.")
-            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-                for rk_to_done in completed_keys_buffer:
-                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
-            if processed_in_batch > 0:
-                task.update_state('running', progress=idx)
-            return
-        
-        if processed_in_batch >= BATCH_SIZE or idx == total:
-            if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-                for rk_to_done in completed_keys_buffer:
-                    core_api['cache'].mark_as_done('rating_key', rk_to_done)
-                    
-            task.update_state('running', progress=idx)
-            
-            processed_in_batch = 0
-            completed_keys_buffer = []
-        
-        if sleep_time > 0 and not skip_delay and idx < total:
-            loops = max(1, int(sleep_time * 2))
-            for _ in range(loops):
-                if task.is_cancelled():
-                    task.log("🛑 사용자 취소 명령 감지. 진행 중인 항목까지만 완료하고 작업을 중단합니다.")
-                    if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-                        for rk_to_done in completed_keys_buffer:
-                            core_api['cache'].mark_as_done('rating_key', rk_to_done)
-                    if processed_in_batch > 0:
-                        task.update_state('running', progress=idx)
-                    return
-                time.sleep(0.5)
-
-    # -------------------------------------------------------------
-    # [일괄 검증 및 종료 처리]
-    # -------------------------------------------------------------
-    if not task.is_cancelled() and not task_data.get('_is_single'):
-        analyze_rks = [str(item['rating_key']) for item in items if item['fix_type'] == 'analyze']
-        if analyze_rks:
-            task.log("분석 작업 완료. DB 갱신 상태를 일괄 검증합니다...")
-            time.sleep(2) 
-            
             try:
-                corrupt_titles = []
-                for i in range(0, len(analyze_rks), 500):
-                    chunk = analyze_rks[i:i+500]
-                    placeholders = ",".join("?" for _ in chunk)
+                if fix_type in ['yaml_season', 'yaml_marker']:
+                    yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
+                    yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
                     
-                    check_q = f"""
-                        SELECT mi.id, mi.metadata_type 
-                        FROM metadata_items mi
-                        JOIN media_items m ON m.metadata_item_id = mi.id
-                        WHERE mi.id IN ({placeholders}) AND (
-                            (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0))
-                            OR
-                            (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
-                        )
-                    """
-                    for r in core_api['query'](check_q, tuple(chunk)):
-                        fail_rk_str = str(r['id'])
-                        fail_title = f"Unknown Title (ID:{fail_rk_str})"
-                        
-                        for item in items:
-                            if str(item['rating_key']) == fail_rk_str:
-                                fail_title = item['title']
-                                break
-                                
-                        corrupt_titles.append(fail_title)
-                        
-                        core_api['cache'].mark_as_error('rating_key', fail_rk_str)
-                
-                if corrupt_titles:
-                    task.log("=" * 45)
-                    task.log(f"🚨 [분석 실패 (파일 손상, 읽기 권한, 클라우드 마운트 해제 의심): 총 {len(corrupt_titles):,}건]")
-                    for c_title in corrupt_titles: task.log(f"   > {c_title}")
-                    task.log("=" * 45)
-                else: 
-                    task.log("모든 분석 항목이 정상적으로 갱신(미디어 정보 등록)되었습니다.")
-            except Exception as e:
-                task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
+                    log_tag = "시즌 메타" if fix_type == 'yaml_season' else "마커(인트로)"
+                    task.log(f"   -> [YAML {log_tag}] 대상 폴더 내 {yaml_filename} 존재 여부 확인 중...")
+                    
+                    yaml_exists = False
+                    if files:
+                        for f in files:
+                            local_path = translate_path(f, path_mappings)
+                            target_dir = get_show_root_dir(local_path)
+                            if os.path.exists(os.path.join(target_dir, yaml_filename)) or os.path.exists(os.path.join(target_dir, yml_filename)):
+                                yaml_exists = True; break
+                    
+                    if not yaml_exists:
+                        task.log(f"      ⚠️ 대상 폴더에 {yaml_filename} 파일이 없어 적용을 스킵합니다.")
+                        skip_delay = True 
+                    elif not mate_url or not mate_apikey:
+                        task.log("      ⚠️ Plex Mate 연결 설정(URL/API Key)이 누락되어 YAML 적용이 불가합니다.")
+                        skip_delay = True 
+                    else:
+                        task.log("      ✅ YAML 파일 확인 완료. Plex Mate로 동기화 API를 호출합니다...")
+                        if call_plexmate_refresh(mate_url, mate_apikey, rk): 
+                            task.log("         ➔ 🟢 Plex Mate 연동 성공! (YAML 정보가 Plex에 반영됩니다)")
+                        else: 
+                            task.log("         ➔ 🔴 Plex Mate 연동 실패 (서버 응답 오류)")
+                            
+                else:
+                    safe_endpoint = f"/library/metadata/{str(rk).strip()}"
+                    plex_item = plex.fetchItem(safe_endpoint)
+                    
+                    if task.is_cancelled(): return
+                    
+                    if fix_type == 'analyze':
+                        task.log("   -> [미분석] 해상도/코덱 등 미디어 정보 유실 감지. 강제 분석(Analyze) 호출 중...")
+                        plex_item.analyze()
+                        task.log("      ✅ 분석 요청 완료 (Plex 백그라운드에서 파일 스캔 진행)")
 
-    if not task.is_cancelled():
+                    elif fix_type == 'match':
+                        task.log("   -> [미매칭] GUID 매칭 누락 감지. Plex 서버에 매칭 후보(Matches) 검색 요청 중...")
+                        matches = plex_item.matches()
+                        if task.is_cancelled(): return
+                        if matches:
+                            best_match = matches[0]
+                            task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (매칭 점수: {best_match.score}점)")
+                            task.log("         ➔ 매칭 데이터 적용 중...")
+                            plex_item.fixMatch(best_match)
+                            task.log("         ➔ 🟢 자동 매칭 완료!")
+                        else: 
+                            task.log("      ⚠️ Plex 서버에서 적절한 매칭 후보를 찾지 못했습니다. 수동 매칭이 필요합니다.")
+
+                    elif fix_type == 'refresh':
+                        task.log("   -> [메타 유실] 포스터/배경 등 메타데이터 불량 감지. 새로고침(Refresh) 호출 중...")
+                        plex_item.refresh()
+                        task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 에이전트 데이터 갱신 진행)")
+                
+                actual_fix_counts[fix_type] += 1
+                
+                completed_keys_buffer.append(str(rk))
+
+            except Exception as e:
+                task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
+                if not task_data.get('_is_single') and action != 'execute_instant':
+                    core_api['cache'].mark_as_error('rating_key', str(rk))
+                
+            processed_in_batch += 1
+            
+            if task.is_cancelled(): return
+            
+            if processed_in_batch >= BATCH_SIZE or idx == total:
+                if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+                    for rk_to_done in completed_keys_buffer:
+                        core_api['cache'].mark_as_done('rating_key', rk_to_done)
+                        
+                task.update_state('running', progress=idx)
+                processed_in_batch = 0
+                completed_keys_buffer = []
+            
+            if sleep_time > 0 and not skip_delay and idx < total:
+                loops = max(1, int(sleep_time * 2))
+                for _ in range(loops):
+                    if task.is_cancelled(): return
+                    time.sleep(0.5)
+
+        # -------------------------------------------------------------
+        # [일괄 검증 및 종료 처리] (정상적으로 100% 끝났을 때만 실행)
+        # -------------------------------------------------------------
+        if not task_data.get('_is_single'):
+            analyze_rks = [str(i['rating_key']) for i in items if i['fix_type'] == 'analyze']
+            if analyze_rks:
+                task.log("🔍 분석 작업 완료. Plex DB 갱신 상태를 일괄 검증합니다...")
+                time.sleep(2) 
+                
+                try:
+                    corrupt_titles = []
+                    for i in range(0, len(analyze_rks), 500):
+                        chunk = analyze_rks[i:i+500]
+                        placeholders = ",".join("?" for _ in chunk)
+                        check_q = f"""
+                            SELECT mi.id, mi.metadata_type 
+                            FROM metadata_items mi
+                            JOIN media_items m ON m.metadata_item_id = mi.id
+                            WHERE mi.id IN ({placeholders}) AND (
+                                (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0))
+                                OR
+                                (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
+                            )
+                        """
+                        for r in core_api['query'](check_q, tuple(chunk)):
+                            fail_rk_str = str(r['id'])
+                            fail_title = f"Unknown Title (ID:{fail_rk_str})"
+                            for it in items:
+                                if str(it['rating_key']) == fail_rk_str:
+                                    fail_title = it['title']
+                                    break
+                            corrupt_titles.append(fail_title)
+                            core_api['cache'].mark_as_error('rating_key', fail_rk_str)
+                    
+                    if corrupt_titles:
+                        task.log("=" * 45)
+                        task.log(f"🚨 [분석 실패 (파일 손상, 읽기 권한, 클라우드 마운트 해제 의심): 총 {len(corrupt_titles):,}건]")
+                        for c_title in corrupt_titles: task.log(f"   > {c_title}")
+                        task.log("=" * 45)
+                    else: 
+                        task.log("✅ 모든 분석 항목이 정상적으로 갱신(미디어 정보 등록)되었습니다.")
+                except Exception as e:
+                    task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
+
         task.update_state('completed', progress=total)
-        elapsed_sec = int(time.time() - work_start_time)
-        elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
         
-        prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
-        task.log(f"✅ {prefix}총 {total:,}건의 복구 작업 완료! (소요시간: {elapsed_str})")
-        
-        tool_vars = {
-            "total": f"{total:,}",
-            "elapsed_time": elapsed_str,
-            "cnt_analyze": f"{actual_fix_counts['analyze']:,}",
-            "cnt_match": f"{actual_fix_counts['match']:,}",
-            "cnt_refresh": f"{actual_fix_counts['refresh']:,}",
-            "cnt_yaml_season": f"{actual_fix_counts['yaml_season']:,}",
-            "cnt_yaml_marker": f"{actual_fix_counts['yaml_marker']:,}"
-        }
-        
-        core_api['notify']("스마트 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
+        if not task_data.get('_is_single'):
+            elapsed_sec = int(time.time() - work_start_time)
+            elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
+            prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
+            task.log(f"✅ {prefix}총 {total:,}건의 복구 작업 완료! (소요시간: {elapsed_str})")
+            
+            tool_vars = {
+                "total": f"{total:,}", "elapsed_time": elapsed_str,
+                "cnt_analyze": f"{actual_fix_counts['analyze']:,}", "cnt_match": f"{actual_fix_counts['match']:,}",
+                "cnt_refresh": f"{actual_fix_counts['refresh']:,}", "cnt_yaml_season": f"{actual_fix_counts['yaml_season']:,}",
+                "cnt_yaml_marker": f"{actual_fix_counts['yaml_marker']:,}"
+            }
+            core_api['notify']("스마트 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
+
+    finally:
+        # 💡 [핵심 보완] 잔여 버퍼 처리 및 최종 진행률 확정 (취소/에러 시에도 무조건 실행!)
+        if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
+            for rk_to_done in completed_keys_buffer:
+                core_api['cache'].mark_as_done('rating_key', rk_to_done)
+                
+        current_state = core_api['task'].load(include_target_items=False)
+        if current_state:
+            real_state = current_state.get('state', 'running')
+            if real_state != 'completed':
+                task.update_state(real_state, progress=idx)
