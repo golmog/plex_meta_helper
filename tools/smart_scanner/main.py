@@ -7,6 +7,7 @@ import time
 import unicodedata
 import re
 import json
+import sqlite3
 
 # =====================================================================
 # 디스코드 알림 기본 템플릿
@@ -230,7 +231,7 @@ def get_target_issues(req_data, core_api, task=None):
         return targets, total_scanned
 
     plex_db_path = core_api['config'].get('plex_db_path', '')
-    import sqlite3
+
     plex_conn = None
     try:
         plex_conn = sqlite3.connect(f'file:{plex_db_path}?mode=ro', uri=True, timeout=10.0)
@@ -329,19 +330,13 @@ def run(data, core_api):
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
             if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
-                cached_page = core_api['cache'].load_page(1, 99999999)
-                if cached_page and cached_page.get('data'):
-                    items = []
-                    for row in cached_page['data']:
-                        items.append({
-                            'rating_key': str(row.get('rating_key')), 'title': row.get('title'),
-                            'section': row.get('section'), 'fix_type': row.get('fix_type'),
-                            'm_type': int(row.get('m_type', 1)), 'files': row.get('files', [])
-                        })
+                cached_page = core_api['cache'].load_page(1, 1)
+                if cached_page and cached_page.get('total_items', 0) > 0:
                     task_data = data.copy()
-                    task_data['target_items'] = items
-                    task_data['total'] = len(items)
+                    task_data['_use_cache_db'] = True
+                    task_data['total'] = cached_page.get('total_items')
                     task_data['_resume_start_index'] = task_state.get('progress', 0)
+                    task_data.pop('target_items', None)
                     return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             
             # 진행 중인 작업이 없으면 크론은 즉시 실행 모드로 우회
@@ -362,7 +357,7 @@ def run(data, core_api):
                 'title': data.get('title', '단일 항목'),
                 'section': data.get('section', ''),
                 'fix_type': data.get('fix_type', 'analyze'),
-                'm_type': data.get('m_type', 1),
+                'm_type': int(data.get('m_type', 1)),
                 'files': files_list
             }]
             task_data = data.copy()
@@ -372,21 +367,12 @@ def run(data, core_api):
             
         # 3-3. UI 조회 목록 일괄 실행
         else:
-            cached_page = core_api['cache'].load_page(1, 99999999)
-            if cached_page and cached_page.get('data'):
-                items = []
-                for row in cached_page['data']:
-                    items.append({
-                        'rating_key': str(row.get('rating_key')),
-                        'title': row.get('title'),
-                        'section': row.get('section'),
-                        'fix_type': row.get('fix_type'),
-                        'm_type': int(row.get('m_type', 1)),
-                        'files': row.get('files', [])
-                    })
+            cached_page = core_api['cache'].load_page(1, 1)
+            if cached_page and cached_page.get('total_items', 0) > 0:
                 task_data = data.copy()
-                task_data['target_items'] = items
-                task_data['total'] = len(items)
+                task_data['_use_cache_db'] = True
+                task_data['total'] = cached_page.get('total_items')
+                task_data.pop('target_items', None)
                 return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             else:
                 return {"status": "error", "message": "캐시된 대상이 없습니다. 먼저 조회해주세요."}, 400
@@ -512,19 +498,45 @@ def worker(task_data, core_api, start_index):
             return
 
     else:
-        items = task_data.get('target_items', [])
-        total = task_data.get('total', len(items))
-        if total == 0:
-            task.update_state('completed', progress=0, total=0)
-            task.log("실행할 대상 항목이 없습니다.")
-            return
-
+        total = task_data.get('total', 0)
+        
         if task_data.get('_resume_start_index') is not None:
             start_index = task_data['_resume_start_index']
-            task.log(f"중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
+            task.update_state('running', progress=start_index, total=total)
+            task.log(f"🔄 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
+        
+        if task_data.get('_use_cache_db'):
+            def item_generator(start_idx):
+                cache_db_path = core_api['cache'].db_file
+                with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
+                    conn.row_factory = sqlite3.Row
+                    c = conn.cursor()
+                    c.execute("SELECT * FROM data ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
+                    while True:
+                        rows = c.fetchmany(10000)
+                        if not rows: break
+                        for r in rows:
+                            row_dict = dict(r)
+                            row_dict['rating_key'] = str(row_dict.get('rating_key', ''))
+                            try: row_dict['m_type'] = int(row_dict.get('m_type', 1))
+                            except: row_dict['m_type'] = 1
+                            
+                            if isinstance(row_dict.get('files'), str):
+                                try: row_dict['files'] = json.loads(row_dict['files'])
+                                except: row_dict['files'] = []
+                            yield row_dict
+            items = item_generator(start_index)
         else:
-            task.log(f"총 {total:,}건 작업을 시작합니다.")
-    
+            items = task_data.get('target_items', [])
+
+        if total == 0:
+            task.update_state('completed', progress=0, total=0)
+            task.log("⚠️ 실행할 대상 항목이 없습니다.")
+            return
+
+        if not task_data.get('_resume_start_index'):
+            task.log(f"🚀 총 {total:,}건 작업을 시작합니다.")
+
     opts = core_api.get('options', {})
     try: sleep_time = float(opts.get('sleep_time', 2))
     except: sleep_time = 2.0
@@ -568,7 +580,7 @@ def worker(task_data, core_api, start_index):
 
     # 본 작업 루프
     try:
-        for idx, item in enumerate(items[start_index:], start=start_index + 1):
+        for idx, item in enumerate(items, start=start_index + 1):
             
             if task.is_cancelled(): 
                 task.log("🛑 취소 명령 감지. 작업을 중단합니다.")
@@ -658,13 +670,21 @@ def worker(task_data, core_api, start_index):
             
             if processed_in_batch >= BATCH_SIZE or idx == total:
                 if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-                    for rk_to_done in completed_keys_buffer:
-                        core_api['cache'].mark_as_done('rating_key', rk_to_done)
+                    try:
+                        cache_db_path = core_api['cache'].db_file
+                        with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
+                            c = conn.cursor()
+                            placeholders = ",".join("?" for _ in completed_keys_buffer)
+                            query = f'UPDATE data SET pmh_status = "done" WHERE "rating_key" IN ({placeholders})'
+                            c.execute(query, completed_keys_buffer)
+                            conn.commit()
+                    except Exception as e:
+                        task.log(f"⚠️ 상태 일괄 업데이트 실패: {e}")
                         
                 task.update_state('running', progress=idx)
                 processed_in_batch = 0
                 completed_keys_buffer = []
-            
+
             if sleep_time > 0 and not skip_delay and idx < total:
                 loops = max(1, int(sleep_time * 2))
                 for _ in range(loops):
@@ -732,11 +752,18 @@ def worker(task_data, core_api, start_index):
             core_api['notify']("스마트 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
 
     finally:
-        # 💡 [핵심 보완] 잔여 버퍼 처리 및 최종 진행률 확정 (취소/에러 시에도 무조건 실행!)
         if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-            for rk_to_done in completed_keys_buffer:
-                core_api['cache'].mark_as_done('rating_key', rk_to_done)
-                
+            try:
+                cache_db_path = core_api['cache'].db_file
+                with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
+                    c = conn.cursor()
+                    placeholders = ",".join("?" for _ in completed_keys_buffer)
+                    query = f'UPDATE data SET pmh_status = "done" WHERE "rating_key" IN ({placeholders})'
+                    c.execute(query, completed_keys_buffer)
+                    conn.commit()
+            except Exception as e:
+                task.log(f"⚠️ 최종 상태 일괄 업데이트 실패: {e}")
+
         current_state = core_api['task'].load(include_target_items=False)
         if current_state:
             real_state = current_state.get('state', 'running')
