@@ -506,26 +506,23 @@ def worker(task_data, core_api, start_index):
             task.log(f"🔄 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
         
         if task_data.get('_use_cache_db'):
-            def item_generator(start_idx):
+            def load_all_items(start_idx):
                 cache_db_path = core_api['cache'].db_file
+                results = []
                 with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
                     c.execute("SELECT * FROM data ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
-                    while True:
-                        rows = c.fetchmany(10000)
-                        if not rows: break
-                        for r in rows:
-                            row_dict = dict(r)
-                            row_dict['rating_key'] = str(row_dict.get('rating_key', ''))
-                            try: row_dict['m_type'] = int(row_dict.get('m_type', 1))
-                            except: row_dict['m_type'] = 1
-                            
-                            if isinstance(row_dict.get('files'), str):
-                                try: row_dict['files'] = json.loads(row_dict['files'])
-                                except: row_dict['files'] = []
-                            yield row_dict
-            items = item_generator(start_index)
+                    for r in c.fetchall():
+                        row_dict = dict(r)
+                        row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
+                        row_dict['rating_key'] = row_dict['id']
+                        if isinstance(row_dict.get('files'), str):
+                            try: row_dict['files'] = json.loads(row_dict['files'])
+                            except: row_dict['files'] = []
+                        results.append(row_dict)
+                return results
+            items = load_all_items(start_index)
         else:
             items = task_data.get('target_items', [])
 
@@ -573,9 +570,6 @@ def worker(task_data, core_api, start_index):
         task.log("⚠️ Plex 작업 큐 대기 시간 초과. 강제로 다음 항목을 진행합니다.")
         return True
 
-    BATCH_SIZE = 10
-    processed_in_batch = 0
-    completed_keys_buffer = []
     idx = start_index
 
     # 본 작업 루프
@@ -633,58 +627,49 @@ def worker(task_data, core_api, start_index):
                     if task.is_cancelled(): return
                     
                     if fix_type == 'analyze':
-                        task.log("   -> [미분석] 해상도/코덱 등 미디어 정보 유실 감지. 강제 분석(Analyze) 호출 중...")
+                        task.log("   -> [미분석] 강제 분석(Analyze) 호출 중...")
                         plex_item.analyze()
                         task.log("      ✅ 분석 요청 완료 (Plex 백그라운드에서 파일 스캔 진행)")
 
                     elif fix_type == 'match':
-                        task.log("   -> [미매칭] GUID 매칭 누락 감지. Plex 서버에 매칭 후보(Matches) 검색 요청 중...")
-                        matches = plex_item.matches()
+                        task.log("   -> [미매칭] Plex 서버에 매칭 후보(Matches) 검색 요청 중...")
+                        target_agent = plex_item.section().agent
+                        matches = plex_item.matches(agent=target_agent, title=plex_item.title, year=plex_item.year, language='ko')
                         if task.is_cancelled(): return
                         if matches:
+                            matches.sort(key=lambda m: getattr(m, 'score', 0), reverse=True)
                             best_match = matches[0]
-                            task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (매칭 점수: {best_match.score}점)")
-                            task.log("         ➔ 매칭 데이터 적용 중...")
-                            plex_item.fixMatch(best_match)
-                            task.log("         ➔ 🟢 자동 매칭 완료!")
+                            
+                            if best_match.score >= 95:
+                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (매칭 점수: {best_match.score}점)")
+                                task.log("         ➔ 매칭 데이터 적용 중...")
+                                plex_item.fixMatch(best_match)
+                                task.log("         ➔ 🟢 자동 매칭 완료!")
+                            else:
+                                task.log(f"      ⚠️ 최상위 매칭 점수가 너무 낮아({best_match.score}점 < 95점) 오매칭 방지를 위해 건너뜁니다.")
+                                core_api['cache'].mark_as_error('rating_key', str(rk))
                         else: 
-                            task.log("      ⚠️ Plex 서버에서 적절한 매칭 후보를 찾지 못했습니다. 수동 매칭이 필요합니다.")
+                            task.log("      ⚠️ Plex 서버에서 매칭 후보를 전혀 찾지 못했습니다. 수동 매칭이 필요합니다.")
+                            core_api['cache'].mark_as_error('rating_key', str(rk))
 
                     elif fix_type == 'refresh':
-                        task.log("   -> [메타 유실] 포스터/배경 등 메타데이터 불량 감지. 새로고침(Refresh) 호출 중...")
+                        task.log("   -> [메타 유실] 새로고침(Refresh) 호출 중...")
                         plex_item.refresh()
                         task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 에이전트 데이터 갱신 진행)")
                 
                 actual_fix_counts[fix_type] += 1
-                
-                completed_keys_buffer.append(str(rk))
+                if not task_data.get('_is_single') and action != 'execute_instant':
+                    core_api['cache'].mark_keys_as_done('rating_key', [str(rk)])
 
             except Exception as e:
                 task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
                 if not task_data.get('_is_single') and action != 'execute_instant':
                     core_api['cache'].mark_as_error('rating_key', str(rk))
                 
-            processed_in_batch += 1
-            
             if task.is_cancelled(): return
             
-            if processed_in_batch >= BATCH_SIZE or idx == total:
-                if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-                    try:
-                        cache_db_path = core_api['cache'].db_file
-                        with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
-                            c = conn.cursor()
-                            placeholders = ",".join("?" for _ in completed_keys_buffer)
-                            query = f'UPDATE data SET pmh_status = "done" WHERE "rating_key" IN ({placeholders})'
-                            c.execute(query, completed_keys_buffer)
-                            conn.commit()
-                    except Exception as e:
-                        task.log(f"⚠️ 상태 일괄 업데이트 실패: {e}")
-                        
-                task.update_state('running', progress=idx)
-                processed_in_batch = 0
-                completed_keys_buffer = []
-
+            task.update_state('running', progress=idx)
+            
             if sleep_time > 0 and not skip_delay and idx < total:
                 loops = max(1, int(sleep_time * 2))
                 for _ in range(loops):
@@ -692,7 +677,7 @@ def worker(task_data, core_api, start_index):
                     time.sleep(0.5)
 
         # -------------------------------------------------------------
-        # [일괄 검증 및 종료 처리] (정상적으로 100% 끝났을 때만 실행)
+        # [일괄 검증 및 종료 처리]
         # -------------------------------------------------------------
         if not task_data.get('_is_single'):
             analyze_rks = [str(i['rating_key']) for i in items if i['fix_type'] == 'analyze']
@@ -752,18 +737,6 @@ def worker(task_data, core_api, start_index):
             core_api['notify']("스마트 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
 
     finally:
-        if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-            try:
-                cache_db_path = core_api['cache'].db_file
-                with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
-                    c = conn.cursor()
-                    placeholders = ",".join("?" for _ in completed_keys_buffer)
-                    query = f'UPDATE data SET pmh_status = "done" WHERE "rating_key" IN ({placeholders})'
-                    c.execute(query, completed_keys_buffer)
-                    conn.commit()
-            except Exception as e:
-                task.log(f"⚠️ 최종 상태 일괄 업데이트 실패: {e}")
-
         current_state = core_api['task'].load(include_target_items=False)
         if current_state:
             real_state = current_state.get('state', 'running')
