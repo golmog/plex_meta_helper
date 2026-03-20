@@ -86,6 +86,9 @@ def get_ui(core_api):
                 {"value": "path_scan", "text": "배치 경로 스캔 (Plex Mate 연동)"}
             ], "default": "refresh"},
             
+            {"id": "opt_smart_refresh", "type": "checkbox", "label": "포스터/메타데이터 유실이 의심되는 항목만 조회", "default": False, "show_if": {"mode": "refresh"}},
+            {"id": "opt_smart_match", "type": "checkbox", "label": "GUID가 없는 미매칭 항목만 조회", "default": False, "show_if": {"mode": "rematch"}},
+            
             {"id": "target_agent", "type": "text", "label": "에이전트 제외 필터", "placeholder": "예: tv.plex.agents.movie (입력 시 해당 에이전트 항목 제외)", "show_if": {"mode": "rematch"}},
             {"id": "scan_depth", "type": "number", "label": "경로 스캔 Depth (기본: 1)", "default": 1, "layout": "plain", "width": "60px", "show_if": {"mode": "path_scan"}}
         ],
@@ -125,6 +128,9 @@ def get_target_items(req_data, core_api, task=None):
     target_agent = req_data.get('target_agent', '').strip()
     scan_depth = int(req_data.get('scan_depth', 1))
     
+    opt_smart_refresh = req_data.get('opt_smart_refresh', False)
+    opt_smart_match = req_data.get('opt_smart_match', False)
+    
     items = []
     total_scanned = 0
     
@@ -149,6 +155,9 @@ def get_target_items(req_data, core_api, task=None):
     lib_map = {str(r['id']): r['name'] for r in target_libs}
     lib_ids_str = ",".join(lib_map.keys())
 
+    # -------------------------------------------------------------
+    # 경로 스캔(Path Scan) 모드
+    # -------------------------------------------------------------
     if mode == 'path_scan':
         if task: 
             task.log(f"디렉토리 계층 구조에서 Depth {scan_depth} 경로들을 수집 중입니다...")
@@ -191,11 +200,23 @@ def get_target_items(req_data, core_api, task=None):
         if task: task.update_state('running', progress=90, total=100)
         return items, total_scanned
 
+    # -------------------------------------------------------------
+    # 메타데이터 기반 조회 (Refresh, Rematch)
+    # -------------------------------------------------------------
     try:
         count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 2, 9)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception: pass
+
+    where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 9)"
+    
+    if mode == 'refresh' and opt_smart_refresh:
+        where_conditions += """ AND (
+            (mi.metadata_type IN (1, 2) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+        )"""
+    elif mode == 'rematch' and opt_smart_match:
+        where_conditions += " AND (mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL)"
 
     base_select = f"""
         SELECT 
@@ -208,11 +229,12 @@ def get_target_items(req_data, core_api, task=None):
             (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
             mi."index" as e_idx
         FROM metadata_items mi
-        WHERE mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 9)
+        WHERE {where_conditions}
     """
 
     if task: 
-        task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 대상을 일괄 조회 중입니다...")
+        filter_msg = "(지능형 필터 적용)" if (opt_smart_refresh and mode=='refresh') or (opt_smart_match and mode=='rematch') else "(전체)"
+        task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 대상 {filter_msg}을(를) 조회 중입니다...")
         task.update_state('running', progress=10, total=100)
 
     plex_db_path = core_api['config'].get('plex_db_path', '')
@@ -246,7 +268,8 @@ def get_target_items(req_data, core_api, task=None):
                 if guid_val:
                     clean_guid = guid_val.replace("com.plexapp.agents.", "").replace("tv.plex.agents.", "")
                     if "?" in clean_guid: clean_guid = clean_guid.split("?")[0]
-                    if target_agent and clean_guid.startswith(target_agent): continue 
+                    if mode == 'rematch' and target_agent and clean_guid.startswith(target_agent): 
+                        continue # 지정한 에이전트는 리매칭 대상에서 제외
 
                 if m_type == 2:
                     display_title = title
@@ -343,6 +366,9 @@ def worker(task_data, core_api, start_index):
     mate_url = core_api['config'].get('mate_url', '')
     mate_apikey = core_api['config'].get('mate_apikey', '')
 
+    # -----------------------------------------------------------------
+    # [1] Preview 액션
+    # -----------------------------------------------------------------
     if action == 'preview':
         task.log("🔍 조회 대상을 찾기 위해 라이브러리를 검사합니다...")
         task.update_state('running', progress=0, total=100)
@@ -423,24 +449,23 @@ def worker(task_data, core_api, start_index):
             task.log(f"🔄 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
         
         if task_data.get('_use_cache_db'):
-            def item_generator(start_idx):
+            def load_all_items(start_idx):
                 cache_db_path = core_api['cache'].db_file
+                results = []
                 with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
                     c.execute("SELECT * FROM data ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
-                    while True:
-                        rows = c.fetchmany(10000)
-                        if not rows: break
-                        for r in rows:
-                            row_dict = dict(r)
-                            row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
-                            row_dict['rating_key'] = row_dict['id']
-                            if isinstance(row_dict.get('files'), str):
-                                try: row_dict['files'] = json.loads(row_dict['files'])
-                                except: row_dict['files'] = []
-                            yield row_dict
-            items = item_generator(start_index)
+                    for r in c.fetchall():
+                        row_dict = dict(r)
+                        row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
+                        row_dict['rating_key'] = row_dict['id']
+                        if isinstance(row_dict.get('files'), str):
+                            try: row_dict['files'] = json.loads(row_dict['files'])
+                            except: row_dict['files'] = []
+                        results.append(row_dict)
+                return results
+            items = load_all_items(start_index)
         else:
             items = task_data.get('target_items', [])
             
@@ -488,9 +513,6 @@ def worker(task_data, core_api, start_index):
         task.log("⚠️ Plex 작업 큐 대기 시간 초과. 강제로 다음 항목을 진행합니다.")
         return True
 
-    BATCH_SIZE = 10
-    processed_in_batch = 0
-    completed_keys_buffer = []
     opt_vfs = task_data.get('opt_vfs', True)
     idx = start_index
 
@@ -540,20 +562,31 @@ def worker(task_data, core_api, start_index):
                     
                     elif mode == 'rematch':
                         task.log("   -> 🔗 자동 매칭(Auto Match) 대상 검색 중...")
-                        matches = plex_item.matches()
+                        target_agent = plex_item.section().agent
+                        matches = plex_item.matches(agent=target_agent, title=plex_item.title, year=plex_item.year, language='ko')
                         
                         if task.is_cancelled(): return
                         
                         if matches: 
+                            matches.sort(key=lambda m: getattr(m, 'score', 0), reverse=True)
                             best_match = matches[0]
-                            task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (점수: {best_match.score}점)")
-                            task.log("         ➔ 매칭 데이터 적용 중...")
-                            plex_item.fixMatch(best_match)
-                            task.log("         ➔ 🟢 자동 매칭 완료!")
+                            
+                            if best_match.score >= 95:
+                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (점수: {best_match.score}점)")
+                                task.log("         ➔ 매칭 데이터 적용 중...")
+                                plex_item.fixMatch(best_match)
+                                task.log("         ➔ 🟢 자동 매칭 완료!")
+                            else:
+                                task.log(f"      ⚠️ 최상위 매칭 점수가 너무 낮아({best_match.score}점 < 95점) 오매칭 방지를 위해 건너뜁니다.")
+                                core_api['cache'].mark_as_error('rating_key', str(mid))
                         else: 
                             task.log("      ⚠️ 매칭 후보를 찾을 수 없어 리매칭을 건너뜁니다.")
-                            
-                completed_keys_buffer.append(str(mid))
+                            core_api['cache'].mark_as_error('rating_key', str(mid))
+
+                # 1건 처리 완료 즉시 DB에 상태 반영 (모드에 따라 키 분기)
+                if not task_data.get('_is_single') and action != 'execute_instant':
+                    key_name = 'id' if mode == 'path_scan' else 'rating_key'
+                    core_api['cache'].mark_keys_as_done(key_name, [str(mid)])
                     
             except Exception as e:
                 task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
@@ -561,28 +594,9 @@ def worker(task_data, core_api, start_index):
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
                     core_api['cache'].mark_as_error(key_name, str(mid))
                 
-            processed_in_batch += 1
-                
             if task.is_cancelled(): return
             
-            if processed_in_batch >= BATCH_SIZE or idx == total:
-                if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-                    key_name = 'id' if task_data.get('mode') == 'path_scan' else 'rating_key'
-                    
-                    try:
-                        cache_db_path = core_api['cache'].db_file
-                        with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
-                            c = conn.cursor()
-                            placeholders = ",".join("?" for _ in completed_keys_buffer)
-                            query = f'UPDATE data SET pmh_status = "done" WHERE "{key_name}" IN ({placeholders})'
-                            c.execute(query, completed_keys_buffer)
-                            conn.commit()
-                    except Exception as e:
-                        task.log(f"⚠️ 상태 일괄 업데이트 실패: {e}")
-                        
-                task.update_state('running', progress=idx)
-                processed_in_batch = 0
-                completed_keys_buffer = []
+            task.update_state('running', progress=idx)
             
             if sleep_time > 0 and idx < total:
                 loops = max(1, int(sleep_time * 2))
@@ -604,38 +618,9 @@ def worker(task_data, core_api, start_index):
             core_api['notify']("배치 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#51a351", tool_vars)
 
     finally:
-        if completed_keys_buffer and not task_data.get('_is_single') and action != 'execute_instant':
-            key_name = 'id' if mode == 'path_scan' else 'rating_key'
-            try:
-                cache_db_path = core_api['cache'].db_file
-                with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
-                    c = conn.cursor()
-                    placeholders = ",".join("?" for _ in completed_keys_buffer)
-                    query = f'UPDATE data SET pmh_status = "done" WHERE "{key_name}" IN ({placeholders})'
-                    c.execute(query, completed_keys_buffer)
-                    conn.commit()
-            except Exception as e:
-                task.log(f"⚠️ 최종 상태 일괄 업데이트 실패: {e}")
-                
         current_state = core_api['task'].load(include_target_items=False)
         if current_state:
             real_state = current_state.get('state', 'running')
             if real_state != 'completed':
                 task.update_state(real_state, progress=idx)
 
-    # -----------------------------------------------------------------
-    # 루프 무사 완료 시 최종 처리 (finally를 거친 후 이쪽으로 옵니다)
-    # -----------------------------------------------------------------
-    task.update_state('completed', progress=total)
-    
-    if task_data.get('_is_single'):
-        task.log("✅ 단일 실행 작업이 정상적으로 완료되었습니다!")
-    else:
-        elapsed_sec = int(time.time() - work_start_time)
-        elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
-
-        prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
-        task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
-        
-        tool_vars = {"mode": mode, "total": f"{total:,}", "elapsed_time": elapsed_str}
-        core_api['notify']("배치 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#51a351", tool_vars)
