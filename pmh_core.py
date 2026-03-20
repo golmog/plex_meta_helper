@@ -7,7 +7,6 @@ import time
 import re
 import unicodedata
 import shutil
-import urllib.request
 import inspect
 import json
 import yaml
@@ -17,11 +16,13 @@ import csv
 import io
 from datetime import datetime
 from contextlib import contextmanager
+from urllib.request import Request, urlopen
+from urllib.parse import urlencode
 
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.55"
+__version__ = "0.7.56"
 
 def get_version():
     return __version__
@@ -121,8 +122,8 @@ def create_discord_notifier(base_dir, tool_id, server_id, global_config):
         
         try:
             headers = {'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-            urllib.request.urlopen(req, timeout=5)
+            req = Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+            urlopen(req, timeout=5)
             print(f"[PMH Discord] ✅ '{tool_id}' 알림 발송 성공.")
         except Exception as e:
             print(f"[PMH Discord Error] ❌ 발송 실패: {e}")
@@ -842,6 +843,8 @@ class CoreDataManager:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=10.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         try: yield conn
         finally: conn.commit(); conn.close()
 
@@ -889,6 +892,9 @@ class CoreDataManager:
                 col_defs = ", ".join([f'"{col}" TEXT' for col in columns])
                 c.execute(f"CREATE TABLE data (pmh_id INTEGER PRIMARY KEY AUTOINCREMENT, {col_defs}, pmh_status TEXT DEFAULT 'pending')")
                 c.execute("CREATE INDEX idx_status ON data (pmh_status)")
+                
+                if "rating_key" in columns: c.execute('CREATE INDEX idx_rk ON data ("rating_key")')
+                if "id" in columns: c.execute('CREATE INDEX idx_id ON data ("id")')
                 
                 col_names = ", ".join([f'"{col}"' for col in columns])
                 placeholders = ", ".join(["?" for _ in columns])
@@ -943,7 +949,7 @@ class CoreDataManager:
 
                 where_clause = "WHERE pmh_status IN ('pending', 'error')"
                 
-                c.execute(f"SELECT COUNT(pmh_id) FROM data INDEXED BY idx_status {where_clause}")
+                c.execute(f"SELECT COUNT(pmh_id) FROM data {where_clause}")
                 total_items = c.fetchone()[0]
                 
                 order_clause = "ORDER BY pmh_id ASC"
@@ -962,7 +968,7 @@ class CoreDataManager:
 
                 offset = (page - 1) * limit
                 
-                query = f"SELECT *, pmh_status as _pmh_status_val FROM data INDEXED BY idx_status {where_clause} {order_clause} LIMIT ? OFFSET ?"
+                query = f"SELECT *, pmh_status as _pmh_status_val FROM data {where_clause} {order_clause} LIMIT ? OFFSET ?"
                 
                 c.execute(query, (limit, offset))
 
@@ -1017,6 +1023,17 @@ class CoreDataManager:
                     if row and row[0]: return json.loads(row[0])
             except: pass
             return None
+
+    def mark_keys_as_done(self, key_column, keys_list):
+        with self._lock:
+            if not os.path.exists(self.db_file) or not keys_list: return
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                placeholders = ",".join("?" for _ in keys_list)
+                try:
+                    c.execute(f'UPDATE data SET pmh_status = "done" WHERE "{key_column}" IN ({placeholders})', keys_list)
+                except Exception as e:
+                    print(f"[PMH DB] mark_keys_as_done 실패: {e}")
 
 # ==============================================================================
 # [코어 UI 옵션 캐시 관리자 (Options Manager)]
@@ -1248,6 +1265,100 @@ def dispatch_request(subpath, method, args, data, global_config):
             rating_key = subpath.split('/')[1]
             return handle_media_detail(rating_key, db_path)
 
+        elif subpath.startswith('media/') and method == 'POST':
+            parts = subpath.split('/')
+            if len(parts) >= 3:
+                rating_key = parts[1]
+                action = parts[2] # unmatch, match, refresh, analyze
+
+                plex_url = data.get('_plex_url') if data else ''
+                plex_token = data.get('_plex_token') if data else ''
+
+                if not plex_url or not plex_token:
+                    plex_url = global_config.get("plex_url")
+                    plex_token = global_config.get("plex_token")
+
+                if not plex_url or not plex_token:
+                    return {"error": "Plex credentials missing"}, 400
+
+                try:
+                    from plexapi.server import PlexServer
+                    plex = PlexServer(plex_url, plex_token, timeout=120)
+                    
+                    ekey = f"/library/metadata/{rating_key}"
+                    item = plex.fetchItem(ekey)
+
+                    if action == 'unmatch':
+                        item.unmatch()
+                        return {"status": "success"}, 200
+                        
+                    elif action == 'match':
+                        import urllib.parse
+                        
+                        section = item.section()
+                        target_agent = section.agent
+                        target_title = item.title
+                        target_year = item.year
+                        
+                        query_params = {
+                            'X-Plex-Token': plex_token,
+                            'language': 'ko',
+                            'manual': '1',
+                            'agent': target_agent
+                        }
+                        if target_title: query_params['title'] = target_title
+                        if target_year: query_params['year'] = str(target_year)
+                        
+                        matches_url = f"{plex_url}/library/metadata/{rating_key}/matches?{urlencode(query_params)}"
+                        req = Request(matches_url, headers={'Accept': 'application/json'})
+                        
+                        try:
+                            with urlopen(req, timeout=30) as response:
+                                matches_data = json.loads(response.read())
+                        except Exception as e:
+                            return {"error": f"Match search API failed: {e}"}, 500
+                            
+                        results = matches_data.get('MediaContainer', {}).get('SearchResult', [])
+                        if not results:
+                            return {"error": f"No matches found for agent '{target_agent}'"}, 404
+                            
+                        results.sort(key=lambda r: r.get('score', 0), reverse=True)
+                        best_match = results[0]
+                        
+                        best_score = best_match.get('score', 0)
+                        if best_score < 95:
+                            return {"error": f"Best match score is too low ({best_score} < 95). Manual match required."}, 404
+
+                        match_params = {
+                            'X-Plex-Token': plex_token,
+                            'guid': best_match.get('guid'),
+                            'name': best_match.get('name')
+                        }
+                        if best_match.get('year'): match_params['year'] = str(best_match.get('year'))
+                        
+                        apply_url = f"{plex_url}/library/metadata/{rating_key}/match?{urlencode(match_params)}"
+                        req_apply = Request(apply_url, method='PUT')
+                        
+                        try:
+                            with urlopen(req_apply, timeout=30) as response:
+                                return {"status": "success"}, 200
+                        except Exception as e:
+                            return {"error": f"Match apply API failed: {e}"}, 500
+
+                    elif action == 'refresh':
+                        item.refresh()
+                        return {"status": "success"}, 200
+                        
+                    elif action == 'analyze':
+                        item.analyze()
+                        return {"status": "success"}, 200
+                        
+                    else:
+                        return {"error": f"Unknown action: {action}"}, 400
+
+                except Exception as e:
+                    return {"error": str(e)}, 500
+
         elif subpath == 'tools' and method == 'GET':
             installed_tools = []
             for item in os.listdir(tools_dir):
@@ -1278,8 +1389,8 @@ def dispatch_request(subpath, method, args, data, global_config):
             if not yaml_url: return {"error": "info.yaml URL이 제공되지 않았습니다."}, 400
 
             ts = int(time.time())
-            req = urllib.request.Request(f"{yaml_url}?t={ts}", headers={'Cache-Control': 'no-cache'})
-            with urllib.request.urlopen(req, timeout=10) as response:
+            req = Request(f"{yaml_url}?t={ts}", headers={'Cache-Control': 'no-cache'})
+            with urlopen(req, timeout=10) as response:
                 yaml_content = response.read().decode('utf-8')
 
             tool_info = yaml.safe_load(yaml_content)
@@ -1296,8 +1407,8 @@ def dispatch_request(subpath, method, args, data, global_config):
 
             base_url = yaml_url.rsplit('/', 1)[0]
             py_url = f"{base_url}/{entry_file}?t={ts}"
-            py_req = urllib.request.Request(py_url, headers={'Cache-Control': 'no-cache'})
-            with urllib.request.urlopen(py_req, timeout=10) as py_response:
+            py_req = Request(py_url, headers={'Cache-Control': 'no-cache'})
+            with urlopen(py_req, timeout=10) as py_response:
                 py_content = py_response.read().decode('utf-8')
 
             tool_path = os.path.join(tools_dir, safe_tool_id)
@@ -1477,7 +1588,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                     return {"status": "success", "type": "async_task", "task_id": tool_id}, 200
 
                 elif action_type == 'page':
-                    sort_key = data.get('sort_key')
+                    sort_key = data.get('sort_key', '')
                     sort_dir = data.get('sort_dir', 'asc')
                     page = int(data.get('page', 1))
                     limit = int(data.get('limit', 10))
@@ -1492,10 +1603,7 @@ def dispatch_request(subpath, method, args, data, global_config):
 
                     machine_id = cached.get('machine_id', "")
                     if not machine_id:
-                        try:
-                            plex = get_plex_instance()
-                            machine_id = plex.machineIdentifier
-                        except: pass
+                        machine_id = data.get('_machine_id', server_id)
                     cached['machine_id'] = machine_id
 
                     t_data = task_mgr.load(include_target_items=False)
