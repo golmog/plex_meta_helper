@@ -568,7 +568,7 @@ def worker(task_data, core_api, start_index):
                         if task.is_cancelled(): return
                         
                         if matches: 
-                            matches.sort(key=lambda m: getattr(m, 'score', 0), reverse=True)
+                            matches.sort(key=lambda m: int(getattr(m, 'score') or 0), reverse=True)
                             best_match = matches[0]
                             
                             if best_match.score >= 95:
@@ -583,7 +583,6 @@ def worker(task_data, core_api, start_index):
                             task.log("      ⚠️ 매칭 후보를 찾을 수 없어 리매칭을 건너뜁니다.")
                             core_api['cache'].mark_as_error('rating_key', str(mid))
 
-                # 1건 처리 완료 즉시 DB에 상태 반영 (모드에 따라 키 분기)
                 if not task_data.get('_is_single') and action != 'execute_instant':
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
                     core_api['cache'].mark_keys_as_done(key_name, [str(mid)])
