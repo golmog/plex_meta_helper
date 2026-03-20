@@ -637,7 +637,7 @@ def worker(task_data, core_api, start_index):
                         matches = plex_item.matches(agent=target_agent, title=plex_item.title, year=plex_item.year, language='ko')
                         if task.is_cancelled(): return
                         if matches:
-                            matches.sort(key=lambda m: getattr(m, 'score', 0), reverse=True)
+                            matches.sort(key=lambda m: int(getattr(m, 'score') or 0), reverse=True)
                             best_match = matches[0]
                             
                             if best_match.score >= 95:
