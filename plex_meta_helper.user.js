@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.7.56
+// @version      0.7.57
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -399,12 +399,12 @@ GM_addStyle(`
             document.getElementById('pmh-panel-close').addEventListener('click', (e) => {
                 e.preventDefault(); e.stopPropagation();
                 panel.style.display = 'none';
-                window._pmh_is_minimized = false; // 닫을 때 상태 초기화
+                window._pmh_is_minimized = false;
                 GM_setValue('pmh_last_open_tool', ''); 
             });
             document.getElementById('pmh-panel-minimize').addEventListener('click', (e) => {
                 e.preventDefault(); e.stopPropagation();
-                window._pmh_is_minimized = !window._pmh_is_minimized; // 상태 토글
+                window._pmh_is_minimized = !window._pmh_is_minimized;
                 const isMin = panel.classList.toggle('pmh-panel-minimized');
                 e.currentTarget.innerHTML = isMin ? '<i class="fas fa-window-restore"></i>' : '<i class="fas fa-minus"></i>';
             });
@@ -414,7 +414,6 @@ GM_addStyle(`
         document.getElementById('pmh-panel-content').innerHTML = htmlContent;
         panel.style.display = 'flex';
 
-        // 렌더링 시 전역 최소화 상태 강제 적용
         if (window._pmh_is_minimized) {
             panel.classList.add('pmh-panel-minimized');
             const minBtn = document.getElementById('pmh-panel-minimize');
@@ -4591,7 +4590,7 @@ GM_addStyle(`
                 }
 
                 if (gBox.dataset.refreshing === 'true') {
-                    if (gBox.textContent.includes('갱신') || gBox.textContent.includes('불러오는') || gBox.textContent.includes('리매칭')) {
+                    if (gBox.textContent.includes('갱신') || gBox.textContent.includes('불러오는') || gBox.textContent.includes('리매칭') || gBox.textContent.includes('매칭')) {
                         abortPolling = true;
                         gBox.innerHTML = '<i class="fas fa-times"></i> 취소됨';
                         gBox.title = "";
@@ -4621,6 +4620,31 @@ GM_addStyle(`
 
                 const targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
                 const plexSrv = targetServerId ? extractPlexServerInfo(targetServerId) : null;
+
+                let actionTargetId = id;
+                let isParentUnmatched = isUnmatched;
+                let initialUpdated = 0;
+
+                if (srvConfig && plexSrv) {
+                    const currentMeta = await fetchPlexMetaFallback(id, plexSrv);
+                    if (currentMeta) {
+                        initialUpdated = currentMeta.updatedAt || 0;
+                        
+                        if (currentMeta.type === 'episode' && currentMeta.grandparentRatingKey) {
+                            actionTargetId = currentMeta.grandparentRatingKey;
+                        } else if (currentMeta.type === 'season' && currentMeta.parentRatingKey) {
+                            actionTargetId = currentMeta.parentRatingKey;
+                        }
+                        
+                        if (actionTargetId !== id) {
+                            const parentMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
+                            if (parentMeta) {
+                                const pGuid = (parentMeta.guid || '').toLowerCase();
+                                isParentUnmatched = !pGuid || pGuid === '-' || pGuid.includes('local://') || pGuid.includes('none://');
+                            }
+                        }
+                    }
+                }
 
                 if (srvConfig && plexSrv && !info.g) {
                     gBox.title = '클릭 시 취소';
@@ -4665,20 +4689,20 @@ GM_addStyle(`
                     gBox.title = '클릭 시 취소';
                     
                     if (isShiftClick && plexSrv) {
-                        infoLog(`[List] 🔄 Shift-Click detected: Starting Meta Rematch process for Item: ${id}`);
+                        infoLog(`[List] 🔄 Shift-Click detected: Starting Meta Rematch process for Target: ${actionTargetId} (Clicked: ${id})`);
                         if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>리매칭중...`;
                         toastr.info("1/3: 기존 메타 언매치 중...", "리매칭 시작", {timeOut: 3000});
 
                         try {
                             infoLog(`[List] ➔ Step 1: Unmatching current metadata...`);
-                            const unmatchOk = await triggerPlexMediaAction(id, 'unmatch', plexSrv, srvConfig);
+                            const unmatchOk = await triggerPlexMediaAction(actionTargetId, 'unmatch', plexSrv, srvConfig);
                             if (!unmatchOk) throw new Error("Unmatch Action Failed");
                             if (abortPolling) return;
 
                             toastr.info("2/3: 최적 후보 자동 매칭 중...", "리매칭 진행", {timeOut: 3000});
                             
                             infoLog(`[List] ➔ Step 2: Triggering Auto-Match...`);
-                            const matchSuccess = await triggerPlexMediaAction(id, 'match', plexSrv, srvConfig);
+                            const matchSuccess = await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig);
                             if (!matchSuccess) throw new Error("Auto Match Failed or No Candidates Found");
                             if (abortPolling) return;
                             
@@ -4689,7 +4713,7 @@ GM_addStyle(`
                             for (let i = 0; i < 15; i++) {
                                 if (abortPolling) return;
                                 await new Promise(r => setTimeout(r, 2000));
-                                const tempMeta = await fetchPlexMetaFallback(id, plexSrv);
+                                const tempMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
                                 if (tempMeta) {
                                     const tempGuid = (tempMeta.guid || '').toLowerCase();
                                     if (!tempGuid.includes('local://') && !tempGuid.includes('none://') && tempGuid !== '-' && tempGuid !== '') {
@@ -4705,7 +4729,9 @@ GM_addStyle(`
                             toastr.info("3/3: 메타데이터 갱신 및 UI 동기화 중...", "리매칭 진행", {timeOut: 3000});
 
                             infoLog(`[List] ➔ Step 4: Refreshing metadata and syncing with PMH DB...`);
-                            triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
+                            triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
+                            if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
+                            
                             const dbData = await makeRequest(`${srvConfig.pmhServerUrl}/api/library/batch`, 'POST', { ids: [id], check_multi_path: state.listMultiPath }, srvConfig.plexMateApiKey);
                             if (abortPolling) return;
 
@@ -4737,7 +4763,9 @@ GM_addStyle(`
                         infoLog(`[List] Metadata refresh requested to PMH DB for matched Item: ${id}`);
                         if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>DB 갱신중...`;
 
-                        triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
+                        triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
+                        if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
+                        
                         toastr.info("Plex 서버에 메타 갱신을 요청했습니다.<br>작업은 백그라운드에서 진행됩니다.", "메타 갱신 요청", {timeOut: 3000});
 
                         try {
@@ -4764,15 +4792,38 @@ GM_addStyle(`
                 }
 
                 if (srvConfig && plexSrv && (isUnmatched || !info.g)) {
-                    infoLog(`[List] Auto-Match requested via PMH Backend for unmatched Item: ${id}`);
+                    
+                    if (actionTargetId !== id && !isParentUnmatched) {
+                        infoLog(`[List] Parent is already matched. Refreshing episode instead of matching. (ID: ${id})`);
+                        gBox.title = '클릭 시 취소';
+                        if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>갱신중...`;
+                        toastr.info("상위 쇼(Show) 항목은 이미 매칭되어 있습니다.<br>해당 항목의 메타 갱신을 요청합니다.", "메타 갱신", {timeOut: 3000});
+                        
+                        triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
+                        if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
+                        
+                        try {
+                            const dbData = await makeRequest(`${srvConfig.pmhServerUrl}/api/library/batch`, 'POST', { ids: [id], check_multi_path: state.listMultiPath }, srvConfig.plexMateApiKey);
+                            if (abortPolling) return;
+
+                            if (dbData[id]) {
+                                setMemoryCache(`L_${targetServerId}_${id}`, dbData[id]);
+                                sessionRevalidated.add(id);
+                                if (gBox.isConnected) {
+                                    const displayData = { ...dbData[id], tags: applyUserTags(dbData[id].p, dbData[id].tags) };
+                                    renderListBadges(cont, poster, link, displayData, srvConfig, id);
+                                }
+                            }
+                        } catch (e) {}
+                        return;
+                    }
+
+                    infoLog(`[List] Auto-Match requested via PMH Backend for unmatched Target: ${actionTargetId}`);
                     gBox.title = '클릭 시 취소';
                     if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>자동 매칭중...`;
                     toastr.info("미매칭 항목입니다.<br>서버에 자동 매칭을 요청합니다.", "매칭 시도", {timeOut: 3000});
 
-                    const initialMeta = await fetchPlexMetaFallback(id, plexSrv);
-                    const initialUpdated = initialMeta && initialMeta.updatedAt ? initialMeta.updatedAt : 0;
-
-                    const matchSuccess = await triggerPlexMediaAction(id, 'match', plexSrv, srvConfig);
+                    const matchSuccess = await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig);
                     
                     if (!matchSuccess && !abortPolling) {
                         toastr.error("자동 매칭 대상을 찾지 못했거나 매칭에 실패했습니다.<br>수동 매칭이 필요합니다.", "매칭 실패", {timeOut: 5000});
@@ -4795,7 +4846,8 @@ GM_addStyle(`
 
                     for (let attempt = 1; attempt <= 20; attempt++) {
                         if (abortPolling) return;
-                        const tempMeta = await fetchPlexMetaFallback(id, plexSrv);
+                        
+                        const tempMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
 
                         if (tempMeta) {
                             const tempUpdated = tempMeta.updatedAt || 0;
@@ -4819,7 +4871,8 @@ GM_addStyle(`
 
                     if (pollSuccess && finalMeta) {
                         toastr.success("자동 매칭 완료!", "성공", {timeOut: 3000});
-                        triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
+                        triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
+                        if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
                         
                         try {
                             const dbData = await makeRequest(`${srvConfig.pmhServerUrl}/api/library/batch`, 'POST', { ids: [id], check_multi_path: state.listMultiPath }, srvConfig.plexMateApiKey);
