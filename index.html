@@ -1,31 +1,32 @@
+<!-- index.html (모바일 PWA 앱) -->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>PMH Mobile</title>
-    <!-- iOS PWA 지원 -->
     <meta name="theme-color" content="#1e2124">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="PMH">
-    <link rel="apple-touch-icon" href="https://www.google.com/s2/favicons?sz=192&domain=plex.tv">
+    <!-- [수정] 오렌지색 툴박스 Base64 SVG 아이콘 적용 -->
+    <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMxMTEiLz48cGF0aCBkPSJNMjAgMjB2LTRjMC0yLjIgMS44LTQgNC00aDE2YzIuMiAwIDQgMS44 
+NCA0djRoNmMxLjEgMCAyIC45IDIgMnYyNGMwIDEuMS0uOSAyLTIgMkgxNGMtMS4xIDAtMi0uOS0y 
+LTJWMjJjMC0xLjEgLjktMiAyLTJoNnptNC0R2NGgxNnYtNEgyNHptLTggOHYxMGgzMlYyNEgxNnpt 
+MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         :root { --bg: #121212; --panel: #1e2124; --text: #e0e0e0; --primary: #e5a00d; --border: #333; --success: #51a351; --danger: #bd362f; }
         body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
         * { box-sizing: border-box; }
         
-        /* 네비게이션 바 */
         .navbar { background: var(--panel); border-bottom: 1px solid var(--border); padding: 15px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
         .nav-title { color: var(--primary); font-weight: 800; font-size: 18px; display: flex; align-items: center; gap: 8px; }
         
-        /* 스크린 트랜지션 */
         .screen { display: none; padding: 15px; padding-bottom: 90px; animation: fadeIn 0.2s ease; }
         .screen.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         
-        /* 폼 & 설정 */
         .form-group { margin-bottom: 20px; }
         .form-label { display: block; color: var(--primary); font-size: 13px; font-weight: bold; margin-bottom: 8px; }
         .input-text, .input-select { width: 100%; padding: 14px; background: #0a0a0c; color: #fff; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; outline: none; transition: 0.2s; }
@@ -35,13 +36,11 @@
         .btn:disabled { background: #444; color: #888; cursor: not-allowed; }
         .btn-success { background: var(--success); color: #fff; }
         
-        /* 대시보드 요약 (포탈) */
         .dashboard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
         .dash-card { background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 15px; text-align: center; }
         .dash-card.active-run { border-color: var(--primary); background: rgba(229,160,13,0.1); }
         .dash-card.active-cron { border-color: var(--success); background: rgba(81,163,81,0.1); }
         
-        /* 툴 카드 리스트 */
         .tool-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 15px; margin-bottom: 12px; display: flex; align-items: center; gap: 15px; cursor: pointer; transition: 0.2s; }
         .tool-card:active { background: rgba(255,255,255,0.05); }
         .tool-card.running { border-left: 4px solid var(--primary); background: rgba(229,160,13,0.05); }
@@ -53,20 +52,17 @@
         .badge-run { background: rgba(229,160,13,0.2); color: var(--primary); border: 1px solid var(--primary); }
         .badge-cron { background: rgba(81,163,81,0.2); color: var(--success); border: 1px solid var(--success); }
 
-        /* 하단 탭 바 */
         .tab-bar { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--panel); border-top: 1px solid var(--border); display: flex; padding-bottom: env(safe-area-inset-bottom); z-index: 100; }
         .tab-item { flex: 1; padding: 12px 0; text-align: center; color: #666; font-size: 11px; font-weight: bold; cursor: pointer; transition: 0.2s; }
         .tab-item.active { color: var(--primary); }
+        .tab-item.disabled { color: #333; cursor: not-allowed; opacity: 0.5; pointer-events: none; }
         .tab-item i { display: block; font-size: 20px; margin-bottom: 4px; }
 
-        /* 토스트 및 기타 */
         #toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: var(--success); color: #fff; padding: 12px 24px; border-radius: 30px; font-size: 14px; font-weight: bold; opacity: 0; pointer-events: none; transition: 0.3s; z-index: 9999; box-shadow: 0 5px 15px rgba(0,0,0,0.5); white-space: nowrap; }
-        .log-box { background: #000; color: #aaa; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 12px; height: 250px; overflow-y: auto; line-height: 1.5; border: 1px solid #333; }
     </style>
 </head>
 <body>
 
-    <!-- 상단 네비게이션 -->
     <div id="pwa-install-banner" style="display:none; background:var(--primary); color:#111; padding:12px 15px; font-size:13px; font-weight:bold; align-items:center; justify-content:space-between; box-shadow: 0 4px 10px rgba(0,0,0,0.5); z-index:9999; position:relative;">
         <div style="display:flex; align-items:center; gap:10px;">
             <i class="fas fa-download" style="font-size:20px;"></i>
@@ -75,14 +71,12 @@
         <button id="btn-pwa-install" style="background:#111; color:var(--primary); border:none; padding:8px 12px; border-radius:6px; font-weight:bold; cursor:pointer;">설치</button>
     </div>
 
-    <!-- 1. 포탈 (홈) 스크린 -->
     <div id="screen-portal" class="screen active">
         <div id="portal-loading" style="text-align:center; padding:50px 0; color:#777; display:none;">
             <i class="fas fa-spinner fa-spin" style="font-size:30px; color:var(--primary); margin-bottom:15px;"></i><br>서버에서 정보를 불러오고 있습니다...
         </div>
         
         <div id="portal-content" style="display:none;">
-            <!-- 대시보드 요약 -->
             <div class="dashboard-grid">
                 <div class="dash-card" id="dash-run">
                     <div style="font-size:11px; color:#aaa; margin-bottom:4px;"><i class="fas fa-running" style="color:var(--primary);"></i> 실행 중인 작업</div>
@@ -94,7 +88,6 @@
                 </div>
             </div>
 
-            <!-- 설치된 툴 리스트 -->
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                 <h3 style="margin:0; font-size:15px; color:#ddd;"><i class="fas fa-toolbox"></i> 내 툴박스</h3>
                 <button onclick="loadPortal()" style="background:none; border:none; color:var(--primary); font-size:16px; padding:5px;"><i class="fas fa-sync-alt"></i></button>
@@ -109,7 +102,6 @@
         </div>
     </div>
 
-    <!-- 2. 설정 스크린 -->
     <div id="screen-setup" class="screen">
         <h2 style="margin-top:0; color:var(--primary); font-size:18px; border-bottom:1px solid var(--border); padding-bottom:15px;">
             <i class="fas fa-cogs"></i> 서버 연결 설정
@@ -123,13 +115,6 @@
             <label class="form-label"><i class="fas fa-key"></i> 마스터 API Key</label>
             <input type="password" id="inp-key" class="input-text" placeholder="BASE.APIKEY 입력">
         </div>
-        <div class="form-group">
-            <label class="form-label"><i class="fas fa-bug"></i> 로그 레벨</label>
-            <select id="inp-log" class="input-select">
-                <option value="INFO">INFO (기본)</option>
-                <option value="DEBUG">DEBUG (상세)</option>
-            </select>
-        </div>
         
         <div style="display:flex; gap:10px; margin-top:30px;">
             <button id="btn-test" class="btn" style="background:#2f96b4; color:#fff; flex:1;"><i class="fas fa-plug"></i> 테스트</button>
@@ -137,62 +122,44 @@
         </div>
     </div>
 
-    <!-- 3. 툴 실행 스크린 -->
     <div id="screen-tool" class="screen">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-            <button class="btn" onclick="showScreen('screen-portal')" style="background:#333; color:#fff; width:auto; padding:8px 15px; font-size:13px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+            <button class="btn" onclick="showScreen('screen-portal')" style="background:#333; color:#fff; width:auto; padding:6px 12px; font-size:12px; border-radius:6px;">
                 <i class="fas fa-arrow-left"></i> 홈으로
             </button>
-            <div id="tool-view-title" style="font-weight:bold; color:var(--primary); font-size:16px;">로딩 중...</div>
+            <div id="tool-view-title" style="font-weight:bold; color:var(--primary); font-size:15px;">로딩 중...</div>
         </div>
 
-        <div class="form-group">
-            <label class="form-label"><i class="fas fa-server"></i> 대상 서버 (노드) 선택</label>
-            <select id="tool-server-select" class="input-select"></select>
-        </div>
-
-        <div id="tool-form-container" style="margin-bottom:25px;"></div>
-        
-        <div id="tool-action-container" style="display:flex; flex-direction:column; gap:10px;"></div>
-        
-        <div id="tool-monitor" style="margin-top:25px; display:none;">
-            <div style="display:flex; justify-content:space-between; font-size:12px; font-weight:bold; color:#fff; margin-bottom:8px;">
-                <span id="monitor-state" style="color:var(--primary);"><i class="fas fa-spinner fa-spin"></i> 작업 진행 중</span>
-                <span id="monitor-progress">0 / 0</span>
-            </div>
-            <div style="width:100%; height:8px; background:#222; border-radius:4px; overflow:hidden; margin-bottom:15px;">
-                <div id="monitor-bar" style="width:0%; height:100%; background:var(--primary); transition:0.3s;"></div>
-            </div>
-            <div class="log-box" id="tool-log-box"></div>
-            <button id="btn-cancel-task" class="btn" style="background:var(--danger); color:#fff; margin-top:15px;"><i class="fas fa-stop"></i> 진행 중인 작업 중단</button>
-        </div>
+        <!-- [수정] 모바일 화면 내 자체 서버 선택 UI 중복 제거 -->
+        <div id="tool-form-container" style="margin-bottom:25px; width:100%;"></div>
     </div>
 
-    <!-- 하단 탭 바 -->
     <div class="tab-bar">
-        <div class="tab-item active" data-target="screen-portal"><i class="fas fa-home"></i>홈</div>
-        <div class="tab-item" data-target="screen-setup"><i class="fas fa-cog"></i>설정</div>
+        <div class="tab-item active" data-target="screen-portal">
+            <i class="fas fa-home"></i>홈
+        </div>
+        <div class="tab-item disabled" id="tab-tool" data-target="screen-tool">
+            <i class="fas fa-wrench"></i>도구
+        </div>
+        <div class="tab-item" data-target="screen-setup">
+            <i class="fas fa-cog"></i>설정
+        </div>
     </div>
 
     <div id="toast">메시지</div>
 
     <script>
-        // 전역 상태 관리
         let AppState = {
             url: localStorage.getItem('pmh_url') || window.location.origin,
             key: localStorage.getItem('pmh_key') || '',
-            logLevel: localStorage.getItem('pmh_log') || 'INFO',
             servers: [],      
             activeToolId: null,
             pollTimer: null
         };
 
-        // 초기 UI 셋팅
         document.getElementById('inp-url').value = AppState.url;
         document.getElementById('inp-key').value = AppState.key;
-        document.getElementById('inp-log').value = AppState.logLevel;
 
-        // 유틸: 토스트 메시지
         function showToast(msg, isError = false) {
             const t = document.getElementById('toast');
             t.innerHTML = msg;
@@ -201,13 +168,14 @@
             setTimeout(() => t.style.opacity = '0', 3000);
         }
 
-        // 유틸: 스크린 트랜지션
         function showScreen(id) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById(id).classList.add('active');
             
             document.querySelectorAll('.tab-item').forEach(t => {
-                t.classList.toggle('active', t.dataset.target === id);
+                if (!t.classList.contains('disabled')) {
+                    t.classList.toggle('active', t.dataset.target === id);
+                }
             });
 
             if (AppState.pollTimer && id !== 'screen-tool') {
@@ -216,7 +184,6 @@
             }
         }
 
-        // 탭 바 이벤트
         document.querySelectorAll('.tab-item').forEach(t => {
             t.addEventListener('click', () => {
                 if (t.dataset.target === 'screen-portal' && AppState.servers.length > 0) loadPortal();
@@ -224,7 +191,6 @@
             });
         });
 
-        // [V2 Mobile API Wrapper] 마스터 서버 통신 전용 (Fetch)
         const PmhAPI = {
             call: async function(endpoint, method="GET", data=null) {
                 if(!AppState.url || !AppState.key) throw new Error("서버 정보가 설정되지 않았습니다.");
@@ -241,11 +207,32 @@
             }
         };
 
-        // 1. 설정 및 서버 연결 (Bootstrap)
+        async function loadSharedCoreModules() {
+            return new Promise((resolve, reject) => {
+                let loadedCount = 0;
+                const checkDone = () => { if (++loadedCount === 2) resolve(); };
+
+                if (!document.getElementById('pmh-shared-css')) {
+                    const link = document.createElement('link');
+                    link.id = 'pmh-shared-css'; link.rel = 'stylesheet';
+                    link.href = `${AppState.url}/api/client/pmh_ui_core.css?t=${Date.now()}`;
+                    link.onload = checkDone; link.onerror = () => reject("UI Core CSS 로드 실패");
+                    document.head.appendChild(link);
+                } else { checkDone(); }
+
+                if (!document.getElementById('pmh-shared-js')) {
+                    const script = document.createElement('script');
+                    script.id = 'pmh-shared-js';
+                    script.src = `${AppState.url}/api/client/pmh_ui_core.js?t=${Date.now()}`;
+                    script.onload = checkDone; script.onerror = () => reject("UI Core JS 로드 실패");
+                    document.head.appendChild(script);
+                } else { checkDone(); }
+            });
+        }
+
         async function connectServer(isTest = false) {
             const url = document.getElementById('inp-url').value.trim().replace(/\/$/, '');
             const key = document.getElementById('inp-key').value.trim();
-            const logLvl = document.getElementById('inp-log').value;
 
             if (!url || !key) return showToast("URL과 접속 키를 입력하세요.", true);
 
@@ -255,7 +242,6 @@
             btn.disabled = true;
 
             try {
-                // 마스터 서버의 설정 동기화 API 호출
                 AppState.url = url; AppState.key = key; 
                 const conf = await PmhAPI.call('/client/config');
                 
@@ -264,10 +250,10 @@
                 } else {
                     localStorage.setItem('pmh_url', url);
                     localStorage.setItem('pmh_key', key);
-                    localStorage.setItem('pmh_log', logLvl);
                     
                     AppState.servers = conf.SERVERS || [];
-                    document.getElementById('nav-status').innerHTML = '<i class="fas fa-circle" style="color:var(--success);"></i> 연결됨';
+
+                    await loadSharedCoreModules();
                     
                     showToast("설정 저장 및 연결 완료!");
                     loadPortal();
@@ -275,7 +261,6 @@
                 }
             } catch(e) {
                 showToast("연결 실패: " + e.message, true);
-                document.getElementById('nav-status').innerHTML = '<i class="fas fa-circle" style="color:var(--danger);"></i> 실패';
             } finally {
                 btn.innerHTML = origHtml;
                 btn.disabled = false;
@@ -285,19 +270,15 @@
         document.getElementById('btn-test').addEventListener('click', () => connectServer(true));
         document.getElementById('btn-save').addEventListener('click', () => connectServer(false));
 
-        // 2. 포탈(홈) 화면 로드 (대시보드 + 툴 목록)
         async function loadPortal() {
             document.getElementById('portal-loading').style.display = 'block';
             document.getElementById('portal-content').style.display = 'none';
             document.getElementById('portal-error').style.display = 'none';
 
             try {
-                // 마스터 노드의 릴레이를 거쳐 'self(마스터 자신)'의 도구 및 상태 조회
-                // (차후 전체 노드 취합 로직이 필요하다면 추가 가능)
                 const masterNodeId = AppState.servers[0].id || 'master_node';
                 const res = await PmhAPI.call(`/relay/${masterNodeId}/tools`);
                 
-                // 대시보드 요약 업데이트
                 const runCnt = res.dashboard.running.length;
                 const cronCnt = res.dashboard.cron.length;
                 
@@ -312,7 +293,6 @@
                 document.getElementById('dash-run-cnt').style.color = runCnt > 0 ? 'var(--primary)' : '#777';
                 document.getElementById('dash-cron-cnt').style.color = cronCnt > 0 ? 'var(--success)' : '#777';
 
-                // 툴 리스트 렌더링
                 const listEl = document.getElementById('tool-list');
                 listEl.innerHTML = '';
                 
@@ -352,22 +332,26 @@
             }
         }
 
-        // 3. 툴 실행 및 UI 동적 렌더링
         async function openTool(toolId) {
             AppState.activeToolId = toolId;
+            
+            const tabTool = document.getElementById('tab-tool');
+            tabTool.classList.remove('disabled');
+            
             showScreen('screen-tool');
             document.getElementById('tool-view-title').innerText = "로딩 중...";
             
-            const container = document.getElementById('tool-form-container'); // 모바일 빈 화면
-            container.innerHTML = '<div style="text-align:center; padding:30px;"><i class="fas fa-spinner fa-spin fa-2x"></i></div>';
+            const container = document.getElementById('tool-form-container');
+            container.innerHTML = '<div style="text-align:center; padding:30px;"><i class="fas fa-spinner fa-spin fa-2x" style="color:var(--primary);"></i></div>';
 
             const activeServerId = AppState.servers[0].id || 'master_node';
             
             try {
-                const ui = await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/ui`);
-                document.getElementById('tool-view-title').innerText = ui.title || toolId;
+                if (typeof PmhUICore === 'undefined') throw new Error("UI 코어 모듈이 로드되지 않았습니다.");
 
-                // [핵심] 공용 모듈을 호출하여 모바일 화면 내부에 완벽한 툴 UI 삽입!
+                const uiSchema = await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/ui`);
+                document.getElementById('tool-view-title').innerText = uiSchema.title || toolId;
+
                 PmhUICore.createToolInstance({
                     container: container,
                     toolId: toolId,
@@ -383,102 +367,29 @@
                 });
 
             } catch(e) { 
-                showToast("툴을 불러오지 못했습니다.", true); 
+                showToast("툴을 불러오지 못했습니다. " + e.message, true); 
                 showScreen('screen-portal'); 
             }
         }
 
-        // 4. 작업 모니터링 (폴링)
-        async function startPolling(toolId, srvId) {
-            document.getElementById('tool-monitor').style.display = 'block';
-            const logBox = document.getElementById('tool-log-box');
-            const stateEl = document.getElementById('monitor-state');
-            const progEl = document.getElementById('monitor-progress');
-            const barEl = document.getElementById('monitor-bar');
-            const cancelBtn = document.getElementById('btn-cancel-task');
-            
-            logBox.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 상태 동기화 중...<br>';
-            barEl.style.width = '0%';
-            barEl.style.background = 'var(--primary)';
+        if (AppState.url && AppState.key) connectServer(false);
+        else showScreen('screen-setup');
 
-            // 취소 버튼 이벤트
-            cancelBtn.onclick = async () => {
-                cancelBtn.disabled = true; cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 취소 요청 중...';
-                try { await PmhAPI.call(`/relay/${srvId}/tool/${toolId}/cancel`, "POST", {task_id: toolId}); } catch(e){}
-            };
-
-            const poll = async () => {
-                if (AppState.activeToolId !== toolId) return; // 화면 벗어나면 중지
-                try {
-                    const status = await PmhAPI.call(`/relay/${srvId}/tool/${toolId}/status?task_id=${toolId}`);
-                    
-                    let percent = 0;
-                    if (status.total > 0) percent = Math.floor((status.progress / status.total) * 100);
-                    else if (status.state === 'completed') percent = 100;
-
-                    progEl.innerText = `${status.progress} / ${status.total} (${percent}%)`;
-                    barEl.style.width = `${percent}%`;
-
-                    let logs = status.logs ? status.logs.join('<br>') : '';
-                    logBox.innerHTML = logs;
-                    logBox.scrollTop = logBox.scrollHeight;
-
-                    const isDone = ['completed', 'error', 'cancelled'].includes(status.state);
-                    
-                    if (isDone) {
-                        cancelBtn.style.display = 'none';
-                        if (status.state === 'completed') {
-                            stateEl.innerHTML = '<i class="fas fa-check-circle"></i> 작업 완료';
-                            stateEl.style.color = 'var(--success)';
-                            barEl.style.background = 'var(--success)';
-                        } else {
-                            stateEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i> 중단됨 (${status.state})`;
-                            stateEl.style.color = 'var(--danger)';
-                            barEl.style.background = 'var(--danger)';
-                        }
-                    } else {
-                        cancelBtn.style.display = 'block';
-                        cancelBtn.disabled = false;
-                        cancelBtn.innerHTML = '<i class="fas fa-stop"></i> 진행 중인 작업 중단';
-                        stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 작업 진행 중';
-                        stateEl.style.color = 'var(--primary)';
-                        
-                        AppState.pollTimer = setTimeout(poll, 1500);
-                    }
-                } catch(e) {
-                    AppState.pollTimer = setTimeout(poll, 2000);
-                }
-            };
-            poll();
-        }
-
-        // 초기 앱 시작
-        if (AppState.url && AppState.key) {
-            connectServer(false);
-        } else {
-            showScreen('screen-setup');
-        }
-
-        // --- PWA (홈 화면 설치) 유도 로직 ---
         let deferredPrompt;
         const installBanner = document.getElementById('pwa-install-banner');
         const installBtn = document.getElementById('btn-pwa-install');
 
-        // 1. 브라우저인지 Standalone(설치된 PWA) 앱인지 확인
         const isStandalone = window.matchMedia('(display-mode: standalone)').matches 
                              || window.navigator.standalone 
                              || document.referrer.includes('android-app://');
 
-        // 이미 PWA로 열렸다면 배너 표시 안함
         if (!isStandalone) {
-            // Android/Chrome 등 표준 PWA 설치 이벤트 캐치
             window.addEventListener('beforeinstallprompt', (e) => {
-                e.preventDefault(); // 기본 설치 팝업 막기
-                deferredPrompt = e; // 이벤트 저장
-                installBanner.style.display = 'flex'; // 커스텀 배너 띄우기
+                e.preventDefault();
+                deferredPrompt = e;
+                installBanner.style.display = 'flex';
             });
 
-            // iOS Safari는 위 이벤트 미지원. 수동 안내 (선택사항)
             const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
             if (isIOS) {
                 installBanner.style.display = 'flex';
@@ -486,16 +397,12 @@
             }
         }
 
-        // 2. 설치 버튼 클릭 시 기본 설치 팝업 호출
         if (installBtn) {
             installBtn.addEventListener('click', async () => {
                 if (deferredPrompt) {
                     installBanner.style.display = 'none';
                     deferredPrompt.prompt();
                     const { outcome } = await deferredPrompt.userChoice;
-                    if (outcome === 'accepted') {
-                        console.log('[PWA] 설치 성공!');
-                    }
                     deferredPrompt = null;
                 }
             });

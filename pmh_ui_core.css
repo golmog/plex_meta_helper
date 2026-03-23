@@ -2,7 +2,7 @@
    PMH UI Core CSS (PC Tool Panel & Mobile PWA 공용)
    ========================================================== */
 
-/* 1. 툴 패널 프레임 (PC 플로팅 / 모바일은 무시됨) */
+/* 1. 툴 패널 프레임 (PC 플로팅) */
 #pmh-tool-panel { position: fixed; background-color: rgba(15, 17, 20, 0.98); border: 1px solid #e5a00d; border-radius: 8px; z-index: 999999; display: none; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,0.9); backdrop-filter: blur(10px); transition: opacity 0.2s ease; min-width: 500px; min-height: 200px; max-width: 95vw; max-height: calc(100vh - 50px); }
 .pmh-panel-header { padding: 12px 15px; background-color: rgba(0,0,0,0.7); border-bottom: 1px solid #444; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; cursor: move; flex-shrink: 0; }
 .pmh-panel-title { color: #e5a00d; font-weight: bold; font-size: 14px; display: flex; align-items: center; gap: 6px; }
@@ -12,7 +12,7 @@
 .pmh-panel-minimized .pmh-panel-content, .pmh-panel-minimized .pmh-resizer { display: none !important; }
 .pmh-panel-minimized { height: auto !important; min-height: 0 !important; }
 .pmh-panel-minimized .pmh-panel-header { border-radius: 8px !important; border-bottom: none !important; }
-.pmh-panel-content { padding: 15px; overflow-y: auto; overflow-x: hidden; color: #ddd; font-size: 13px; line-height: 1.5; flex-grow: 1; min-height: 0; }
+.pmh-panel-content { padding: 15px; overflow-y: auto; overflow-x: hidden; color: #ddd; font-size: 13px; line-height: 1.5; flex-grow: 1; min-height: 0; text-align: left; }
 .pmh-panel-content::-webkit-scrollbar { width: 8px; }
 .pmh-panel-content::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
 .pmh-panel-content::-webkit-scrollbar-thumb:hover { background: #e5a00d; }
@@ -29,21 +29,21 @@
 .pmh-resizer-sw { bottom: -4px; left: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
 
 /* 2. 툴 폼(Form) 요소 공통 */
-.pmh-form-group { margin-bottom: 15px; transition: 0.2s; }
-.pmh-form-label { display: block; color: #e5a00d; font-size: 12px; margin-bottom: 6px; font-weight: bold; }
-.pmh-form-header { margin-top: 20px; margin-bottom: 12px; font-size: 14px; font-weight: bold; color: #2f96b4; border-bottom: 1px solid #333; padding-bottom: 6px; }
-.pmh-input-text { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; transition: border-color 0.2s; box-sizing: border-box; }
+.pmh-form-group { margin-bottom: 15px; transition: 0.2s; text-align: left; }
+.pmh-form-label { display: block; color: #e5a00d; font-size: 12px; margin-bottom: 6px; font-weight: bold; text-align: left; }
+.pmh-form-header { margin-top: 20px; margin-bottom: 12px; font-size: 14px; font-weight: bold; color: #2f96b4; border-bottom: 1px solid #333; padding-bottom: 6px; text-align: left; }
+.pmh-input-text { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; transition: border-color 0.2s; box-sizing: border-box; text-align: left; }
 .pmh-input-text:focus { outline: none; border-color: #e5a00d; }
-.pmh-input-select { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; cursor: pointer; box-sizing: border-box; }
+.pmh-input-select { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; cursor: pointer; box-sizing: border-box; text-align: left; }
 .pmh-input-number-label { color: #e5a00d; font-size: 12px; font-weight: bold; margin: 0; }
 .pmh-input-number { width: 60px; padding: 4px 6px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; text-align: center; }
 .pmh-check-group-box { display: flex; flex-direction: column; gap: 10px; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 4px; border: 1px solid #333; }
-.pmh-check-label { color: #ddd; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0; line-height: 1.3; transition: color 0.2s; }
+.pmh-check-label { color: #ddd; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0; line-height: 1.3; transition: color 0.2s; text-align: left; }
 .pmh-check-label:hover { color: #fff; }
 .pmh-check-input { margin: 0 !important; width: 14px; height: 14px; cursor: pointer; accent-color: #e5a00d; flex-shrink: 0; }
 
 /* 3. Multi-Select Dropdown */
-.pmh-multi-select-wrap { position: relative; width: 100%; user-select: none; }
+.pmh-multi-select-wrap { position: relative; width: 100%; user-select: none; text-align: left; }
 .pmh-multi-select-btn { width: 100%; padding: 5px 12px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; text-align: left; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: border-color 0.2s; }
 .pmh-multi-select-btn:hover { border-color: #e5a00d; }
 .pmh-multi-select-dropdown { position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; background: #1a1d21; border: 1px solid #444; border-radius: 4px; z-index: 100; max-height: 250px; overflow-y: auto; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
@@ -51,38 +51,51 @@
 .pmh-multi-select-header { padding: 5px 12px; border-bottom: 1px solid #333; background: rgba(0,0,0,0.3); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 2; }
 .pmh-multi-toggle-btn { font-size: 11px; color: #2f96b4; cursor: pointer; background: rgba(47,150,180,0.1); padding: 3px 8px; border-radius: 3px; font-weight: bold; }
 .pmh-multi-toggle-btn:hover { background: rgba(47,150,180,0.3); color: #fff; }
-.pmh-multi-option { padding: 5px 12px; border-bottom: 1px solid #222; display: flex; align-items: center; gap: 8px; cursor: pointer; transition: background 0.2s; }
+.pmh-multi-option { padding: 5px 12px; border-bottom: 1px solid #222; display: flex; align-items: center; gap: 8px; cursor: pointer; transition: background 0.2s; text-align: left; }
 .pmh-multi-option:hover { background: rgba(255,255,255,0.05); }
 .pmh-multi-chk { margin: 0 !important; width: 14px; height: 14px; accent-color: #e5a00d; cursor: pointer; flex-shrink: 0; }
 
 /* 4. 탭 및 버튼 컴포넌트 */
-.pmh-tab-btn { padding: 10px 15px; cursor: pointer; color: #777; font-weight: normal; border-bottom: 2px solid transparent; transition: color 0.2s, border-bottom-color 0.2s; }
+.pmh-tab-btn { padding: 10px 15px; cursor: pointer; color: #777; font-weight: normal; border-bottom: 2px solid transparent; transition: color 0.2s, border-bottom-color 0.2s; white-space: nowrap; }
 .pmh-tab-btn:hover { color: #fff; }
 .pmh-tab-btn.active { color: #e5a00d; font-weight: bold; border-bottom-color: #e5a00d; }
 
+/* 오버레이 (로딩) 공통 스타일 */
 .pmh-btn-wrapper { position: relative; display: inline-block; flex-shrink: 0; }
 .pmh-btn-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); border-radius: 4px; display: none; align-items: center; justify-content: center; color: #fff; font-size: 16px; z-index: 2; }
 
-.pmh-sub-action-btn { color: #1f1f1f !important; border: none; border-radius: 4px; cursor: pointer; transition: filter 0.2s, opacity 0.2s; font-weight: bold; box-sizing: border-box; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-.pmh-sub-action-btn:disabled { cursor: not-allowed !important; opacity: 0.6; }
-.pmh-sub-action-btn:not(:disabled):hover { filter: brightness(1.15); }
-
-.pmh-dynamic-run-btn { background-color: var(--btn-bg, #e5a00d); color: #1f1f1f; border: none; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 13px; transition: filter 0.2s, opacity 0.2s; padding: 12px 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); display: flex; align-items: center; gap: 6px; }
+/* 동적 실행 메인 버튼 (.pmh-dynamic-run-btn) */
+.pmh-dynamic-run-btn { background-color: var(--btn-bg, #e5a00d); color: var(--btn-text, #1f1f1f) !important; border: none; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 13px; transition: filter 0.2s, opacity 0.2s; padding: 12px 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; gap: 6px; }
 .pmh-dynamic-run-btn:disabled { cursor: not-allowed !important; opacity: 0.6; filter: grayscale(80%); }
 .pmh-dynamic-run-btn:not(:disabled):hover { filter: brightness(1.2); }
 
-.pmh-dt-action-btn { padding: 10px 20px; color: #1f1f1f; border: none; border-radius: 4px; font-weight: bold; min-height: 40px; cursor: pointer; font-size: 13px; transition: filter 0.2s, opacity 0.2s; box-shadow: 0 4px 10px rgba(0,0,0,0.3); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+/* 데이터 테이블 하단 액션 버튼 공통 스타일 (.pmh-dt-action-btn) */
+.pmh-dt-action-btn { padding: 10px 20px; color: #1f1f1f; border: none; border-radius: 4px; font-weight: bold; min-height: 40px; cursor: pointer; font-size: 13px; transition: filter 0.2s, opacity 0.2s; box-shadow: 0 4px 10px rgba(0,0,0,0.3); white-space: nowrap; display: flex; align-items: center; justify-content: center; gap: 6px; }
 .pmh-dt-action-btn:not(:disabled):hover { filter: brightness(1.2); }
 .pmh-dt-action-btn:disabled { opacity: 0.6; cursor: not-allowed; filter: grayscale(80%); }
-.pmh-btn-resume { background-color: #2f96b4; }
-.pmh-btn-execute { background-color: #51a351; }
+
+/* 각 버튼별 고유 배경색 */
+.pmh-btn-resume { background-color: #2f96b4; color: #fff; }
+.pmh-btn-execute { background-color: #51a351; color: #fff; }
 .pmh-btn-cancel { background-color: #bd362f; color: #fff; }
+
+/* 폼 토글 버튼 */
+.pmh-toggle-container { position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%); z-index: 10; height: 28px; display: flex; align-items: center; justify-content: center; }
+.pmh-toggle-btn { color: #2f96b4; cursor: pointer; background: #1a1d21; padding: 4px 20px; border-radius: 14px; border: 1px solid #333; font-size: 14px; transition: 0.2s; display: flex; align-items: center; justify-content: center; }
+.pmh-toggle-btn:hover { color: #fff; transform: scale(1.1); }
 
 /* 5. 데이터 테이블 */
 .pmh-dt-row { border-bottom: 1px solid #333; transition: background-color 0.2s; }
 .pmh-dt-row:hover { background-color: rgba(255,255,255,0.05); }
-.pmh-action-link { font-size: 12px; text-decoration: none; display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; transition: background 0.2s, color 0.2s; }
+
+/* [복원] 페이징 점프 텍스트/입력 폼 스타일 */
+.pmh-page-jump-container { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 12px; width: 100%; max-width: 400px; }
+
+/* [복원] 페이징 버튼 스타일 완벽 복구 (배경색, 테두리, 글자색, Hover/Active 효과) */
 .pmh-page-btn { min-width: 26px; height: 26px; padding: 0 6px; display: flex; justify-content: center; align-items: center; border-radius: 4px; font-family: monospace; font-size: 13px; cursor: pointer; background: #222; color: #ccc; border: 1px solid #444; transition: background 0.2s, color 0.2s, filter 0.2s; }
 .pmh-page-btn:not(:disabled):not(.active):hover { background: #333; color: #fff; border-color: #555; }
 .pmh-page-btn:disabled { background: #111; color: #555; border-color: #222; cursor: not-allowed; }
 .pmh-page-btn.active { background: #e5a00d; color: #1f1f1f; border-color: #e5a00d; font-weight: bold; cursor: default; }
+
+/* 링크 기본 스타일 */
+.pmh-action-link { font-size: 12px; text-decoration: none; display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; transition: background 0.2s, color 0.2s; }

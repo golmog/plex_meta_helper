@@ -104,13 +104,28 @@ def get_ui(core_api):
             {"id": "cron_expr", "type": "cron", "label": "크론탭 시간 설정 (분 시 일 월 요일)", "placeholder": "0 4 * * 0 ※숫자만 허용"},
 
             {"id": "s_h2", "type": "header", "label": "<i class='fab fa-discord'></i> 알림 설정"},
-            {"id": "discord_enable", "type": "checkbox", "label": "작업 완료 시 디스코드 알림 발송", "default": True},
+            {"id": "discord_enable", "type": "checkbox", "label": "작업 완료 시 디스코드 통계 알림 발송", "default": True},
             {"id": "discord_webhook", "type": "text", "label": "툴 전용 웹훅 URL (비워두면 서버 전역 설정 사용)", "placeholder": "https://discord.com/api/webhooks/..."},
-            {"id": "discord_template", "type": "textarea", "label": "본문 메시지 템플릿 편집", "height": 130, "default": DEFAULT_DISCORD_TEMPLATE,
+            {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: {server_name}의 봇 (아래의 모든 템플릿 변수 사용 가능)"},
+            {"id": "discord_avatar_url", "type": "text", "label": "디스코드 봇 프로필 이미지 URL", "placeholder": "https://.../icon.png"},
+            {"id": "discord_template", "type": "textarea", "label": "본문 메시지 템플릿 편집", "height": 160, "default": DEFAULT_DISCORD_TEMPLATE, 
              "template_vars": [
-                 {"key": "mode", "desc": "실행된 작업 모드 (refresh, rematch 등)"},
                  {"key": "total", "desc": "처리된 총 항목 수"},
-                 {"key": "elapsed_time", "desc": "총 소요 시간 (예: 2분 30초)"}
+                 {"key": "elapsed_time", "desc": "총 소요 시간 (예: 5분 20초)"},
+                 {"key": "cnt_analyze", "desc": "미분석 항목 복구 건수"},
+                 {"key": "cnt_match", "desc": "미매칭 자동 복구 건수"},
+                 {"key": "cnt_refresh", "desc": "유실 메타 갱신 건수"},
+                 {"key": "cnt_yaml_season", "desc": "시즌 YAML 적용 건수"},
+                 {"key": "cnt_yaml_marker", "desc": "마커 YAML 적용 건수"}
+             ]},
+             
+            {"id": "discord_template_footer", "type": "textarea", "label": "푸터(Footer) 템플릿 편집", "height": 50, "default": "Plex Meta Helper - {tool_id} | {server_name}", 
+             "template_vars": [
+                 {"key": "tool_id", "desc": "실행된 툴의 고유 ID (어느 곳에서나 사용 가능)"},
+                 {"key": "server_id", "desc": "실행 대상 서버 식별자 앞 8자리 (어느 곳에서나 사용 가능)"},
+                 {"key": "server_name", "desc": "사용자가 설정한 서버 이름 (어느 곳에서나 사용 가능)"},
+                 {"key": "date", "desc": "현재 날짜 YYYY-MM-DD (어느 곳에서나 사용 가능)"},
+                 {"key": "time", "desc": "현재 시간 HH:MM:SS (어느 곳에서나 사용 가능)"}
              ]}
         ],
         "buttons": [

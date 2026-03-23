@@ -1,122 +1,196 @@
 /**
  * ==============================================================================
- * PMH V2 UI Core Engine - 100% Shared Logic for PC & Mobile
+ * PMH UI Core Engine - Shared Logic for PC & Mobile
  * ==============================================================================
  */
 window.PmhUICore = {
-    // --------------------------------------------------------------------------
-    // 1. 공용 폼(Form) 요소 렌더러
-    // --------------------------------------------------------------------------
+    activeInstance: null,
+
+    destroyActiveInstance: function() {
+        if (this.activeInstance) {
+            this.activeInstance.isDestroyed = true;
+            if (this.activeInstance.pollTimer) clearTimeout(this.activeInstance.pollTimer);
+            this.activeInstance = null;
+        }
+    },
+
     renderInputsHtml: function(inputs, savedOptions, currentSecId = "all") {
         if (!inputs || inputs.length === 0) return '';
         let html = '';
         inputs.forEach(input => {
             let val = savedOptions[input.id] !== undefined ? savedOptions[input.id] : (input.default !== undefined ? input.default : '');
             switch (input.type) {
-                case 'header': html += `<div class="pmh-form-header">${input.label}</div>`; break;
+                case 'header': 
+                    html += `<div class="pmh-form-header">${input.label}</div>`; 
+                    break;
                 case 'checkbox_group':
                     html += `<div class="pmh-form-group"><div class="pmh-form-label">${input.label}</div><div class="pmh-check-group-box">`;
                     input.options.forEach(opt => {
                         let isChecked = savedOptions[opt.id] !== undefined ? savedOptions[opt.id] : (opt.default || false);
                         html += `<label class="pmh-check-label"><input type="checkbox" id="pmh_inp_${opt.id}" class="pmh-check-input pmh-dynamic-input" ${isChecked ? "checked" : ""}>${opt.label}</label>`;
                     });
-                    html += `</div></div>`; break;
+                    html += `</div></div>`; 
+                    break;
                 case 'radio_group':
                     html += `<div class="pmh-form-group"><div class="pmh-form-label">${input.label}</div><div class="pmh-check-group-box">`;
                     input.options.forEach(opt => {
                         let isChecked = (String(val) === String(opt.value));
                         html += `<label class="pmh-check-label"><input type="radio" name="pmh_rad_${input.id}" value="${opt.value}" class="pmh-check-input pmh-dynamic-radio" ${isChecked ? "checked" : ""}>${opt.label}</label>`;
                     });
-                    html += `</div></div>`; break;
+                    html += `</div></div>`; 
+                    break;
                 case 'multi_select':
-                    let cachedArr = Array.isArray(savedOptions[input.id]) ? savedOptions[input.id] : (input.default === 'all' ? input.options.map(o=>String(o.value)) : []);
+                    let cachedArr = [];
+                    if (Array.isArray(savedOptions[input.id])) cachedArr = savedOptions[input.id];
+                    else if (input.default === 'all') cachedArr = input.options.map(o => String(o.value));
+                    else if (Array.isArray(input.default)) cachedArr = input.default.map(String);
+
                     let btnText = cachedArr.length === 0 ? "선택 안 됨" : (cachedArr.length === input.options.length ? "전체 선택됨" : `${cachedArr.length}개 선택됨`);
                     html += `<div class="pmh-form-group"><label class="pmh-form-label">${input.label}</label><div class="pmh-multi-select-wrap" id="pmh_mwrap_${input.id}"><div class="pmh-multi-select-btn pmh-multi-main-btn" data-target="${input.id}"><span class="pmh-multi-btn-text" style="color:${cachedArr.length===0?'#777':'#fff'}; font-weight:${cachedArr.length===0?'normal':'bold'};">${btnText}</span><i class="fas fa-chevron-down" style="color:#777;"></i></div><div class="pmh-multi-select-dropdown" id="pmh_mdrop_${input.id}"><div class="pmh-multi-select-header"><span style="font-size:11px; color:#aaa;">항목 선택</span><span class="pmh-multi-toggle-btn" data-target="${input.id}">전체 토글</span></div>`;
                     input.options.forEach(opt => {
                         let isChecked = cachedArr.includes(String(opt.value));
                         html += `<label class="pmh-multi-option"><input type="checkbox" name="pmh_mchk_${input.id}" value="${opt.value}" class="pmh-multi-chk pmh-dynamic-multi" ${isChecked ? "checked" : ""}><span style="font-size:13px; color:#ddd;">${opt.text || opt.label}</span></label>`;
                     });
-                    html += `</div></div></div>`; break;
+                    html += `</div></div></div>`; 
+                    break;
                 case 'checkbox':
-                    html += `<div class="pmh-form-group" style="padding:4px 0;"><label class="pmh-check-label"><input type="checkbox" id="pmh_inp_${input.id}" class="pmh-check-input pmh-dynamic-input" ${val ? "checked" : ""}>${input.label}</label></div>`; break;
+                    html += `<div class="pmh-form-group" style="padding:4px 0;"><label class="pmh-check-label"><input type="checkbox" id="pmh_inp_${input.id}" class="pmh-check-input pmh-dynamic-input" ${val ? "checked" : ""}>${input.label}</label></div>`; 
+                    break;
                 case 'number':
+                    let layoutStyle = input.layout === 'plain' 
+                        ? 'display: flex; align-items: center; gap: 10px; margin-bottom: 12px;' 
+                        : 'display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.1); padding: 8px 10px; border-radius: 4px; border: 1px solid #333; margin-bottom: 12px;';
+                    let labelHtml = `<label class="pmh-input-number-label" style="${input.layout === 'plain' ? 'margin:0;' : ''}">${input.label}</label>`;
+                    let inputHtml = `<input type="number" id="pmh_inp_${input.id}" value="${val}" placeholder="${input.placeholder||''}" step="any" class="pmh-input-number pmh-dynamic-input" style="${input.width ? `width:${input.width};` : ''}">`;
+                    
+                    if (input.align === 'left') html += `<div class="pmh-form-group" style="${layoutStyle}">${inputHtml}${labelHtml}</div>`;
+                    else html += `<div class="pmh-form-group" style="${layoutStyle}">${labelHtml}${inputHtml}</div>`;
+                    break;
                 case 'text':
+                    html += `<div class="pmh-form-group"><label class="pmh-form-label">${input.label}</label><input type="text" id="pmh_inp_${input.id}" value="${val}" placeholder="${input.placeholder||''}" class="pmh-input-text pmh-dynamic-input" style="${input.width ? `width:${input.width};` : ''}"></div>`;
+                    break;
+                case 'textarea':
+                    html += `<div class="pmh-form-group"><div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:6px;"><label class="pmh-form-label" style="margin:0;">${input.label}</label>`;
+                    if (input.default) {
+                        const encDef = encodeURIComponent(input.default);
+                        html += `<a href="#" class="pmh-textarea-reset" data-target="pmh_inp_${input.id}" data-val="${encDef}" style="color:#2f96b4; font-size:11px; text-decoration:none; padding:2px 6px; background:rgba(47,150,180,0.1); border-radius:3px; transition:0.2s;"><i class="fas fa-undo"></i> 기본값 초기화</a>`;
+                    }
+                    html += `</div><textarea id="pmh_inp_${input.id}" class="pmh-input-text pmh-dynamic-input" style="width:100%; height:${input.height||130}px; resize:vertical; font-family:monospace; font-size:12px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; padding:10px; line-height:1.5; box-sizing:border-box; white-space:pre;" placeholder="${input.placeholder||''}">${val}</textarea>`;
+                    
+                    if (input.template_vars && input.template_vars.length > 0) {
+                        html += `<div style="margin-top:8px; font-size:11px; color:#aaa;">사용 가능한 변수: `;
+                        input.template_vars.forEach(tv => { html += `<span style="background:rgba(255,255,255,0.1); padding:2px 5px; border-radius:3px; margin-right:5px; font-family:monospace; line-height:1.9;" title="${tv.desc}">{${tv.key}}</span>`; });
+                        html += `</div>`;
+                    }
+                    html += `</div>`;
+                    break;
                 case 'cron':
-                    let styleExtra = input.type === 'cron' ? 'font-family:monospace;' : '';
-                    html += `<div class="pmh-form-group"><label class="pmh-form-label">${input.label}</label><input type="${input.type === 'cron' ? 'text' : input.type}" id="pmh_inp_${input.id}" value="${val}" placeholder="${input.placeholder||''}" class="pmh-input-text pmh-dynamic-input" style="${styleExtra}"></div>`;
-                    if (input.type === 'cron') html += `<div style="font-size:11px; color:#aaa; margin-top:4px;" id="pmh_cron_msg_${input.id}">대기 중...</div>`;
+                    html += `<div class="pmh-form-group">
+                                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:6px;">
+                                    <label class="pmh-form-label" style="margin:0;">${input.label}</label>
+                                    <a href="https://crontab.guru/" target="_blank" style="color:#2f96b4; font-size:11px; text-decoration:none; padding:2px 6px; background:rgba(47,150,180,0.1); border-radius:3px;"><i class="fas fa-external-link-alt"></i> 문법 도움말</a>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:10px;">
+                                    <input type="text" id="pmh_inp_${input.id}" value="${val}" placeholder="${input.placeholder||''}" class="pmh-input-text pmh-dynamic-input pmh-cron-input" style="font-family:monospace; text-align:center; width:100%;">
+                                </div>
+                                <div style="font-size:11px; font-weight:bold; color:#777; margin-top:6px;" id="pmh_cron_msg_${input.id}">대기 중...</div>
+                             </div>`;
+                    break;
+                case 'sub_action':
+                    const btnStyle = `${input.width ? `width:${input.width};` : ''} ${input.height ? `height:${input.height};` : ''} ${input.font_size ? `font-size:${input.font_size};` : ''}`;
+                    const safeLabel = (input.label || '').replace(/\n/g, '<br>');
+                    
+                    const btnHtml = `
+                        <div class="pmh-btn-wrapper pmh-sub-btn-wrapper" style="flex-shrink:0;">
+                            <button type="button" class="pmh-sub-action-btn" data-action="${input.action_type}" data-target="${input.id}" style="background-color:${input.color || '#2f96b4'} !important; color:#fff !important; padding:8px 15px; ${btnStyle}">
+                                <i class="${input.icon || 'fas fa-play'}" style="margin-right:4px;"></i><span>${safeLabel}</span>
+                            </button>
+                            <div class="pmh-btn-overlay pmh-sub-overlay"><i class="fas fa-spinner fa-spin"></i></div>
+                        </div>`;
+
+                    const cachedText = val ? `<i class="fas fa-check" style="color:#51a351;"></i> 이전에 적용되었습니다.` : '';
+                    const msgHtml = `<span id="pmh_sub_msg_${input.id}" style="font-size:12px; color:#aaa; line-height:1.4; flex-grow:1;">${cachedText}</span>`;
+                    const hiddenHtml = `<input type="hidden" id="pmh_inp_${input.id}" value="${val}" class="pmh-dynamic-input">`;
+
+                    const msgPos = input.msg_pos || 'right';
+                    if (msgPos === 'right') html += `<div class="pmh-form-group" style="display:flex; align-items:center; gap:10px;">${btnHtml}${msgHtml}${hiddenHtml}</div>`;
+                    else if (msgPos === 'left') html += `<div class="pmh-form-group" style="display:flex; align-items:center; gap:10px;">${msgHtml}${btnHtml}${hiddenHtml}</div>`;
+                    else if (msgPos === 'bottom') html += `<div class="pmh-form-group" style="display:flex; flex-direction:column; gap:6px;"><div style="display:flex; justify-content:center;">${btnHtml}</div>${msgHtml}${hiddenHtml}</div>`;
+                    else html += `<div class="pmh-form-group" style="display:flex; flex-direction:column; gap:6px;">${msgHtml}<div style="display:flex; justify-content:center;">${btnHtml}</div>${hiddenHtml}</div>`;
                     break;
                 case 'select':
                     html += `<div class="pmh-form-group"><label class="pmh-form-label">${input.label}</label><select id="pmh_inp_${input.id}" class="pmh-input-select pmh-dynamic-input">`;
-                    input.options.forEach(o => html += `<option value="${o.value}" ${String(o.value) === String(val) ? "selected" : ""}>${o.text}</option>`);
-                    html += `</select></div>`; break;
+                    input.options.forEach(o => {
+                        let isSelected = String(o.value) === String(val);
+                        if (!val && input.id === 'target_section' && String(o.value) === currentSecId) isSelected = true;
+                        html += `<option value="${o.value}" ${isSelected ? "selected" : ""}>${o.text}</option>`;
+                    });
+                    html += `</select></div>`; 
+                    break;
             }
         });
         return html;
     },
 
-    // --------------------------------------------------------------------------
-    // 2. 메인 툴박스 인스턴스화 (플랫폼 종속성 완전 분리)
-    // --------------------------------------------------------------------------
     createToolInstance: function(config) {
-        /*
-          config = {
-              container: HTMLElement, 
-              toolId: "scanner", 
-              uiSchema: {...}, 
-              servers: [...], 
-              activeServerIdx: 0,
-              apiAdapter: { run: async (data)=>{...}, status: async (taskId)=>{...}, cancel: async (taskId)=>{...} },
-              toast: { success: (msg)=>{...}, error: (msg)=>{...}, info: (msg)=>{...} }
-          }
-        */
+        this.destroyActiveInstance();
+
+        const isMobileEnv = window.matchMedia('(max-width: 768px)').matches || ('ontouchstart' in window);
+        
+        const currentSrv = config.servers[config.activeServerIdx];
+        const resolvedSrvId = currentSrv ? (currentSrv.machineIdentifier || currentSrv.machine_id || 'default') : 'default';
+
         const ctx = {
             c: config.container,
             ui: config.uiSchema,
             opts: config.uiSchema.saved_options || {},
-            srvId: config.servers[config.activeServerIdx]?.machineIdentifier,
+            srvId: resolvedSrvId,
             pollTimer: null,
             currentPage: 1,
             itemsPerPage: config.uiSchema.saved_options?.items_per_page || 10,
             sortKey: config.uiSchema.saved_options?._sort_key || null,
             sortDir: config.uiSchema.saved_options?._sort_dir || 'asc',
-            isCancelling: false
+            isCancelling: false,
+            isDestroyed: false,
+            autoRefresh: true
         };
+        this.activeInstance = ctx;
 
-        // --- A. 기본 레이아웃 HTML 생성 ---
         let srvOptionsHtml = config.servers.map((s, i) => `<option value="${i}" ${i === config.activeServerIdx ? 'selected' : ''}>${s.name}</option>`).join('');
         const formDisplay = ctx.opts._form_collapsed ? 'none' : 'block';
         const collapseIcon = ctx.opts._form_collapsed ? 'fa-chevron-down' : 'fa-chevron-up';
 
         let html = `
-            <div style="display:flex; flex-direction:column; height:100%;">
+            <div style="display:flex; flex-direction:column; height:100%; width:100%; text-align:left;">
                 <div style="display:flex; border-bottom:1px solid #444; margin-bottom:15px; flex-shrink:0; justify-content:space-between; align-items:flex-end;">
-                    <div style="display:flex; gap:2px;">
-                        <div class="pmh-tab-btn active" data-tab="pmh_tab_form" style="cursor:pointer; padding:8px 12px; color:#e5a00d; border-bottom:2px solid #e5a00d; font-weight:bold;"><i class="fas fa-search"></i> 기본 설정</div>
-                        <div class="pmh-tab-btn" data-tab="pmh_tab_monitor" style="cursor:pointer; padding:8px 12px; color:#777;"><i class="fas fa-desktop"></i> 진행 상태</div>
-                        <div class="pmh-tab-btn" data-tab="pmh_tab_settings" style="cursor:pointer; padding:8px 12px; color:#777;"><i class="fas fa-cog"></i> 고급 설정</div>
-                    </div>
-                    <div style="display:flex; gap:12px; padding-bottom:8px; padding-right:5px;">
-                        <i class="fas fa-broom" id="pmh_btn_clear" title="조회 데이터 비우기" style="color:#2f96b4; cursor:pointer;"></i>
-                        <i class="fas fa-bomb" id="pmh_btn_reset" title="설정/캐시 완전 초기화" style="color:#bd362f; cursor:pointer;"></i>
+                    <div style="display:flex; gap:2px; overflow-x:auto;">
+                        <div class="pmh-tab-btn active" data-tab="pmh_tab_form" style="cursor:pointer; padding:8px 12px; color:#e5a00d; border-bottom:2px solid #e5a00d; font-weight:bold;"><i class="fas fa-search"></i> 조회/실행</div>
+                        <div class="pmh-tab-btn" data-tab="pmh_tab_monitor" style="cursor:pointer; padding:8px 12px; color:#777;"><i class="fas fa-desktop"></i> 모니터링</div>
+                        <div class="pmh-tab-btn" data-tab="pmh_tab_settings" style="cursor:pointer; padding:8px 12px; color:#777;"><i class="fas fa-cog"></i> 환경설정</div>
                     </div>
                 </div>
                 
                 <div id="pmh_tab_form" class="pmh-tab-content" style="display:flex; flex-direction:column; flex-grow:1;">
-                    ${config.servers.length > 1 ? `<div class="pmh-form-group"><label class="pmh-form-label"><i class="fas fa-server"></i> 대상 서버</label><select id="pmh_srv_select" class="pmh-input-select" style="font-weight:bold; color:#e5a00d;">${srvOptionsHtml}</select></div>` : ''}
-                    <div style="border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:10px; position:relative;">
+                    ${config.servers.length > 1 && !isMobileEnv ? `<div class="pmh-form-group"><label class="pmh-form-label"><i class="fas fa-server"></i> 대상 서버</label><select id="pmh_srv_select" class="pmh-input-select" style="font-weight:bold; color:#e5a00d;">${srvOptionsHtml}</select></div>` : ''}
+                    
+                    <div style="border-bottom:1px solid #333; padding-bottom:25px; margin-bottom:25px; position:relative;">
                         <div id="pmh_form_body" style="display:${formDisplay};">
                             ${ctx.ui.inputs ? `<div style="background:rgba(0,0,0,0.2); padding:15px; border-radius:8px; border:1px solid #333; margin-bottom:15px;"><div style="color:#51a351; font-size:13px; font-weight:bold; margin-bottom:10px;"><i class="fas fa-search"></i> 조회 조건</div>${this.renderInputsHtml(ctx.ui.inputs, ctx.opts)}</div>` : ''}
-                            ${ctx.ui.execute_inputs ? `<div id="pmh_exec_frame" style="background:rgba(60,20,20,0.1); padding:15px; border-radius:8px; border:1px solid #4a2121; margin-bottom:15px;"><div style="color:#e06c6c; font-size:13px; font-weight:bold; margin-bottom:10px;"><i class="fas fa-cogs"></i> 실행 옵션</div>${this.renderInputsHtml(ctx.ui.execute_inputs, ctx.opts)}</div>` : ''}
-                            <div id="pmh_action_container" style="display:flex; flex-wrap:wrap; gap:10px; justify-content:center; margin-bottom:10px;">
-                                ${ctx.ui.buttons ? ctx.ui.buttons.map(b => `<button class="pmh-btn pmh-tool-run-btn" data-action="${b.action_type}" style="background:${b.color||'#e5a00d'}; color:#111; padding:10px 20px; border:none; border-radius:4px; font-weight:bold; cursor:pointer;"><i class="${b.icon}"></i> ${b.label}</button>`).join('') : ''}
+                            ${ctx.ui.execute_inputs ? `<div id="pmh_exec_frame" style="background:rgba(60,20,20,0.1); padding:15px; border-radius:8px; border:1px solid #4a2121; margin-bottom:15px;"><div style="color:#e06c6c; font-size:13px; font-weight:bold; margin-bottom:10px;"><i class="fas fa-cogs"></i> 작업 실행 옵션 설정</div>${this.renderInputsHtml(ctx.ui.execute_inputs, ctx.opts)}</div>` : ''}
+                            <div id="pmh_action_container" style="display:flex; flex-wrap:wrap; gap:10px; justify-content:center;">
+                                ${ctx.ui.buttons ? ctx.ui.buttons.map(b => {
+                                    const isRed = (b.color === '#bd362f' || b.color === 'red');
+                                    const textColor = isRed ? '#fff' : '#1f1f1f';
+                                    return `<div class="pmh-btn-wrapper"><button class="pmh-dynamic-run-btn pmh-main-run-btn" data-action="${b.action_type}" style="background-color:${b.color||'#e5a00d'} !important; color:${textColor} !important;"><i class="${b.icon}"></i> ${b.label}</button><div class="pmh-btn-overlay"><i class="fas fa-spinner fa-spin"></i></div></div>`;
+                                }).join('') : ''}
                             </div>
                         </div>
-                        <div style="text-align:center; margin-top:-20px; position:relative; z-index:2; height:15px;">
-                            <i class="fas ${collapseIcon}" id="pmh_btn_toggle_form" style="color:#2f96b4; cursor:pointer; background:#1a1d21; padding:2px 15px; border-radius:10px; border:1px solid #333;"></i>
+                        <div class="pmh-toggle-container">
+                            <i class="fas ${collapseIcon} pmh-toggle-btn" id="pmh_btn_toggle_form"></i>
                         </div>
                     </div>
-                    <div id="pmh_data_table_res" style="flex-grow:1; display:none; overflow-y:auto;"></div>
+                    
+                    <div id="pmh_data_table_res" style="flex-grow:1; display:none; flex-direction:column; position:relative;"></div>
                 </div>
 
                 <div id="pmh_tab_monitor" class="pmh-tab-content" style="display:none; flex-direction:column; flex-grow:1;">
@@ -128,19 +202,158 @@ window.PmhUICore = {
                         <div style="width:100%; height:12px; background:#222; border-radius:6px; overflow:hidden; margin-bottom:15px; flex-shrink:0;">
                             <div id="pmh_mon_bar" style="width:0%; height:100%; background:#e5a00d; transition:0.3s;"></div>
                         </div>
-                        <div id="pmh_mon_logs" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:10px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6;">로그 없음</div>
-                        <button id="pmh_btn_cancel" style="background:#bd362f; color:#fff; border:none; border-radius:4px; padding:12px; margin-top:15px; font-weight:bold; cursor:pointer; display:none;"><i class="fas fa-stop"></i> 작업 중단</button>
+                        <div id="pmh_mon_logs" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:10px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; text-align:left;">로그 없음</div>
+                        <div style="display:flex; justify-content:center;">
+                            <button id="pmh_btn_cancel" class="pmh-dt-action-btn pmh-btn-cancel" style="margin-top:15px; display:none;"><i class="fas fa-stop"></i> 작업 중단</button>
+                        </div>
                     </div>
                 </div>
 
                 <div id="pmh_tab_settings" class="pmh-tab-content" style="display:none; flex-direction:column; flex-grow:1; overflow-y:auto;">
-                    ${ctx.ui.settings_inputs ? `<div style="background:rgba(0,0,0,0.2); padding:15px; border-radius:8px; border:1px solid #333; margin-bottom:15px;">${this.renderInputsHtml(ctx.ui.settings_inputs, ctx.opts)}</div><button id="pmh_btn_save_opts" style="background:#51a351; color:#fff; border:none; padding:12px; border-radius:4px; font-weight:bold; cursor:pointer; width:100%;"><i class="fas fa-save"></i> 설정 적용</button>` : '<div style="text-align:center; color:#777; padding:30px;">추가 설정이 없습니다.</div>'}
+                    ${ctx.ui.settings_inputs ? `<div style="background:rgba(0,0,0,0.2); padding:15px; border-radius:8px; border:1px solid #333; margin-bottom:15px;">${this.renderInputsHtml(ctx.ui.settings_inputs, ctx.opts)}</div>` : '<div style="text-align:center; color:#777; padding:30px;">추가 설정이 없습니다.</div>'}
+                    <div style="display:flex; justify-content:center; gap:10px; margin-top:15px; border-top:1px dashed #444; padding-top:15px;">
+                        <button id="pmh_btn_reset_all" class="pmh-dynamic-run-btn" style="background-color:#bd362f !important; color:#fff !important;"><i class="fas fa-bomb"></i> 환경/캐시 초기화</button>
+                        <button id="pmh_btn_save_opts" class="pmh-dynamic-run-btn" style="background-color:#e5a00d !important; color:#1f1f1f !important;"><i class="fas fa-save"></i> 설정 적용</button>
+                    </div>
                 </div>
             </div>
         `;
         ctx.c.innerHTML = html;
 
-        // --- B. 공용 이벤트 로직 (내부 함수 바인딩) ---
+        // 1. 폼 토글 버튼 직접 바인딩
+        const toggleBtn = ctx.c.querySelector('#pmh_btn_toggle_form');
+        if (toggleBtn) {
+            toggleBtn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const body = ctx.c.querySelector('#pmh_form_body');
+                if (body) {
+                    const isHidden = body.style.display === 'none';
+                    body.style.display = isHidden ? 'block' : 'none';
+                    toggleBtn.className = `fas ${isHidden ? 'fa-chevron-up' : 'fa-chevron-down'} pmh-toggle-btn`;
+                    ctx.opts._form_collapsed = !isHidden;
+                }
+            };
+        }
+
+        // 2. 멀티 셀렉트 메인 버튼
+        ctx.c.querySelectorAll('.pmh-multi-main-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const drop = ctx.c.querySelector(`#pmh_mdrop_${btn.dataset.target}`);
+                ctx.c.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => { if(d !== drop) d.classList.remove('open'); });
+                drop.classList.toggle('open');
+            };
+        });
+
+        // 3. 멀티 셀렉트 전체 토글 버튼
+        ctx.c.querySelectorAll('.pmh-multi-toggle-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const targetId = btn.dataset.target;
+                const checkboxes = ctx.c.querySelectorAll(`input[name="pmh_mchk_${targetId}"]`);
+                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+                checkboxes.forEach(cb => cb.checked = !allChecked);
+                if (checkboxes.length > 0) checkboxes[0].dispatchEvent(new Event('change', { bubbles: true }));
+            };
+        });
+
+        // 4. 멀티 셀렉트 항목 변경 시 텍스트 갱신
+        ctx.c.querySelectorAll('.pmh-multi-chk').forEach(chk => {
+            chk.addEventListener('change', (e) => {
+                const wrap = e.target.closest('.pmh-multi-select-wrap');
+                if (wrap) {
+                    const targetId = wrap.querySelector('.pmh-multi-main-btn').dataset.target;
+                    const btnTextSpan = wrap.querySelector('.pmh-multi-btn-text');
+                    const checkboxes = wrap.querySelectorAll(`input[name="pmh_mchk_${targetId}"]`);
+                    const chkCnt = wrap.querySelectorAll(`input[name="pmh_mchk_${targetId}"]:checked`).length;
+                    
+                    if (chkCnt === 0) {
+                        btnTextSpan.innerText = "선택 안 됨";
+                        btnTextSpan.style.color = "#777"; btnTextSpan.style.fontWeight = "normal";
+                    } else if (chkCnt === checkboxes.length) {
+                        btnTextSpan.innerText = "전체 선택됨";
+                        btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
+                    } else {
+                        btnTextSpan.innerText = `${chkCnt}개 선택됨`;
+                        btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
+                    }
+                }
+                updateShowIf();
+            });
+        });
+
+        // 5. 드롭다운 외부 영역 클릭 시 닫기
+        ctx.c.addEventListener('click', (e) => {
+            if (!e.target.closest('.pmh-multi-select-wrap')) {
+                ctx.c.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => d.classList.remove('open'));
+            }
+        });
+
+        // 6. Textarea 기본값 초기화 버튼
+        ctx.c.querySelectorAll('.pmh-textarea-reset').forEach(btn => {
+            btn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const ta = ctx.c.querySelector('#' + btn.dataset.target);
+                if (ta) ta.value = decodeURIComponent(btn.dataset.val);
+            };
+        });
+
+        // 7. Sub Action 버튼
+        ctx.c.querySelectorAll('.pmh-sub-action-btn').forEach(subBtn => {
+            subBtn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                if (subBtn.disabled) return;
+                
+                const targetId = subBtn.dataset.target;
+                const msgSpan = ctx.c.querySelector(`#pmh_sub_msg_${targetId}`);
+                const hiddenInput = ctx.c.querySelector(`#pmh_inp_${targetId}`);
+                const wrapper = subBtn.closest('.pmh-sub-btn-wrapper');
+                const overlay = wrapper ? wrapper.querySelector('.pmh-sub-overlay') : null;
+
+                subBtn.disabled = true;
+                if (overlay) overlay.style.display = 'flex';
+                if (msgSpan) msgSpan.innerHTML = `<span style="color:#aaa;"><i class="fas fa-circle-notch fa-spin"></i> 요청을 처리하고 있습니다...</span>`;
+
+                const req = getFormData();
+                req.action_type = subBtn.dataset.action;
+
+                config.apiAdapter.run(req).then(res => {
+                    subBtn.disabled = false;
+                    if (overlay) overlay.style.display = 'none';
+                    if (res.status === 'success') {
+                        if (msgSpan) msgSpan.innerHTML = `<span style="color:#51a351; font-weight:bold;"><i class="fas fa-check"></i> ${res.message || '완료되었습니다.'}</span>`;
+                        if (hiddenInput && res.value !== undefined) hiddenInput.value = res.value;
+                    } else {
+                        if (msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> ${res.message || '실패했습니다.'}</span>`;
+                    }
+                }).catch(err => {
+                    subBtn.disabled = false;
+                    if (overlay) overlay.style.display = 'none';
+                    if (msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-wifi"></i> 통신 실패</span>`;
+                });
+            };
+        });
+
+        // 8. Cron 입력 문법 검사
+        ctx.c.querySelectorAll('.pmh-cron-input').forEach(cronInput => {
+            cronInput.addEventListener('input', (e) => {
+                const cronId = e.target.id.replace('pmh_inp_', '');
+                const msgSpan = ctx.c.querySelector(`#pmh_cron_msg_${cronId}`);
+                if (!msgSpan) return;
+
+                const val = e.target.value.trim();
+                if (val === '') {
+                    msgSpan.innerHTML = "비어있습니다."; msgSpan.style.color = "#bd362f";
+                } else if (val.split(/\s+/).length !== 5) {
+                    msgSpan.innerHTML = `현재 ${val.split(/\s+/).length}자리입니다. 띄어쓰기로 구분된 5자리여야 합니다.`; msgSpan.style.color = "#bd362f";
+                } else if (/[^0-9\*\/\-\,\s]/.test(val)) {
+                    msgSpan.innerHTML = "잘못된 문자가 포함됨."; msgSpan.style.color = "#bd362f";
+                } else {
+                    msgSpan.innerHTML = `<i class="fas fa-check-circle"></i> 올바른 포맷입니다.`; msgSpan.style.color = "#51a351";
+                }
+            });
+        });
+
         const getFormData = () => {
             let req = { _server_id: ctx.srvId };
             ctx.c.querySelectorAll('.pmh-dynamic-input, .pmh-dynamic-radio:checked').forEach(el => {
@@ -165,8 +378,8 @@ window.PmhUICore = {
                 let show = true;
                 for (const [depId, depVal] of Object.entries(inp.show_if)) {
                     const el = ctx.c.querySelector(`#pmh_inp_${depId}`);
-                    if (el) { if(el.type==='checkbox'? el.checked!==depVal : el.value!==depVal) { show = false; break; } }
-                    else { const rad = ctx.c.querySelector(`input[name="pmh_rad_${depId}"]:checked`); if(rad && rad.value!==depVal) { show = false; break; } }
+                    if (el) { if(el.type==='checkbox'? el.checked!==depVal : String(el.value)!==String(depVal)) { show = false; break; } }
+                    else { const rad = ctx.c.querySelector(`input[name="pmh_rad_${depId}"]:checked`); if(rad && String(rad.value)!==String(depVal)) { show = false; break; } }
                 }
                 wrap.style.display = show ? 'block' : 'none';
             });
@@ -178,128 +391,279 @@ window.PmhUICore = {
         };
         ctx.c.addEventListener('change', updateShowIf); setTimeout(updateShowIf, 50);
 
-        // 탭 스위칭 로직
         const switchTab = (tabId) => {
             ctx.c.querySelectorAll('.pmh-tab-btn').forEach(b => {
                 if(b.dataset.tab === tabId) { b.style.color = '#e5a00d'; b.style.borderBottomColor = '#e5a00d'; b.classList.add('active'); }
                 else { b.style.color = '#777'; b.style.borderBottomColor = 'transparent'; b.classList.remove('active'); }
             });
             ctx.c.querySelectorAll('.pmh-tab-content').forEach(c => c.style.display = (c.id === tabId) ? 'flex' : 'none');
-            
             if (tabId === 'pmh_tab_form') loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir);
         };
         ctx.c.querySelectorAll('.pmh-tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 
-        // 폼 토글(접기/펼치기)
-        ctx.c.querySelector('#pmh_btn_toggle_form').addEventListener('click', (e) => {
-            const body = ctx.c.querySelector('#pmh_form_body');
-            const isHidden = body.style.display === 'none';
-            body.style.display = isHidden ? 'block' : 'none';
-            e.target.className = `fas ${isHidden ? 'fa-chevron-up' : 'fa-chevron-down'}`;
-            ctx.opts._form_collapsed = !isHidden;
-        });
-
-        // 툴박스 Multi-Select 제어
-        ctx.c.addEventListener('click', (e) => {
-            const btn = e.target.closest('.pmh-multi-main-btn');
-            if (btn) {
-                const drop = ctx.c.querySelector(`#pmh_mdrop_${btn.dataset.target}`);
-                ctx.c.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => { if(d!==drop) d.classList.remove('open'); });
-                drop.classList.toggle('open');
-            } else if (!e.target.closest('.pmh-multi-select-wrap')) {
-                ctx.c.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => d.classList.remove('open'));
-            }
-        });
-
-        // 데이터 테이블(Page) 로드 및 렌더링
-        const loadPage = async (page, sKey, sDir) => {
+        const loadPage = async (page, sKey, sDir, customLimit = null) => {
+            if (ctx.isDestroyed) return;
             ctx.currentPage = page; ctx.sortKey = sKey; ctx.sortDir = sDir;
+            if (customLimit) ctx.itemsPerPage = customLimit;
+            
             const resEl = ctx.c.querySelector('#pmh_data_table_res');
-            resEl.style.display = 'block'; resEl.innerHTML = `<div style="text-align:center; padding:30px; color:#aaa;"><i class="fas fa-spinner fa-spin"></i> 로딩 중...</div>`;
+            resEl.style.display = 'flex';
+            
+            let overlay = resEl.querySelector('.pmh-table-overlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.className = 'pmh-table-overlay';
+                overlay.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.6); z-index:10; display:flex; align-items:center; justify-content:center; border-radius:4px;';
+                overlay.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size:30px; color:#e5a00d;"></i>`;
+                resEl.appendChild(overlay);
+            } else {
+                overlay.style.display = 'flex';
+            }
+
             try {
                 const req = { action_type: 'page', page: page, limit: ctx.itemsPerPage, sort_key: sKey, sort_dir: sDir, _server_id: ctx.srvId };
                 const r = await config.apiAdapter.run(req);
-                renderTable(r);
-            } catch(e) { resEl.innerHTML = `<div style="color:#bd362f; text-align:center; padding:20px;">불러오기 실패: ${e}</div>`; }
+                if (!ctx.isDestroyed) renderTable(r);
+            } catch(e) { 
+                if (!ctx.isDestroyed) resEl.innerHTML = `<div style="color:#bd362f; text-align:center; padding:20px;">불러오기 실패: ${e}</div>`; 
+            }
         };
 
         const renderTable = (res) => {
             if (!res || (res.type !== 'datatable' && res.type !== 'dashboard')) return;
             const resEl = ctx.c.querySelector('#pmh_data_table_res');
+            resEl.style.display = 'flex';
             let html = '';
 
-            // 1. 요약(Summary) 대시보드
-            if (res.summary_cards && res.summary_cards.length > 0) {
-                html += `<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;">`;
-                res.summary_cards.forEach(card => {
-                    html += `<div style="background:rgba(0,0,0,0.3); border:1px solid #333; border-radius:6px; padding:15px; text-align:center;">
-                                <div style="font-size:11px; color:#aaa; margin-bottom:4px;"><i class="${card.icon}"></i> ${card.label}</div>
-                                <div style="font-size:18px; color:${card.color||'#fff'}; font-weight:bold;">${card.value}</div>
-                             </div>`;
-                });
+            if (res.summary_cards || res.bar_charts) {
+                html += `<div style="padding-bottom:15px; margin-bottom:15px; border-bottom:1px solid #333; flex-shrink:0;">`;
+                if (res.summary_cards && res.summary_cards.length > 0) {
+                    html += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:15px;">`;
+                    res.summary_cards.forEach(card => {
+                        html += `<div style="background:#111; border:1px solid #333; border-radius:6px; padding:12px; display:flex; align-items:center; gap:12px; text-align:left;">
+                                    <div style="font-size:24px; color:${card.color||'#e5a00d'}; width:30px; text-align:center;"><i class="${card.icon||'fas fa-info-circle'}"></i></div>
+                                    <div style="flex-grow:1; min-width:0;">
+                                        <div style="font-size:11px; color:#aaa; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.label}</div>
+                                        <div style="font-size:16px; color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${card.value}</div>
+                                    </div>
+                                 </div>`;
+                    });
+                    html += `</div>`;
+                }
+                
+                if (res.bar_charts && res.bar_charts.length > 0) {
+                    html += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;">`;
+                    res.bar_charts.forEach(chart => {
+                        html += `<div style="background:#15181a; border:1px solid #222; border-radius:6px; padding:15px; text-align:left;">
+                                    <div style="font-size:13px; font-weight:bold; color:#2f96b4; margin-bottom:12px; border-bottom:1px dashed #333; padding-bottom:5px;">${chart.title}</div>`;
+                        chart.items.forEach(item => {
+                            html += `<div style="margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; font-size:11px; color:#ccc; margin-bottom:3px;">
+                                            <span>${item.label}</span><span>${item.count} (${item.percent||0}%)</span>
+                                        </div>
+                                        <div style="width:100%; height:6px; background:#222; border-radius:3px; overflow:hidden;">
+                                            <div style="width:${item.percent||0}%; height:100%; background:${chart.color||'#e5a00d'}; border-radius:3px;"></div>
+                                        </div>
+                                     </div>`;
+                        });
+                        html += `</div>`;
+                    });
+                    html += `</div>`;
+                }
                 html += `</div>`;
             }
 
-            // 2. 실제 데이터 테이블
             if (res.type === 'datatable') {
+                const autoRefColor = ctx.autoRefresh ? '#51a351' : '#aaa';
+                const autoRefBg = ctx.autoRefresh ? 'rgba(81,163,81,0.1)' : 'rgba(170,170,170,0.1)';
+                const autoRefBorder = ctx.autoRefresh ? 'rgba(81,163,81,0.3)' : 'rgba(170,170,170,0.3)';
+                const autoRefIcon = ctx.autoRefresh ? 'fa-toggle-on' : 'fa-toggle-off';
+
+                html += `
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-shrink:0;">
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            <div style="color:#51a351; font-weight:bold; font-size:13px;"><i class="fas fa-list"></i> 총: ${res.total_items}건</div>
+                            <a href="#" id="pmh_dt_auto_ref" style="font-size:12px; text-decoration:none; padding:2px 6px; border-radius:4px; color:${autoRefColor}; background:${autoRefBg}; border:1px solid ${autoRefBorder};"><i class="fas ${autoRefIcon}"></i> 자동 갱신</a>
+                            <a href="#" id="pmh_dt_def_sort" style="color:#e5a00d; font-size:12px; text-decoration:none; padding:2px 6px; background:rgba(229,160,13,0.1); border:1px solid rgba(229,160,13,0.3); border-radius:4px;"><i class="fas fa-sort-amount-down"></i> 기본 정렬</a>
+                        </div>
+                    </div>
+                `;
+
                 if (res.total_items === 0) {
                     html += `<div style="padding:20px; text-align:center; color:#777; background:#111; border-radius:6px;">조회된 항목이 없습니다.</div>`;
                 } else {
-                    html += `<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12px; text-align:left; white-space:nowrap;">
-                                <thead><tr style="border-bottom:1px solid #444; color:#e5a00d;">`;
-                    res.columns.forEach(col => html += `<th style="padding:8px; cursor:pointer;" class="pmh-th-sort" data-key="${col.key}">${col.label}</th>`);
-                    html += `</tr></thead><tbody>`;
+                    html += `<div style="overflow-x:auto; flex-grow:1;">
+                                <table style="width:100%; border-collapse:collapse; font-size:12px; text-align:left; white-space:nowrap; table-layout:fixed;">
+                                    <thead>
+                                        <tr style="border-bottom:1px solid #444; color:#e5a00d;">`;
+                    res.columns.forEach(col => {
+                        let sortIcon = '';
+                        if (ctx.sortKey === col.key) sortIcon = ctx.sortDir === 'asc' ? ' <i class="fas fa-sort-up"></i>' : ' <i class="fas fa-sort-down"></i>';
+                        const wStr = col.width ? `width:${col.width};` : '';
+                        const hAlignStr = `text-align:${col.header_align || col.align || 'center'};`;
+                        html += `           <th style="padding:8px; cursor:pointer; ${wStr} ${hAlignStr}" class="pmh-th-sort" data-key="${col.key}">${col.label}${sortIcon}</th>`;
+                    });
+                    html += `           </tr>
+                                    </thead>
+                                    <tbody>`;
                     
                     res.data.forEach(row => {
                         const isErr = row._pmh_status === 'error';
-                        html += `<tr style="border-bottom:1px solid #222; background:${isErr ? 'rgba(189,54,47,0.1)' : 'transparent'};">`;
+                        const rowStyle = isErr ? `background:rgba(189,54,47,0.15); border-bottom:1px solid #bd362f;` : `border-bottom:1px solid #333;`;
+                        const errTitle = isErr ? `title="이전에 실패한 항목"` : '';
+
+                        html += `       <tr style="${rowStyle}" class="pmh-dt-row" ${errTitle}>`;
                         res.columns.forEach(col => {
-                            let val = row[col.key] || '-';
-                            if (col.type === 'action_btn') {
+                            let val = row[col.key] !== undefined && row[col.key] !== null ? row[col.key] : '-';
+                            let displayHtml = val;
+                            const alignStr = `text-align:${col.align || 'left'};`;
+
+                            if (col.type === 'link' && row[col.link_key]) {
+                                if (isMobileEnv) {
+                                    displayHtml = `<span style="color:${isErr ? '#ff6b6b' : '#2f96b4'}; font-weight:bold;">${val}</span>`;
+                                } else {
+                                    displayHtml = `<a href="#!/server/${res.machine_id}/details?key=${encodeURIComponent('/library/metadata/' + row[col.link_key])}" style="color:${isErr ? '#ff6b6b' : '#2f96b4'}; text-decoration:none; font-weight:bold;">${val}</a>`;
+                                }
+                            } else if (col.type === 'action_btn') {
                                 const payload = JSON.stringify({action_type: col.action_type, _is_single: true, ...row}).replace(/"/g, '&quot;');
-                                val = `<button class="pmh-tbl-action-btn" data-payload="${payload}" style="background:none; border:none; color:#e5a00d; cursor:pointer;"><i class="${col.icon||'fas fa-play'}"></i></button>`;
+                                displayHtml = `${isErr ? `<span style="color:#bd362f; margin-right:4px;"><i class="fas fa-exclamation-triangle"></i></span>` : ''}<button class="pmh-tbl-action-btn" data-payload="${payload}" style="background:none; border:none; color:#e5a00d; cursor:pointer; font-size:14px;"><i class="${col.icon || 'fas fa-play'}"></i></button>`;
                             }
-                            html += `<td style="padding:8px; overflow:hidden; text-overflow:ellipsis; max-width:200px;" title="${val}">${val}</td>`;
+                            html += `       <td style="padding:8px; overflow:hidden; text-overflow:ellipsis; ${alignStr}">${displayHtml}</td>`;
                         });
-                        html += `</tr>`;
+                        html += `       </tr>`;
                     });
-                    html += `</tbody></table></div>`;
+                    html += `       </tbody>
+                                </table>
+                             </div>`;
                     
-                    // 페이징
+                    html += `<div style="display:flex; flex-direction:column; align-items:center; margin-top:20px; flex-shrink:0;">`;
                     if (res.total_pages > 1) {
-                        html += `<div style="display:flex; justify-content:center; gap:5px; margin-top:15px;">`;
-                        html += `<button class="pmh-page-btn" data-p="${Math.max(1, res.page-1)}" style="padding:5px 10px; background:#222; color:#fff; border:1px solid #444;">이전</button>`;
-                        html += `<span style="padding:5px 10px; color:#aaa;">${res.page} / ${res.total_pages}</span>`;
-                        html += `<button class="pmh-page-btn" data-p="${Math.min(res.total_pages, res.page+1)}" style="padding:5px 10px; background:#222; color:#fff; border:1px solid #444;">다음</button>`;
+                        if (res.total_pages > 3) {
+                            html += `<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; width:100%; max-width:400px;">
+                                        <span style="color:#aaa; font-size:11px;">이동:</span>
+                                        <input type="number" id="pmh_page_in" value="${res.page}" min="1" max="${res.total_pages}" style="width:50px; background:#111; color:#fff; border:1px solid #444; text-align:center; border-radius:4px; font-size:12px;">
+                                        <span style="color:#777; font-size:11px;">/ ${res.total_pages}</span>
+                                        <input type="range" id="pmh_page_range" min="1" max="${res.total_pages}" value="${res.page}" style="flex-grow:1; accent-color:#e5a00d;">
+                                     </div>`;
+                        }
+                        html += `<div style="display:flex; gap:5px; margin-bottom:15px;">`;
+                        html += `<button class="pmh-page-btn" data-p="1" ${res.page>1?'':'disabled'}><i class="fas fa-angle-double-left"></i></button>`;
+                        html += `<button class="pmh-page-btn" data-p="${res.page-1}" ${res.page>1?'':'disabled'}><i class="fas fa-angle-left"></i></button>`;
+                        let startP = Math.max(1, res.page - 2); let endP = Math.min(res.total_pages, res.page + 2);
+                        for(let i=startP; i<=endP; i++) {
+                            html += `<button class="pmh-page-btn ${i===res.page?'active':''}" data-p="${i}">${i}</button>`;
+                        }
+                        html += `<button class="pmh-page-btn" data-p="${res.page+1}" ${res.page<res.total_pages?'':'disabled'}><i class="fas fa-angle-right"></i></button>`;
+                        html += `<button class="pmh-page-btn" data-p="${res.total_pages}" ${res.page<res.total_pages?'':'disabled'}><i class="fas fa-angle-double-right"></i></button>`;
                         html += `</div>`;
                     }
                     
-                    // 하단 액션
+                    html += `
+                        <div style="display:flex; align-items:center; gap:15px; margin-bottom:15px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="color:#aaa; font-size:11px;">페이지당:</span>
+                                <select id="pmh_dt_limit" style="padding:3px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; font-size:11px; cursor:pointer;">
+                                    <option value="10" ${ctx.itemsPerPage===10?'selected':''}>10개</option>
+                                    <option value="20" ${ctx.itemsPerPage===20?'selected':''}>20개</option>
+                                    <option value="30" ${ctx.itemsPerPage===30?'selected':''}>30개</option>
+                                    <option value="50" ${ctx.itemsPerPage===50?'selected':''}>50개</option>
+                                    <option value="100" ${ctx.itemsPerPage===100?'selected':''}>100개</option>
+                                </select>
+                            </div>
+                            <button id="pmh_btn_clear_data" style="background:#222; color:#aaa; border:1px solid #444; border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;"><i class="fas fa-broom"></i> 목록 비우기</button>
+                        </div>
+                    `;
+                    html += `</div>`;
+
                     if (res.action_button) {
                         const btnPayload = JSON.stringify(res.action_button.payload).replace(/"/g, '&quot;');
-                        html += `<div style="text-align:center; margin-top:20px;"><button class="pmh-tbl-global-action" data-payload="${btnPayload}" style="background:#51a351; color:#fff; padding:10px 20px; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">${res.action_button.label}</button></div>`;
+                        
+                        html += `<div style="text-align:center; margin-top:10px; padding-top:15px; border-top:1px dashed #444; flex-shrink:0; display:flex; justify-content:center;">
+                                    <div class="pmh-btn-wrapper">
+                                        <button class="pmh-tbl-global-action pmh-dt-action-btn pmh-btn-execute" data-payload="${btnPayload}">
+                                            ${res.action_button.label}
+                                        </button>
+                                        <div class="pmh-btn-overlay"><i class="fas fa-spinner fa-spin"></i></div>
+                                    </div>
+                                 </div>`;
                     }
                 }
             }
             resEl.innerHTML = html;
 
-            // 테이블 내 이벤트 바인딩
             resEl.querySelectorAll('.pmh-page-btn').forEach(b => b.onclick = () => loadPage(parseInt(b.dataset.p), ctx.sortKey, ctx.sortDir));
-            resEl.querySelectorAll('.pmh-th-sort').forEach(th => th.onclick = () => loadPage(1, th.dataset.key, ctx.sortDir==='asc'?'desc':'asc'));
+            resEl.querySelectorAll('.pmh-th-sort').forEach(th => th.onclick = () => loadPage(1, th.dataset.key, ctx.sortKey===th.dataset.key && ctx.sortDir==='asc'?'desc':'asc'));
+            
+            const limitSel = resEl.querySelector('#pmh_dt_limit');
+            if (limitSel) limitSel.onchange = (e) => loadPage(1, ctx.sortKey, ctx.sortDir, parseInt(e.target.value));
+
+            const inPage = resEl.querySelector('#pmh_page_in');
+            const rangePage = resEl.querySelector('#pmh_page_range');
+            if (inPage && rangePage) {
+                rangePage.oninput = (e) => inPage.value = e.target.value;
+                rangePage.onchange = (e) => loadPage(parseInt(e.target.value), ctx.sortKey, ctx.sortDir);
+                inPage.onkeydown = (e) => { if(e.key === 'Enter') loadPage(parseInt(e.target.value), ctx.sortKey, ctx.sortDir); };
+            }
+
+            const refBtn = resEl.querySelector('#pmh_dt_auto_ref');
+            if (refBtn) refBtn.onclick = (e) => {
+                e.preventDefault(); ctx.autoRefresh = !ctx.autoRefresh;
+                if(ctx.autoRefresh) loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir);
+                else { refBtn.style.color='#aaa'; refBtn.style.background='rgba(170,170,170,0.1)'; refBtn.style.borderColor='rgba(170,170,170,0.3)'; refBtn.innerHTML='<i class="fas fa-toggle-off"></i> 자동 갱신'; }
+            };
+
+            const defSortBtn = resEl.querySelector('#pmh_dt_def_sort');
+            if (defSortBtn) defSortBtn.onclick = (e) => { e.preventDefault(); loadPage(1, null, 'asc'); };
+
+            const clearBtn = resEl.querySelector('#pmh_btn_clear_data');
+            if (clearBtn) clearBtn.onclick = async () => {
+                if(confirm("조회된 데이터 목록을 비우시겠습니까?\n(환경 설정과 상태는 유지됩니다)")) {
+                    try {
+                        await config.apiAdapter.run({action_type: 'clear_data', _server_id: ctx.srvId});
+                        config.toast.info("목록이 비워졌습니다.");
+                        loadPage(1, ctx.sortKey, ctx.sortDir);
+                    } catch(e){}
+                }
+            };
+
             resEl.querySelectorAll('.pmh-tbl-action-btn, .pmh-tbl-global-action').forEach(b => b.onclick = async () => {
                 const payload = JSON.parse(b.dataset.payload);
                 const req = { ...getFormData(), ...payload };
                 config.toast.info("작업 실행 중...");
+
+                const wrapper = b.closest('.pmh-btn-wrapper');
+                const overlay = wrapper ? wrapper.querySelector('.pmh-btn-overlay') : null;
+                
+                const origHtml = b.innerHTML; 
+                if (wrapper) {
+                    b.disabled = true;
+                    if (overlay) overlay.style.display = 'flex';
+                } else {
+                    b.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`; 
+                    b.disabled = true;
+                }
+
                 try {
                     const r = await config.apiAdapter.run(req);
-                    if (r.type === 'async_task') { config.toast.success("백그라운드 시작!"); startPolling(); switchTab('pmh_tab_monitor'); }
+                    if (r.type === 'async_task') { 
+                        config.toast.success("백그라운드 시작!"); 
+                        startPolling(); 
+                        switchTab('pmh_tab_monitor'); 
+                    }
                     else loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir);
-                } catch(e) { config.toast.error("오류: "+e); }
+                } catch(e) { 
+                    config.toast.error("오류: "+e); 
+                    b.innerHTML = origHtml; 
+                    b.disabled = false;
+                    if (overlay) overlay.style.display = 'none';
+                }
             });
         };
 
-        // 폴링 엔진
         const startPolling = async () => {
+            if (ctx.isDestroyed) return;
+            if (ctx.pollTimer) clearTimeout(ctx.pollTimer);
+
             const stateEl = ctx.c.querySelector('#pmh_mon_state');
             const progEl = ctx.c.querySelector('#pmh_mon_prog');
             const barEl = ctx.c.querySelector('#pmh_mon_bar');
@@ -310,6 +674,7 @@ window.PmhUICore = {
             cancelBtn.onclick = async () => { cancelBtn.disabled=true; cancelBtn.innerHTML='중단 중...'; ctx.isCancelling=true; await config.apiAdapter.cancel(config.toolId); };
 
             const poll = async () => {
+                if (ctx.isDestroyed || !document.body.contains(ctx.c)) return; 
                 try {
                     const s = await config.apiAdapter.status(config.toolId);
                     let percent = s.total > 0 ? Math.floor((s.progress/s.total)*100) : (s.state==='completed'?100:0);
@@ -323,9 +688,14 @@ window.PmhUICore = {
                         stateEl.innerHTML = s.state==='completed' ? '작업 완료' : `종료됨 (${s.state})`;
                         stateEl.style.color = s.state==='completed' ? '#51a351' : '#bd362f';
                         barEl.style.background = s.state==='completed' ? '#51a351' : '#bd362f';
+                        ctx.isCancelling = false;
                         
-                        // 자동 갱신
-                        if(s.state==='completed') setTimeout(() => loadPage(1, ctx.sortKey, ctx.sortDir), 1000);
+                        if(s.state==='completed' && ctx.autoRefresh) {
+                            setTimeout(() => {
+                                loadPage(1, ctx.sortKey, ctx.sortDir);
+                                switchTab('pmh_tab_form');
+                            }, 1000);
+                        }
                     } else {
                         stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; stateEl.style.color = '#e5a00d';
                         ctx.pollTimer = setTimeout(poll, 1500);
@@ -335,33 +705,49 @@ window.PmhUICore = {
             poll();
         };
 
-        // 초기화 데이터 로드 (활성 작업 체크)
         if (ctx.ui.active_task && ctx.ui.active_task.state === 'running') {
             switchTab('pmh_tab_monitor'); startPolling();
         } else {
             loadPage(1, ctx.sortKey, ctx.sortDir);
         }
 
-        // 최상단 실행 버튼 이벤트
-        ctx.c.querySelectorAll('.pmh-tool-run-btn').forEach(btn => {
+        ctx.c.querySelectorAll('.pmh-main-run-btn').forEach(btn => {
             btn.onclick = async () => {
-                btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = "요청 중...";
+                if (ctx.isDestroyed) return;
+                const wrapper = btn.closest('.pmh-btn-wrapper');
+                const overlay = wrapper ? wrapper.querySelector('.pmh-btn-overlay') : null;
+                btn.disabled = true; if(overlay) overlay.style.display = 'flex';
+                
                 try {
                     const req = getFormData(); req.action_type = btn.dataset.action;
-                    await config.apiAdapter.run({...req, action_type: 'save_options'}); // 저장
+                    await config.apiAdapter.run({...req, action_type: 'save_options'}); 
                     const r = await config.apiAdapter.run(req);
                     if (r.type === 'async_task') { config.toast.success("작업 시작!"); switchTab('pmh_tab_monitor'); startPolling(); }
                     else { config.toast.success("완료!"); loadPage(1, ctx.sortKey, ctx.sortDir); }
-                } catch(e) { config.toast.error("오류: "+e); } finally { btn.disabled = false; btn.innerHTML = orig; }
+                } catch(e) { config.toast.error("오류: "+e); } 
+                finally { btn.disabled = false; if(overlay) overlay.style.display = 'none'; }
             };
         });
 
-        // 설정 저장
         const saveBtn = ctx.c.querySelector('#pmh_btn_save_opts');
         if(saveBtn) saveBtn.onclick = async () => {
-            saveBtn.disabled=true; saveBtn.innerHTML="저장 중...";
+            if (ctx.isDestroyed) return;
+            saveBtn.disabled=true; saveBtn.innerHTML="<i class='fas fa-spinner fa-spin'></i> 저장 중...";
             const req = getFormData(); req.action_type = 'save_options';
             try { await config.apiAdapter.run(req); config.toast.success("설정 저장됨!"); } catch(e){} finally { saveBtn.disabled=false; saveBtn.innerHTML='<i class="fas fa-save"></i> 설정 적용'; }
+        };
+
+        const resetAllBtn = ctx.c.querySelector('#pmh_btn_reset_all');
+        if(resetAllBtn) resetAllBtn.onclick = async () => {
+            if (ctx.isDestroyed) return;
+            if(confirm("이 툴의 저장된 옵션, 결과, 작업 기록을 모두 초기화하시겠습니까?")) {
+                try {
+                    await config.apiAdapter.run({action_type: 'reset', _server_id: ctx.srvId});
+                    config.toast.success("초기화 완료");
+                    switchTab('pmh_tab_form');
+                    loadPage(1, null, 'asc');
+                } catch(e){}
+            }
         };
     }
 };

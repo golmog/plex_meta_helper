@@ -11,6 +11,7 @@ BASE:
   PLEX_URL: "http://plex:32400"
   PLEX_TOKEN: "YOUR_PLEX_TOKEN"
   PLEX_MACHINE_IDENTIFIER: "YOUR_PLEX_MACHINE_ID_HERE"
+
   # Plex 메인 DB 파일 경로 (sqlite3 접근용)
   # 예시:
   #   Windows: "C:\\Users\\Username\\AppData\\Local\\Plex Media Server\\Plug-in Support\\Databases\\com.plexapp.plugins.library.db"
@@ -22,9 +23,12 @@ BASE:
   # FF 연결 정보
   FF_URL: "http://127.0.0.1:9999"
   FF_APIKEY: "YOUR_FF_API_KEY_HERE"
-  # (선택) 노드 전역 디스코드 알림 웹훅 URL
 
+  # (선택) 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
+
+  # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
+  DEV_MODE: false
 
 # ==============================================================================
 # [MASTER] - 프론트엔드 전역 설정 및 게이트웨이 라우팅

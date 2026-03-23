@@ -58,7 +58,7 @@ GM_addStyle(`
     .toast-bottom-right { right: 12px; bottom: 12px; }
     .toast-progress { position: absolute; left: 0; bottom: 0; height: 4px; background-color: #000; opacity: .4; }
 
-    /* 2. Plex 상세페이지 링크 & 상세정보 텍스트 효과 */
+    /* 2. Plex 상세페이지 링크 & 상세정보 텍스트 효과 (Plex UI 오버레이) */
     .plex-guid-link, .plex-path-scan-link, #plex-guid-box .path-text-wrapper { text-decoration: none !important; cursor: pointer; color: #f1f1f1 !important; transition: color 0.2s, opacity 0.2s; }
     .plex-guid-link:hover, .plex-path-scan-link:hover { color: #f0ad4e !important; text-decoration: underline !important; }
     #plex-guid-box .plex-guid-action { font-size: 14px; margin: 0; text-decoration: none; cursor: pointer; vertical-align: middle; color: #adb5bd; opacity: 0.8; transition: opacity 0.2s, transform 0.2s, color 0.2s; }
@@ -79,7 +79,7 @@ GM_addStyle(`
     .pmh-video-version-block:last-child { border-bottom: none; padding-bottom: 0; margin-bottom: 0; }
     .pmh-video-data-line { margin-bottom: 2px !important; }
 
-    /* 3. Plex 목록 페이지 포스터 아이콘/태그 */
+    /* 3. Plex 목록 페이지 포스터 아이콘/태그 (Plex UI 오버레이) */
     div[data-testid^="cellItem"] div[class*="PosterCard-card-"], div[class*="ListItem-container"] div[class*="ThumbCard-card-"], div[class*="ListItem-container"] div[class*="ThumbCard-imageContainer"], div[class*="MetadataPosterCard-container"] div[class*="Card-card-"] { position: relative; overflow: hidden; }
 
     .pmh-top-right-wrapper { position: absolute; top: 2px; right: 2px; z-index: 10; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; pointer-events: none; }
@@ -115,14 +115,21 @@ GM_addStyle(`
     .pmh-tool-item:last-child { border-bottom: none; }
     .pmh-tool-item:hover { background-color: rgba(255, 255, 255, 0.08) !important; }
     .pmh-tool-item.pmh-running-tool:hover { background-color: rgba(229, 160, 13, 0.15) !important; }
-    .pmh-tool-run-btn:hover { color: #e5a00d; font-weight: bold; cursor: pointer; }
+    #pmh-tool-dropdown .pmh-tool-run-btn:hover { color: #e5a00d; font-weight: bold; cursor: pointer; }
+    
     .pmh-tool-delete-btn { color: rgba(255, 255, 255, 0.4) !important; transition: color 0.2s, transform 0.2s; }
     .pmh-tool-delete-btn:hover { color: #ff6b6b !important; transform: scale(1.1); }
     .pmh-action-icon:hover { transform: scale(1.1); color: #fff !important; }
     .pmh-tool-install-bundle-btn { color: #51a351 !important; transition: color 0.2s, transform 0.2s; opacity: 0.7; }
     .pmh-tool-install-bundle-btn:hover { opacity: 1.0; transform: scale(1.1); text-shadow: 0 0 5px rgba(81,163,81,0.5); }
     
-    /* 5. 클라이언트 전역 설정(모달) CSS (PC/Mobile 공유 불가 로직) */
+    /* 5. 클라이언트 전역 설정(모달) CSS 자립형 요소 (마스터 연결 전 렌더링 대비 필수 폼 요소만 유지) */
+    .pmh-form-group { margin-bottom: 15px; text-align: left; }
+    .pmh-form-label { display: block; color: #e5a00d; font-size: 12px; margin-bottom: 6px; font-weight: bold; text-align: left; }
+    .pmh-form-header { margin-top: 20px; margin-bottom: 12px; font-size: 14px; font-weight: bold; color: #2f96b4; border-bottom: 1px solid #333; padding-bottom: 6px; text-align: left; }
+    .pmh-input-text { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; transition: border-color 0.2s; box-sizing: border-box; text-align: left; }
+    .pmh-input-text:focus { outline: none; border-color: #e5a00d; }
+    .pmh-input-select { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; cursor: pointer; box-sizing: border-box; text-align: left; }
     .pmh-path-mapping-row { display: flex; gap: 10px; margin-bottom: 8px; align-items: center; }
     .pmh-btn-remove-row { background: #bd362f; color: #fff; border: none; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
 `);
@@ -4726,24 +4733,47 @@ GM_addStyle(`
 
             ServerConfig.USER_TAGS = res.USER_TAGS || {};
             ServerConfig.DISPLAY_PATH_PREFIXES_TO_REMOVE = res.DISPLAY_PATH_PREFIXES_TO_REMOVE || [];
-            
-            // [핵심] 마스터 서버가 보내준 노드 목록을 Relay URL로 매핑
             ServerConfig.SERVERS = (res.SERVERS || []).map(srv => {
                 return {
-                    id: srv.id,
-                    name: srv.name,
-                    machineIdentifier: srv.machine_id,
-                    // 프론트엔드는 이제 타겟의 pmhServerUrl이나 개별 apikey를 몰라도 됨.
+                    id: srv.id, name: srv.name, machineIdentifier: srv.machine_id,
                     relayUrl: `${ClientSettings.masterUrl}/api/relay/${srv.id}`
                 };
             });
 
-            infoLog(`[PMH Boot] 설정 동기화 완료! (연결된 노드 수: ${ServerConfig.SERVERS.length})`);
+            // [수정] 비동기 CSS/JS 로딩 대기 로직 추가 (Race Condition 해결)
+            if(!document.getElementById('pmh-shared-css')) {
+                const link = document.createElement('link');
+                link.id = 'pmh-shared-css';
+                link.rel = 'stylesheet';
+                link.href = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.css?t=${Date.now()}`;
+                document.head.appendChild(link);
+            }
+
+            await new Promise((resolve, reject) => {
+                if(document.getElementById('pmh-shared-js')) return resolve();
+                const script = document.createElement('script');
+                script.id = 'pmh-shared-js';
+                script.src = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.js?t=${Date.now()}`;
+                script.onload = resolve;
+                script.onerror = () => reject("UI Core JS 로드 실패");
+                document.head.appendChild(script);
+            });
+
+            infoLog(`[PMH Boot] 설정 동기화 및 UI 코어 로드 완료! (노드 수: ${ServerConfig.SERVERS.length})`);
             
-            // PMH 코어 엔진 구동 시작
             checkUpdate();
             observer.observe(document.body, { childList: true, subtree: true });
             checkUrlChange(true);
+
+            // [추가] 패널 닫기 시 UI Core 파괴 이벤트 바인딩
+            const closeBtn = document.getElementById('pmh-panel-close');
+            if(closeBtn) {
+                closeBtn.addEventListener('click', () => {
+                    if(window.PmhUICore && window.PmhUICore.destroyActiveInstance) {
+                        window.PmhUICore.destroyActiveInstance();
+                    }
+                });
+            }
 
             setTimeout(() => {
                 const lastTool = GM_getValue('pmh_last_open_tool', '');
@@ -4751,24 +4781,7 @@ GM_addStyle(`
                     window._pmh_is_minimized = GM_getValue('pmh_last_minimize_state', false); 
                     openPmhToolUI(lastTool);
                 }
-            }, 1000);
-
-        if(!document.getElementById('pmh-shared-css')) {
-            const link = document.createElement('link');
-            link.id = 'pmh-shared-css';
-            link.rel = 'stylesheet';
-            link.href = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.css?t=${Date.now()}`; // 렌더링마다 최신 갱신 보장
-            document.head.appendChild(link);
-        }
-
-        if(!document.getElementById('pmh-shared-js')) {
-            const script = document.createElement('script');
-            script.id = 'pmh-shared-js';
-            script.src = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.js?t=${Date.now()}`;
-            document.head.appendChild(script);
-        }
-
-        infoLog(`[PMH Boot] 설정 동기화 및 UI 코어 로드 완료! (연결된 노드 수: ${ServerConfig.SERVERS.length})`);
+            }, 500);
 
         } catch (e) {
             errorLog("[PMH Boot Error]", e);

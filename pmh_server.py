@@ -45,6 +45,9 @@ BASE:
   # (선택) 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
 
+  # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
+  DEV_MODE: false
+
 # ==============================================================================
 # [MASTER] - 프론트엔드 전역 설정 및 게이트웨이 라우팅
 # ==============================================================================
@@ -96,6 +99,7 @@ BASE_CFG = cfg.get("BASE", {})
 MASTER_CFG = cfg.get("MASTER", None)
 
 IS_MASTER = MASTER_CFG is not None
+DEV_MODE = BASE_CFG.get("DEV_MODE", False)
 
 SERVER_PORT = BASE_CFG.get("PORT", 8899)
 API_KEY = BASE_CFG.get("APIKEY", "")
@@ -116,6 +120,10 @@ global_conf = {
 def download_file_if_missing(url, filename):
     file_path = os.path.join(BASE_DIR, filename)
     if not os.path.exists(file_path):
+        if DEV_MODE:
+            print(f"[PMH DEV] DEV_MODE 활성화됨. 누락된 파일({filename})의 다운로드를 건너뜁니다.")
+            return
+            
         print(f"[PMH BOOTSTRAP] {filename} 파일이 존재하지 않아 다운로드합니다...")
         try:
             urllib.request.urlretrieve(url, file_path)
@@ -125,6 +133,10 @@ def download_file_if_missing(url, filename):
 
 CORE_FILE_PATH = os.path.join(BASE_DIR, "pmh_core.py")
 if not os.path.exists(CORE_FILE_PATH):
+    if DEV_MODE:
+        print("[PMH DEV ERROR] DEV_MODE가 활성화되어 있으나 로컬에 pmh_core.py가 없습니다. 서버를 종료합니다.")
+        sys.exit(1)
+        
     print("[PMH BOOTSTRAP] pmh_core.py 가 존재하지 않아 GitHub에서 다운로드합니다...")
     try:
         urllib.request.urlretrieve(CORE_URL, CORE_FILE_PATH)
@@ -146,15 +158,13 @@ log.setLevel(logging.ERROR)
 
 @app.before_request
 def check_api_key():
-    # 1. CORS Preflight 허용
     if request.method == "OPTIONS":
         return
     
-    # 2. PWA 앱(index.html) 로드 및 파비콘 등 정적 파일 접근은 인증 없이 허용
-    if request.path == '/' or request.path == '/favicon.ico':
+    allowed_paths = ['/', '/favicon.ico']
+    if request.path in allowed_paths or request.path.startswith('/api/client/'):
         return
         
-    # 3. 실제 API 통신(/api/...)에 대해서만 보안 키 검사 수행
     provided_key = request.headers.get("X-API-Key")
     if not provided_key or provided_key != API_KEY:
         print(f"[PMH SECURITY] 🚫 인증 실패. (IP: {request.remote_addr}, Path: {request.path})")
@@ -165,6 +175,17 @@ def check_api_key():
 # ==============================================================================
 def background_update_task():
     print("[PMH UPDATE BACKGROUND] 워커 스레드 완전 종료 대기 및 코어 업데이트를 시작합니다...")
+    
+    if DEV_MODE:
+        print("[PMH DEV] 🛠️ DEV_MODE 가 활성화되어 있습니다. 깃허브 원격 덮어쓰기를 생략하고 모듈만 리로드합니다.")
+        try:
+            importlib.reload(pmh_core)
+            pmh_core.start_scheduler_daemon(global_conf)
+            print(f"[PMH DEV] 코어 모듈 리로드 완료! (v{pmh_core.get_version()})")
+        except Exception as e:
+            print(f"[PMH DEV FATAL] 모듈 리로드 실패: {e}")
+        return
+
     try:
         time.sleep(3)
         import threading
@@ -182,20 +203,25 @@ def background_update_task():
             print("[PMH UPDATE BACKGROUND] 모든 워커 종료 확인 완료. 최신 코드를 다운로드합니다.")
 
         ts = int(time.time())
+        
         req_core = urllib.request.Request(f"{CORE_URL}?t={ts}", headers={'Cache-Control': 'no-cache'})
         with urllib.request.urlopen(req_core, timeout=10) as response:
             with open(CORE_FILE_PATH, 'w', encoding='utf-8') as f:
                 f.write(response.read().decode('utf-8'))
                 
-        # [NEW] 2. 정적 리소스(HTML, JS, CSS) 업데이트 (별도 함수로 래핑 권장)
         def update_file(url, filename):
             try:
                 req = urllib.request.Request(f"{url}?t={ts}", headers={'Cache-Control': 'no-cache'})
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     with open(os.path.join(BASE_DIR, filename), 'w', encoding='utf-8') as f:
                         f.write(resp.read().decode('utf-8'))
+                print(f"[PMH UPDATE] {filename} 업데이트 완료.")
             except Exception as e:
                 print(f"[PMH UPDATE WARNING] {filename} 업데이트 실패: {e}")
+        
+        assets = get_static_assets_from_github()
+        for asset in assets:
+            update_file(asset['url'], asset['name'])
             
         importlib.reload(pmh_core)
         pmh_core.start_scheduler_daemon(global_conf)
@@ -258,27 +284,25 @@ def get_client_config():
     
     for node in MASTER_CFG.get("NODES", []):
         node_id = node.get("id", "")
-        machine_id = node.get("machine_id", "") # YAML에 하드코딩 되어있으면 우선 사용
+        plex_machine_id = ""
         
-        # YAML에 없으면 노드에 Ping을 날려 동적으로 가져옴
-        if not machine_id:
-            if node_id in NODE_INFO_CACHE:
-                machine_id = NODE_INFO_CACHE[node_id]
-            else:
-                try:
-                    import json
-                    req = urllib.request.Request(f"{node['url'].rstrip('/')}/api/ping", headers={"X-API-Key": node['apikey']})
-                    with urllib.request.urlopen(req, timeout=3) as response:
-                        data = json.loads(response.read().decode('utf-8'))
-                        machine_id = data.get("machine_id", "")
-                        NODE_INFO_CACHE[node_id] = machine_id
-                except Exception as e:
-                    print(f"[PMH MASTER] 워커 노드({node.get('name')}) 정보 자동 조회 실패: {e}")
+        if node_id in NODE_INFO_CACHE:
+            plex_machine_id = NODE_INFO_CACHE[node_id]
+        else:
+            try:
+                import json
+                req = urllib.request.Request(f"{node['url'].rstrip('/')}/api/ping", headers={"X-API-Key": node['apikey']})
+                with urllib.request.urlopen(req, timeout=3) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+                    plex_machine_id = data.get("machine_id", "")
+                    NODE_INFO_CACHE[node_id] = plex_machine_id
+            except Exception as e:
+                print(f"[PMH MASTER] 워커 노드({node.get('name')}) 정보 자동 조회 실패: {e}")
         
         servers.append({
             "id": node_id,
             "name": node.get("name", ""),
-            "machine_id": machine_id
+            "machine_id": plex_machine_id
         })
 
     print(f"[PMH MASTER] 프론트엔드 설정 동기화 요청 처리 (노드 수: {len(servers)})")
@@ -298,43 +322,30 @@ def relay_to_node(node_id, subpath):
     if not IS_MASTER:
         return jsonify({"error": "이 서버는 마스터 노드가 아닙니다. 릴레이 기능이 비활성화되어 있습니다."}), 400
 
-    # 1. 대상이 자기 자신(Master)이면 직접 처리
     if node_id in ["master_node", "self"]:
         return api_gateway(subpath)
 
-    # 2. 타겟 워커 노드 정보 조회
     node_info = next((n for n in MASTER_CFG.get("NODES", []) if n.get("id") == node_id), None)
     if not node_info:
         return jsonify({"error": f"등록되지 않은 노드입니다 (ID: {node_id})"}), 404
 
     target_url = f"{node_info['url'].rstrip('/')}/api/{subpath}"
-    
-    # 쿼리스트링(GET 파라미터) 유지
     qs = request.query_string.decode('utf-8')
-    if qs:
-        target_url += f"?{qs}"
+    if qs: target_url += f"?{qs}"
 
-    # 3. 요청 헤더 재구성 (보안: 프론트엔드 키 대신, 마스터가 알고 있는 타겟 노드의 API Key 주입)
-    headers = {
-        "X-API-Key": node_info['apikey']
-    }
+    headers = { "X-API-Key": node_info['apikey'] }
     content_type = request.headers.get("Content-Type")
-    if content_type:
-        headers["Content-Type"] = content_type
+    if content_type: headers["Content-Type"] = content_type
 
-    req_data = request.get_data() if request.method in ['POST', 'PUT', 'DELETE'] else None
+    # [수정] GET 방식 등에서 불필요한 payload 방지 및 Method 명시적 보장
+    req_data = request.get_data() if request.method in ['POST', 'PUT', 'PATCH', 'DELETE'] else None
 
     if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/run')):
         print(f"[PMH RELAY] 🚀 {request.method} -> {node_info['name']} ({target_url})")
 
-    # 4. 포워딩 실행
     try:
-        req = urllib.request.Request(
-            target_url, 
-            data=req_data, 
-            headers=headers, 
-            method=request.method
-        )
+        # [수정] urllib에서 data가 있으면 자동으로 POST로 인식하는 것을 방지하기 위해 method 파라미터 강제
+        req = urllib.request.Request(target_url, data=req_data, headers=headers, method=request.method)
         with urllib.request.urlopen(req, timeout=45) as response:
             resp_data = response.read()
             resp_headers = {}
@@ -418,10 +429,14 @@ def api_gateway(subpath):
 if __name__ == '__main__':
     tz_info = time.strftime('%z (%Z)')
     print("\n" + "="*60)
-    print(" 🚀 PMH V2 API Server Initialized")
+    print(" 🚀 PMH API Server Initialized")
     print("="*60)
     mode_text = "MASTER (Gateway Enabled)" if IS_MASTER else "WORKER NODE (Standalone)"
     print(f" [ Mode ] {mode_text}")
+    if DEV_MODE:
+        print(" [ Dev  ] ⚠️ DEV_MODE = True (GitHub 자동 업데이트 무시됨)")
+    else:
+        print(" [ Dev  ] False (GitHub 자동 업데이트 활성화됨)")
     print(f" [ Core ] Loaded v{pmh_core.get_version()}")
     print(f" [ Time ] Timezone: {tz_info}")
     print(f" [ Port ] Listening on {SERVER_PORT}")
