@@ -1,0 +1,65 @@
+# ==============================================================================
+# [BASE] - 이 서버(노드) 자체의 구동 환경 설정
+# ==============================================================================
+BASE:
+  # PMH 서버 구동 포트
+  PORT: 8899
+  # 프론트엔드나 마스터 서버가 이 노드에 접근할 때 사용할 키
+  APIKEY: "YOUR_SECRET_KEY"
+
+  # Plex 서버 설정 (Plex API 통신용)
+  PLEX_URL: "http://plex:32400"
+  PLEX_TOKEN: "YOUR_PLEX_TOKEN"
+  PLEX_MACHINE_IDENTIFIER: "YOUR_PLEX_MACHINE_ID_HERE"
+  # Plex 메인 DB 파일 경로 (sqlite3 접근용)
+  # 예시:
+  #   Windows: "C:\\Users\\Username\\AppData\\Local\\Plex Media Server\\Plug-in Support\\Databases\\com.plexapp.plugins.library.db"
+  #   Linux/Docker: "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+  PLEX_DB_PATH: "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+  # Plex SQLite 바이너리 파일 경로 (DB 수정 쿼리 우회용)
+  PLEX_SQLITE_BIN: "/usr/lib/plexmediaserver/Plex SQLite"
+
+  # FF 연결 정보
+  FF_URL: "http://127.0.0.1:9999"
+  FF_APIKEY: "YOUR_FF_API_KEY_HERE"
+  # (선택) 노드 전역 디스코드 알림 웹훅 URL
+
+  DISCORD_WEBHOOK: ""
+
+# ==============================================================================
+# [MASTER] - 프론트엔드 전역 설정 및 게이트웨이 라우팅
+# ==============================================================================
+# MASTER 설정이 활성화되어 있으면 이 서버는 마스터(Gateway) 역할을 수행합니다.
+# 워커 노드로만 사용할 경우 아래 MASTER 블록 전체를 삭제하거나 주석 처리하세요.
+MASTER:
+  # Plex 상세 페이지에 파일 경로 표시 시, 지저분한 앞부분 경로를 숨김 처리할 접두어 목록
+  DISPLAY_PATH_PREFIXES_TO_REMOVE:
+    - "/mnt"
+
+  # Plex 영상 썸네일(태그 뱃지)에 사용자 커스텀 태그를 표시하기 위한 정규식 규칙
+  USER_TAGS:
+    # PRIORITY_GROUP: 여러 조건 중 첫 번째로 일치하는 1개 태그만 적용됨
+    PRIORITY_GROUP:
+      - name: "LEAK"
+        pattern: "(leaked|유출)"
+      - name: "MOPA"
+        pattern: "(mopa|모파|모자이크제거)"
+        target: "path"
+    # INDEPENDENT: 위와 상관없이 조건이 일치하면 모두 독립적으로 태그 추가됨
+    INDEPENDENT:
+      - name: "REMUX"
+        pattern: "remux"
+        target: "path"
+        
+  # 게이트웨이 라우팅 테이블 (마스터 서버가 명령을 중계할 노드 목록)
+  NODES:
+    # 첫 번째 노드(마스터 자신)는 설정하지 않아도 프론트엔드에 자동 포함됩니다.
+    # 추가 워커 노드가 있다면 아래에 등록합니다.
+    - id: "worker_node_2"
+      name: "2.MUSIC"
+      url: "http://192.168.1.100:8899"
+      apikey: "WORKER_SECRET_KEY"
+    # - id: "worker_node_3"
+    #   name: "Worker Server (Sub DB)"
+    #   url: "https://pmh-worker.example.com"
+    #   apikey: "WORKER_SECRET_KEY"

@@ -18,11 +18,12 @@ from datetime import datetime
 from contextlib import contextmanager
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.58"
+__version__ = "0.8.59"
 
 def get_version():
     return __version__
@@ -1254,7 +1255,8 @@ def dispatch_request(subpath, method, args, data, global_config):
 
     try:
         if subpath == 'ping' and method == 'GET':
-            return {"status": "ok", "version": __version__}, 200
+            machine_id = global_config.get("machine_id", "")
+            return {"status": "ok", "version": __version__, "machine_id": machine_id}, 200
             
         elif subpath == 'library/batch' and method == 'POST':
             return handle_library_batch(data, max_batch_size, db_path)
@@ -1356,6 +1358,45 @@ def dispatch_request(subpath, method, args, data, global_config):
 
                 except Exception as e:
                     return {"error": str(e)}, 500
+
+        elif subpath.startswith('mate/') and method == 'POST':
+            ff_url = global_config.get("mate_url")
+            ff_apikey = global_config.get("mate_apikey")
+            
+            if not ff_url or not ff_apikey:
+                return {"ret": "error", "msg": "노드의 Plex Mate (FF) 설정이 누락되었습니다. (BASE.FF_URL / BASE.FF_APIKEY)"}, 400
+                
+            ff_url = ff_url.rstrip('/')
+            target_endpoint = subpath.replace('mate/', '/plex_mate/api/', 1)
+            target_url = f"{ff_url}{target_endpoint}"
+            
+            # 클라이언트가 보낸 데이터(JSON)를 FF가 요구하는 Form Data (x-www-form-urlencoded)로 변환
+            form_data = data if data else {}
+            form_data['apikey'] = ff_apikey  # 보안: 노드가 자신의 FF API Key를 직접 주입
+            
+            encoded_data = urlencode(form_data).encode('utf-8')
+            
+            print(f"[PMH Core] 🚀 Plex Mate 중계 요청: {target_url}")
+            
+            try:
+                req = Request(target_url, data=encoded_data, method='POST')
+                req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+                
+                with urlopen(req, timeout=60) as response:
+                    resp_data = response.read().decode('utf-8')
+                    try:
+                        result_json = json.loads(resp_data)
+                        return result_json, 200
+                    except json.JSONDecodeError:
+                        return {"ret": "error", "msg": "FF 서버의 응답을 파싱할 수 없습니다.", "raw": resp_data}, 500
+                        
+            except HTTPError as e:
+                err_body = e.read().decode('utf-8')
+                print(f"[PMH Core Error] FF HTTP Error: {e.code} - {err_body}")
+                return {"ret": "error", "msg": f"FF API HTTP 오류 ({e.code})"}, e.code
+            except URLError as e:
+                print(f"[PMH Core Error] FF Network Error: {e}")
+                return {"ret": "error", "msg": f"FF 서버 통신 실패: {str(e)}"}, 502
 
         elif subpath == 'tools' and method == 'GET':
             installed_tools = []
