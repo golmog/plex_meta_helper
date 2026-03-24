@@ -72,18 +72,21 @@ def call_plexmate_refresh(mate_url, apikey, rating_key):
 # 1. UI 스키마
 # =====================================================================
 def get_ui(core_api):
-    sections = [{"value": "all", "text": "전체 라이브러리 (All)"}]
+    sections = []
+    default_secs = []
     try:
         rows = core_api['query']("SELECT id, name FROM library_sections ORDER BY name")
-        for r in rows: sections.append({"value": str(r['id']), "text": r['name']})
+        for r in rows: 
+            sec_val = str(r['id'])
+            sections.append({"value": sec_val, "text": r['name']})
+            default_secs.append(sec_val)
     except: pass
 
     return {
         "title": "스마트 스캐너",
         "description": "미분석/미매칭/메타/마커/YAML 적용 누락 등을 감지하고 최적의 순서로 자동 복구합니다.",
         "inputs": [
-            {"id": "h1", "type": "header", "label": "<i class='fas fa-filter'></i> 1. 복구 대상 라이브러리"},
-            {"id": "target_sections", "type": "multi_select", "label": "검사할 라이브러리 선택", "options": sections, "default": "all"},
+            {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},
             {"id": "fix_options", "type": "checkbox_group", "label": "선택 옵션", "options": [
                 {"id": "opt_analyze", "label": "미분석 항목 감지 및 강제 분석", "default": True},
                 {"id": "opt_match", "label": "미매칭 항목 감지 및 자동 매칭 시도", "default": True},

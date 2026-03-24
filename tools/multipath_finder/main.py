@@ -48,18 +48,21 @@ def get_unique_root_path(raw_file):
 # 1. UI 스키마 정의 (동일)
 # =====================================================================
 def get_ui(core_api):
-    sections = [{"value": "all", "text": "전체 라이브러리 (All)"}]
+    sections = []
+    default_secs = []
     try:
         rows = core_api['query']("SELECT id, name FROM library_sections ORDER BY name")
-        for r in rows:
-            sections.append({"value": str(r['id']), "text": r['name']})
-    except Exception: pass
+        for r in rows: 
+            sec_val = str(r['id'])
+            sections.append({"value": sec_val, "text": r['name']})
+            default_secs.append(sec_val)
+    except: pass
 
     return {
         "title": "다중 경로(병합 오류 의심) 항목 검색",
         "description": "서로 다른 폴더 경로를 가진 파일들이 하나의 메타로 잘못 병합된 항목을 찾습니다.<br><span style='color:#777; font-size:11px;'>(이 툴은 데이터 변경을 수행하지 않는 조회 전용 툴입니다.)</span>",
         "inputs": [
-            {"id": "target_sections", "type": "multi_select", "label": "검사할 라이브러리 선택", "options": sections, "default": "all"}
+            {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs}
         ],
         "settings_inputs": [
             {"id": "s_h_cron", "type": "header", "label": "<i class='fas fa-clock'></i> 자동 실행 스케줄러"},

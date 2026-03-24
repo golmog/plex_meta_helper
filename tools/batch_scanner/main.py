@@ -78,7 +78,7 @@ def get_ui(core_api):
         "title": "배치 스캐너",
         "description": "대상 항목을 큐 대기열 병목 없이 안전한 속도로 순차 처리합니다.",
         "inputs": [
-            {"id": "target_sections", "type": "multi_select", "label": "작업 대상 섹션", "options": sections, "default": default_secs},
+            {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},
             
             {"id": "mode", "type": "select", "label": "작업 모드", "options": [
                 {"value": "refresh", "text": "배치 리프레시 (Refresh)"},

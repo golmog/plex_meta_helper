@@ -37,17 +37,21 @@ def format_duration(ms):
 # 1. UI 스키마 정의
 # =====================================================================
 def get_ui(core_api):
-    sections = [{"value": "all", "text": "전체 라이브러리 (All)"}]
+    sections = []
+    default_secs = []
     try:
-        for r in core_api['query']("SELECT id, name FROM library_sections ORDER BY name"):
-            sections.append({"value": str(r['id']), "text": r['name']})
-    except Exception: pass
+        rows = core_api['query']("SELECT id, name FROM library_sections ORDER BY name")
+        for r in rows: 
+            sec_val = str(r['id'])
+            sections.append({"value": sec_val, "text": r['name']})
+            default_secs.append(sec_val)
+    except: pass
 
     return {
         "title": "라이브러리 종합 통계 분석",
         "description": "선택한 라이브러리의 메타 데이터를 분석하여 요약 대시보드를 생성합니다.<br><span style='color:#777; font-size:11px;'>(이 툴은 데이터 변경을 수행하지 않는 조회 전용 툴입니다.)</span>",
         "inputs": [
-            {"id": "target_sections", "type": "multi_select", "label": "분석할 라이브러리 섹션", "options": sections, "default": "all"},
+            {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},
             
             {"id": "media_types", "type": "checkbox_group", "label": "분석 대상 미디어 (실제 파일 단위)", "options": [
                 {"id": "type_movie", "label": "영화 (Movies)", "default": True},

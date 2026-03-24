@@ -1220,7 +1220,6 @@ GM_addStyle(`
             return;
         }
 
-        // 대상 서버 설정 (캐시 및 폴백 로직 포함)
         const globalCacheStr = GM_getValue(`pmh_tool_cache_global_${toolId}`, "{}");
         let globalCache = {}; try { globalCache = JSON.parse(globalCacheStr); } catch(e) {}
         
@@ -2961,19 +2960,18 @@ GM_addStyle(`
         let instantRenderCount = 0;
         pendingItems.forEach(item => {
             const srvConfig = getServerConfig(item.sid);
-            const cacheKey = srvConfig ? `L_${item.sid}_${item.iid}` : `F_${item.sid}_${item.iid}`;
-            const cData = getMemoryCache(cacheKey);
+            
+            let cData = getMemoryCache(`L_${item.sid}_${item.iid}`) || getMemoryCache(`F_${item.sid}_${item.iid}`);
 
             if (cData) {
                 if (cData.saved_state_hash && item.currentStateHash && cData.saved_state_hash !== item.currentStateHash) {
                     changedItems.add(item.iid);
-                    
                     let displayData = { ...cData, tags: applyUserTags(cData.p, cData.tags) };
                     renderListBadges(item.cont, item.poster, item.link, displayData, srvConfig, item.iid);
                     item.isRendered = true; 
 
                     cData.saved_state_hash = item.currentStateHash;
-                    setMemoryCache(cacheKey, cData);
+                    setMemoryCache(`L_${item.sid}_${item.iid}`, cData);
                     sessionRevalidated.delete(item.iid);
                     return; 
                 }
@@ -2995,7 +2993,7 @@ GM_addStyle(`
                 
                 if (!cData.saved_state_hash && item.currentStateHash) {
                     cData.saved_state_hash = item.currentStateHash;
-                    setMemoryCache(cacheKey, cData);
+                    setMemoryCache(`L_${item.sid}_${item.iid}`, cData);
                 }
 
                 let displayData = { ...cData, tags: applyUserTags(cData.p, cData.tags) };
@@ -3005,7 +3003,7 @@ GM_addStyle(`
             }
         });
 
-        if (instantRenderCount > 0) log(`[List] Fast rendered ${instantRenderCount} items from memory cache.`);
+        if (instantRenderCount > 0) log(`[List] Fast rendered ${instantRenderCount} items instantly from memory cache.`);
 
         if (swrDebounceTimer) clearTimeout(swrDebounceTimer);
 
@@ -4404,13 +4402,16 @@ GM_addStyle(`
         if (!observerPending) {
             observerPending = true;
             requestAnimationFrame(() => {
+                processList(); 
+            });
+
+            requestAnimationFrame(() => {
                 observerPending = false;
 
                 if (masterObserverTimer) clearTimeout(masterObserverTimer);
 
                 masterObserverTimer = setTimeout(() => {
                     processMatchModal();
-
                     if (!document.getElementById('pmdv-controls')) injectControlUI();
 
                     if (window.location.hash.includes('/details?key=')) {
@@ -4432,7 +4433,7 @@ GM_addStyle(`
                             if (guidBox) guidBox.style.opacity = '0.4';
                             
                             if(observer.detailTimer) clearTimeout(observer.detailTimer);
-                            observer.detailTimer = setTimeout(() => { processDetail(true); }, 600);
+                            observer.detailTimer = setTimeout(() => { processDetail(true); }, 300);
                         }
                         else if (!guidBox && !isFetchingDetail) {
                             const target = document.querySelector('div[data-testid="metadata-top-level-items"]')
@@ -4442,7 +4443,7 @@ GM_addStyle(`
                                         || document.querySelector('span[data-testid="metadata-line2"]');
                             if (target) {
                                 if(observer.detailTimer) clearTimeout(observer.detailTimer);
-                                observer.detailTimer = setTimeout(() => { processDetail(); }, 200);
+                                observer.detailTimer = setTimeout(() => { processDetail(); }, 100);
                             }
                         }
                     }
@@ -4807,6 +4808,9 @@ GM_addStyle(`
     }
 
     window.addEventListener('load', () => {
+        checkUpdate();
+        observer.observe(document.body, { childList: true, subtree: true });
+        checkUrlChange(true);
         bootstrapPMH();
     });
 

@@ -38,6 +38,7 @@ BASE:
 MASTER:
   # 자동 업데이트 체크(24h)를 활성화합니다.
   AUTO_UPDATE_CHECK: true
+
   # Plex 상세 페이지에 파일 경로 표시 시, 지저분한 앞부분 경로를 숨김 처리할 접두어 목록
   DISPLAY_PATH_PREFIXES_TO_REMOVE:
     - "/mnt"

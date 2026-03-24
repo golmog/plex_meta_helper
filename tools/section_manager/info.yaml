@@ -1,6 +1,6 @@
 id: "section_manager"
 name: "섹션 매니저"
 description: "라이브러리 섹션을 관리합니다. 이 툴은 Plex DB를 직접 수정하므로 주의가 필요합니다."
-version: "0.7.1"
+version: "0.8.1"
 icon: "fas fa-layer-group"
 entry_file: "main.py"

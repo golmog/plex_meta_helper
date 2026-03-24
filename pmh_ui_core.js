@@ -46,7 +46,7 @@ window.PmhUICore = {
                     else if (Array.isArray(input.default)) cachedArr = input.default.map(String);
 
                     let btnText = cachedArr.length === 0 ? "선택 안 됨" : (cachedArr.length === input.options.length ? "전체 선택됨" : `${cachedArr.length}개 선택됨`);
-                    html += `<div class="pmh-form-group"><label class="pmh-form-label">${input.label}</label><div class="pmh-multi-select-wrap" id="pmh_mwrap_${input.id}"><div class="pmh-multi-select-btn pmh-multi-main-btn" data-target="${input.id}"><span class="pmh-multi-btn-text" style="color:${cachedArr.length===0?'#777':'#fff'}; font-weight:${cachedArr.length===0?'normal':'bold'};">${btnText}</span><i class="fas fa-chevron-down" style="color:#777;"></i></div><div class="pmh-multi-select-dropdown" id="pmh_mdrop_${input.id}"><div class="pmh-multi-select-header"><span style="font-size:11px; color:#aaa;">항목 선택</span><span class="pmh-multi-toggle-btn" data-target="${input.id}">전체 토글</span></div>`;
+                    html += `<div class="pmh-form-group"><label class="pmh-form-label">${input.label}</label><div class="pmh-multi-select-wrap" id="pmh_mwrap_${input.id}"><div class="pmh-multi-select-btn pmh-multi-main-btn" data-target="${input.id}"><span class="pmh-multi-btn-text" style="color:${cachedArr.length===0?'#777':'#fff'};">${btnText}</span><i class="fas fa-chevron-down" style="color:#777;"></i></div><div class="pmh-multi-select-dropdown" id="pmh_mdrop_${input.id}"><div class="pmh-multi-select-header"><span style="font-size:11px; color:#aaa;">항목 선택</span><span class="pmh-multi-toggle-btn" data-target="${input.id}">전체 토글</span></div>`;
                     input.options.forEach(opt => {
                         let isChecked = cachedArr.includes(String(opt.value));
                         html += `<label class="pmh-multi-option"><input type="checkbox" name="pmh_mchk_${input.id}" value="${opt.value}" class="pmh-multi-chk pmh-dynamic-multi" ${isChecked ? "checked" : ""}><span style="font-size:13px; color:#ddd;">${opt.text || opt.label}</span></label>`;
@@ -171,7 +171,7 @@ window.PmhUICore = {
                 </div>
                 
                 <div id="pmh_tab_form" class="pmh-tab-content" style="display:flex; flex-direction:column; flex-grow:1;">
-                    ${config.servers.length > 1 && !isMobileEnv ? `<div class="pmh-form-group"><label class="pmh-form-label"><i class="fas fa-server"></i> 대상 서버</label><select id="pmh_srv_select" class="pmh-input-select" style="font-weight:bold; color:#e5a00d;">${srvOptionsHtml}</select></div>` : ''}
+                    ${config.servers.length > 1 && !isMobileEnv ? `<div class="pmh-form-group"><label class="pmh-form-label"><i class="fas fa-server"></i> 대상 서버</label><select id="pmh_srv_select" class="pmh-input-select">${srvOptionsHtml}</select></div>` : ''}
                     
                     <div style="border-bottom:1px solid #333; padding-bottom:25px; margin-bottom:25px; position:relative;">
                         <div id="pmh_form_body" style="display:${formDisplay};">
@@ -364,13 +364,13 @@ window.PmhUICore = {
                     
                     if (chkCnt === 0) {
                         btnTextSpan.innerText = "선택 안 됨";
-                        btnTextSpan.style.color = "#777"; btnTextSpan.style.fontWeight = "normal";
+                        btnTextSpan.style.color = "#777";
                     } else if (chkCnt === checkboxes.length) {
                         btnTextSpan.innerText = "전체 선택됨";
-                        btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
+                        btnTextSpan.style.color = "#fff";
                     } else {
                         btnTextSpan.innerText = `${chkCnt}개 선택됨`;
-                        btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
+                        btnTextSpan.style.color = "#fff";
                     }
                 }
             }
