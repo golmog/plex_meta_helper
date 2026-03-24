@@ -5,8 +5,8 @@
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
-// @updateURL    https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js
-// @downloadURL  https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js
+// @updateURL    https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/plex_meta_helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/plex_meta_helper.user.js
 // @match        https://app.plex.tv/*
 // @match        https://*.plex.tv/web/index.html*
 // @match        https://*.plex.direct/*
@@ -335,11 +335,16 @@ GM_addStyle(`
 
     function fetchLatestVersion(force = false) {
         return new Promise(async (resolve) => {
+            if (!force && ServerConfig.AUTO_UPDATE_CHECK === false) {
+                log("[Update] Auto-update check is disabled by server config.");
+                resolve({ skipped: true, uiNeedsUpdate: false });
+                return;
+            }
+
             if (!force) {
                 const lastCheck = GM_getValue('pmh_last_update_check', 0);
                 if (Date.now() - lastCheck < 24 * 60 * 60 * 1000) {
                     log("[Update] Background update check skipped (checked recently).");
-                    
                     const localPyVers = await pingLocalServer();
                     let hasServerError = false;
                     if (ServerConfig.SERVERS) {
@@ -358,50 +363,46 @@ GM_addStyle(`
                 }
             }
 
-            log("[Update] Fetching latest unified version from info.yaml...");
-            const noCacheUrl = `${INFO_YAML_URL}?t=${Date.now()}`;
+            log(`[Update] Requesting full update info from Master Server... (force: ${force})`);
             const localServerVersions = await pingLocalServer();
 
             GM_xmlhttpRequest({
-                method: "GET", url: noCacheUrl,
-                timeout: 5000,
+                method: "GET", 
+                url: `${ClientSettings.masterUrl}/api/master/check_update?force=${force}`,
+                headers: { "X-API-Key": ClientSettings.masterApiKey },
+                timeout: 10000,
                 onload: (res) => {
                     if (res.status === 200) {
-                        const match = res.responseText.match(/version:\s*"([^"]+)"/);
-                        let latestVer = match ? match[1] : null;
-                        let reqRestart = false;
+                        try {
+                            const data = JSON.parse(res.responseText);
+                            let latestVer = data.latest_version;
+                            let reqRestart = false;
 
-                        if (latestVer) {
-                            if (latestVer.includes('-server')) {
-                                reqRestart = true;
-                                latestVer = latestVer.replace('-server', '');
-                            }
-                            
-                            GM_setValue('pmh_latest_version', latestVer);
-                            GM_setValue('pmh_server_restart_required', reqRestart);
-                            GM_setValue('pmh_last_update_check', Date.now());
-
-                            let bundledTools = [];
-                            const bundleMatch = res.responseText.match(/bundled_tools:([\s\S]*?)(?=\n[a-zA-Z0-9_]+:|$)/);
-                            if (bundleMatch) {
-                                const regex = /-\s*id:\s*['"]?([^'"\r\n]+)['"]?[\s\S]*?url:\s*['"]?([^'"\r\n]+)['"]?/g;
-                                let m;
-                                while ((m = regex.exec(bundleMatch[1])) !== null) {
-                                    bundledTools.push({ id: m[1].trim(), url: m[2].trim() });
+                            if (latestVer) {
+                                if (latestVer.includes('-server')) {
+                                    reqRestart = true;
+                                    latestVer = latestVer.replace('-server', '');
                                 }
-                            }
-                            GM_setValue('pmh_bundled_tools', JSON.stringify(bundledTools));
+                                
+                                GM_setValue('pmh_latest_version', latestVer);
+                                GM_setValue('pmh_server_restart_required', reqRestart);
+                                GM_setValue('pmh_last_update_check', Date.now());
+                                
+                                GM_setValue('pmh_bundled_tools', JSON.stringify(data.bundled_tools || []));
 
-                            resolve({ skipped: false, targetVer: latestVer, localPyVers: localServerVersions, msg: "성공", error: false, reqRestart });
-                        } else {
-                            resolve({ skipped: false, targetVer: null, msg: "버전 정보 형식 오류", error: true });
+                                resolve({ skipped: false, targetVer: latestVer, localPyVers: localServerVersions, msg: "성공", error: false, reqRestart });
+                            } else {
+                                resolve({ skipped: false, targetVer: null, msg: "버전 정보 형식 오류", error: true });
+                            }
+                        } catch (e) {
+                            resolve({ skipped: false, targetVer: null, msg: "JSON 파싱 실패", error: true });
                         }
                     } else {
                         resolve({ skipped: false, targetVer: null, msg: `서버 응답 오류 (${res.status})`, error: true });
                     }
                 },
-                onerror: () => resolve({ skipped: false, targetVer: null, msg: "네트워크 연결 실패", error: true }),
-                ontimeout: () => resolve({ skipped: false, targetVer: null, msg: "응답 지연", error: true })
+                onerror: () => resolve({ skipped: false, targetVer: null, msg: "마스터 서버 연결 실패", error: true }),
+                ontimeout: () => resolve({ skipped: false, targetVer: null, msg: "마스터 서버 응답 지연", error: true })
             });
         });
     }
@@ -1234,11 +1235,9 @@ GM_addStyle(`
         const targetSrv = ServerConfig.SERVERS[srvIdx];
         if (!targetSrv) return toastr.error("서버 설정이 유효하지 않습니다.");
 
-        // PMH 패널 껍데기만 생성
         window.showPmhToolPanel(toolId, "로딩 중...", `<div id="pmh_common_tool_container" style="padding:15px; text-align:center;"><i class="fas fa-spinner fa-spin fa-2x" style="color:#e5a00d;"></i><br><br>UI 스키마 로드 중...</div>`);
 
         try {
-            // 백엔드로부터 UI 스키마(JSON) 획득
             const res = await new Promise((resolve) => {
                 GM_xmlhttpRequest({
                     method: "GET", url: `${targetSrv.relayUrl}/tool/${toolId}/ui?server_id=${targetSrv.machineIdentifier}&_t=${Date.now()}`,
@@ -1250,14 +1249,12 @@ GM_addStyle(`
             const uiSchema = JSON.parse(res.responseText);
             document.getElementById('pmh-panel-title-text').innerText = uiSchema.title || toolId;
 
-            // [핵심] 공용 모듈을 호출하여 PC 플로팅 패널 내부에 완벽한 툴 UI 삽입 및 이벤트 바인딩!
             PmhUICore.createToolInstance({
                 container: document.getElementById('pmh_common_tool_container'),
                 toolId: toolId,
                 uiSchema: uiSchema,
                 servers: ServerConfig.SERVERS,
                 activeServerIdx: srvIdx,
-                // PC 환경(Tampermonkey) 전용 통신 어댑터 주입
                 apiAdapter: {
                     run: (data) => new Promise((resolve, reject) => {
                         GM_xmlhttpRequest({
@@ -1280,7 +1277,6 @@ GM_addStyle(`
                         });
                     })
                 },
-                // PC 환경 전용 토스트 팝업 주입
                 toast: {
                     success: (msg) => toastr.success(msg),
                     error: (msg) => toastr.error(msg),
@@ -1288,7 +1284,6 @@ GM_addStyle(`
                 }
             });
 
-            // 서버 드롭다운 변경 감지 시 현재 툴 패널 닫고 새 서버로 다시 엶 (PC 전용 로직)
             setTimeout(() => {
                 const srvSelectEl = document.getElementById('pmh_srv_select');
                 if (srvSelectEl) {
@@ -1444,7 +1439,6 @@ GM_addStyle(`
 
         settingsWrapper.appendChild(lenInp); settingsWrapper.appendChild(lenBtn); settingsWrapper.appendChild(clearCacheBtn);
 
-        // [NEW] 설정창 진입 톱니바퀴 버튼을 접히는 영역(settingsWrapper) 안쪽 가장 우측에 배치
         const clientSettingsBtn = document.createElement('a');
         clientSettingsBtn.href = '#'; clientSettingsBtn.id = 'pmh-client-settings-btn';
         clientSettingsBtn.style.cssText = "color:#adb5bd; font-size:15px; margin-left:12px; transition:0.2s; display:flex; align-items:center; justify-content:center; text-decoration:none;";
@@ -1811,16 +1805,41 @@ GM_addStyle(`
                 });
             }
 
-            const uninstalledBundles = processedBundles.filter(b => !installedTools.some(t => t.id === b.expectedId));
+            const uninstalledBundles = processedBundles.filter(bundle => {
+                return !installedTools.some(t => {
+                    if (t.update_url && bundle.url && t.update_url.split('?')[0].toLowerCase() === bundle.url.split('?')[0].toLowerCase()) {
+                        return true;
+                    }
+                    if (t.id === bundle.id || t.id === bundle.expectedId) {
+                        return true;
+                    }
+                    if (t.id.endsWith(`_${bundle.id}`)) {
+                        return true;
+                    }
+                    return false;
+                });
+            });
+
             if (uninstalledBundles.length > 0) {
                 if (installedTools.length > 0) html += `<div style="padding: 4px 15px; background: rgba(0,0,0,0.3); font-size: 10px; color: #555; text-align: center; border-bottom: 1px solid #333;">미설치 번들 툴</div>`;
+                
                 uninstalledBundles.forEach(bundle => {
+                    const meta = bundle.meta || {};
+                    const dName = meta.name || bundle.id;
+                    const dVer = meta.version ? `v${meta.version}` : 'v1.0';
+                    
                     html += `
                         <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333; opacity: 0.6;">
-                            <div style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:not-allowed;">
-                                <i class="fas fa-box-open"></i><span>${bundle.id} <span style="color:#555; font-size:10px;">설치 필요</span></span>
+                            <div style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:not-allowed; min-width:0;">
+                                <i class="fas fa-box-open" style="color:#777; margin-top:2px;"></i>
+                                <div style="display:flex; flex-direction:column; min-width:0; width:100%;">
+                                    <span style="color:#ccc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
+                                        ${dName} <span style="color:#777; font-size:10px; font-weight:normal;">${dVer}</span>
+                                        <span style="color:#51a351; border:1px solid #51a351; padding:1px 4px; border-radius:3px; font-size:9px; margin-left:6px; vertical-align:middle;">설치 가능</span>
+                                    </span>
+                                </div>
                             </div>
-                            <span class="pmh-tool-install-bundle-btn" data-id="${bundle.expectedId}" data-url="${bundle.url}" style="cursor:pointer; font-size:13px;" title="이 툴 설치하기"><i class="fas fa-download"></i></span>
+                            <span class="pmh-tool-install-bundle-btn" data-id="${bundle.expectedId}" data-url="${bundle.url}" style="cursor:pointer; font-size:13px; padding-left:10px;" title="이 툴 설치하기"><i class="fas fa-download"></i></span>
                         </div>`;
                 });
             }
@@ -2223,7 +2242,12 @@ GM_addStyle(`
                     if (needsJsUpdate) {
                         showStatusMsg(`서버 완료! 스크립트를 업데이트합니다...`, '#51a351', 3000);
                         setTimeout(() => { 
-                            window.open(`https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js?t=${Date.now()}`, "_blank"); 
+                            let scriptUrl = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js";
+                            if (typeof GM_info !== 'undefined' && GM_info.script) {
+                                scriptUrl = GM_info.script.downloadURL || GM_info.script.updateURL || scriptUrl;
+                            }
+                            
+                            window.open(`${scriptUrl}?t=${Date.now()}`, "_blank"); 
                         }, 1500);
                     }
                     defaultMsg = ''; defaultColor = '#aaa';
@@ -3726,7 +3750,7 @@ GM_addStyle(`
             }).join('');
         }
 
-        const mateBtnHtml = (srvConfig && srvConfig.plexMateUrl && srvConfig.plexMateApiKey) ?
+        const mateBtnHtml = srvConfig ?
             `<div style="margin-bottom: 4px; display:flex; align-items:center;">
                 <div style="width: 95px; flex-shrink: 0; color: #bababa; font-size:13px; font-weight:500;">PLEX MATE</div>
                 <a href="#" id="plex-mate-refresh-button" data-itemid="${data.itemId}"><i class="fas fa-bolt"></i> YAML/TMDB 반영</a>
@@ -4023,7 +4047,7 @@ GM_addStyle(`
                         if (!unmatchSuccess) throw new Error("언매치 API 호출에 실패했습니다.");
 
                         let unmatchVerified = false;
-                        for (let i = 0; i < 20; i++) { // 최대 50초 대기
+                        for (let i = 0; i < 20; i++) {
                             if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
                             await new Promise(r => setTimeout(r, 2500));
                             if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
@@ -4239,18 +4263,15 @@ GM_addStyle(`
 
         if (!srvConfig) return;
 
-        // [V2] 백엔드 이관된 Plex Mate API 중계 호출 헬퍼
         const callPlexMateViaRelay = (endpoint, paramsObj) => {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: 'POST',
-                    // 마스터의 Relay 라우터를 통해 백엔드의 mate/ 엔드포인트로 전송
                     url: `${srvConfig.relayUrl}/mate${endpoint}`,
                     headers: { 
                         'Content-Type': 'application/json',
                         'X-API-Key': ClientSettings.masterApiKey 
                     },
-                    // 프론트엔드는 API Key를 모름. 데이터만 JSON으로 쏘면 백엔드가 알아서 변환 및 Key 주입
                     data: JSON.stringify(paramsObj),
                     timeout: 60000,
                     onload: r => { 
@@ -4263,7 +4284,6 @@ GM_addStyle(`
             });
         };
 
-        // 1. 폴더 스캔 (VFS Refresh -> Library Scan)
         document.querySelectorAll('#plex-guid-box .plex-path-scan-link').forEach(el => {
             el.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
@@ -4284,7 +4304,6 @@ GM_addStyle(`
                 try {
                     toastr.info(`[1/2] VFS/Refresh 요청 중...<br>${scanPath}`, "Web 스캔 시작", {timeOut: 3000});
                     
-                    // 백엔드로 전송 (apikey 파라미터는 백엔드가 알아서 채움)
                     const vfsRes = await callPlexMateViaRelay('/scan/vfs_refresh', { target: scanPath, recursive: 'true', async: 'false' });
                     if (vfsRes.ret !== 'success') throw new Error(vfsRes.msg || "VFS 갱신 실패");
 
@@ -4307,7 +4326,6 @@ GM_addStyle(`
             });
         });
 
-        // 2. YAML/TMDB 매뉴얼 리프레시
         const mateBtn = document.getElementById('plex-mate-refresh-button');
         if (mateBtn) {
             mateBtn.addEventListener('click', async (e) => {
@@ -4326,7 +4344,6 @@ GM_addStyle(`
                         toastr.success('YAML/TMDB 반영 완료!<br>(제목/포스터는 화면 이동시 갱신됨)', '성공', {timeOut: 5000});
                         infoLog(`[PlexMate] Manual Refresh successful for Item: ${data.itemId}`);
 
-                        // 캐시 지우고 디테일 다시 렌더링
                         deleteMemoryCache(`D_${serverId}_${data.itemId}`);
                         deleteMemoryCache(`L_${serverId}_${data.itemId}`);
                         if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
@@ -4731,6 +4748,7 @@ GM_addStyle(`
                 });
             });
 
+            ServerConfig.AUTO_UPDATE_CHECK = res.AUTO_UPDATE_CHECK !== false;
             ServerConfig.USER_TAGS = res.USER_TAGS || {};
             ServerConfig.DISPLAY_PATH_PREFIXES_TO_REMOVE = res.DISPLAY_PATH_PREFIXES_TO_REMOVE || [];
             ServerConfig.SERVERS = (res.SERVERS || []).map(srv => {
@@ -4740,7 +4758,6 @@ GM_addStyle(`
                 };
             });
 
-            // [수정] 비동기 CSS/JS 로딩 대기 로직 추가 (Race Condition 해결)
             if(!document.getElementById('pmh-shared-css')) {
                 const link = document.createElement('link');
                 link.id = 'pmh-shared-css';
@@ -4765,7 +4782,6 @@ GM_addStyle(`
             observer.observe(document.body, { childList: true, subtree: true });
             checkUrlChange(true);
 
-            // [추가] 패널 닫기 시 UI Core 파괴 이벤트 바인딩
             const closeBtn = document.getElementById('pmh-panel-close');
             if(closeBtn) {
                 closeBtn.addEventListener('click', () => {

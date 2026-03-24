@@ -5,14 +5,14 @@ BASE:
   PORT: 8899
   APIKEY: "WORKER_SECRET_KEY"  # 마스터 서버가 이 노드로 명령을 보낼 때 사용할 암호
 
-  PLEX_URL: "http://192.168.1.100:32400"
+  PLEX_URL: "http://plex:32400"
   PLEX_TOKEN: "WORKER_PLEX_TOKEN"
   PLEX_MACHINE_IDENTIFIER: "YOUR_PLEX_MACHINE_ID_HERE"
 
   PLEX_DB_PATH: "/volume1/Plex/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
   PLEX_SQLITE_BIN: "/usr/lib/plexmediaserver/Plex SQLite"
 
-  FF_URL: "http://192.168.1.100:9999"
+  FF_URL: "http://localhost:9999"
   FF_APIKEY: "WORKER_FF_API_KEY_HERE"
 
   DISCORD_WEBHOOK: ""

@@ -30,7 +30,7 @@ BASE:
   APIKEY: "YOUR_SECRET_KEY"
 
   # Plex 서버 설정 (Plex API 통신용)
-  PLEX_URL: "http://127.0.0.1:32400"
+  PLEX_URL: "http://plex:32400"
   PLEX_TOKEN: "YOUR_PLEX_TOKEN"
   PLEX_MACHINE_IDENTIFIER: "YOUR_PLEX_MACHINE_ID_HERE"
   
@@ -39,7 +39,7 @@ BASE:
   PLEX_SQLITE_BIN: "/usr/lib/plexmediaserver/Plex SQLite"
 
   # FF(Plex Mate) 연결 정보
-  FF_URL: "http://127.0.0.1:9999"
+  FF_URL: "http://localhost:9999"
   FF_APIKEY: "YOUR_FF_API_KEY_HERE"
   
   # (선택) 노드 전역 디스코드 알림 웹훅 URL
@@ -54,6 +54,7 @@ BASE:
 # MASTER 설정이 활성화되어 있으면 이 서버는 마스터(Gateway) 역할을 수행합니다.
 # 워커 노드로만 사용할 경우 아래 MASTER 블록 전체를 삭제하거나 주석 처리하세요.
 # MASTER:
+#   AUTO_UPDATE_CHECK: true
 #   DISPLAY_PATH_PREFIXES_TO_REMOVE:
 #     - "/mnt"
 
@@ -72,7 +73,7 @@ BASE:
 #   NODES:
     # 첫 번째 노드(마스터 자신)는 설정하지 않아도 프론트엔드에 자동 포함됩니다.
     # 추가 워커 노드가 있다면 아래에 등록합니다.
-    # - id: "worker_node_1"
+    # - id: "worker_node_2"
     #   name: "2.MUSIC"
     #   url: "http://192.168.1.100:8899"
     #   apikey: "WORKER_SECRET_KEY"
@@ -120,10 +121,6 @@ global_conf = {
 def download_file_if_missing(url, filename):
     file_path = os.path.join(BASE_DIR, filename)
     if not os.path.exists(file_path):
-        if DEV_MODE:
-            print(f"[PMH DEV] DEV_MODE 활성화됨. 누락된 파일({filename})의 다운로드를 건너뜁니다.")
-            return
-            
         print(f"[PMH BOOTSTRAP] {filename} 파일이 존재하지 않아 다운로드합니다...")
         try:
             urllib.request.urlretrieve(url, file_path)
@@ -131,12 +128,24 @@ def download_file_if_missing(url, filename):
         except Exception as e:
             print(f"[PMH BOOTSTRAP WARNING] {filename} 다운로드 실패: {e}")
 
+def get_static_assets_from_github():
+    try:
+        ts = int(time.time())
+        req = urllib.request.Request(f"{INFO_YAML_URL}?t={ts}", headers={'Cache-Control': 'no-cache'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            info_data = yaml.safe_load(response.read().decode('utf-8'))
+            return info_data.get('static_assets', [])
+    except Exception as e:
+        print(f"[PMH ERROR] info.yaml에서 에셋 목록을 가져오지 못했습니다: {e}")
+        return []
+
+print("[PMH BOOTSTRAP] 필수 정적 에셋 무결성을 검사합니다...")
+assets = get_static_assets_from_github()
+for asset in assets:
+    download_file_if_missing(asset['url'], asset['name'])
+
 CORE_FILE_PATH = os.path.join(BASE_DIR, "pmh_core.py")
 if not os.path.exists(CORE_FILE_PATH):
-    if DEV_MODE:
-        print("[PMH DEV ERROR] DEV_MODE가 활성화되어 있으나 로컬에 pmh_core.py가 없습니다. 서버를 종료합니다.")
-        sys.exit(1)
-        
     print("[PMH BOOTSTRAP] pmh_core.py 가 존재하지 않아 GitHub에서 다운로드합니다...")
     try:
         urllib.request.urlretrieve(CORE_URL, CORE_FILE_PATH)
@@ -309,10 +318,67 @@ def get_client_config():
 
     return jsonify({
         "status": "success",
+        "AUTO_UPDATE_CHECK": MASTER_CFG.get("AUTO_UPDATE_CHECK", True),
         "DISPLAY_PATH_PREFIXES_TO_REMOVE": MASTER_CFG.get("DISPLAY_PATH_PREFIXES_TO_REMOVE", []),
         "USER_TAGS": MASTER_CFG.get("USER_TAGS", {}),
         "SERVERS": servers
     }), 200
+
+UPDATE_INFO_CACHE = {"data": None, "timestamp": 0}
+
+@app.route('/api/master/check_update', methods=['GET'])
+def check_update_from_github():
+    if not IS_MASTER:
+        return jsonify({"error": "이 서버는 Master 노드가 아닙니다."}), 400
+
+    force = request.args.get('force', 'false').lower() == 'true'
+    now = time.time()
+
+    if not force and UPDATE_INFO_CACHE["data"] and (now - UPDATE_INFO_CACHE["timestamp"] < 3600):
+        return jsonify(UPDATE_INFO_CACHE["data"]), 200
+
+    try:
+        req = urllib.request.Request(f"{INFO_YAML_URL}?t={int(now)}", headers={'Cache-Control': 'no-cache'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            main_info = yaml.safe_load(response.read().decode('utf-8'))
+
+        latest_version = main_info.get('version', '0.0.0')
+        bundled_tools_raw = main_info.get('bundled_tools', [])
+        
+        parsed_bundles = []
+        for bundle in bundled_tools_raw:
+            bundle_url = bundle.get('url', '')
+            bundle_id = bundle.get('id', '')
+            if not bundle_url: continue
+            
+            bundle_meta = {}
+            try:
+                b_req = urllib.request.Request(f"{bundle_url}?t={int(now)}", headers={'Cache-Control': 'no-cache'})
+                with urllib.request.urlopen(b_req, timeout=5) as b_resp:
+                    bundle_meta = yaml.safe_load(b_resp.read().decode('utf-8'))
+            except Exception as e:
+                print(f"[PMH UPDATE] 번들 툴({bundle_id}) 메타 파싱 실패 (무시됨): {e}")
+
+            parsed_bundles.append({
+                "id": bundle_id,
+                "url": bundle_url,
+                "meta": bundle_meta
+            })
+
+        result_data = {
+            "status": "success",
+            "latest_version": latest_version,
+            "bundled_tools": parsed_bundles
+        }
+
+        UPDATE_INFO_CACHE["data"] = result_data
+        UPDATE_INFO_CACHE["timestamp"] = now
+
+        return jsonify(result_data), 200
+
+    except Exception as e:
+        print(f"[PMH UPDATE ERROR] 업데이트 정보 파싱 실패: {e}")
+        return jsonify({"error": "GitHub 파싱 실패", "message": str(e)}), 500
 
 # ==============================================================================
 # 동적 라우팅 게이트웨이 & 릴레이(Proxy)
@@ -337,14 +403,12 @@ def relay_to_node(node_id, subpath):
     content_type = request.headers.get("Content-Type")
     if content_type: headers["Content-Type"] = content_type
 
-    # [수정] GET 방식 등에서 불필요한 payload 방지 및 Method 명시적 보장
     req_data = request.get_data() if request.method in ['POST', 'PUT', 'PATCH', 'DELETE'] else None
 
     if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/run')):
         print(f"[PMH RELAY] 🚀 {request.method} -> {node_info['name']} ({target_url})")
 
     try:
-        # [수정] urllib에서 data가 있으면 자동으로 POST로 인식하는 것을 방지하기 위해 method 파라미터 강제
         req = urllib.request.Request(target_url, data=req_data, headers=headers, method=request.method)
         with urllib.request.urlopen(req, timeout=45) as response:
             resp_data = response.read()
@@ -368,19 +432,6 @@ def serve_index():
     if os.path.exists(path): return send_file(path, mimetype='text/html')
     return "Not Found", 404
 
-def get_static_assets_from_github():
-    """info.yaml에서 동적 자산(Static Assets) 목록을 긁어옵니다."""
-    try:
-        ts = int(time.time())
-        req = urllib.request.Request(f"{INFO_YAML_URL}?t={ts}", headers={'Cache-Control': 'no-cache'})
-        with urllib.request.urlopen(req, timeout=5) as response:
-            info_data = yaml.safe_load(response.read().decode('utf-8'))
-            return info_data.get('static_assets', [])
-    except Exception as e:
-        print(f"[PMH ERROR] info.yaml에서 에셋 목록을 가져오지 못했습니다: {e}")
-        return []
-
-# 부트스트랩 시 동적 자원 다운로드
 assets = get_static_assets_from_github()
 for asset in assets:
     file_path = os.path.join(BASE_DIR, asset['name'])
@@ -391,10 +442,8 @@ for asset in assets:
         except Exception as e:
             print(f" -> 실패: {e}")
 
-# 정적 파일 서빙 라우트도 동적으로 허용
 @app.route('/api/client/<filename>')
 def serve_static_client(filename):
-    # 보안: 상위 폴더 접근(..) 차단, 허용된 확장자만
     if ".." in filename or not (filename.endswith('.js') or filename.endswith('.css')):
         return "Unauthorized Request", 403
     

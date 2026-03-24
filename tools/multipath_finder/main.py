@@ -185,7 +185,7 @@ def worker(task_data, core_api, start_index):
                 paths_map[rk].add(get_unique_root_path(unicodedata.normalize('NFC', row['file'])))
 
         # -----------------------------------------------------------------
-        # STEP 3: 가벼운 쿼리로 TV 쇼 라이브러리 일괄 조회 (최적화 됨)
+        # STEP 3: 가벼운 쿼리로 TV 쇼 라이브러리 일괄 조회
         # -----------------------------------------------------------------
         if show_lib_ids:
             task.log("📺 TV 쇼 라이브러리 파일 경로를 분석 중입니다...")

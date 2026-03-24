@@ -178,35 +178,44 @@ def get_target_issues(req_data, core_api, task=None):
 
     total_scanned = 0
     try:
-        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4, 10)"
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 2, 9)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception: pass
 
+    # [최적화] 병합 로직: 리매치나 리프레시일 경우 부모(Show/Album)를 대상으로 묶습니다.
     def add_target(rk, m_type, title, sec_name, fix_type, file_path=None, parent_rk=None):
-        if rk not in targets:
-            targets[rk] = {"title": title, "section": sec_name, "type": m_type, "fix": fix_type, "files": set()}
-        if file_path: targets[rk]["files"].add(file_path)
+        target_rk = parent_rk if parent_rk and fix_type in ['match', 'refresh'] else rk
+        
+        if target_rk not in targets:
+            targets[target_rk] = {"title": title, "section": sec_name, "type": m_type, "fix": fix_type, "files": set()}
+            
+        if file_path: targets[target_rk]["files"].add(file_path)
         if parent_rk: assigned_grandparents.add(parent_rk)
 
+    # [최적화] 무거운 JOIN 대신 스칼라 서브쿼리 사용
     base_from = f"""
         SELECT 
-            mi.id, mi.metadata_type, mi.title, mp.file, mi.year, mi.parent_id, mi.guid, mi.library_section_id,
+            mi.id, mi.metadata_type, mi.title, 
+            (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) as file,
+            mi.year, mi.parent_id, mi.guid, mi.library_section_id,
             (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
             (SELECT title FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
             (SELECT year FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
             (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
             mi."index" as e_idx
         FROM metadata_items mi
-        LEFT JOIN media_items m ON m.metadata_item_id = mi.id
-        LEFT JOIN media_parts mp ON mp.media_item_id = m.id
         WHERE mi.library_section_id IN ({lib_ids_str}) AND 
     """
 
-    def format_title(r, is_episode=False):
-        if is_episode:
-            s_title = r[9] or "Unknown" # show_title (index 9)
-            if r[1] == 10: # 음악 트랙
+    def format_title(r, is_episode=False, is_parent=False):
+        if is_parent:
+            base_title = r[9] if r[1] in (3, 4, 10) else r[2]
+            year = r[10] if r[1] in (3, 4, 10) else r[4]
+            return f"{base_title} ({year})" if year else base_title
+        elif is_episode:
+            s_title = r[9] or "Unknown"
+            if r[1] == 10:
                 s_num = f"Disc {int(r[11]):02d}" if r[11] is not None else "Disc 01"
                 e_num = f"Track {int(r[12]):02d}" if r[12] is not None else "Track 01"
             else:
@@ -214,16 +223,16 @@ def get_target_issues(req_data, core_api, task=None):
                 e_num = f"E{int(r[12]):02d}" if r[12] is not None else "E01"
             return f"{s_title} / {s_num} / {e_num} - {r[2]}"
         else:
-            base_title = r[9] if r[1] in (3, 4, 10) else r[2]
-            year = r[10] if r[1] in (3, 4, 10) else r[4]
+            base_title = r[2]
+            year = r[4]
             return f"{base_title} ({year})" if year else base_title
 
     tasks_to_run = []
-    if opts['analyze']: tasks_to_run.append(('analyze', '미분석 파일(해상도/코덱 정보 누락) 감지 중...'))
-    if opts['match']: tasks_to_run.append(('match', '미매칭 항목(GUID 없음) 감지 중...'))
-    if opts['refresh']: tasks_to_run.append(('refresh', '메타데이터 유실(포스터 등 누락) 감지 중...'))
+    if opts['analyze']: tasks_to_run.append(('analyze', '미분석 파일 감지 중...'))
+    if opts['match']: tasks_to_run.append(('match', '미매칭 항목 감지 중...'))
+    if opts['refresh']: tasks_to_run.append(('refresh', '메타데이터 유실 감지 중...'))
     if opts['yaml_season']: tasks_to_run.append(('yaml_season', '시즌 번호 3자리 이상 YAML 미적용 감지 중...'))
-    if opts['yaml_marker']: tasks_to_run.append(('yaml_marker', '인트로/크레딧 마커 누락 항목 감지 중...'))
+    if opts['yaml_marker']: tasks_to_run.append(('yaml_marker', '마커 누락 항목 감지 중...'))
 
     total_steps = len(tasks_to_run)
     if total_steps == 0:
@@ -248,19 +257,19 @@ def get_target_issues(req_data, core_api, task=None):
             query = ""
             if fix_type == 'analyze':
                 query = base_from + """
-                    mp.file IS NOT NULL AND (
-                        (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0)) OR
-                        (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
-                    )
+                    mi.metadata_type IN (1, 4, 10) AND mi.id IN (
+                        SELECT m.metadata_item_id FROM media_items m 
+                        WHERE (m.width IS NULL OR m.width = 0 OR m.audio_codec IS NULL OR m.audio_codec = '')
+                    ) AND (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) IS NOT NULL
                 """
             elif fix_type == 'match':
-                query = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2)"
+                query = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2, 9)"
             elif fix_type == 'refresh':
                 query = base_from + """
                     (
-                        (mi.metadata_type IN (1, 2) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                        (mi.metadata_type IN (1, 2, 9) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                         OR
-                        (mi.metadata_type = 4 AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                        (mi.metadata_type IN (4, 8) AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                     )
                 """
             elif fix_type == 'yaml_season':
@@ -284,10 +293,16 @@ def get_target_issues(req_data, core_api, task=None):
                     rk, m_type, title, f_path, parent_id, grandparent_id = r[0], r[1], r[2], r[3], r[5], r[8]
                     sec_name = lib_map.get(str(r[7]), 'Unknown')
                     
+                    # 1:영화, 2:쇼, 3:시즌, 4:에피소드, 8:앨범, 9:아티스트, 10:음악트랙
                     if m_type == 1: 
                         add_target(rk, 1, format_title(r), sec_name, fix_type, f_path, parent_rk=rk)
+                    elif m_type in (2, 3, 8, 9):
+                        add_target(rk, m_type, format_title(r, is_parent=True), sec_name, fix_type, f_path, parent_rk=rk)
                     elif m_type in (4, 10): 
-                        add_target(rk, m_type, format_title(r, is_episode=True), sec_name, fix_type, f_path, parent_rk=grandparent_id or parent_id)
+                        # 에피소드(4)의 부모는 쇼(grandparent), 트랙(10)의 부모는 앨범(parent) -> 아티스트(grandparent)
+                        actual_parent = grandparent_id or parent_id
+                        display_title = format_title(r, is_parent=True) if fix_type in ['match', 'refresh'] else format_title(r, is_episode=True)
+                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
                         
             if task: task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
 
@@ -298,10 +313,17 @@ def get_target_issues(req_data, core_api, task=None):
             try: plex_conn.close()
             except: pass
 
-    for rk in targets: targets[rk]['files'] = list(targets[rk]['files'])
+    # [수정] 파일 목록을 단순 알파벳 정렬이 아닌 PMH 코어 엔진의 자연 정렬(Natural Sort) 적용
+    for rk in targets: 
+        raw_files = list(targets[rk]['files'])
+        # 코어 엔진은 dict의 리스트만 받으므로 래핑 후 정렬
+        tmp_wrapped = [{"path": f} for f in raw_files]
+        sorted_wrapped = core_api['sort'](tmp_wrapped, [{"key": "path", "dir": "asc"}])
+        targets[rk]['files'] = [item["path"] for item in sorted_wrapped]
     
     if task: 
-        task.log(f"✅ DB 쿼리 수집 완료. (총 {len(targets):,}개 병합됨)")
+        # 로그 간소화 완료
+        task.log(f"✅ DB 쿼리 수집 완료.")
         task.update_state('running', progress=90, total=100)
         
     return targets, total_scanned
@@ -509,19 +531,34 @@ def worker(task_data, core_api, start_index):
             def load_all_items(start_idx):
                 cache_db_path = core_api['cache'].db_file
                 results = []
+                
+                # [최적화] 배치 스캐너와 동일하게 pmh_id 인덱스 기반으로 정렬하여 DB 로드 속도를 극대화합니다.
                 with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
                     c.execute("SELECT * FROM data ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
                     for r in c.fetchall():
                         row_dict = dict(r)
-                        row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
+                        
+                        # [호환성 처리] DB에 'rating_key' 또는 'id' 형태로 들어있는 키 값을 통일
+                        row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id', '')))
                         row_dict['rating_key'] = row_dict['id']
+                        
+                        # 파일 경로는 JSON 배열 문자열 형태로 저장되어 있으므로 파싱 (스마트 스캐너 전용)
                         if isinstance(row_dict.get('files'), str):
                             try: row_dict['files'] = json.loads(row_dict['files'])
                             except: row_dict['files'] = []
+                        elif not row_dict.get('files'):
+                            row_dict['files'] = []
+                            
+                        # m_type, fix_type 등 스마트 스캐너 전용 키 무결성 보장
+                        row_dict['m_type'] = int(row_dict.get('m_type', 1))
+                        row_dict['fix_type'] = row_dict.get('fix_type', 'analyze')
+                        
                         results.append(row_dict)
                 return results
+            
+            # 여기서 최적화된 함수 호출
             items = load_all_items(start_index)
         else:
             items = task_data.get('target_items', [])

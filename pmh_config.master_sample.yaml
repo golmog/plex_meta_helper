@@ -21,7 +21,7 @@ BASE:
   PLEX_SQLITE_BIN: "/usr/lib/plexmediaserver/Plex SQLite"
 
   # FF 연결 정보
-  FF_URL: "http://127.0.0.1:9999"
+  FF_URL: "http://localhost:9999"
   FF_APIKEY: "YOUR_FF_API_KEY_HERE"
 
   # (선택) 노드 전역 디스코드 알림 웹훅 URL
@@ -36,6 +36,8 @@ BASE:
 # MASTER 설정이 활성화되어 있으면 이 서버는 마스터(Gateway) 역할을 수행합니다.
 # 워커 노드로만 사용할 경우 아래 MASTER 블록 전체를 삭제하거나 주석 처리하세요.
 MASTER:
+  # 자동 업데이트 체크(24h)를 활성화합니다.
+  AUTO_UPDATE_CHECK: true
   # Plex 상세 페이지에 파일 경로 표시 시, 지저분한 앞부분 경로를 숨김 처리할 접두어 목록
   DISPLAY_PATH_PREFIXES_TO_REMOVE:
     - "/mnt"

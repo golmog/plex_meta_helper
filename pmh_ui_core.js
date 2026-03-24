@@ -158,7 +158,7 @@ window.PmhUICore = {
 
         let srvOptionsHtml = config.servers.map((s, i) => `<option value="${i}" ${i === config.activeServerIdx ? 'selected' : ''}>${s.name}</option>`).join('');
         const formDisplay = ctx.opts._form_collapsed ? 'none' : 'block';
-        const collapseIcon = ctx.opts._form_collapsed ? 'fa-chevron-down' : 'fa-chevron-up';
+        const collapsedClass = ctx.opts._form_collapsed ? 'collapsed' : '';
 
         let html = `
             <div style="display:flex; flex-direction:column; height:100%; width:100%; text-align:left;">
@@ -186,7 +186,7 @@ window.PmhUICore = {
                             </div>
                         </div>
                         <div class="pmh-toggle-container">
-                            <i class="fas ${collapseIcon} pmh-toggle-btn" id="pmh_btn_toggle_form"></i>
+                            <i class="fas fa-chevron-up pmh-toggle-btn ${collapsedClass}" id="pmh_btn_toggle_form"></i>
                         </div>
                     </div>
                     
@@ -218,142 +218,12 @@ window.PmhUICore = {
                 </div>
             </div>
         `;
+
         ctx.c.innerHTML = html;
 
-        // 1. 폼 토글 버튼 직접 바인딩
-        const toggleBtn = ctx.c.querySelector('#pmh_btn_toggle_form');
-        if (toggleBtn) {
-            toggleBtn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const body = ctx.c.querySelector('#pmh_form_body');
-                if (body) {
-                    const isHidden = body.style.display === 'none';
-                    body.style.display = isHidden ? 'block' : 'none';
-                    toggleBtn.className = `fas ${isHidden ? 'fa-chevron-up' : 'fa-chevron-down'} pmh-toggle-btn`;
-                    ctx.opts._form_collapsed = !isHidden;
-                }
-            };
-        }
-
-        // 2. 멀티 셀렉트 메인 버튼
-        ctx.c.querySelectorAll('.pmh-multi-main-btn').forEach(btn => {
-            btn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const drop = ctx.c.querySelector(`#pmh_mdrop_${btn.dataset.target}`);
-                ctx.c.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => { if(d !== drop) d.classList.remove('open'); });
-                drop.classList.toggle('open');
-            };
-        });
-
-        // 3. 멀티 셀렉트 전체 토글 버튼
-        ctx.c.querySelectorAll('.pmh-multi-toggle-btn').forEach(btn => {
-            btn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const targetId = btn.dataset.target;
-                const checkboxes = ctx.c.querySelectorAll(`input[name="pmh_mchk_${targetId}"]`);
-                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-                checkboxes.forEach(cb => cb.checked = !allChecked);
-                if (checkboxes.length > 0) checkboxes[0].dispatchEvent(new Event('change', { bubbles: true }));
-            };
-        });
-
-        // 4. 멀티 셀렉트 항목 변경 시 텍스트 갱신
-        ctx.c.querySelectorAll('.pmh-multi-chk').forEach(chk => {
-            chk.addEventListener('change', (e) => {
-                const wrap = e.target.closest('.pmh-multi-select-wrap');
-                if (wrap) {
-                    const targetId = wrap.querySelector('.pmh-multi-main-btn').dataset.target;
-                    const btnTextSpan = wrap.querySelector('.pmh-multi-btn-text');
-                    const checkboxes = wrap.querySelectorAll(`input[name="pmh_mchk_${targetId}"]`);
-                    const chkCnt = wrap.querySelectorAll(`input[name="pmh_mchk_${targetId}"]:checked`).length;
-                    
-                    if (chkCnt === 0) {
-                        btnTextSpan.innerText = "선택 안 됨";
-                        btnTextSpan.style.color = "#777"; btnTextSpan.style.fontWeight = "normal";
-                    } else if (chkCnt === checkboxes.length) {
-                        btnTextSpan.innerText = "전체 선택됨";
-                        btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
-                    } else {
-                        btnTextSpan.innerText = `${chkCnt}개 선택됨`;
-                        btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
-                    }
-                }
-                updateShowIf();
-            });
-        });
-
-        // 5. 드롭다운 외부 영역 클릭 시 닫기
-        ctx.c.addEventListener('click', (e) => {
-            if (!e.target.closest('.pmh-multi-select-wrap')) {
-                ctx.c.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => d.classList.remove('open'));
-            }
-        });
-
-        // 6. Textarea 기본값 초기화 버튼
-        ctx.c.querySelectorAll('.pmh-textarea-reset').forEach(btn => {
-            btn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const ta = ctx.c.querySelector('#' + btn.dataset.target);
-                if (ta) ta.value = decodeURIComponent(btn.dataset.val);
-            };
-        });
-
-        // 7. Sub Action 버튼
-        ctx.c.querySelectorAll('.pmh-sub-action-btn').forEach(subBtn => {
-            subBtn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                if (subBtn.disabled) return;
-                
-                const targetId = subBtn.dataset.target;
-                const msgSpan = ctx.c.querySelector(`#pmh_sub_msg_${targetId}`);
-                const hiddenInput = ctx.c.querySelector(`#pmh_inp_${targetId}`);
-                const wrapper = subBtn.closest('.pmh-sub-btn-wrapper');
-                const overlay = wrapper ? wrapper.querySelector('.pmh-sub-overlay') : null;
-
-                subBtn.disabled = true;
-                if (overlay) overlay.style.display = 'flex';
-                if (msgSpan) msgSpan.innerHTML = `<span style="color:#aaa;"><i class="fas fa-circle-notch fa-spin"></i> 요청을 처리하고 있습니다...</span>`;
-
-                const req = getFormData();
-                req.action_type = subBtn.dataset.action;
-
-                config.apiAdapter.run(req).then(res => {
-                    subBtn.disabled = false;
-                    if (overlay) overlay.style.display = 'none';
-                    if (res.status === 'success') {
-                        if (msgSpan) msgSpan.innerHTML = `<span style="color:#51a351; font-weight:bold;"><i class="fas fa-check"></i> ${res.message || '완료되었습니다.'}</span>`;
-                        if (hiddenInput && res.value !== undefined) hiddenInput.value = res.value;
-                    } else {
-                        if (msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> ${res.message || '실패했습니다.'}</span>`;
-                    }
-                }).catch(err => {
-                    subBtn.disabled = false;
-                    if (overlay) overlay.style.display = 'none';
-                    if (msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-wifi"></i> 통신 실패</span>`;
-                });
-            };
-        });
-
-        // 8. Cron 입력 문법 검사
-        ctx.c.querySelectorAll('.pmh-cron-input').forEach(cronInput => {
-            cronInput.addEventListener('input', (e) => {
-                const cronId = e.target.id.replace('pmh_inp_', '');
-                const msgSpan = ctx.c.querySelector(`#pmh_cron_msg_${cronId}`);
-                if (!msgSpan) return;
-
-                const val = e.target.value.trim();
-                if (val === '') {
-                    msgSpan.innerHTML = "비어있습니다."; msgSpan.style.color = "#bd362f";
-                } else if (val.split(/\s+/).length !== 5) {
-                    msgSpan.innerHTML = `현재 ${val.split(/\s+/).length}자리입니다. 띄어쓰기로 구분된 5자리여야 합니다.`; msgSpan.style.color = "#bd362f";
-                } else if (/[^0-9\*\/\-\,\s]/.test(val)) {
-                    msgSpan.innerHTML = "잘못된 문자가 포함됨."; msgSpan.style.color = "#bd362f";
-                } else {
-                    msgSpan.innerHTML = `<i class="fas fa-check-circle"></i> 올바른 포맷입니다.`; msgSpan.style.color = "#51a351";
-                }
-            });
-        });
-
+        // ==========================================
+        // 1. 상태 취합 및 show_if 로직
+        // ==========================================
         const getFormData = () => {
             let req = { _server_id: ctx.srvId };
             ctx.c.querySelectorAll('.pmh-dynamic-input, .pmh-dynamic-radio:checked').forEach(el => {
@@ -391,6 +261,141 @@ window.PmhUICore = {
         };
         ctx.c.addEventListener('change', updateShowIf); setTimeout(updateShowIf, 50);
 
+        // ==========================================
+        // 2. 통합 이벤트 델리게이션
+        // ==========================================
+        ctx.c.addEventListener('click', (e) => {
+            
+            const toggleBtn = e.target.closest('#pmh_btn_toggle_form');
+            if (toggleBtn) {
+                e.preventDefault();
+                const body = ctx.c.querySelector('#pmh_form_body');
+                if (body) {
+                    const isHidden = body.style.display === 'none';
+                    body.style.display = isHidden ? 'block' : 'none';
+                    
+                    if (isHidden) {
+                        toggleBtn.classList.remove('collapsed');
+                    } else {
+                        toggleBtn.classList.add('collapsed');
+                    }
+                    
+                    ctx.opts._form_collapsed = !isHidden;
+                }
+                return;
+            }
+
+            const multiBtn = e.target.closest('.pmh-multi-main-btn');
+            if (multiBtn) {
+                e.preventDefault();
+                const drop = ctx.c.querySelector(`#pmh_mdrop_${multiBtn.dataset.target}`);
+                ctx.c.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => { if(d !== drop) d.classList.remove('open'); });
+                drop.classList.toggle('open');
+                return;
+            } 
+
+            const toggleMultiBtn = e.target.closest('.pmh-multi-toggle-btn');
+            if (toggleMultiBtn) {
+                e.preventDefault();
+                const targetId = toggleMultiBtn.dataset.target;
+                const checkboxes = ctx.c.querySelectorAll(`input[name="pmh_mchk_${targetId}"]`);
+                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+                checkboxes.forEach(cb => cb.checked = !allChecked);
+                if (checkboxes.length > 0) checkboxes[0].dispatchEvent(new Event('change', { bubbles: true }));
+                return;
+            }
+            
+            const taReset = e.target.closest('.pmh-textarea-reset');
+            if (taReset) {
+                e.preventDefault();
+                const ta = ctx.c.querySelector('#' + taReset.dataset.target);
+                if (ta) ta.value = decodeURIComponent(taReset.dataset.val);
+                return;
+            }
+
+            const subBtn = e.target.closest('.pmh-sub-action-btn');
+            if (subBtn) {
+                e.preventDefault();
+                if (subBtn.disabled) return;
+                
+                const targetId = subBtn.dataset.target;
+                const msgSpan = ctx.c.querySelector(`#pmh_sub_msg_${targetId}`);
+                const hiddenInput = ctx.c.querySelector(`#pmh_inp_${targetId}`);
+                const wrapper = subBtn.closest('.pmh-sub-btn-wrapper');
+                const overlay = wrapper ? wrapper.querySelector('.pmh-sub-overlay') : null;
+
+                subBtn.disabled = true;
+                if (overlay) overlay.style.display = 'flex';
+                if (msgSpan) msgSpan.innerHTML = `<span style="color:#aaa;"><i class="fas fa-circle-notch fa-spin"></i> 요청을 처리하고 있습니다...</span>`;
+
+                const req = getFormData();
+                req.action_type = subBtn.dataset.action;
+
+                config.apiAdapter.run(req).then(res => {
+                    subBtn.disabled = false;
+                    if (overlay) overlay.style.display = 'none';
+                    if (res.status === 'success') {
+                        if (msgSpan) msgSpan.innerHTML = `<span style="color:#51a351; font-weight:bold;"><i class="fas fa-check"></i> ${res.message || '완료되었습니다.'}</span>`;
+                        if (hiddenInput && res.value !== undefined) hiddenInput.value = res.value;
+                    } else {
+                        if (msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> ${res.message || '실패했습니다.'}</span>`;
+                    }
+                }).catch(err => {
+                    subBtn.disabled = false;
+                    if (overlay) overlay.style.display = 'none';
+                    if (msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-wifi"></i> 통신 실패</span>`;
+                });
+                return;
+            }
+
+            if (!e.target.closest('.pmh-multi-select-wrap')) {
+                ctx.c.querySelectorAll('.pmh-multi-select-dropdown.open').forEach(d => d.classList.remove('open'));
+            }
+        });
+
+        ctx.c.addEventListener('change', (e) => {
+            if (e.target.classList.contains('pmh-multi-chk')) {
+                const wrap = e.target.closest('.pmh-multi-select-wrap');
+                if (wrap) {
+                    const targetId = wrap.querySelector('.pmh-multi-main-btn').dataset.target;
+                    const btnTextSpan = wrap.querySelector('.pmh-multi-btn-text');
+                    const checkboxes = wrap.querySelectorAll(`input[name="pmh_mchk_${targetId}"]`);
+                    const chkCnt = wrap.querySelectorAll(`input[name="pmh_mchk_${targetId}"]:checked`).length;
+                    
+                    if (chkCnt === 0) {
+                        btnTextSpan.innerText = "선택 안 됨";
+                        btnTextSpan.style.color = "#777"; btnTextSpan.style.fontWeight = "normal";
+                    } else if (chkCnt === checkboxes.length) {
+                        btnTextSpan.innerText = "전체 선택됨";
+                        btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
+                    } else {
+                        btnTextSpan.innerText = `${chkCnt}개 선택됨`;
+                        btnTextSpan.style.color = "#fff"; btnTextSpan.style.fontWeight = "bold";
+                    }
+                }
+            }
+            updateShowIf();
+        });
+
+        ctx.c.addEventListener('input', (e) => {
+            if (e.target.classList.contains('pmh-cron-input')) {
+                const cronId = e.target.id.replace('pmh_inp_', '');
+                const msgSpan = ctx.c.querySelector(`#pmh_cron_msg_${cronId}`);
+                if (!msgSpan) return;
+
+                const val = e.target.value.trim();
+                if (val === '') {
+                    msgSpan.innerHTML = "비어있습니다."; msgSpan.style.color = "#bd362f";
+                } else if (val.split(/\s+/).length !== 5) {
+                    msgSpan.innerHTML = `현재 ${val.split(/\s+/).length}자리입니다. 띄어쓰기로 구분된 5자리여야 합니다.`; msgSpan.style.color = "#bd362f";
+                } else if (/[^0-9\*\/\-\,\s]/.test(val)) {
+                    msgSpan.innerHTML = "잘못된 문자가 포함됨."; msgSpan.style.color = "#bd362f";
+                } else {
+                    msgSpan.innerHTML = `<i class="fas fa-check-circle"></i> 올바른 포맷입니다.`; msgSpan.style.color = "#51a351";
+                }
+            }
+        });
+
         const switchTab = (tabId) => {
             ctx.c.querySelectorAll('.pmh-tab-btn').forEach(b => {
                 if(b.dataset.tab === tabId) { b.style.color = '#e5a00d'; b.style.borderBottomColor = '#e5a00d'; b.classList.add('active'); }
@@ -423,7 +428,16 @@ window.PmhUICore = {
             try {
                 const req = { action_type: 'page', page: page, limit: ctx.itemsPerPage, sort_key: sKey, sort_dir: sDir, _server_id: ctx.srvId };
                 const r = await config.apiAdapter.run(req);
-                if (!ctx.isDestroyed) renderTable(r);
+                
+                if (ctx.isDestroyed) return;
+                
+                if (!r || r.total_items === 0 || !r.data || r.data.length === 0) {
+                    if (overlay) overlay.style.display = 'none';
+                    renderTable(r); 
+                    return;
+                }
+                
+                renderTable(r);
             } catch(e) { 
                 if (!ctx.isDestroyed) resEl.innerHTML = `<div style="color:#bd362f; text-align:center; padding:20px;">불러오기 실패: ${e}</div>`; 
             }
@@ -580,7 +594,7 @@ window.PmhUICore = {
                         
                         html += `<div style="text-align:center; margin-top:10px; padding-top:15px; border-top:1px dashed #444; flex-shrink:0; display:flex; justify-content:center;">
                                     <div class="pmh-btn-wrapper">
-                                        <button class="pmh-tbl-global-action pmh-dt-action-btn pmh-btn-execute" data-payload="${btnPayload}">
+                                        <button class="pmh-dynamic-run-btn pmh-tbl-global-action pmh-dt-action-btn pmh-btn-execute" data-payload="${btnPayload}" style="background-color:#51a351 !important; color:#1f1f1f !important;">
                                             ${res.action_button.label}
                                         </button>
                                         <div class="pmh-btn-overlay"><i class="fas fa-spinner fa-spin"></i></div>
@@ -738,16 +752,94 @@ window.PmhUICore = {
         };
 
         const resetAllBtn = ctx.c.querySelector('#pmh_btn_reset_all');
-        if(resetAllBtn) resetAllBtn.onclick = async () => {
+        const headerResetBtn = ctx.c.querySelector('#pmh_btn_reset');
+
+        const handleReset = async (e) => {
+            e.preventDefault(); e.stopPropagation();
             if (ctx.isDestroyed) return;
-            if(confirm("이 툴의 저장된 옵션, 결과, 작업 기록을 모두 초기화하시겠습니까?")) {
+            
+            if(confirm(`[${currentSrv.name}] 서버에 저장된 옵션과 결과, 작업 기록을 모두 초기화하시겠습니까?`)) {
                 try {
+                    if (typeof GM_deleteValue === 'function') {
+                        GM_deleteValue(`pmh_panel_geo_${config.toolId}`);
+                        GM_deleteValue(`pmh_tool_cache_global_${config.toolId}`);
+                        GM_deleteValue(`pmh_tool_cache_${config.toolId}`);
+                    }
+
                     await config.apiAdapter.run({action_type: 'reset', _server_id: ctx.srvId});
-                    config.toast.success("초기화 완료");
+                    config.toast.success("설정 및 데이터 캐시가 초기화되었습니다.");
+                    
+                } catch(e) {
+                    console.error("[PMH UI Core] 백그라운드 초기화 API 호출 실패 (무시됨):", e);
+                    config.toast.info("서버 응답 오류가 있었으나 로컬 화면은 초기화됩니다.");
+                } finally {
+                    const resForm = ctx.c.querySelector('#pmh_data_table_res');
+                    if (resForm) {
+                        resForm.style.display = 'none';
+                        resForm.innerHTML = '';
+                    }
+
+                    const resMonitorLogs = ctx.c.querySelector('#pmh_mon_logs');
+                    if (resMonitorLogs) resMonitorLogs.innerHTML = '로그 없음';
+                    
+                    const resMonitorState = ctx.c.querySelector('#pmh_mon_state');
+                    if (resMonitorState) {
+                        resMonitorState.innerHTML = '<i class="fas fa-info-circle"></i> 대기 중';
+                        resMonitorState.style.color = '#e5a00d';
+                    }
+                    
+                    const resMonitorProg = ctx.c.querySelector('#pmh_mon_prog');
+                    if (resMonitorProg) resMonitorProg.innerText = '0 / 0 (0%)';
+                    
+                    const resMonitorBar = ctx.c.querySelector('#pmh_mon_bar');
+                    if (resMonitorBar) resMonitorBar.style.width = '0%';
+                    
+                    const cancelBtn = ctx.c.querySelector('#pmh_btn_cancel');
+                    if (cancelBtn) cancelBtn.style.display = 'none';
+
+                    if (ctx.pollTimer) {
+                        clearTimeout(ctx.pollTimer);
+                        ctx.pollTimer = null;
+                    }
+                    ctx.isCancelling = false;
+
+                    const panel = document.getElementById('pmh-tool-panel');
+                    if (panel && !isMobileEnv) {
+                        panel.style.top = '80px';
+                        panel.style.left = '60%';
+                        panel.style.width = '450px';
+                        panel.style.height = 'auto';
+                    }
+
                     switchTab('pmh_tab_form');
-                    loadPage(1, null, 'asc');
-                } catch(e){}
+                    
+                    loadPage(1, null, 'asc').catch(()=>{});
+                }
             }
         };
+
+        if (resetAllBtn) resetAllBtn.addEventListener('click', handleReset);
+        if (headerResetBtn) headerResetBtn.addEventListener('click', handleReset);
+
+        const applyMaxHeight = () => {
+            const panel = document.getElementById('pmh-tool-panel');
+            if (panel && !isMobileEnv) {
+                if (panel.style.height !== 'auto' && panel.style.height !== '') return;
+                
+                const maxAllowedHeight = window.innerHeight - 80;
+                
+                if (panel.offsetHeight >= maxAllowedHeight || panel.scrollHeight >= maxAllowedHeight) {
+                    panel.style.height = maxAllowedHeight + 'px';
+                }
+            }
+        };
+
+        const panelObserver = new MutationObserver(() => {
+            if (!ctx.isDestroyed) requestAnimationFrame(applyMaxHeight);
+        });
+        
+        panelObserver.observe(ctx.c, { childList: true, subtree: true, attributes: true, characterData: false });
+        
+        setTimeout(applyMaxHeight, 100);
     }
 };

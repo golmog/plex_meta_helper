@@ -9,7 +9,6 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="PMH">
-    <!-- [수정] 오렌지색 툴박스 Base64 SVG 아이콘 적용 -->
     <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMxMTEiLz48cGF0aCBkPSJNMjAgMjB2LTRjMC0yLjIgMS44LTQgNC00aDE2YzIuMiAwIDQgMS44 
 NCA0djRoNmMxLjEgMCAyIC45IDIgMnYyNGMwIDEuMS0uOSAyLTIgMkgxNGMtMS4xIDAtMi0uOS0y 
 LTJWMjJjMC0xLjEgLjktMiAyLTJoNnptNC0R2NGgxNnYtNEgyNHptLTggOHYxMGgzMlYyNEgxNnpt 
@@ -130,7 +129,6 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
             <div id="tool-view-title" style="font-weight:bold; color:var(--primary); font-size:15px;">로딩 중...</div>
         </div>
 
-        <!-- [수정] 모바일 화면 내 자체 서버 선택 UI 중복 제거 -->
         <div id="tool-form-container" style="margin-bottom:25px; width:100%;"></div>
     </div>
 
@@ -199,10 +197,18 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
                 
                 try {
                     const res = await fetch(`${AppState.url}/api${endpoint}`, options);
+                    const contentType = res.headers.get("content-type");
+                    if (contentType && contentType.includes("application/json")) {
+                        const json = await res.json();
+                        if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+                        return json;
+                    }
+                    
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    return await res.json();
+                    return await res.text();
+                    
                 } catch(e) {
-                    throw new Error("네트워크 오류 또는 서버 응답 실패");
+                    throw new Error(e.message || "네트워크 오류 또는 서버 응답 실패");
                 }
             }
         };
@@ -344,12 +350,14 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
             const container = document.getElementById('tool-form-container');
             container.innerHTML = '<div style="text-align:center; padding:30px;"><i class="fas fa-spinner fa-spin fa-2x" style="color:var(--primary);"></i></div>';
 
-            const activeServerId = AppState.servers[0].id || 'master_node';
+            const activeServerNode = AppState.servers[0] || {};
+            const activeServerId = activeServerNode.id || 'master_node';
+            const activeMachineId = activeServerNode.machine_id || 'default';
             
             try {
                 if (typeof PmhUICore === 'undefined') throw new Error("UI 코어 모듈이 로드되지 않았습니다.");
 
-                const uiSchema = await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/ui`);
+                const uiSchema = await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/ui?server_id=${activeMachineId}`);
                 document.getElementById('tool-view-title').innerText = uiSchema.title || toolId;
 
                 PmhUICore.createToolInstance({

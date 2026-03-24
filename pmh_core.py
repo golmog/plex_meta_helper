@@ -924,17 +924,21 @@ class CoreDataManager:
 
     def load_page(self, page, limit, sort_key=None, sort_dir='asc'):
         with self._lock:
-            if not os.path.exists(self.db_file): return None
+            if not os.path.exists(self.db_file): 
+                return {"data": [], "total_items": 0, "total_pages": 1, "page": page, "columns": []}
             
             with self._get_conn() as conn:
                 c = conn.cursor()
                 
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='meta'")
-                if c.fetchone()[0] == 0: return None
+                if c.fetchone()[0] == 0: 
+                    return {"data": [], "total_items": 0, "total_pages": 1, "page": page, "columns": []}
                 
                 c.execute("SELECT payload FROM meta LIMIT 1")
                 meta_row = c.fetchone()
-                if not meta_row: return None
+                if not meta_row: 
+                    return {"data": [], "total_items": 0, "total_pages": 1, "page": page, "columns": []}
+                
                 result = json.loads(meta_row[0])
                 
                 if result.get('type') == 'dashboard':
@@ -1369,10 +1373,8 @@ def dispatch_request(subpath, method, args, data, global_config):
             ff_url = ff_url.rstrip('/')
             target_endpoint = subpath.replace('mate/', '/plex_mate/api/', 1)
             target_url = f"{ff_url}{target_endpoint}"
-            
-            # 클라이언트가 보낸 데이터(JSON)를 FF가 요구하는 Form Data (x-www-form-urlencoded)로 변환
             form_data = data if data else {}
-            form_data['apikey'] = ff_apikey  # 보안: 노드가 자신의 FF API Key를 직접 주입
+            form_data['apikey'] = ff_apikey
             
             encoded_data = urlencode(form_data).encode('utf-8')
             

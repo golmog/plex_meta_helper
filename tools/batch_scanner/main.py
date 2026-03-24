@@ -135,7 +135,7 @@ def get_ui(core_api):
     }
 
 # =====================================================================
-# 2. 데이터 추출
+# 2. 데이터 추출 및 그룹화
 # =====================================================================
 def get_target_items(req_data, core_api, task=None):
     target_sections = req_data.get('target_sections', [])
@@ -152,7 +152,7 @@ def get_target_items(req_data, core_api, task=None):
     sec_query = "SELECT id, name FROM library_sections"
     sec_params = []
     
-    if target_sections:
+    if target_sections and 'all' not in target_sections:
         placeholders = ",".join("?" for _ in target_sections)
         sec_query += f" WHERE id IN ({placeholders})"
         sec_params.extend(target_sections)
@@ -207,9 +207,9 @@ def get_target_items(req_data, core_api, task=None):
                         elif current_depth > scan_depth:
                             dirnames.clear()
                 except Exception: pass
-                
-        for i, (p, sid, sname) in enumerate(sorted(list(path_set))):
-            items.append({'id': p, 'section_id': sid, 'section': sname, 'title': p, 'guid': '-'})
+
+        tmp_list = [{'id': p, 'section_id': sid, 'section': sname, 'title': p, 'guid': '-'} for p, sid, sname in list(path_set)]
+        items = core_api['sort'](tmp_list, [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}])
             
         total_scanned = len(items)
         if task: task.update_state('running', progress=90, total=100)
@@ -219,19 +219,28 @@ def get_target_items(req_data, core_api, task=None):
     # 메타데이터 기반 조회 (Refresh, Rematch)
     # -------------------------------------------------------------
     try:
-        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 2, 9)"
+        # [변경] 스캔 대상 모수: 스마트 스캐너와 동일하게 에피소드(4)/트랙(10)까지 모두 포함하여 총량 계산
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4, 10)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception: pass
 
-    where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 9)"
+    # [변경] 기본적으로 모든 개별 미디어(영화, 에피소드, 트랙)를 딥스캔 대상으로 삼음
+    where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 4, 10)"
     
     if mode == 'refresh' and opt_smart_refresh:
-        where_conditions += """ AND (
-            (mi.metadata_type IN (1, 2) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
-        )"""
+        # [변경] 스마트 스캐너와 동일한 엄격한 조건 적용 (에피소드/앨범 썸네일 유실까지 감지)
+        where_conditions = f"""
+            mi.library_section_id IN ({lib_ids_str}) AND 
+            (
+                (mi.metadata_type IN (1, 2, 9) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                OR
+                (mi.metadata_type IN (4, 8) AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+            )
+        """
     elif mode == 'rematch' and opt_smart_match:
-        where_conditions += " AND (mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL)"
+        # [변경] 미매칭 감지 (영화, 쇼, 아티스트 최상위 항목만 대상)
+        where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND (mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2, 9)"
 
     base_select = f"""
         SELECT 
@@ -248,8 +257,8 @@ def get_target_items(req_data, core_api, task=None):
     """
 
     if task: 
-        filter_msg = "(지능형 필터 적용)" if (opt_smart_refresh and mode=='refresh') or (opt_smart_match and mode=='rematch') else "(전체)"
-        task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 대상 {filter_msg}을(를) 조회 중입니다...")
+        filter_msg = "(지능형 필터 적용)" if (opt_smart_refresh and mode=='refresh') or (opt_smart_match and mode=='rematch') else "(전체 딥스캔)"
+        task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 개별 미디어 대상 {filter_msg}을(를) 조회 및 부모 병합 중입니다...")
         task.update_state('running', progress=10, total=100)
 
     plex_db_path = core_api['config'].get('plex_db_path', '')
@@ -258,6 +267,19 @@ def get_target_items(req_data, core_api, task=None):
         return items, total_scanned
         
     plex_conn = None
+    targets = {}
+    
+    # [추가] 스마트 스캐너의 타이틀 포맷팅 로직
+    def format_title(r, is_parent=False):
+        if is_parent:
+            base_title = r[9] if r[1] in (3, 4, 10) else r[2]
+            year = r[10] if r[1] in (3, 4, 10) else r[4]
+            return f"{base_title} ({year})" if year else base_title
+        else:
+            base_title = r[2]
+            year = r[4]
+            return f"{base_title} ({year})" if year else base_title
+
     try:
         plex_conn = sqlite3.connect(f'file:{plex_db_path}?mode=ro', uri=True, timeout=10.0)
         plex_c = plex_conn.cursor()
@@ -275,9 +297,8 @@ def get_target_items(req_data, core_api, task=None):
                 f_path = r[3]
                 guid_val = r[6]
                 lib_sec_id = r[7]
-                show_title = r[9] or "Unknown"
-                s_idx = r[11]
-                e_idx = r[12]
+                parent_id = r[5]
+                grandparent_id = r[8]
                 
                 clean_guid = '-'
                 if guid_val:
@@ -286,22 +307,24 @@ def get_target_items(req_data, core_api, task=None):
                     if mode == 'rematch' and target_agent and clean_guid.startswith(target_agent): 
                         continue # 지정한 에이전트는 리매칭 대상에서 제외
 
-                if m_type == 2:
-                    display_title = title
-                elif m_type == 9:
-                    artist_name = show_title if show_title != "Unknown" else "Unknown Artist"
-                    display_title = f"{artist_name} / {title}"
-                else:
-                    display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
-
-                lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
+                # [핵심] 리프레시와 리매치는 부모 단위(영화/쇼/아티스트)로 작업해야 하므로 병합
+                actual_parent = grandparent_id or parent_id
+                target_rk = actual_parent if actual_parent and mode in ['refresh', 'rematch'] else rk
                 
-                items.append({
-                    'id': str(rk), 
-                    'section': lib_name, 
-                    'title': display_title, 
-                    'guid': clean_guid
-                })
+                if target_rk not in targets:
+                    display_title = format_title(r, is_parent=(mode in ['refresh', 'rematch'] and m_type in (4, 8, 10)))
+                    if m_type not in (1, 2, 3, 4, 8, 9, 10):
+                        display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
+
+                    lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
+                    
+                    # 스마트 스캐너처럼 대상을 Dictionary로 묶어서 중복 제거 (병합)
+                    targets[target_rk] = {
+                        'id': str(target_rk), 
+                        'section': lib_name, 
+                        'title': display_title, 
+                        'guid': clean_guid
+                    }
 
     except Exception as e:
         if task: task.log(f"❌ 쿼리 실행 중 오류 발생: {e}")
@@ -309,6 +332,11 @@ def get_target_items(req_data, core_api, task=None):
         if plex_conn:
             try: plex_conn.close()
             except: pass
+
+    items = list(targets.values())
+
+    # 결과 자연 정렬 적용
+    items = core_api['sort'](items, [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}])
 
     if task: task.update_state('running', progress=90, total=100)
     
@@ -424,9 +452,9 @@ def worker(task_data, core_api, start_index):
             "summary_cards": summary_cards,
             "default_sort": sort_rules,
             "columns": [
-                {"key": "section", "label": "섹션", "width": "20%", "align": "center", "header_align": "center", "sortable": True},
-                {"key": "title", "label": "대상 항목 (경로/제목)", "width": "45%", "align": "left", "header_align": "center", "type": link_type, "link_key": link_key, "sortable": True},
-                {"key": "guid", "label": "에이전트", "width": "25%", "align": "center", "header_align": "center", "sortable": True},
+                {"key": "section", "label": "섹션", "width": "20%", "header_align": "center", "sortable": True},
+                {"key": "title", "label": "대상 항목 (경로/제목)", "width": "45%", "header_align": "center", "type": link_type, "link_key": link_key, "sortable": True},
+                {"key": "guid", "label": "에이전트", "width": "25%", "header_align": "center", "sortable": True},
                 {"key": "action", "label": "실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn", "action_type": "execute", "payload": {"mode": task_data.get('mode', 'refresh')}}
             ],
             "data": table_data
@@ -637,4 +665,3 @@ def worker(task_data, core_api, start_index):
             real_state = current_state.get('state', 'running')
             if real_state != 'completed':
                 task.update_state(real_state, progress=idx)
-

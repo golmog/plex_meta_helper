@@ -3,8 +3,8 @@ version: "0.8.59-server"
 package_name: "plex_meta_helper"
 developer: "golmog"
 description: "Plex Web UI 관리 기능 개선 프로젝트"
-home: "https://github.com/golmog/plex_meta_helper"
-more: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/README.md"
+home: "https://github.com/golmog/plex_meta_helper/tree/v0.8-alpha"
+more: "https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/README.md"
 
 static_assets:
   - name: "index.html"
