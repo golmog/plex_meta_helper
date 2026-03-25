@@ -10,6 +10,8 @@ window.PmhUICore = {
         if (this.activeInstance) {
             this.activeInstance.isDestroyed = true;
             if (this.activeInstance.pollTimer) clearTimeout(this.activeInstance.pollTimer);
+            if (this.activeInstance.resizeObserver) this.activeInstance.resizeObserver.disconnect();
+            if (this.activeInstance.mobileResizeHandler) window.removeEventListener('resize', this.activeInstance.mobileResizeHandler);
             this.activeInstance = null;
         }
     },
@@ -39,11 +41,14 @@ window.PmhUICore = {
                     });
                     html += `</div></div>`; 
                     break;
-                case 'multi_select':
+case 'multi_select':
                     let cachedArr = [];
                     if (Array.isArray(savedOptions[input.id])) cachedArr = savedOptions[input.id];
                     else if (input.default === 'all') cachedArr = input.options.map(o => String(o.value));
                     else if (Array.isArray(input.default)) cachedArr = input.default.map(String);
+
+                    const validValues = input.options.map(o => String(o.value));
+                    cachedArr = cachedArr.filter(v => validValues.includes(String(v)));
 
                     let btnText = cachedArr.length === 0 ? "선택 안 됨" : (cachedArr.length === input.options.length ? "전체 선택됨" : `${cachedArr.length}개 선택됨`);
                     html += `<div class="pmh-form-group"><label class="pmh-form-label">${input.label}</label><div class="pmh-multi-select-wrap" id="pmh_mwrap_${input.id}"><div class="pmh-multi-select-btn pmh-multi-main-btn" data-target="${input.id}"><span class="pmh-multi-btn-text" style="color:${cachedArr.length===0?'#777':'#fff'};">${btnText}</span><i class="fas fa-chevron-down" style="color:#777;"></i></div><div class="pmh-multi-select-dropdown" id="pmh_mdrop_${input.id}"><div class="pmh-multi-select-header"><span style="font-size:11px; color:#aaa;">항목 선택</span><span class="pmh-multi-toggle-btn" data-target="${input.id}">전체 토글</span></div>`;
@@ -152,16 +157,66 @@ window.PmhUICore = {
             sortDir: config.uiSchema.saved_options?._sort_dir || 'asc',
             isCancelling: false,
             isDestroyed: false,
-            autoRefresh: true
+            autoRefresh: true,
+            isRunning: false,   // [추가] 작업 실행 상태
+            pollCount: 0        // [추가] 폴링 카운터
         };
         this.activeInstance = ctx;
 
-        let srvOptionsHtml = config.servers.map((s, i) => `<option value="${i}" ${i === config.activeServerIdx ? 'selected' : ''}>${s.name}</option>`).join('');
+        // [추가] 폼 탭의 버튼 상태를 런타임 상태(isRunning)에 맞게 일괄 제어하는 함수
+        const updateFormTabButtons = (running) => {
+            ctx.isRunning = running;
+            
+            // 1. 상단 폼 영역의 조회/실행(Main) 버튼들
+            ctx.c.querySelectorAll('.pmh-main-run-btn').forEach(btn => {
+                if (!btn.dataset.originalHtml) btn.dataset.originalHtml = btn.innerHTML;
+                if (running) {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.style.cursor = 'not-allowed';
+                } else {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.style.cursor = 'pointer';
+                    btn.innerHTML = btn.dataset.originalHtml;
+                }
+            });
+
+            // 2. 테이블 목록 내부의 개별 실행(Play) 버튼들
+            ctx.c.querySelectorAll('.pmh-tbl-action-btn').forEach(btn => {
+                if (running) {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.style.cursor = 'not-allowed';
+                } else {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.style.cursor = 'pointer';
+                }
+            });
+
+            // 3. 데이터 테이블 하단의 글로벌 액션(작업 실행 <-> 작업 중단) 버튼 교체
+            const execWrapper = ctx.c.querySelector('#pmh_tbl_global_exec_wrapper');
+            const cancelWrapper = ctx.c.querySelector('#pmh_tbl_global_cancel_wrapper');
+            
+            if (running) {
+                if (execWrapper) execWrapper.style.display = 'none';
+                if (cancelWrapper) cancelWrapper.style.display = 'block';
+            } else {
+                if (execWrapper) execWrapper.style.display = 'block';
+                if (cancelWrapper) cancelWrapper.style.display = 'none';
+            }
+        };
+
+        let srvOptionsHtml = config.servers.map((s, i) => {
+            if (config.availableServerIndices && !config.availableServerIndices.includes(i)) return '';
+            return `<option value="${i}" ${i === config.activeServerIdx ? 'selected' : ''}>${s.name}</option>`;
+        }).join('');
         const formDisplay = ctx.opts._form_collapsed ? 'none' : 'block';
         const collapsedClass = ctx.opts._form_collapsed ? 'collapsed' : '';
 
         let html = `
-            <div style="display:flex; flex-direction:column; height:100%; width:100%; text-align:left;">
+            <div style="display:flex; flex-direction:column; height:100%; width:100%; text-align:left; flex-grow:1; min-height:0;">
                 <div style="display:flex; border-bottom:1px solid #444; margin-bottom:15px; flex-shrink:0; justify-content:space-between; align-items:flex-end;">
                     <div style="display:flex; gap:2px; overflow-x:auto;">
                         <div class="pmh-tab-btn active" data-tab="pmh_tab_form" style="cursor:pointer; padding:8px 12px; color:#e5a00d; border-bottom:2px solid #e5a00d; font-weight:bold;"><i class="fas fa-search"></i> 조회/실행</div>
@@ -171,6 +226,7 @@ window.PmhUICore = {
                 </div>
                 
                 <div id="pmh_tab_form" class="pmh-tab-content" style="display:flex; flex-direction:column; flex-grow:1;">
+                    <!-- 폼 탭 내용 유지 -->
                     ${config.servers.length > 1 && !isMobileEnv ? `<div class="pmh-form-group"><label class="pmh-form-label"><i class="fas fa-server"></i> 대상 서버</label><select id="pmh_srv_select" class="pmh-input-select">${srvOptionsHtml}</select></div>` : ''}
                     
                     <div style="border-bottom:1px solid #333; padding-bottom:25px; margin-bottom:25px; position:relative;">
@@ -193,25 +249,28 @@ window.PmhUICore = {
                     <div id="pmh_data_table_res" style="flex-grow:1; display:none; flex-direction:column; position:relative;"></div>
                 </div>
 
-                <div id="pmh_tab_monitor" class="pmh-tab-content" style="display:none; flex-direction:column; flex-grow:1;">
-                    <div style="background:#15181a; border:1px solid #333; border-radius:6px; padding:15px; display:flex; flex-direction:column; height:100%;">
+                <div id="pmh_tab_monitor" class="pmh-tab-content" style="display:none; flex-direction:column; width:100%;">
+                    <div style="background:#15181a; border:1px solid #333; border-radius:6px; padding:15px; width:100%; box-sizing:border-box;">
                         <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-bottom:10px; font-weight:bold;">
                             <span id="pmh_mon_state" style="color:#e5a00d;"><i class="fas fa-info-circle"></i> 대기 중</span>
                             <span id="pmh_mon_prog">0 / 0 (0%)</span>
                         </div>
-                        <div style="width:100%; height:12px; background:#222; border-radius:6px; overflow:hidden; margin-bottom:15px; flex-shrink:0;">
+                        <div style="width:100%; height:12px; background:#222; border-radius:6px; overflow:hidden; margin-bottom:15px;">
                             <div id="pmh_mon_bar" style="width:0%; height:100%; background:#e5a00d; transition:0.3s;"></div>
                         </div>
-                        <div id="pmh_mon_logs" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:10px; flex-grow:1; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; text-align:left;">로그 없음</div>
-                        <div style="display:flex; justify-content:center;">
-                            <button id="pmh_btn_cancel" class="pmh-dt-action-btn pmh-btn-cancel" style="margin-top:15px; display:none;"><i class="fas fa-stop"></i> 작업 중단</button>
+                        
+                        <!-- JS에서 계산된 높이가 주입됩니다. 기본값 300px -->
+                        <div id="pmh_mon_logs" style="background:#0a0a0c; border:1px solid #222; border-radius:4px; padding:10px; height:300px; overflow-y:auto; font-family:monospace; font-size:11px; color:#aaa; line-height:1.6; text-align:left; word-break:break-all; box-sizing:border-box;">로그 없음</div>
+
+                        <div style="display:flex; justify-content:center; flex-shrink:0; margin-top:15px;">
+                            <button id="pmh_btn_cancel" class="pmh-dt-action-btn pmh-btn-cancel" style="display:none;"><i class="fas fa-stop"></i> 작업 중단</button>
                         </div>
                     </div>
                 </div>
 
                 <div id="pmh_tab_settings" class="pmh-tab-content" style="display:none; flex-direction:column; flex-grow:1; overflow-y:auto;">
                     ${ctx.ui.settings_inputs ? `<div style="background:rgba(0,0,0,0.2); padding:15px; border-radius:8px; border:1px solid #333; margin-bottom:15px;">${this.renderInputsHtml(ctx.ui.settings_inputs, ctx.opts)}</div>` : '<div style="text-align:center; color:#777; padding:30px;">추가 설정이 없습니다.</div>'}
-                    <div style="display:flex; justify-content:center; gap:10px; margin-top:15px; border-top:1px dashed #444; padding-top:15px;">
+                    <div style="display:flex; justify-content:center; gap:10px; margin-top:15px; border-top:1px dashed #444; padding-top:15px; flex-shrink:0;">
                         <button id="pmh_btn_reset_all" class="pmh-dynamic-run-btn" style="background-color:#bd362f !important; color:#fff !important;"><i class="fas fa-bomb"></i> 환경/캐시 초기화</button>
                         <button id="pmh_btn_save_opts" class="pmh-dynamic-run-btn" style="background-color:#e5a00d !important; color:#1f1f1f !important;"><i class="fas fa-save"></i> 설정 적용</button>
                     </div>
@@ -281,6 +340,12 @@ window.PmhUICore = {
                     }
                     
                     ctx.opts._form_collapsed = !isHidden;
+
+                    // [수정점] 토글 즉시 상태를 백엔드 옵션 DB에 저장합니다.
+                    const req = getFormData();
+                    req.action_type = 'save_options';
+                    req._form_collapsed = ctx.opts._form_collapsed;
+                    config.apiAdapter.run(req).catch(()=>{});
                 }
                 return;
             }
@@ -396,33 +461,70 @@ window.PmhUICore = {
             }
         });
 
+        const updateLogBoxHeight = () => {
+            const logBox = ctx.c.querySelector('#pmh_mon_logs');
+            const tabMonitor = ctx.c.querySelector('#pmh_tab_monitor');
+            
+            if (!logBox || !tabMonitor || tabMonitor.style.display === 'none') return;
+
+            if (isMobileEnv) {
+                // 모바일
+                const calcHeight = window.innerHeight - 380; 
+                logBox.style.height = Math.max(150, calcHeight) + 'px';
+            } else {
+                // PC:
+                const panel = document.getElementById('pmh-tool-panel');
+                if (panel) {
+                    const calcHeight = panel.offsetHeight - 300;
+                    logBox.style.height = Math.max(100, calcHeight) + 'px';
+                }
+            }
+        };
+
         const switchTab = (tabId) => {
             ctx.c.querySelectorAll('.pmh-tab-btn').forEach(b => {
                 if(b.dataset.tab === tabId) { b.style.color = '#e5a00d'; b.style.borderBottomColor = '#e5a00d'; b.classList.add('active'); }
                 else { b.style.color = '#777'; b.style.borderBottomColor = 'transparent'; b.classList.remove('active'); }
             });
             ctx.c.querySelectorAll('.pmh-tab-content').forEach(c => c.style.display = (c.id === tabId) ? 'flex' : 'none');
+            
+            if (tabId === 'pmh_tab_monitor') {
+                const panel = document.getElementById('pmh-tool-panel');
+                // PC: 패널 높이가 auto라면 픽셀 높이로 굳힘
+                if (panel && !isMobileEnv && (!panel.style.height || panel.style.height === 'auto')) {
+                    panel.style.height = panel.offsetHeight + 'px';
+                }
+                
+                // 💡 모니터 탭 진입 시 즉시 높이 계산 실행
+                updateLogBoxHeight();
+                
+                const logBox = ctx.c.querySelector('#pmh_mon_logs');
+                if (logBox) logBox.scrollTop = logBox.scrollHeight;
+            }
+
             if (tabId === 'pmh_tab_form') loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir);
         };
         ctx.c.querySelectorAll('.pmh-tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 
-        const loadPage = async (page, sKey, sDir, customLimit = null) => {
+        const loadPage = async (page, sKey, sDir, customLimit = null, isSilent = false) => {
             if (ctx.isDestroyed) return;
             ctx.currentPage = page; ctx.sortKey = sKey; ctx.sortDir = sDir;
             if (customLimit) ctx.itemsPerPage = customLimit;
             
             const resEl = ctx.c.querySelector('#pmh_data_table_res');
-            resEl.style.display = 'flex';
+            if (!isSilent) resEl.style.display = 'flex'; // 조용한 갱신일 때는 깜빡임 방지
             
             let overlay = resEl.querySelector('.pmh-table-overlay');
-            if (!overlay) {
-                overlay = document.createElement('div');
-                overlay.className = 'pmh-table-overlay';
-                overlay.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.6); z-index:10; display:flex; align-items:center; justify-content:center; border-radius:4px;';
-                overlay.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size:30px; color:#e5a00d;"></i>`;
-                resEl.appendChild(overlay);
-            } else {
-                overlay.style.display = 'flex';
+            if (!isSilent) {
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.className = 'pmh-table-overlay';
+                    overlay.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.6); z-index:10; display:flex; align-items:center; justify-content:center; border-radius:4px;';
+                    overlay.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size:30px; color:#e5a00d;"></i>`;
+                    resEl.appendChild(overlay);
+                } else {
+                    overlay.style.display = 'flex';
+                }
             }
 
             try {
@@ -439,7 +541,7 @@ window.PmhUICore = {
                 
                 renderTable(r);
             } catch(e) { 
-                if (!ctx.isDestroyed) resEl.innerHTML = `<div style="color:#bd362f; text-align:center; padding:20px;">불러오기 실패: ${e}</div>`; 
+                if (!ctx.isDestroyed && !isSilent) resEl.innerHTML = `<div style="color:#bd362f; text-align:center; padding:20px;">불러오기 실패: ${e}</div>`; 
             }
         };
 
@@ -592,22 +694,47 @@ window.PmhUICore = {
                     if (res.action_button) {
                         const btnPayload = JSON.stringify(res.action_button.payload).replace(/"/g, '&quot;');
                         
-                        html += `<div style="text-align:center; margin-top:10px; padding-top:15px; border-top:1px dashed #444; flex-shrink:0; display:flex; justify-content:center;">
-                                    <div class="pmh-btn-wrapper">
+                        html += `<div style="text-align:center; margin-top:10px; padding-top:15px; border-top:1px dashed #444; flex-shrink:0; display:flex; justify-content:center; gap:10px;">
+                                    
+                                    <!-- 실행 버튼 래퍼 -->
+                                    <div id="pmh_tbl_global_exec_wrapper" class="pmh-btn-wrapper" style="display:block;">
                                         <button class="pmh-dynamic-run-btn pmh-tbl-global-action pmh-dt-action-btn pmh-btn-execute" data-payload="${btnPayload}" style="background-color:#51a351 !important; color:#1f1f1f !important;">
                                             ${res.action_button.label}
                                         </button>
                                         <div class="pmh-btn-overlay"><i class="fas fa-spinner fa-spin"></i></div>
                                     </div>
+
+                                    <!-- 작업 중단 버튼 래퍼 (기본 숨김) -->
+                                    <div id="pmh_tbl_global_cancel_wrapper" class="pmh-btn-wrapper" style="display:none;">
+                                        <button class="pmh-dt-action-btn pmh-btn-cancel pmh-tbl-global-cancel" style="background-color:#bd362f !important; color:#fff !important;">
+                                            <i class="fas fa-stop"></i> 작업 중단
+                                        </button>
+                                    </div>
+                                    
                                  </div>`;
                     }
                 }
             }
             resEl.innerHTML = html;
+            
+            // [추가] 렌더링 즉시 현재 상태(isRunning)에 맞게 버튼들 처리
+            updateFormTabButtons(ctx.isRunning);
+
+            // [추가] 글로벌 작업 중단 버튼 이벤트 바인딩
+            resEl.querySelectorAll('.pmh-tbl-global-cancel').forEach(b => b.onclick = async (e) => {
+                e.preventDefault();
+                b.disabled = true;
+                b.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 중단 중...';
+                ctx.isCancelling = true;
+                await config.apiAdapter.cancel(config.toolId);
+            });
 
             resEl.querySelectorAll('.pmh-page-btn').forEach(b => b.onclick = () => loadPage(parseInt(b.dataset.p), ctx.sortKey, ctx.sortDir));
-            resEl.querySelectorAll('.pmh-th-sort').forEach(th => th.onclick = () => loadPage(1, th.dataset.key, ctx.sortKey===th.dataset.key && ctx.sortDir==='asc'?'desc':'asc'));
-            
+            resEl.querySelectorAll('.pmh-th-sort').forEach(th => th.onclick = () => {
+                const newDir = (ctx.sortKey === th.dataset.key && ctx.sortDir === 'asc') ? 'desc' : 'asc';
+                loadPage(1, th.dataset.key, newDir);
+            });
+
             const limitSel = resEl.querySelector('#pmh_dt_limit');
             if (limitSel) limitSel.onchange = (e) => loadPage(1, ctx.sortKey, ctx.sortDir, parseInt(e.target.value));
 
@@ -678,6 +805,10 @@ window.PmhUICore = {
             if (ctx.isDestroyed) return;
             if (ctx.pollTimer) clearTimeout(ctx.pollTimer);
 
+            // [추가] 시작 시 상태 업데이트
+            updateFormTabButtons(true);
+            ctx.pollCount = 0;
+
             const stateEl = ctx.c.querySelector('#pmh_mon_state');
             const progEl = ctx.c.querySelector('#pmh_mon_prog');
             const barEl = ctx.c.querySelector('#pmh_mon_bar');
@@ -704,14 +835,25 @@ window.PmhUICore = {
                         barEl.style.background = s.state==='completed' ? '#51a351' : '#bd362f';
                         ctx.isCancelling = false;
                         
-                        if(s.state==='completed' && ctx.autoRefresh) {
+                        // [추가] 완료 시 버튼 상태 복구
+                        updateFormTabButtons(false);
+                        
+                        if(ctx.autoRefresh) {
                             setTimeout(() => {
-                                loadPage(1, ctx.sortKey, ctx.sortDir);
-                                switchTab('pmh_tab_form');
+                                // silent 모드로 리스트 최종 갱신
+                                loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true);
+                                if(s.state==='completed') switchTab('pmh_tab_form');
                             }, 1000);
                         }
                     } else {
                         stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; stateEl.style.color = '#e5a00d';
+                        
+                        // [추가] 자동 갱신 켜져있을 경우 2회 폴링(약 3초)마다 백그라운드 무음 갱신
+                        ctx.pollCount++;
+                        if (ctx.autoRefresh && ctx.pollCount % 2 === 0) {
+                            loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true);
+                        }
+
                         ctx.pollTimer = setTimeout(poll, 1500);
                     }
                 } catch(e) { ctx.pollTimer = setTimeout(poll, 2000); }
@@ -752,7 +894,6 @@ window.PmhUICore = {
         };
 
         const resetAllBtn = ctx.c.querySelector('#pmh_btn_reset_all');
-        const headerResetBtn = ctx.c.querySelector('#pmh_btn_reset');
 
         const handleReset = async (e) => {
             e.preventDefault(); e.stopPropagation();
@@ -819,18 +960,35 @@ window.PmhUICore = {
         };
 
         if (resetAllBtn) resetAllBtn.addEventListener('click', handleReset);
-        if (headerResetBtn) headerResetBtn.addEventListener('click', handleReset);
 
         const applyMaxHeight = () => {
             const panel = document.getElementById('pmh-tool-panel');
-            if (panel && !isMobileEnv) {
-                if (panel.style.height !== 'auto' && panel.style.height !== '') return;
-                
-                const maxAllowedHeight = window.innerHeight - 80;
-                
-                if (panel.offsetHeight >= maxAllowedHeight || panel.scrollHeight >= maxAllowedHeight) {
-                    panel.style.height = maxAllowedHeight + 'px';
-                }
+            if (panel && !isMobileEnv && typeof ResizeObserver !== 'undefined') {
+                const resizeObserver = new ResizeObserver(() => {
+                    if (ctx.isDestroyed) return;
+                    
+                    const tabMonitor = ctx.c.querySelector('#pmh_tab_monitor');
+                    const logBox = ctx.c.querySelector('#pmh_mon_logs');
+                    
+                    // 모니터링 탭이 열려있을 때만 높이 재계산
+                    if (tabMonitor && tabMonitor.style.display !== 'none' && logBox) {
+                        const calcHeight = panel.offsetHeight - 300;
+                        logBox.style.height = Math.max(100, calcHeight) + 'px';
+                    }
+                });
+                resizeObserver.observe(panel);
+                ctx.resizeObserver = resizeObserver; // 탭 닫을 때 메모리 해제용
+            }
+
+            // 2. 사용자 아이디어 적용: 모니터링 로그 박스 높이 직접 계산 및 주입
+            const logBox = document.getElementById('pmh_mon_logs');
+            const tabMonitor = document.getElementById('pmh_tab_monitor');
+            
+            if (logBox && tabMonitor && tabMonitor.style.display !== 'none') {
+                // 패널 전체 높이에서 헤더, 패딩, 상단 텍스트, 하단 버튼 등의 여백(약 300px)을 뺌
+                const calcHeight = panel.offsetHeight - 300;
+                // 최소 100px 이상은 유지하도록 설정
+                logBox.style.height = Math.max(100, calcHeight) + 'px';
             }
         };
 
@@ -841,5 +999,25 @@ window.PmhUICore = {
         panelObserver.observe(ctx.c, { childList: true, subtree: true, attributes: true, characterData: false });
         
         setTimeout(applyMaxHeight, 100);
+
+        // [추가] 패널 및 화면 리사이즈를 실시간 감지하여 로그 박스 높이 동기화
+        if (isMobileEnv) {
+            // 모바일: 가로/세로 화면 회전이나 브라우저 창 크기 변화 감지
+            const mobileResizeHandler = () => {
+                if (!ctx.isDestroyed) updateLogBoxHeight();
+            };
+            window.addEventListener('resize', mobileResizeHandler);
+            ctx.mobileResizeHandler = mobileResizeHandler; // 탭 닫을 때 메모리 해제용
+        } else {
+            // PC: 마우스 드래그를 통한 툴 패널 크기 조절 감지
+            const panel = document.getElementById('pmh-tool-panel');
+            if (panel && typeof ResizeObserver !== 'undefined') {
+                const resizeObserver = new ResizeObserver(() => {
+                    if (!ctx.isDestroyed) updateLogBoxHeight();
+                });
+                resizeObserver.observe(panel);
+                ctx.resizeObserver = resizeObserver; // 탭 닫을 때 메모리 해제용
+            }
+        }
     }
 };

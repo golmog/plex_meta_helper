@@ -964,7 +964,7 @@ class CoreDataManager:
                     col_map = {col['key']: col for col in columns_meta}
                     actual_key = col_map.get(sort_key, {}).get('sort_key', sort_key)
                     sort_type = col_map.get(sort_key, {}).get('sort_type', 'string')
-                    s_dir = sort_dir.upper() if sort_dir in ['ASC', 'DESC'] else 'ASC'
+                    s_dir = str(sort_dir).upper() if str(sort_dir).upper() in ['ASC', 'DESC'] else 'ASC'
                     
                     if sort_type == 'number':
                         order_clause = f"ORDER BY CAST(\"{actual_key}\" AS REAL) {s_dir}"
@@ -1329,9 +1329,20 @@ def dispatch_request(subpath, method, args, data, global_config):
                         results.sort(key=lambda r: r.get('score', 0), reverse=True)
                         best_match = results[0]
                         
-                        best_score = best_match.get('score', 0)
-                        if best_score < 95:
-                            return {"error": f"Best match score is too low ({best_score} < 95). Manual match required."}, 404
+                        best_score = int(best_match.get('score', 0) or 0)
+                        is_valid_match = False
+
+                        if best_score >= 95:
+                            is_valid_match = True
+                        elif best_score == 0:
+                            import re
+                            def norm(t): return re.sub(r'[^a-zA-Z0-9가-힣]', '', str(t).lower())
+                            
+                            if norm(target_title) == norm(best_match.get('name', '')):
+                                is_valid_match = True
+
+                        if not is_valid_match:
+                            return {"error": f"신뢰할 수 있는 매칭 후보를 찾지 못했습니다. (수동 매칭 필요)"}, 404
 
                         match_params = {
                             'X-Plex-Token': plex_token,

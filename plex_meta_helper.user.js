@@ -68,14 +68,14 @@ GM_addStyle(`
     #plex-mate-refresh-button:hover { background-color: #d4910c; border-color: #a9780a; transform: scale(1.02); }
     #refresh-guid-button:hover i { color: #ffffff !important; transform: scale(1.1); }
 
-    .media-info-line { display: grid; grid-template-columns: 35px 35px 35px 0.5fr 2.2fr 2.2fr 1.0fr; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 4px; background-color: rgba(0, 0, 0, 0.2); margin-bottom: 4px; }
+    .media-info-line { display: grid; grid-template-columns: 35px 35px 35px 0.5fr 2.2fr 2.2fr 1.0fr; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 4px; background-color: rgba(0, 0, 0, 0.2); }
     .media-info-line .info-block { display: flex; flex-direction: column; justify-content: center; text-align: center; }
     .media-info-line .info-label { color: #9E9E9E; font-size: 10px; margin-bottom: 2px; white-space: nowrap; }
     .media-info-line .info-value { font-size: 12.5px; color: #E0E0E0; line-height: 1.3; display: flex; align-items: center; justify-content: center; text-align: center; word-break: break-word; }
 
-    .pmh-video-header-line { background-color: transparent !important; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px !important; margin-bottom: 6px !important; }
+    .pmh-video-header-line { background-color: transparent !important; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px !important; }
     .pmh-video-header-label { margin: 0 !important; font-size: 11px !important; }
-    .pmh-video-version-block { border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 6px; margin-bottom: 6px; }
+    .pmh-video-version-block { border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 6px; }
     .pmh-video-version-block:last-child { border-bottom: none; padding-bottom: 0; margin-bottom: 0; }
     .pmh-video-data-line { margin-bottom: 2px !important; }
 
@@ -1234,7 +1234,7 @@ GM_addStyle(`
         const targetSrv = ServerConfig.SERVERS[srvIdx];
         if (!targetSrv) return toastr.error("서버 설정이 유효하지 않습니다.");
 
-        window.showPmhToolPanel(toolId, "로딩 중...", `<div id="pmh_common_tool_container" style="padding:15px; text-align:center;"><i class="fas fa-spinner fa-spin fa-2x" style="color:#e5a00d;"></i><br><br>UI 스키마 로드 중...</div>`);
+        window.showPmhToolPanel(toolId, "로딩 중...", `<div id="pmh_common_tool_container" style="padding:10px; text-align:center;"><i class="fas fa-spinner fa-spin fa-2x" style="color:#e5a00d;"></i><br><br>UI 스키마 로드 중...</div>`);
 
         try {
             const res = await new Promise((resolve) => {
@@ -1253,6 +1253,7 @@ GM_addStyle(`
                 toolId: toolId,
                 uiSchema: uiSchema,
                 servers: ServerConfig.SERVERS,
+                availableServerIndices: availableServerIndices,
                 activeServerIdx: srvIdx,
                 apiAdapter: {
                     run: (data) => new Promise((resolve, reject) => {
@@ -1879,7 +1880,10 @@ GM_addStyle(`
 
                 if (successCount > 0) {
                     toastr.success(`[${targetId}] 설치 완료!`);
-                    pmhToolListCache = null; fetchTools(); 
+                    pmhToolListCache = null;
+                    
+                    await checkUpdate(true);
+                    fetchTools();
                 } else {
                     toastr.error("설치에 실패했습니다.");
                     bundleInstallBtn.style.color = '#bd362f';
@@ -1982,6 +1986,7 @@ GM_addStyle(`
                         setTimeout(() => parentItem.style.backgroundColor = "transparent", 1000);
                         pmhToolListCache = null;
                     }
+                    checkUpdate(true);
                 } else {
                     toastr.error("업데이트에 실패했습니다.");
                     delete doUpdateBtn.dataset.updating;
@@ -2130,6 +2135,8 @@ GM_addStyle(`
                             
                             if (successCount > 0) { 
                                 pmhToolListCache = null;
+                                checkUpdate(true);
+
                                 msgDiv.innerHTML = `<span style="color:#51a351;"><i class="fas fa-check"></i> ${successCount}/${ServerConfig.SERVERS.length}대 서버 설치 완료!</span>`;
                                 setTimeout(() => {
                                     urlInput.value = ""; previewDiv.style.display = "none"; btnInstall.disabled = true;
@@ -2150,6 +2157,8 @@ GM_addStyle(`
             if (delBtn) {
                 e.preventDefault(); e.stopPropagation();
                 if(confirm(`'${delBtn.dataset.name}' 툴을 삭제하시겠습니까?`)) {
+                    dropdown.innerHTML = `<div style="padding:30px; text-align:center; color:#aaa;"><i class="fas fa-spinner fa-spin fa-2x" style="color:#e5a00d;"></i><br><br>삭제 및 정보 동기화 중...</div>`;
+
                     GM_deleteValue(`pmh_tool_cache_${delBtn.dataset.id}`);
                     await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
                         try {
@@ -2157,7 +2166,10 @@ GM_addStyle(`
                             res();
                         } catch(err) { res(); }
                     })));
-                    pmhToolListCache = null; fetchTools();
+                    
+                    pmhToolListCache = null;
+                    await checkUpdate(true);
+                    fetchTools();
                 }
                 return;
             }
@@ -3562,7 +3574,7 @@ GM_addStyle(`
             }).join('');
 
             if (data.type === 'album' && data.tracks && data.tracks.length > 0) {
-                versionsHtml += `<div style="margin: 10px 0; border-top: 1px dashed #444; padding-top: 10px;">
+                versionsHtml += `<div style="border-top: 1px dashed #444; padding-top: 10px;">
                                     <div style="font-size: 12px; color: #a3a3a3; font-weight: bold; margin-bottom: 8px;"><i class="fas fa-list-ol"></i> 수록곡 목록 (${data.tracks.length} 트랙)</div>`;
                 
                 data.tracks.forEach(t => {
@@ -3749,7 +3761,7 @@ GM_addStyle(`
         }
 
         const mateBtnHtml = srvConfig ?
-            `<div style="margin-bottom: 4px; display:flex; align-items:center;">
+            `<div style="margin-top: 8px; display:flex; align-items:center;">
                 <div style="width: 95px; flex-shrink: 0; color: #bababa; font-size:13px; font-weight:500;">PLEX MATE</div>
                 <a href="#" id="plex-mate-refresh-button" data-itemid="${data.itemId}"><i class="fas fa-bolt"></i> YAML/TMDB 반영</a>
              </div>` : '';
@@ -3787,14 +3799,18 @@ GM_addStyle(`
         ` : '';
 
         const boxHtml = `
-        <div id="plex-guid-box" class="pmh-fade-update" style="margin-top: 15px; margin-bottom: 10px; width: 100%; position: relative;">
-            <div style="color:#e5a00d; font-size:16px; margin-bottom:4px; font-weight:bold; display:flex; align-items:baseline;">
+        <div id="plex-guid-box" class="pmh-fade-update" style="margin-top: 15px; width: 100%; position: relative;">
+            
+            <div style="color:#e5a00d; font-size:16px; font-weight:bold; display:flex; align-items:baseline;">
                 미디어 정보
                 <span style="margin-left: 12px; font-weight: normal; letter-spacing: -0.5px; font-size: 11px;">
                     <a href="#" id="pmh-btn-refresh-data" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="DB 데이터를 다시 불러옵니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-sync-alt" style="font-size: 10px; margin-right: 2px;"></i>정보 새로고침</a>
                     ${refreshMetaBtnHtml}
                 </span>
             </div>
+            
+            <div style="border-top: 1px solid rgba(255,255,255,0.1);"></div>
+            
             <div id="plex-guid-content">
                 ${versionsHtml}
                 ${mateBtnHtml}
@@ -3809,6 +3825,9 @@ GM_addStyle(`
                     ${markersHtml}
                 </div>` : ''}
             </div>
+            
+            <div style="border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 4px;"></div>
+            
         </div>`;
 
         container.insertAdjacentHTML('afterend', boxHtml);
@@ -4401,8 +4420,12 @@ GM_addStyle(`
 
         if (!observerPending) {
             observerPending = true;
+
             requestAnimationFrame(() => {
                 processList(); 
+                if (window.location.hash.includes('/details?key=')) {
+                    processDetail(false);
+                }
             });
 
             requestAnimationFrame(() => {

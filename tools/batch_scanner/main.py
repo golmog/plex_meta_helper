@@ -604,26 +604,35 @@ def worker(task_data, core_api, start_index):
                         task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 진행)")
                     
                     elif mode == 'rematch':
-                        task.log("   -> 🔗 자동 매칭(Auto Match) 대상 검색 중...")
+                        task.log("   -> 🔗 매칭 대상 검색 중...")
                         target_agent = plex_item.section().agent
                         matches = plex_item.matches(agent=target_agent, title=plex_item.title, year=plex_item.year, language='ko')
-                        
                         if task.is_cancelled(): return
-                        
-                        if matches: 
-                            matches.sort(key=lambda m: int(getattr(m, 'score') or 0), reverse=True)
+                        if matches:
+                            matches.sort(key=lambda m: int(getattr(m, 'score', 0) or 0), reverse=True)
                             best_match = matches[0]
+
+                            best_score = int(getattr(best_match, 'score', 0) or 0)
+                            is_valid_match = False
                             
-                            if best_match.score >= 95:
-                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (점수: {best_match.score}점)")
+                            if best_score >= 95:
+                                is_valid_match = True
+                            elif best_score == 0:
+                                import re
+                                def norm(t): return re.sub(r'[^a-zA-Z0-9가-힣]', '', str(t).lower())
+                                if norm(plex_item.title) == norm(getattr(best_match, 'name', '')):
+                                    is_valid_match = True
+
+                            if is_valid_match:
+                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}'")
                                 task.log("         ➔ 매칭 데이터 적용 중...")
                                 plex_item.fixMatch(best_match)
                                 task.log("         ➔ 🟢 자동 매칭 완료!")
                             else:
-                                task.log(f"      ⚠️ 최상위 매칭 점수가 너무 낮아({best_match.score}점 < 95점) 오매칭 방지를 위해 건너뜁니다.")
+                                task.log(f"      ⚠️ 신뢰할 수 있는 매칭 후보가 없어 오매칭 방지를 위해 건너뜁니다.")
                                 core_api['cache'].mark_as_error('rating_key', str(mid))
-                        else: 
-                            task.log("      ⚠️ 매칭 후보를 찾을 수 없어 리매칭을 건너뜁니다.")
+                        else:
+                            task.log("      ⚠️ Plex 서버에서 매칭 후보를 전혀 찾지 못했습니다. 수동 매칭이 필요합니다.")
                             core_api['cache'].mark_as_error('rating_key', str(mid))
 
                 if not task_data.get('_is_single') and action != 'execute_instant':

@@ -368,8 +368,10 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
                     activeServerIdx: 0,
                     apiAdapter: {
                         run: async (data) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/run`, "POST", data),
-                        status: async (taskId) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/status?task_id=${taskId}`),
-                        cancel: async (taskId) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/cancel`, "POST", {task_id: taskId})
+                        
+                        status: async (taskId) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/status?task_id=${taskId}&server_id=${activeMachineId}`, "GET"),
+                        
+                        cancel: async (taskId) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/cancel`, "POST", {task_id: taskId, _server_id: activeMachineId})
                     },
                     toast: { success: (m)=>showToast(m), error: (m)=>showToast(m, true), info: (m)=>showToast(m) }
                 });
