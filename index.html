@@ -1,4 +1,4 @@
-<!-- index.html (모바일 PWA 앱) -->
+<!-- index.html (모바일 PWA & 태블릿 듀얼뷰 앱) -->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -6,23 +6,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>PMH Mobile</title>
     <meta name="theme-color" content="#1e2124">
+    
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="PMH">
-    <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMxMTEiLz48cGF0aCBkPSJNMjAgMjB2LTRjMC0yLjIgMS44LTQgNC00aDE2YzIuMiAwIDQgMS44 
-NCA0djRoNmMxLjEgMCAyIC45IDIgMnYyNGMwIDEuMS0uOSAyLTIgMkgxNGMtMS4xIDAtMi0uOS0y 
-LTJWMjJjMC0xLjEgLjktMiAyLTJoNnptNC0R2NGgxNnYtNEgyNHptLTggOHYxMGgzMlYyNEgxNnpt 
-MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
+    
+    <link rel="apple-touch-icon" sizes="180x180" href="/api/client/apple-touch-icon.png">
+    <link rel="icon" type="image/png" href="/api/client/favicon-96x96.png" sizes="96x96">
+    
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    
     <style>
         :root { --bg: #121212; --panel: #1e2124; --text: #e0e0e0; --primary: #e5a00d; --border: #333; --success: #51a351; --danger: #bd362f; }
-        body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
+        
+        html { background-color: #000; }
+        body { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            background: var(--bg); 
+            color: var(--text); 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            -webkit-tap-highlight-color: transparent; 
+            min-height: 100vh;
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+            overflow-x: hidden;
+        }
         * { box-sizing: border-box; }
         
+        .tab-bar { max-width: 1200px; margin: 0 auto; right: 0; position: fixed; bottom: 0; left: 0; width: 100%; background: var(--panel); border-top: 1px solid var(--border); display: flex; padding-bottom: env(safe-area-inset-bottom); z-index: 100; }
+        #toast { max-width: 90%; width: max-content; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: var(--success); color: #fff; padding: 12px 24px; border-radius: 30px; font-size: 14px; font-weight: bold; opacity: 0; pointer-events: none; transition: 0.3s; z-index: 9999; box-shadow: 0 5px 15px rgba(0,0,0,0.5); white-space: nowrap; }
+        #pwa-install-banner { max-width: 1200px; margin: 0 auto; right: 0; }
+
         .navbar { background: var(--panel); border-bottom: 1px solid var(--border); padding: 15px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
         .nav-title { color: var(--primary); font-weight: 800; font-size: 18px; display: flex; align-items: center; gap: 8px; }
         
-        .screen { display: none; padding: 15px; padding-bottom: 90px; animation: fadeIn 0.2s ease; }
+        .screen { display: none; padding: 15px; padding-bottom: 70px; animation: fadeIn 0.2s ease; }
         .screen.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         
@@ -45,19 +65,70 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
         .tool-card.running { border-left: 4px solid var(--primary); background: rgba(229,160,13,0.05); }
         .tool-icon { font-size: 26px; color: var(--primary); width: 30px; text-align: center; }
         .tool-info { flex: 1; min-width: 0; }
-        .tool-title { font-size: 16px; font-weight: bold; color: #fff; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+        .tool-title { font-size: 16px; font-weight: bold; color: #fff; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: baseline; gap: 6px; }
         .tool-desc { font-size: 12px; color: #aaa; }
         .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; }
         .badge-run { background: rgba(229,160,13,0.2); color: var(--primary); border: 1px solid var(--primary); }
         .badge-cron { background: rgba(81,163,81,0.2); color: var(--success); border: 1px solid var(--success); }
 
-        .tab-bar { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--panel); border-top: 1px solid var(--border); display: flex; padding-bottom: env(safe-area-inset-bottom); z-index: 100; }
         .tab-item { flex: 1; padding: 12px 0; text-align: center; color: #666; font-size: 11px; font-weight: bold; cursor: pointer; transition: 0.2s; }
         .tab-item.active { color: var(--primary); }
         .tab-item.disabled { color: #333; cursor: not-allowed; opacity: 0.5; pointer-events: none; }
         .tab-item i { display: block; font-size: 20px; margin-bottom: 4px; }
 
-        #toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: var(--success); color: #fff; padding: 12px 24px; border-radius: 30px; font-size: 14px; font-weight: bold; opacity: 0; pointer-events: none; transition: 0.3s; z-index: 9999; box-shadow: 0 5px 15px rgba(0,0,0,0.5); white-space: nowrap; }
+        .pmh-tab-btn { white-space: nowrap !important; flex-shrink: 0 !important; }
+
+        /* ========================================================
+           태블릿 / PC 가로 화면 대응: 다이나믹 듀얼 뷰 레이아웃
+           ======================================================== */
+        @media (min-width: 769px) {
+            #tool-form-container > div {
+                display: grid !important;
+                grid-template-columns: 50% 50%;
+                grid-template-rows: auto 1fr;
+                gap: 0;
+            }
+
+            #tool-form-container > div > div:nth-child(1) {
+                grid-column: 1 / 3;
+                grid-row: 1 / 2;
+                position: relative;
+                margin-bottom: 0 !important;
+            }
+
+            #tool-form-container > div > div:nth-child(1) > div {
+                width: 50% !important;
+                overflow: visible !important;
+            }
+
+            [data-tab="pmh_tab_monitor"] {
+                position: absolute !important;
+                left: 50% !important;
+                bottom: 0 !important;
+                margin-left: 15px !important;
+                border-bottom: 2px solid transparent !important;
+                color: #e5a00d !important;
+                font-weight: bold !important;
+                pointer-events: none !important; 
+            }
+
+            #pmh_tab_form, #pmh_tab_settings {
+                grid-column: 1 / 2;
+                grid-row: 2 / 3;
+                border-right: 1px solid #333;
+                padding-right: 15px;
+                margin-top: 15px;
+            }
+
+            #pmh_tab_monitor {
+                display: flex !important;
+                grid-column: 2 / 3;
+                grid-row: 2 / 3;
+                padding-left: 15px;
+                margin-top: 15px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -112,7 +183,10 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
         </div>
         <div class="form-group">
             <label class="form-label"><i class="fas fa-key"></i> 마스터 API Key</label>
-            <input type="password" id="inp-key" class="input-text" placeholder="BASE.APIKEY 입력">
+            <div style="display:flex; gap:10px;">
+                <input type="password" id="inp-key" class="input-text" placeholder="BASE.APIKEY 입력" style="flex:1;">
+                <button id="btn-copy-key" class="btn" style="width:50px; background:#333; color:#fff; padding:14px;"><i class="fas fa-copy"></i></button>
+            </div>
         </div>
         
         <div style="display:flex; gap:10px; margin-top:30px;">
@@ -129,7 +203,7 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
             <div id="tool-view-title" style="font-weight:bold; color:var(--primary); font-size:15px;">로딩 중...</div>
         </div>
 
-        <div id="tool-form-container" style="margin-bottom:25px; width:100%;"></div>
+        <div id="tool-form-container" style="margin-bottom:10px; width:100%;"></div>
     </div>
 
     <div class="tab-bar">
@@ -276,6 +350,36 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
         document.getElementById('btn-test').addEventListener('click', () => connectServer(true));
         document.getElementById('btn-save').addEventListener('click', () => connectServer(false));
 
+        const copyBtn = document.getElementById('btn-copy-key');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', () => {
+                const keyInput = document.getElementById('inp-key');
+                if (!keyInput.value) {
+                    showToast("복사할 API Key가 없습니다.", true);
+                    return;
+                }
+                
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(keyInput.value).then(() => {
+                        showToast("API Key가 클립보드에 복사되었습니다!");
+                    }).catch(err => {
+                        showToast("복사 실패. 브라우저 권한을 확인하세요.", true);
+                    });
+                } else {
+                    keyInput.type = "text";
+                    keyInput.select();
+                    try {
+                        document.execCommand("copy");
+                        showToast("API Key가 클립보드에 복사되었습니다!");
+                    } catch (err) {
+                        showToast("복사 실패. 수동으로 복사해주세요.", true);
+                    }
+                    keyInput.type = "password";
+                    window.getSelection().removeAllRanges();
+                }
+            });
+        }
+
         async function loadPortal() {
             document.getElementById('portal-loading').style.display = 'block';
             document.getElementById('portal-content').style.display = 'none';
@@ -305,6 +409,8 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
                 if (!res.tools || res.tools.length === 0) {
                     listEl.innerHTML = '<div style="text-align:center; color:#777; padding:20px;">설치된 툴이 없습니다.</div>';
                 } else {
+                    res.tools.sort((a, b) => (a.name || a.id || "").toLowerCase().localeCompare((b.name || b.id || "").toLowerCase()));
+
                     res.tools.forEach(t => {
                         const myRun = res.dashboard.running.filter(r => r.tool_id === t.id);
                         const myCron = res.dashboard.cron.filter(c => c.tool_id === t.id);
@@ -318,8 +424,14 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
                             <div class="tool-card ${isRunning ? 'running' : ''}" onclick="openTool('${t.id}')">
                                 <div class="tool-icon"><i class="${t.icon || 'fas fa-wrench'}"></i></div>
                                 <div class="tool-info">
-                                    <div class="tool-title">${t.name || t.id} ${isRunning ? '<i class="fas fa-spinner fa-spin" style="font-size:12px; color:var(--primary);"></i>' : ''}</div>
-                                    <div class="tool-desc">v${t.version} | ${t.description ? t.description.substring(0, 35) + '...' : ''}</div>
+                                    <div class="tool-title" style="display:flex; flex-wrap:wrap; gap:6px; white-space:normal;">
+                                        ${t.name || t.id} 
+                                        <span style="font-size:11px; color:#777; font-weight:normal;">v${t.version || '1.0'}</span>
+                                        ${isRunning ? '<i class="fas fa-spinner fa-spin" style="font-size:12px; color:var(--primary);"></i>' : ''}
+                                    </div>
+                                    <div class="tool-desc" style="white-space:normal; line-height:1.4; margin-top:2px;">
+                                        ${t.description || ''}
+                                    </div>
                                     <div style="margin-top:6px;">${badgeHtml}</div>
                                 </div>
                                 <i class="fas fa-chevron-right" style="color:#555; font-size:16px;"></i>
@@ -368,13 +480,30 @@ MCAxNHYxMGgzMlYzOEgxNnptMTItNHY0aDh2LTRoLTh6IiBmaWxsPSIjZTVhMDBkIi8+PC9zdmc+">
                     activeServerIdx: 0,
                     apiAdapter: {
                         run: async (data) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/run`, "POST", data),
-                        
                         status: async (taskId) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/status?task_id=${taskId}&server_id=${activeMachineId}`, "GET"),
-                        
                         cancel: async (taskId) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/cancel`, "POST", {task_id: taskId, _server_id: activeMachineId})
                     },
                     toast: { success: (m)=>showToast(m), error: (m)=>showToast(m, true), info: (m)=>showToast(m) }
                 });
+
+                if (!window.dualPaneObserver) {
+                    window.dualPaneObserver = new MutationObserver(() => {
+                        if (window.innerWidth > 768) {
+                            const form = document.getElementById('pmh_tab_form');
+                            const settings = document.getElementById('pmh_tab_settings');
+                            const monitorTabBtn = document.querySelector('[data-tab="pmh_tab_monitor"]');
+                            const formTabBtn = document.querySelector('[data-tab="pmh_tab_form"]');
+                            
+                            if (form && settings && form.style.display === 'none' && settings.style.display === 'none') {
+                                form.style.display = 'flex';
+                                if (monitorTabBtn) monitorTabBtn.classList.remove('active');
+                                if (formTabBtn) formTabBtn.classList.add('active');
+                            }
+                        }
+                    });
+                }
+                window.dualPaneObserver.disconnect();
+                window.dualPaneObserver.observe(container, { attributes: true, subtree: true, attributeFilter: ['style'] });
 
             } catch(e) { 
                 showToast("툴을 불러오지 못했습니다. " + e.message, true); 

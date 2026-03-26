@@ -92,7 +92,7 @@ def get_ui(core_api):
                 {"id": "opt_match", "label": "미매칭 항목 감지 및 자동 매칭 시도", "default": True},
                 {"id": "opt_refresh", "label": "포스터 등 메타데이터 유실 의심 항목 새로고침", "default": True},
                 {"id": "opt_yaml_season", "label": "3자리 시즌 에피소드 중 YAML 미적용 항목 감지", "default": True},
-                {"id": "opt_yaml_marker", "label": "인트로/크레딧 마커 누락 항목 YAML(Plex Mate) 적용", "default": True}
+                {"id": "opt_yaml_marker", "label": "인트로/크레딧 마커 누락 항목 YAML 적용", "default": True}
             ]}
         ],
         "settings_inputs": [
@@ -181,12 +181,11 @@ def get_target_issues(req_data, core_api, task=None):
 
     total_scanned = 0
     try:
-        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 2, 9)"
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 2, 3, 4, 8, 9, 10)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception: pass
 
-    # [최적화] 병합 로직: 리매치나 리프레시일 경우 부모(Show/Album)를 대상으로 묶습니다.
     def add_target(rk, m_type, title, sec_name, fix_type, file_path=None, parent_rk=None):
         target_rk = parent_rk if parent_rk and fix_type in ['match', 'refresh'] else rk
         
@@ -212,23 +211,31 @@ def get_target_issues(req_data, core_api, task=None):
     """
 
     def format_title(r, is_episode=False, is_parent=False):
+        m_type = r[1]
+        raw_title = r[2]
+        
         if is_parent:
-            base_title = r[9] if r[1] in (3, 4, 10) else r[2]
-            year = r[10] if r[1] in (3, 4, 10) else r[4]
-            return f"{base_title} ({year})" if year else base_title
+            base_title = r[9] if m_type in (3, 4, 8, 10) else raw_title
+            year = r[10] if m_type in (3, 4, 8, 10) else r[4]
         elif is_episode:
-            s_title = r[9] or "Unknown"
-            if r[1] == 10:
+            s_title = r[9] or "Unknown Show"
+            if m_type == 10:
                 s_num = f"Disc {int(r[11]):02d}" if r[11] is not None else "Disc 01"
                 e_num = f"Track {int(r[12]):02d}" if r[12] is not None else "Track 01"
             else:
                 s_num = f"S{int(r[11]):02d}" if r[11] is not None else "S01"
                 e_num = f"E{int(r[12]):02d}" if r[12] is not None else "E01"
-            return f"{s_title} / {s_num} / {e_num} - {r[2]}"
+            return f"{s_title} / {s_num} / {e_num} - {raw_title or 'Unknown Episode'}"
         else:
-            base_title = r[2]
+            base_title = raw_title
             year = r[4]
-            return f"{base_title} ({year})" if year else base_title
+            
+        if not base_title: 
+            base_title = raw_title
+            
+        if base_title:
+            return f"{base_title} ({year})" if year else str(base_title)
+        return ""
 
     tasks_to_run = []
     if opts['analyze']: tasks_to_run.append(('analyze', '미분석 파일 감지 중...'))
@@ -296,13 +303,13 @@ def get_target_issues(req_data, core_api, task=None):
                     rk, m_type, title, f_path, parent_id, grandparent_id = r[0], r[1], r[2], r[3], r[5], r[8]
                     sec_name = lib_map.get(str(r[7]), 'Unknown')
                     
-                    # 1:영화, 2:쇼, 3:시즌, 4:에피소드, 8:앨범, 9:아티스트, 10:음악트랙
                     if m_type == 1: 
-                        add_target(rk, 1, format_title(r), sec_name, fix_type, f_path, parent_rk=rk)
+                        display_title = format_title(r)
+                        add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk)
                     elif m_type in (2, 3, 8, 9):
-                        add_target(rk, m_type, format_title(r, is_parent=True), sec_name, fix_type, f_path, parent_rk=rk)
+                        display_title = format_title(r, is_parent=True)
+                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk)
                     elif m_type in (4, 10): 
-                        # 에피소드(4)의 부모는 쇼(grandparent), 트랙(10)의 부모는 앨범(parent) -> 아티스트(grandparent)
                         actual_parent = grandparent_id or parent_id
                         display_title = format_title(r, is_parent=True) if fix_type in ['match', 'refresh'] else format_title(r, is_episode=True)
                         add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
@@ -316,16 +323,21 @@ def get_target_issues(req_data, core_api, task=None):
             try: plex_conn.close()
             except: pass
 
-    # [수정] 파일 목록을 단순 알파벳 정렬이 아닌 PMH 코어 엔진의 자연 정렬(Natural Sort) 적용
-    for rk in targets: 
+    for rk in list(targets.keys()): 
+        if not targets[rk]['title'] or targets[rk]['title'].strip() == "":
+            f_paths = list(targets[rk]['files'])
+            if f_paths:
+                fallback_name = os.path.basename(f_paths[0]) or os.path.basename(os.path.dirname(f_paths[0]))
+                targets[rk]['title'] = fallback_name
+            else:
+                targets[rk]['title'] = f"Unknown Media (ID: {rk})"
+
         raw_files = list(targets[rk]['files'])
-        # 코어 엔진은 dict의 리스트만 받으므로 래핑 후 정렬
         tmp_wrapped = [{"path": f} for f in raw_files]
         sorted_wrapped = core_api['sort'](tmp_wrapped, [{"key": "path", "dir": "asc"}])
         targets[rk]['files'] = [item["path"] for item in sorted_wrapped]
     
     if task: 
-        # 로그 간소화 완료
         task.log(f"✅ DB 쿼리 수집 완료.")
         task.update_state('running', progress=90, total=100)
         
@@ -337,21 +349,16 @@ def get_target_issues(req_data, core_api, task=None):
 def run(data, core_api):
     action = data.get('action_type', 'preview')
 
-    # [1] Preview (조회)
     if action == 'preview':
         task_data = data.copy()
         task_data['_auto_refresh_ui'] = True  
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-    # [2] 즉시 전체 실행
     if action == 'execute_instant':
         task_data = data.copy()
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-    # [3] 데이터 테이블 등에서 넘어온 실행 (Execute)
     if action == 'execute':
-        
-        # 3-1. 크론(스케줄러)
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
             if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
@@ -364,12 +371,10 @@ def run(data, core_api):
                     task_data.pop('target_items', None)
                     return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             
-            # 진행 중인 작업이 없으면 크론은 즉시 실행 모드로 우회
             task_data = data.copy()
             task_data['action_type'] = 'execute_instant'
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-        # 3-2. 단일 항목 실행
         elif data.get('_is_single'):
             raw_files = data.get('files', [])
             if isinstance(raw_files, str):
@@ -390,7 +395,6 @@ def run(data, core_api):
             task_data['total'] = len(items)
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             
-        # 3-3. UI 조회 목록 일괄 실행
         else:
             cached_page = core_api['cache'].load_page(1, 1)
             if cached_page and cached_page.get('total_items', 0) > 0:
@@ -411,14 +415,10 @@ def worker(task_data, core_api, start_index):
     task = core_api['task']
     action = task_data.get('action_type')
 
-    # -----------------------------------------------------------------
-    # [1] Preview (대상 조회) 액션
-    # -----------------------------------------------------------------
     if action == 'preview':
         task.log("🔍 복구 대상(이슈)을 찾기 위해 라이브러리 검사를 시작합니다...")
         task.update_state('running', progress=0, total=100)
         
-        # 1-1. get_target_issues 호출
         targets, total_scanned = get_target_issues(task_data, core_api, task)
         
         if task.is_cancelled(): 
@@ -535,33 +535,27 @@ def worker(task_data, core_api, start_index):
                 cache_db_path = core_api['cache'].db_file
                 results = []
                 
-                # [최적화] 배치 스캐너와 동일하게 pmh_id 인덱스 기반으로 정렬하여 DB 로드 속도를 극대화합니다.
                 with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
                     c.execute("SELECT * FROM data ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
                     for r in c.fetchall():
                         row_dict = dict(r)
-                        
-                        # [호환성 처리] DB에 'rating_key' 또는 'id' 형태로 들어있는 키 값을 통일
                         row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id', '')))
                         row_dict['rating_key'] = row_dict['id']
                         
-                        # 파일 경로는 JSON 배열 문자열 형태로 저장되어 있으므로 파싱 (스마트 스캐너 전용)
                         if isinstance(row_dict.get('files'), str):
                             try: row_dict['files'] = json.loads(row_dict['files'])
                             except: row_dict['files'] = []
                         elif not row_dict.get('files'):
                             row_dict['files'] = []
                             
-                        # m_type, fix_type 등 스마트 스캐너 전용 키 무결성 보장
                         row_dict['m_type'] = int(row_dict.get('m_type', 1))
                         row_dict['fix_type'] = row_dict.get('fix_type', 'analyze')
                         
                         results.append(row_dict)
                 return results
             
-            # 여기서 최적화된 함수 호출
             items = load_all_items(start_index)
         else:
             items = task_data.get('target_items', [])
@@ -612,7 +606,6 @@ def worker(task_data, core_api, start_index):
 
     idx = start_index
 
-    # 본 작업 루프
     try:
         for idx, item in enumerate(items, start=start_index + 1):
             
@@ -727,9 +720,6 @@ def worker(task_data, core_api, start_index):
                     if task.is_cancelled(): return
                     time.sleep(0.5)
 
-        # -------------------------------------------------------------
-        # [일괄 검증 및 종료 처리]
-        # -------------------------------------------------------------
         if not task_data.get('_is_single'):
             analyze_rks = [str(i['rating_key']) for i in items if i['fix_type'] == 'analyze']
             if analyze_rks:

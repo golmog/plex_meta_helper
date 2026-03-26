@@ -444,12 +444,14 @@ for asset in assets:
 
 @app.route('/api/client/<filename>')
 def serve_static_client(filename):
-    if ".." in filename or not (filename.endswith('.js') or filename.endswith('.css')):
+    if ".." in filename or not (filename.endswith('.js') or filename.endswith('.css') or filename.endswith('.png')):
         return "Unauthorized Request", 403
     
     path = os.path.join(BASE_DIR, filename)
     if os.path.exists(path):
-        mime = 'text/css' if filename.endswith('.css') else 'application/javascript'
+        if filename.endswith('.css'): mime = 'text/css'
+        elif filename.endswith('.png'): mime = 'image/png'
+        else: mime = 'application/javascript'
         return Response(open(path, 'rb').read(), mimetype=mime)
     return "Not Found", 404
 

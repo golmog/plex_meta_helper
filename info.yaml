@@ -13,6 +13,10 @@ static_assets:
     url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/pmh_ui_core.js"
   - name: "pmh_ui_core.css"
     url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/pmh_ui_core.css"
+  - name: "apple-touch-icon.png"
+    url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/apple-touch-icon.png"
+  - name: "favicon-96x96.png"
+    url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/favicon-96x96.png"
 
 bundled_tools:
   - id: "batch_scanner"

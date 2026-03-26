@@ -12,19 +12,7 @@
 .pmh-panel-minimized .pmh-panel-content, .pmh-panel-minimized .pmh-resizer { display: none !important; }
 .pmh-panel-minimized { height: auto !important; min-height: 0 !important; }
 .pmh-panel-minimized .pmh-panel-header { border-radius: 8px !important; border-bottom: none !important; }
-.pmh-panel-content { 
-    padding: 15px; 
-    overflow-y: auto; 
-    overflow-x: hidden; 
-    color: #ddd; 
-    font-size: 13px; 
-    line-height: 1.5; 
-    flex-grow: 1; 
-    min-height: 0; 
-    text-align: left; 
-    display: flex;           /* 추가됨 */
-    flex-direction: column;  /* 추가됨 */
-}
+.pmh-panel-content { padding: 15px; overflow-y: auto; overflow-x: hidden; color: #ddd; font-size: 13px; line-height: 1.5; flex-grow: 1; min-height: 0; text-align: left; display: flex; flex-direction: column; }
 .pmh-panel-content::-webkit-scrollbar { width: 8px; }
 .pmh-panel-content::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
 .pmh-panel-content::-webkit-scrollbar-thumb:hover { background: #e5a00d; }
