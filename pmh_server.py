@@ -17,10 +17,9 @@ from flask_cors import CORS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "pmh_config.yaml")
 
-CORE_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/pmh_core.py"
-SERVER_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/pmh_server.py"
-
-INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/v0.8-alpha/info.yaml"
+CORE_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_core.py"
+SERVER_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_server.py"
+INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml"
 
 YAML_TEMPLATE = """# ==============================================================================
 # [BASE] - 이 서버(노드) 자체의 구동 환경 설정
