@@ -50,25 +50,26 @@ BASE:
 # ==============================================================================
 # [MASTER] - 프론트엔드 전역 설정 및 게이트웨이 라우팅
 # ==============================================================================
-# MASTER 설정이 활성화되어 있으면 이 서버는 마스터(Gateway) 역할을 수행합니다.
-# 워커 노드로만 사용할 경우 아래 MASTER 블록 전체를 삭제하거나 주석 처리하세요.
-# MASTER:
-#   AUTO_UPDATE_CHECK: true
-#   DISPLAY_PATH_PREFIXES_TO_REMOVE:
-#     - "/mnt"
+# ⚠️ 주의: 서버가 1대뿐이라도, 프론트엔드와 통신하려면 반드시 MASTER 설정이 활성화되어 있어야 합니다.
+# (여러 대의 서버를 운영할 경우, 오직 1대의 메인 서버에만 이 MASTER 블록을 남겨두고,
+# 나머지 보조 서버(워커 노드)의 설정 파일에서는 이 블록 전체를 삭제하거나 주석 처리하세요.)
+MASTER:
+  AUTO_UPDATE_CHECK: true
+  DISPLAY_PATH_PREFIXES_TO_REMOVE:
+    - "/mnt"
 
-#   USER_TAGS:
-#     PRIORITY_GROUP:
-#       - name: "LEAK"
-#         pattern: "(leaked|유출)"
-#       - name: "MOPA"
-#         pattern: "(mopa|모파|모자이크제거)"
-#         target: "path"
-#     INDEPENDENT:
-#       - name: "REMUX"
-#         pattern: "remux"
-#         target: "path"
-        
+  USER_TAGS:
+    PRIORITY_GROUP:
+      - name: "LEAK"
+        pattern: "(leaked|유출)"
+      - name: "UNCEN"
+        pattern: "(mopa|uncen|모파|모자이크제거)"
+        target: "path"
+    INDEPENDENT:
+      - name: "REMUX"
+        pattern: "remux"
+        target: "path"
+
 #   NODES:
     # 첫 번째 노드(마스터 자신)는 설정하지 않아도 프론트엔드에 자동 포함됩니다.
     # 추가 워커 노드가 있다면 아래에 등록합니다.
