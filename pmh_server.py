@@ -389,6 +389,8 @@ def relay_to_node(node_id, subpath):
         return jsonify({"error": "이 서버는 마스터 노드가 아닙니다. 릴레이 기능이 비활성화되어 있습니다."}), 400
 
     if node_id in ["master_node", "self"]:
+        if subpath == 'admin/update':
+            return api_admin_update()
         return api_gateway(subpath)
 
     node_info = next((n for n in MASTER_CFG.get("NODES", []) if n.get("id") == node_id), None)
