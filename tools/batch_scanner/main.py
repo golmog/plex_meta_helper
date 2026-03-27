@@ -56,7 +56,7 @@ def translate_path(plex_path, mappings):
         if "|" not in m: continue
         p_path, s_path = m.split("|", 1)
         p_path, s_path = p_path.strip().replace('\\', '/'), s_path.strip().replace('\\', '/')
-        if p_path and plex_path.startswith(p_path): 
+        if p_path and plex_path.startswith(p_path):
             return s_path + plex_path[len(p_path):]
     return plex_path
 
@@ -68,7 +68,7 @@ def get_ui(core_api):
     default_secs = []
     try:
         rows = core_api['query']("SELECT id, name FROM library_sections ORDER BY name")
-        for r in rows: 
+        for r in rows:
             sec_val = str(r['id'])
             sections.append({"value": sec_val, "text": r['name']})
             default_secs.append(sec_val)
@@ -78,17 +78,17 @@ def get_ui(core_api):
         "title": "배치 스캐너",
         "description": "대상 항목을 큐 대기열 병목 없이 안전한 속도로 순차 처리합니다.",
         "inputs": [
-            {"id": "target_sections", "type": "multi_select", "label": "작업 대상 섹션", "options": sections, "default": default_secs},
-            
+            {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},
+
             {"id": "mode", "type": "select", "label": "작업 모드", "options": [
                 {"value": "refresh", "text": "배치 리프레시 (Refresh)"},
                 {"value": "rematch", "text": "배치 리매칭 (Fix Match)"},
                 {"value": "path_scan", "text": "배치 경로 스캔 (Plex Mate 연동)"}
             ], "default": "refresh"},
-            
+
             {"id": "opt_smart_refresh", "type": "checkbox", "label": "포스터/메타데이터 유실이 의심되는 항목만 조회", "default": False, "show_if": {"mode": "refresh"}},
             {"id": "opt_smart_match", "type": "checkbox", "label": "GUID가 없는 미매칭 항목만 조회", "default": False, "show_if": {"mode": "rematch"}},
-            
+
             {"id": "target_agent", "type": "text", "label": "에이전트 제외 필터", "placeholder": "예: tv.plex.agents.movie (입력 시 해당 에이전트 항목 제외)", "show_if": {"mode": "rematch"}},
             {"id": "scan_depth", "type": "number", "label": "경로 스캔 Depth (기본: 1)", "default": 1, "layout": "plain", "width": "60px", "show_if": {"mode": "path_scan"}}
         ],
@@ -98,19 +98,30 @@ def get_ui(core_api):
         "settings_inputs": [
             {"id": "s_h1", "type": "header", "label": "<i class='fas fa-tachometer-alt'></i> 실행 속도 제어"},
             {"id": "sleep_time", "type": "number", "label": "항목 처리 후 대기 시간 (단위: 초)", "default": 2},
-            
+
             {"id": "s_h_cron", "type": "header", "label": "<i class='fas fa-clock'></i> 자동 실행 스케줄러"},
             {"id": "cron_enable", "type": "checkbox", "label": "크론탭(Crontab) 기반 자동 실행 활성화", "default": False},
             {"id": "cron_expr", "type": "cron", "label": "크론탭 시간 설정 (분 시 일 월 요일)", "placeholder": "0 4 * * 0 ※숫자만 허용"},
 
             {"id": "s_h2", "type": "header", "label": "<i class='fab fa-discord'></i> 알림 설정"},
-            {"id": "discord_enable", "type": "checkbox", "label": "작업 완료 시 디스코드 알림 발송", "default": True},
+            {"id": "discord_enable", "type": "checkbox", "label": "작업 완료 시 디스코드 통계 알림 발송", "default": True},
             {"id": "discord_webhook", "type": "text", "label": "툴 전용 웹훅 URL (비워두면 서버 전역 설정 사용)", "placeholder": "https://discord.com/api/webhooks/..."},
-            {"id": "discord_template", "type": "textarea", "label": "본문 메시지 템플릿 편집", "height": 130, "default": DEFAULT_DISCORD_TEMPLATE,
+            {"id": "discord_bot_name", "type": "text", "label": "디스코드 봇 이름 오버라이딩", "placeholder": "예: {server_name}의 봇 (아래의 모든 템플릿 변수 사용 가능)"},
+            {"id": "discord_avatar_url", "type": "text", "label": "디스코드 봇 프로필 이미지 URL", "placeholder": "https://.../icon.png"},
+            {"id": "discord_template", "type": "textarea", "label": "본문 메시지 템플릿 편집", "height": 160, "default": DEFAULT_DISCORD_TEMPLATE,
              "template_vars": [
-                 {"key": "mode", "desc": "실행된 작업 모드 (refresh, rematch 등)"},
                  {"key": "total", "desc": "처리된 총 항목 수"},
-                 {"key": "elapsed_time", "desc": "총 소요 시간 (예: 2분 30초)"}
+                 {"key": "elapsed_time", "desc": "총 소요 시간 (예: 5분 20초)"},
+                 {"key": "mode", "desc": "실행 모드 (refresh, rematch 등)"}
+             ]},
+
+            {"id": "discord_template_footer", "type": "textarea", "label": "푸터(Footer) 템플릿 편집", "height": 50, "default": "Plex Meta Helper - {tool_id} | {server_name}",
+             "template_vars": [
+                 {"key": "tool_id", "desc": "실행된 툴의 고유 ID (어느 곳에서나 사용 가능)"},
+                 {"key": "server_id", "desc": "실행 대상 서버 식별자 앞 8자리 (어느 곳에서나 사용 가능)"},
+                 {"key": "server_name", "desc": "사용자가 설정한 서버 이름 (어느 곳에서나 사용 가능)"},
+                 {"key": "date", "desc": "현재 날짜 YYYY-MM-DD (어느 곳에서나 사용 가능)"},
+                 {"key": "time", "desc": "현재 시간 HH:MM:SS (어느 곳에서나 사용 가능)"}
              ]}
         ],
         "buttons": [
@@ -120,35 +131,35 @@ def get_ui(core_api):
     }
 
 # =====================================================================
-# 2. 데이터 추출
+# 2. 데이터 추출 및 그룹화
 # =====================================================================
 def get_target_items(req_data, core_api, task=None):
     target_sections = req_data.get('target_sections', [])
     mode = req_data.get('mode', 'refresh')
     target_agent = req_data.get('target_agent', '').strip()
     scan_depth = int(req_data.get('scan_depth', 1))
-    
+
     opt_smart_refresh = req_data.get('opt_smart_refresh', False)
     opt_smart_match = req_data.get('opt_smart_match', False)
-    
+
     items = []
     total_scanned = 0
-    
+
     sec_query = "SELECT id, name FROM library_sections"
     sec_params = []
-    
-    if target_sections:
+
+    if target_sections and 'all' not in target_sections:
         placeholders = ",".join("?" for _ in target_sections)
         sec_query += f" WHERE id IN ({placeholders})"
         sec_params.extend(target_sections)
-    
+
     try:
         target_libs = core_api['query'](sec_query, tuple(sec_params))
     except Exception as e:
         if task: task.log(f"❌ 라이브러리 섹션 조회 실패: {e}")
         return items, total_scanned
 
-    if not target_libs: 
+    if not target_libs:
         if task: task.log("⚠️ 선택한 라이브러리를 찾을 수 없습니다.")
         return items, total_scanned
 
@@ -159,23 +170,23 @@ def get_target_items(req_data, core_api, task=None):
     # 경로 스캔(Path Scan) 모드
     # -------------------------------------------------------------
     if mode == 'path_scan':
-        if task: 
+        if task:
             task.log(f"디렉토리 계층 구조에서 Depth {scan_depth} 경로들을 수집 중입니다...")
             task.update_state('running', progress=10, total=100)
-            
+
         path_set = set()
         loc_q = f"SELECT library_section_id, root_path FROM section_locations WHERE library_section_id IN ({lib_ids_str})"
-        
+
         path_mappings = core_api['config'].get('path_mappings', [])
-        
+
         for loc in core_api['query'](loc_q):
             if task and task.is_cancelled(): return items, total_scanned
             root = loc['root_path']
             sec_id = loc['library_section_id']
             sec_name = lib_map.get(str(sec_id), 'Unknown')
-            
+
             if not os.path.exists(root): continue
-            
+
             if scan_depth <= 0:
                 mapped_path = translate_path(root, path_mappings)
                 path_set.add((mapped_path, sec_id, sec_name))
@@ -184,18 +195,18 @@ def get_target_items(req_data, core_api, task=None):
                     for dirpath, dirnames, filenames in os.walk(root):
                         rel_path = os.path.relpath(dirpath, root)
                         current_depth = 0 if rel_path == '.' else len(rel_path.replace('\\', '/').split('/'))
-                        
+
                         if current_depth == scan_depth:
                             mapped_path = translate_path(dirpath, path_mappings)
                             path_set.add((mapped_path, sec_id, sec_name))
-                            dirnames.clear() 
+                            dirnames.clear()
                         elif current_depth > scan_depth:
                             dirnames.clear()
                 except Exception: pass
-                
-        for i, (p, sid, sname) in enumerate(sorted(list(path_set))):
-            items.append({'id': p, 'section_id': sid, 'section': sname, 'title': p, 'guid': '-'})
-            
+
+        tmp_list = [{'id': p, 'section_id': sid, 'section': sname, 'title': p, 'guid': '-'} for p, sid, sname in list(path_set)]
+        items = core_api['sort'](tmp_list, [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}])
+
         total_scanned = len(items)
         if task: task.update_state('running', progress=90, total=100)
         return items, total_scanned
@@ -204,23 +215,28 @@ def get_target_items(req_data, core_api, task=None):
     # 메타데이터 기반 조회 (Refresh, Rematch)
     # -------------------------------------------------------------
     try:
-        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 2, 9)"
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 2, 3, 4, 8, 9, 10)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception: pass
 
-    where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 9)"
-    
+    where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 3, 4, 8, 9, 10)"
+
     if mode == 'refresh' and opt_smart_refresh:
-        where_conditions += """ AND (
-            (mi.metadata_type IN (1, 2) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
-        )"""
+        where_conditions = f"""
+            mi.library_section_id IN ({lib_ids_str}) AND
+            (
+                (mi.metadata_type IN (1, 2, 9) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                OR
+                (mi.metadata_type IN (4, 8) AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+            )
+        """
     elif mode == 'rematch' and opt_smart_match:
-        where_conditions += " AND (mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL)"
+        where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND (mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2, 3, 4, 8, 9, 10)"
 
     base_select = f"""
-        SELECT 
-            mi.id, mi.metadata_type, mi.title, 
+        SELECT
+            mi.id, mi.metadata_type, mi.title,
             (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) as file,
             mi.year, mi.parent_id, mi.guid, mi.library_section_id,
             (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
@@ -232,61 +248,81 @@ def get_target_items(req_data, core_api, task=None):
         WHERE {where_conditions}
     """
 
-    if task: 
-        filter_msg = "(지능형 필터 적용)" if (opt_smart_refresh and mode=='refresh') or (opt_smart_match and mode=='rematch') else "(전체)"
-        task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 대상 {filter_msg}을(를) 조회 중입니다...")
+    if task:
+        filter_msg = "(지능형 필터 적용)" if (opt_smart_refresh and mode=='refresh') or (opt_smart_match and mode=='rematch') else "(전체 딥스캔)"
+        task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 개별 미디어 대상 {filter_msg}을(를) 조회 및 부모 병합 중입니다...")
         task.update_state('running', progress=10, total=100)
 
     plex_db_path = core_api['config'].get('plex_db_path', '')
     if not os.path.exists(plex_db_path):
         if task: task.log("❌ Plex DB 경로를 찾을 수 없습니다.")
         return items, total_scanned
-        
+
     plex_conn = None
+    targets = {}
+
+    def format_title(r, is_parent=False):
+        m_type = r[1]
+        raw_title = r[2]
+        
+        if is_parent:
+            base_title = r[9] if m_type in (3, 4, 8, 10) else raw_title
+            year = r[10] if m_type in (3, 4, 8, 10) else r[4]
+        else:
+            base_title = raw_title
+            year = r[4]
+            
+        if not base_title: 
+            base_title = raw_title
+            
+        if base_title:
+            return f"{base_title} ({year})" if year else str(base_title)
+        return ""
+
     try:
         plex_conn = sqlite3.connect(f'file:{plex_db_path}?mode=ro', uri=True, timeout=10.0)
         plex_c = plex_conn.cursor()
         plex_c.execute(base_select)
-        
+
         while True:
             rows = plex_c.fetchmany(10000)
             if not rows: break
             if task and task.is_cancelled(): break
-            
+
             for r in rows:
                 rk = r[0]
                 m_type = r[1]
-                title = r[2] or "Unknown Title"
+                title = r[2]
                 f_path = r[3]
                 guid_val = r[6]
                 lib_sec_id = r[7]
-                show_title = r[9] or "Unknown"
-                s_idx = r[11]
-                e_idx = r[12]
-                
+                parent_id = r[5]
+                grandparent_id = r[8]
+
                 clean_guid = '-'
                 if guid_val:
                     clean_guid = guid_val.replace("com.plexapp.agents.", "").replace("tv.plex.agents.", "")
                     if "?" in clean_guid: clean_guid = clean_guid.split("?")[0]
-                    if mode == 'rematch' and target_agent and clean_guid.startswith(target_agent): 
-                        continue # 지정한 에이전트는 리매칭 대상에서 제외
+                    if mode == 'rematch' and target_agent and clean_guid.startswith(target_agent):
+                        continue
 
-                if m_type == 2:
-                    display_title = title
-                elif m_type == 9:
-                    artist_name = show_title if show_title != "Unknown" else "Unknown Artist"
-                    display_title = f"{artist_name} / {title}"
-                else:
-                    display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
+                actual_parent = grandparent_id or parent_id
+                target_rk = actual_parent if actual_parent and mode in ['refresh', 'rematch'] else rk
 
-                lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
-                
-                items.append({
-                    'id': str(rk), 
-                    'section': lib_name, 
-                    'title': display_title, 
-                    'guid': clean_guid
-                })
+                if target_rk not in targets:
+                    display_title = format_title(r, is_parent=(mode in ['refresh', 'rematch'] and m_type in (4, 8, 10)))
+                    if m_type not in (1, 2, 3, 4, 8, 9, 10):
+                        display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
+
+                    lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
+
+                    targets[target_rk] = {
+                        'id': str(target_rk),
+                        'section': lib_name,
+                        'title': display_title,
+                        'guid': clean_guid,
+                        'f_path': f_path
+                    }
 
     except Exception as e:
         if task: task.log(f"❌ 쿼리 실행 중 오류 발생: {e}")
@@ -295,15 +331,28 @@ def get_target_items(req_data, core_api, task=None):
             try: plex_conn.close()
             except: pass
 
+    for rk in list(targets.keys()): 
+        if not targets[rk]['title'] or targets[rk]['title'].strip() == "":
+            f_path = targets[rk].get('f_path')
+            if f_path:
+                fallback_name = os.path.basename(f_path) or os.path.basename(os.path.dirname(f_path))
+                targets[rk]['title'] = fallback_name
+            else:
+                targets[rk]['title'] = f"Unknown Media (ID: {rk})"
+
+    items = list(targets.values())
+
+    items = core_api['sort'](items, [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}])
+
     if task: task.update_state('running', progress=90, total=100)
-    
+
     return items, total_scanned
 
 # =====================================================================
 # 3. 메인 라우터
 # =====================================================================
 def run(data, core_api):
-    action = data.get('action_type')
+    action = data.get('action_type', 'preview')
     current_mode = data.get('mode', 'refresh')
 
     if action == 'preview':
@@ -317,7 +366,7 @@ def run(data, core_api):
 
     if action == 'execute':
         vfs_opt = data.get('opt_vfs', True)
-        
+
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
             if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
@@ -328,7 +377,7 @@ def run(data, core_api):
                     task_data['_resume_start_index'] = task_state.get('progress', 0)
                     task_data['_is_cron'] = True
                     return {"status": "success", "type": "async_task", "task_data": task_data}, 200
-            
+
             task_data = data.copy()
             task_data['action_type'] = 'execute_instant'
             task_data['_is_cron'] = True
@@ -341,7 +390,7 @@ def run(data, core_api):
             task_data['_silent_task'] = True
             task_data['_auto_refresh_ui'] = True
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
-        
+
         else:
             cached_page = core_api['cache'].load_page(1, 1)
             if cached_page and cached_page.get('total_items', 0) > 0:
@@ -359,10 +408,10 @@ def run(data, core_api):
 # 4. 백그라운드 워커
 # =====================================================================
 def worker(task_data, core_api, start_index):
-    task = core_api['task'] 
+    task = core_api['task']
     action = task_data.get('action_type')
     work_start_time = time.time()
-    
+
     mate_url = core_api['config'].get('mate_url', '')
     mate_apikey = core_api['config'].get('mate_apikey', '')
 
@@ -373,7 +422,7 @@ def worker(task_data, core_api, start_index):
         task.log("🔍 조회 대상을 찾기 위해 라이브러리를 검사합니다...")
         task.update_state('running', progress=0, total=100)
         items, total_scanned = get_target_items(task_data, core_api, task)
-        
+
         if task.is_cancelled():
             task.log("🛑 조회 작업이 사용자에 의해 취소되었습니다.")
             return
@@ -394,14 +443,14 @@ def worker(task_data, core_api, start_index):
             table_data = [{"section": i['section'], "title": i['title'], "guid": i['guid'], "rating_key": i['id']} for i in items]
             link_type = "link"
             link_key = "rating_key"
-        
+
         action_btn = None
         if len(items) > 0:
             action_btn = {
-                "label": f"<i class='fas fa-rocket'></i> 검색된 {len(items):,}건 전체 작업 시작", 
+                "label": f"<i class='fas fa-rocket'></i> 검색된 {len(items):,}건 전체 작업 시작",
                 "payload": {"action_type": "execute", "mode": task_data.get('mode', 'refresh')}
             }
-            
+
         sort_rules = [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}]
 
         res_payload = {
@@ -409,17 +458,17 @@ def worker(task_data, core_api, start_index):
             "summary_cards": summary_cards,
             "default_sort": sort_rules,
             "columns": [
-                {"key": "section", "label": "섹션", "width": "20%", "align": "center", "header_align": "center", "sortable": True},
-                {"key": "title", "label": "대상 항목 (경로/제목)", "width": "45%", "align": "left", "header_align": "center", "type": link_type, "link_key": link_key, "sortable": True},
-                {"key": "guid", "label": "에이전트", "width": "25%", "align": "center", "header_align": "center", "sortable": True},
+                {"key": "section", "label": "섹션", "width": "20%", "header_align": "center", "sortable": True},
+                {"key": "title", "label": "대상 항목 (경로/제목)", "width": "45%", "header_align": "center", "type": link_type, "link_key": link_key, "sortable": True},
+                {"key": "guid", "label": "에이전트", "width": "25%", "header_align": "center", "sortable": True},
                 {"key": "action", "label": "실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn", "action_type": "execute", "payload": {"mode": task_data.get('mode', 'refresh')}}
             ],
             "data": table_data
         }
-        
+
         core_api['cache'].save(res_payload)
         task.update_state('completed', progress=100, total=100)
-        
+
         if len(items) > 0:
             task.log(f"✅ 조회 완료! 총 {len(items):,}건의 대상을 찾았습니다.")
         else:
@@ -447,7 +496,7 @@ def worker(task_data, core_api, start_index):
             start_index = task_data['_resume_start_index']
             task.update_state('running', progress=start_index, total=total)
             task.log(f"🔄 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
-        
+
         if task_data.get('_use_cache_db'):
             def load_all_items(start_idx):
                 cache_db_path = core_api['cache'].db_file
@@ -468,12 +517,12 @@ def worker(task_data, core_api, start_index):
             items = load_all_items(start_index)
         else:
             items = task_data.get('target_items', [])
-            
+
         if total == 0:
             task.update_state('completed', progress=0, total=0)
             task.log("⚠️ 실행할 대상 항목이 없습니다.")
             return
-            
+
         if not task_data.get('_resume_start_index'):
             mode = task_data.get('mode', 'refresh')
             task.log(f"🚀 총 {total:,}건 작업을 시작합니다.")
@@ -486,7 +535,7 @@ def worker(task_data, core_api, start_index):
     if mode in ['refresh', 'rematch']:
         try:
             plex = core_api['get_plex']()
-            if start_index == 0: 
+            if start_index == 0:
                 task.log("🔌 Plex 연결 완료.")
         except Exception as e:
             task.update_state('error'); task.log(f"❌ Plex 연결 실패: {str(e)}"); return
@@ -501,15 +550,15 @@ def worker(task_data, core_api, start_index):
                 if len(plex.query('/activities').findall('Activity')) == 0:
                     stable_count += 1
                     if stable_count >= 2: return True
-                else: 
+                else:
                     stable_count = 0
             except: pass
-            
+
             for _ in range(4):
                 if task.is_cancelled(): return False
                 time.sleep(0.5)
             waited_time += 2
-            
+
         task.log("⚠️ Plex 작업 큐 대기 시간 초과. 강제로 다음 항목을 진행합니다.")
         return True
 
@@ -518,85 +567,94 @@ def worker(task_data, core_api, start_index):
 
     try:
         for idx, item in enumerate(items, start=start_index + 1):
-            
-            if task.is_cancelled(): 
+
+            if task.is_cancelled():
                 task.log("🛑 사용자 요청에 의해 작업을 중단합니다.")
-                return 
+                return
 
             mid, title = item['id'], item['title']
             task.log(f"[{idx}/{total}] 🎬 '{title}' 처리 중...")
-            
+
             if mode in ['refresh', 'rematch']:
                 if not wait_until_stable_idle(): return
-            
+
             try:
                 if mode == 'path_scan':
                     if not mate_url or not mate_apikey:
                         raise Exception("Plex Mate 서버 URL 또는 API Key가 설정되지 않았습니다.")
-                    
+
                     sec_id = item.get('section_id')
-                    
+
                     if opt_vfs:
                         task.log(f"   -> 📂 Plex Mate VFS/Refresh 호출 중...")
                         if call_plexmate_vfs_refresh(mate_url, mate_apikey, mid):
                             task.log("      ✅ VFS 갱신 성공")
                         else:
                             task.log("      ⚠️ VFS 갱신 실패 (무시하고 스캔을 속행합니다)")
-                    
+
                     task.log(f"   -> 🔍 Plex Mate 경로 스캔 호출 중...")
                     if call_plexmate_scan(mate_url, mate_apikey, mid, sec_id):
                         task.log("      ✅ 스캔 요청 성공 (백그라운드 처리)")
                     else:
                         raise Exception("Plex Mate 응답 오류 또는 연결 실패")
-                        
+
                 else:
                     safe_endpoint = f"/library/metadata/{str(mid).strip()}"
                     plex_item = plex.fetchItem(safe_endpoint)
-                    
+
                     if task.is_cancelled(): return
-                    
-                    if mode == 'refresh': 
+
+                    if mode == 'refresh':
                         task.log("   -> 🔄 메타데이터 새로고침(Refresh) 호출 중...")
                         plex_item.refresh()
                         task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 진행)")
-                    
+
                     elif mode == 'rematch':
-                        task.log("   -> 🔗 자동 매칭(Auto Match) 대상 검색 중...")
+                        task.log("   -> 🔗 매칭 대상 검색 중...")
                         target_agent = plex_item.section().agent
                         matches = plex_item.matches(agent=target_agent, title=plex_item.title, year=plex_item.year, language='ko')
-                        
                         if task.is_cancelled(): return
-                        
-                        if matches: 
-                            matches.sort(key=lambda m: int(getattr(m, 'score') or 0), reverse=True)
+                        if matches:
+                            matches.sort(key=lambda m: int(getattr(m, 'score', 0) or 0), reverse=True)
                             best_match = matches[0]
-                            
-                            if best_match.score >= 95:
-                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (점수: {best_match.score}점)")
+
+                            best_score = int(getattr(best_match, 'score', 0) or 0)
+                            is_valid_match = False
+
+                            if best_score >= 95:
+                                is_valid_match = True
+                            elif best_score == 0:
+                                import re
+                                def norm(t): return re.sub(r'[^a-zA-Z0-9가-힣]', '', str(t).lower())
+                                if norm(plex_item.title) == norm(getattr(best_match, 'name', '')):
+                                    is_valid_match = True
+
+                            if is_valid_match:
+                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}'")
                                 task.log("         ➔ 매칭 데이터 적용 중...")
                                 plex_item.fixMatch(best_match)
                                 task.log("         ➔ 🟢 자동 매칭 완료!")
                             else:
-                                task.log(f"      ⚠️ 최상위 매칭 점수가 너무 낮아({best_match.score}점 < 95점) 오매칭 방지를 위해 건너뜁니다.")
+                                task.log(f"      ⚠️ 신뢰할 수 있는 매칭 후보가 없어 오매칭 방지를 위해 건너뜁니다.")
                                 core_api['cache'].mark_as_error('rating_key', str(mid))
-                        else: 
-                            task.log("      ⚠️ 매칭 후보를 찾을 수 없어 리매칭을 건너뜁니다.")
+                        else:
+                            task.log("      ⚠️ Plex 서버에서 매칭 후보를 전혀 찾지 못했습니다. 수동 매칭이 필요합니다.")
                             core_api['cache'].mark_as_error('rating_key', str(mid))
 
                 if not task_data.get('_is_single') and action != 'execute_instant':
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
                     core_api['cache'].mark_keys_as_done(key_name, [str(mid)])
-                    
+
             except Exception as e:
                 task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
                 if not task_data.get('_is_single') and action != 'execute_instant':
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
                     core_api['cache'].mark_as_error(key_name, str(mid))
-                
+
             if task.is_cancelled(): return
-            
+
             task.update_state('running', progress=idx)
-            
+
             if sleep_time > 0 and idx < total:
                 loops = max(1, int(sleep_time * 2))
                 for _ in range(loops):
@@ -604,7 +662,7 @@ def worker(task_data, core_api, start_index):
                     time.sleep(0.5)
 
         task.update_state('completed', progress=total)
-        
+
         if task_data.get('_is_single'):
             task.log("✅ 단일 실행 작업이 정상적으로 완료되었습니다!")
         else:
@@ -612,7 +670,7 @@ def worker(task_data, core_api, start_index):
             elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
             prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
             task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
-            
+
             tool_vars = {"mode": mode, "total": f"{total:,}", "elapsed_time": elapsed_str}
             core_api['notify']("배치 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#51a351", tool_vars)
 
@@ -622,4 +680,3 @@ def worker(task_data, core_api, start_index):
             real_state = current_state.get('state', 'running')
             if real_state != 'completed':
                 task.update_state(real_state, progress=idx)
-

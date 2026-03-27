@@ -18,11 +18,12 @@ from datetime import datetime
 from contextlib import contextmanager
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.7.58"
+__version__ = "0.8.59"
 
 def get_version():
     return __version__
@@ -831,7 +832,7 @@ class CoreTaskManager:
             return True
 
 # ==============================================================================
-# [코어 데이터 캐시 관리자 (자동 직렬화/역직렬화 적용)]
+# [코어 데이터 캐시 관리자]
 # ==============================================================================
 class CoreDataManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
@@ -923,17 +924,21 @@ class CoreDataManager:
 
     def load_page(self, page, limit, sort_key=None, sort_dir='asc'):
         with self._lock:
-            if not os.path.exists(self.db_file): return None
+            if not os.path.exists(self.db_file): 
+                return {"data": [], "total_items": 0, "total_pages": 1, "page": page, "columns": []}
             
             with self._get_conn() as conn:
                 c = conn.cursor()
                 
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='meta'")
-                if c.fetchone()[0] == 0: return None
+                if c.fetchone()[0] == 0: 
+                    return {"data": [], "total_items": 0, "total_pages": 1, "page": page, "columns": []}
                 
                 c.execute("SELECT payload FROM meta LIMIT 1")
                 meta_row = c.fetchone()
-                if not meta_row: return None
+                if not meta_row: 
+                    return {"data": [], "total_items": 0, "total_pages": 1, "page": page, "columns": []}
+                
                 result = json.loads(meta_row[0])
                 
                 if result.get('type') == 'dashboard':
@@ -959,7 +964,7 @@ class CoreDataManager:
                     col_map = {col['key']: col for col in columns_meta}
                     actual_key = col_map.get(sort_key, {}).get('sort_key', sort_key)
                     sort_type = col_map.get(sort_key, {}).get('sort_type', 'string')
-                    s_dir = sort_dir.upper() if sort_dir in ['ASC', 'DESC'] else 'ASC'
+                    s_dir = str(sort_dir).upper() if str(sort_dir).upper() in ['ASC', 'DESC'] else 'ASC'
                     
                     if sort_type == 'number':
                         order_clause = f"ORDER BY CAST(\"{actual_key}\" AS REAL) {s_dir}"
@@ -1254,7 +1259,8 @@ def dispatch_request(subpath, method, args, data, global_config):
 
     try:
         if subpath == 'ping' and method == 'GET':
-            return {"status": "ok", "version": __version__}, 200
+            machine_id = global_config.get("machine_id", "")
+            return {"status": "ok", "version": __version__, "machine_id": machine_id}, 200
             
         elif subpath == 'library/batch' and method == 'POST':
             return handle_library_batch(data, max_batch_size, db_path)
@@ -1323,9 +1329,20 @@ def dispatch_request(subpath, method, args, data, global_config):
                         results.sort(key=lambda r: r.get('score', 0), reverse=True)
                         best_match = results[0]
                         
-                        best_score = best_match.get('score', 0)
-                        if best_score < 95:
-                            return {"error": f"Best match score is too low ({best_score} < 95). Manual match required."}, 404
+                        best_score = int(best_match.get('score', 0) or 0)
+                        is_valid_match = False
+
+                        if best_score >= 95:
+                            is_valid_match = True
+                        elif best_score == 0:
+                            import re
+                            def norm(t): return re.sub(r'[^a-zA-Z0-9가-힣]', '', str(t).lower())
+                            
+                            if norm(target_title) == norm(best_match.get('name', '')):
+                                is_valid_match = True
+
+                        if not is_valid_match:
+                            return {"error": f"신뢰할 수 있는 매칭 후보를 찾지 못했습니다. (수동 매칭 필요)"}, 404
 
                         match_params = {
                             'X-Plex-Token': plex_token,
@@ -1356,6 +1373,43 @@ def dispatch_request(subpath, method, args, data, global_config):
 
                 except Exception as e:
                     return {"error": str(e)}, 500
+
+        elif subpath.startswith('mate/') and method == 'POST':
+            ff_url = global_config.get("mate_url")
+            ff_apikey = global_config.get("mate_apikey")
+            
+            if not ff_url or not ff_apikey:
+                return {"ret": "error", "msg": "노드의 Plex Mate (FF) 설정이 누락되었습니다. (BASE.FF_URL / BASE.FF_APIKEY)"}, 400
+                
+            ff_url = ff_url.rstrip('/')
+            target_endpoint = subpath.replace('mate/', '/plex_mate/api/', 1)
+            target_url = f"{ff_url}{target_endpoint}"
+            form_data = data if data else {}
+            form_data['apikey'] = ff_apikey
+            
+            encoded_data = urlencode(form_data).encode('utf-8')
+            
+            print(f"[PMH Core] 🚀 Plex Mate 중계 요청: {target_url}")
+            
+            try:
+                req = Request(target_url, data=encoded_data, method='POST')
+                req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+                
+                with urlopen(req, timeout=60) as response:
+                    resp_data = response.read().decode('utf-8')
+                    try:
+                        result_json = json.loads(resp_data)
+                        return result_json, 200
+                    except json.JSONDecodeError:
+                        return {"ret": "error", "msg": "FF 서버의 응답을 파싱할 수 없습니다.", "raw": resp_data}, 500
+                        
+            except HTTPError as e:
+                err_body = e.read().decode('utf-8')
+                print(f"[PMH Core Error] FF HTTP Error: {e.code} - {err_body}")
+                return {"ret": "error", "msg": f"FF API HTTP 오류 ({e.code})"}, e.code
+            except URLError as e:
+                print(f"[PMH Core Error] FF Network Error: {e}")
+                return {"ret": "error", "msg": f"FF 서버 통신 실패: {str(e)}"}, 502
 
         elif subpath == 'tools' and method == 'GET':
             installed_tools = []

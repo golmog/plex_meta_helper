@@ -72,24 +72,27 @@ def call_plexmate_refresh(mate_url, apikey, rating_key):
 # 1. UI 스키마
 # =====================================================================
 def get_ui(core_api):
-    sections = [{"value": "all", "text": "전체 라이브러리 (All)"}]
+    sections = []
+    default_secs = []
     try:
         rows = core_api['query']("SELECT id, name FROM library_sections ORDER BY name")
-        for r in rows: sections.append({"value": str(r['id']), "text": r['name']})
+        for r in rows: 
+            sec_val = str(r['id'])
+            sections.append({"value": sec_val, "text": r['name']})
+            default_secs.append(sec_val)
     except: pass
 
     return {
         "title": "스마트 스캐너",
         "description": "미분석/미매칭/메타/마커/YAML 적용 누락 등을 감지하고 최적의 순서로 자동 복구합니다.",
         "inputs": [
-            {"id": "h1", "type": "header", "label": "<i class='fas fa-filter'></i> 1. 복구 대상 라이브러리"},
-            {"id": "target_sections", "type": "multi_select", "label": "검사할 라이브러리 선택", "options": sections, "default": "all"},
+            {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},
             {"id": "fix_options", "type": "checkbox_group", "label": "선택 옵션", "options": [
                 {"id": "opt_analyze", "label": "미분석 항목 감지 및 강제 분석", "default": True},
                 {"id": "opt_match", "label": "미매칭 항목 감지 및 자동 매칭 시도", "default": True},
                 {"id": "opt_refresh", "label": "포스터 등 메타데이터 유실 의심 항목 새로고침", "default": True},
                 {"id": "opt_yaml_season", "label": "3자리 시즌 에피소드 중 YAML 미적용 항목 감지", "default": True},
-                {"id": "opt_yaml_marker", "label": "인트로/크레딧 마커 누락 항목 YAML(Plex Mate) 적용", "default": True}
+                {"id": "opt_yaml_marker", "label": "인트로/크레딧 마커 누락 항목 YAML 적용", "default": True}
             ]}
         ],
         "settings_inputs": [
@@ -178,52 +181,68 @@ def get_target_issues(req_data, core_api, task=None):
 
     total_scanned = 0
     try:
-        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 4, 10)"
+        count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({lib_ids_str}) AND metadata_type IN (1, 2, 3, 4, 8, 9, 10)"
         count_res = core_api['query'](count_q)
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception: pass
 
     def add_target(rk, m_type, title, sec_name, fix_type, file_path=None, parent_rk=None):
-        if rk not in targets:
-            targets[rk] = {"title": title, "section": sec_name, "type": m_type, "fix": fix_type, "files": set()}
-        if file_path: targets[rk]["files"].add(file_path)
+        target_rk = parent_rk if parent_rk and fix_type in ['match', 'refresh'] else rk
+        
+        if target_rk not in targets:
+            targets[target_rk] = {"title": title, "section": sec_name, "type": m_type, "fix": fix_type, "files": set()}
+            
+        if file_path: targets[target_rk]["files"].add(file_path)
         if parent_rk: assigned_grandparents.add(parent_rk)
 
+    # [최적화] 무거운 JOIN 대신 스칼라 서브쿼리 사용
     base_from = f"""
         SELECT 
-            mi.id, mi.metadata_type, mi.title, mp.file, mi.year, mi.parent_id, mi.guid, mi.library_section_id,
+            mi.id, mi.metadata_type, mi.title, 
+            (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) as file,
+            mi.year, mi.parent_id, mi.guid, mi.library_section_id,
             (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
             (SELECT title FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
             (SELECT year FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
             (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
             mi."index" as e_idx
         FROM metadata_items mi
-        LEFT JOIN media_items m ON m.metadata_item_id = mi.id
-        LEFT JOIN media_parts mp ON mp.media_item_id = m.id
         WHERE mi.library_section_id IN ({lib_ids_str}) AND 
     """
 
-    def format_title(r, is_episode=False):
-        if is_episode:
-            s_title = r[9] or "Unknown" # show_title (index 9)
-            if r[1] == 10: # 음악 트랙
+    def format_title(r, is_episode=False, is_parent=False):
+        m_type = r[1]
+        raw_title = r[2]
+        
+        if is_parent:
+            base_title = r[9] if m_type in (3, 4, 8, 10) else raw_title
+            year = r[10] if m_type in (3, 4, 8, 10) else r[4]
+        elif is_episode:
+            s_title = r[9] or "Unknown Show"
+            if m_type == 10:
                 s_num = f"Disc {int(r[11]):02d}" if r[11] is not None else "Disc 01"
                 e_num = f"Track {int(r[12]):02d}" if r[12] is not None else "Track 01"
             else:
                 s_num = f"S{int(r[11]):02d}" if r[11] is not None else "S01"
                 e_num = f"E{int(r[12]):02d}" if r[12] is not None else "E01"
-            return f"{s_title} / {s_num} / {e_num} - {r[2]}"
+            return f"{s_title} / {s_num} / {e_num} - {raw_title or 'Unknown Episode'}"
         else:
-            base_title = r[9] if r[1] in (3, 4, 10) else r[2]
-            year = r[10] if r[1] in (3, 4, 10) else r[4]
-            return f"{base_title} ({year})" if year else base_title
+            base_title = raw_title
+            year = r[4]
+            
+        if not base_title: 
+            base_title = raw_title
+            
+        if base_title:
+            return f"{base_title} ({year})" if year else str(base_title)
+        return ""
 
     tasks_to_run = []
-    if opts['analyze']: tasks_to_run.append(('analyze', '미분석 파일(해상도/코덱 정보 누락) 감지 중...'))
-    if opts['match']: tasks_to_run.append(('match', '미매칭 항목(GUID 없음) 감지 중...'))
-    if opts['refresh']: tasks_to_run.append(('refresh', '메타데이터 유실(포스터 등 누락) 감지 중...'))
+    if opts['analyze']: tasks_to_run.append(('analyze', '미분석 파일 감지 중...'))
+    if opts['match']: tasks_to_run.append(('match', '미매칭 항목 감지 중...'))
+    if opts['refresh']: tasks_to_run.append(('refresh', '메타데이터 유실 감지 중...'))
     if opts['yaml_season']: tasks_to_run.append(('yaml_season', '시즌 번호 3자리 이상 YAML 미적용 감지 중...'))
-    if opts['yaml_marker']: tasks_to_run.append(('yaml_marker', '인트로/크레딧 마커 누락 항목 감지 중...'))
+    if opts['yaml_marker']: tasks_to_run.append(('yaml_marker', '마커 누락 항목 감지 중...'))
 
     total_steps = len(tasks_to_run)
     if total_steps == 0:
@@ -248,19 +267,19 @@ def get_target_issues(req_data, core_api, task=None):
             query = ""
             if fix_type == 'analyze':
                 query = base_from + """
-                    mp.file IS NOT NULL AND (
-                        (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0)) OR
-                        (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
-                    )
+                    mi.metadata_type IN (1, 4, 10) AND mi.id IN (
+                        SELECT m.metadata_item_id FROM media_items m 
+                        WHERE (m.width IS NULL OR m.width = 0 OR m.audio_codec IS NULL OR m.audio_codec = '')
+                    ) AND (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) IS NOT NULL
                 """
             elif fix_type == 'match':
-                query = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2)"
+                query = base_from + "(mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid IS NULL) AND mi.metadata_type IN (1, 2, 9)"
             elif fix_type == 'refresh':
                 query = base_from + """
                     (
-                        (mi.metadata_type IN (1, 2) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                        (mi.metadata_type IN (1, 2, 9) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                         OR
-                        (mi.metadata_type = 4 AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                        (mi.metadata_type IN (4, 8) AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url NOT LIKE '%://%' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                     )
                 """
             elif fix_type == 'yaml_season':
@@ -285,9 +304,15 @@ def get_target_issues(req_data, core_api, task=None):
                     sec_name = lib_map.get(str(r[7]), 'Unknown')
                     
                     if m_type == 1: 
-                        add_target(rk, 1, format_title(r), sec_name, fix_type, f_path, parent_rk=rk)
+                        display_title = format_title(r)
+                        add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk)
+                    elif m_type in (2, 3, 8, 9):
+                        display_title = format_title(r, is_parent=True)
+                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk)
                     elif m_type in (4, 10): 
-                        add_target(rk, m_type, format_title(r, is_episode=True), sec_name, fix_type, f_path, parent_rk=grandparent_id or parent_id)
+                        actual_parent = grandparent_id or parent_id
+                        display_title = format_title(r, is_parent=True) if fix_type in ['match', 'refresh'] else format_title(r, is_episode=True)
+                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
                         
             if task: task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
 
@@ -298,10 +323,22 @@ def get_target_issues(req_data, core_api, task=None):
             try: plex_conn.close()
             except: pass
 
-    for rk in targets: targets[rk]['files'] = list(targets[rk]['files'])
+    for rk in list(targets.keys()): 
+        if not targets[rk]['title'] or targets[rk]['title'].strip() == "":
+            f_paths = list(targets[rk]['files'])
+            if f_paths:
+                fallback_name = os.path.basename(f_paths[0]) or os.path.basename(os.path.dirname(f_paths[0]))
+                targets[rk]['title'] = fallback_name
+            else:
+                targets[rk]['title'] = f"Unknown Media (ID: {rk})"
+
+        raw_files = list(targets[rk]['files'])
+        tmp_wrapped = [{"path": f} for f in raw_files]
+        sorted_wrapped = core_api['sort'](tmp_wrapped, [{"key": "path", "dir": "asc"}])
+        targets[rk]['files'] = [item["path"] for item in sorted_wrapped]
     
     if task: 
-        task.log(f"✅ DB 쿼리 수집 완료. (총 {len(targets):,}개 병합됨)")
+        task.log(f"✅ DB 쿼리 수집 완료.")
         task.update_state('running', progress=90, total=100)
         
     return targets, total_scanned
@@ -312,21 +349,16 @@ def get_target_issues(req_data, core_api, task=None):
 def run(data, core_api):
     action = data.get('action_type', 'preview')
 
-    # [1] Preview (조회)
     if action == 'preview':
         task_data = data.copy()
         task_data['_auto_refresh_ui'] = True  
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-    # [2] 즉시 전체 실행
     if action == 'execute_instant':
         task_data = data.copy()
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-    # [3] 데이터 테이블 등에서 넘어온 실행 (Execute)
     if action == 'execute':
-        
-        # 3-1. 크론(스케줄러)
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
             if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
@@ -339,12 +371,10 @@ def run(data, core_api):
                     task_data.pop('target_items', None)
                     return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             
-            # 진행 중인 작업이 없으면 크론은 즉시 실행 모드로 우회
             task_data = data.copy()
             task_data['action_type'] = 'execute_instant'
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-        # 3-2. 단일 항목 실행
         elif data.get('_is_single'):
             raw_files = data.get('files', [])
             if isinstance(raw_files, str):
@@ -365,7 +395,6 @@ def run(data, core_api):
             task_data['total'] = len(items)
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
             
-        # 3-3. UI 조회 목록 일괄 실행
         else:
             cached_page = core_api['cache'].load_page(1, 1)
             if cached_page and cached_page.get('total_items', 0) > 0:
@@ -386,14 +415,10 @@ def worker(task_data, core_api, start_index):
     task = core_api['task']
     action = task_data.get('action_type')
 
-    # -----------------------------------------------------------------
-    # [1] Preview (대상 조회) 액션
-    # -----------------------------------------------------------------
     if action == 'preview':
         task.log("🔍 복구 대상(이슈)을 찾기 위해 라이브러리 검사를 시작합니다...")
         task.update_state('running', progress=0, total=100)
         
-        # 1-1. get_target_issues 호출
         targets, total_scanned = get_target_issues(task_data, core_api, task)
         
         if task.is_cancelled(): 
@@ -509,19 +534,28 @@ def worker(task_data, core_api, start_index):
             def load_all_items(start_idx):
                 cache_db_path = core_api['cache'].db_file
                 results = []
+                
                 with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
                     c.execute("SELECT * FROM data ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
                     for r in c.fetchall():
                         row_dict = dict(r)
-                        row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
+                        row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id', '')))
                         row_dict['rating_key'] = row_dict['id']
+                        
                         if isinstance(row_dict.get('files'), str):
                             try: row_dict['files'] = json.loads(row_dict['files'])
                             except: row_dict['files'] = []
+                        elif not row_dict.get('files'):
+                            row_dict['files'] = []
+                            
+                        row_dict['m_type'] = int(row_dict.get('m_type', 1))
+                        row_dict['fix_type'] = row_dict.get('fix_type', 'analyze')
+                        
                         results.append(row_dict)
                 return results
+            
             items = load_all_items(start_index)
         else:
             items = task_data.get('target_items', [])
@@ -572,7 +606,6 @@ def worker(task_data, core_api, start_index):
 
     idx = start_index
 
-    # 본 작업 루프
     try:
         for idx, item in enumerate(items, start=start_index + 1):
             
@@ -632,23 +665,34 @@ def worker(task_data, core_api, start_index):
                         task.log("      ✅ 분석 요청 완료 (Plex 백그라운드에서 파일 스캔 진행)")
 
                     elif fix_type == 'match':
-                        task.log("   -> [미매칭] Plex 서버에 매칭 후보(Matches) 검색 요청 중...")
+                        task.log("   -> [미매칭] 매칭 대상 검색 요청 중...")
                         target_agent = plex_item.section().agent
                         matches = plex_item.matches(agent=target_agent, title=plex_item.title, year=plex_item.year, language='ko')
                         if task.is_cancelled(): return
                         if matches:
-                            matches.sort(key=lambda m: int(getattr(m, 'score') or 0), reverse=True)
+                            matches.sort(key=lambda m: int(getattr(m, 'score', 0) or 0), reverse=True)
                             best_match = matches[0]
+
+                            best_score = int(getattr(best_match, 'score', 0) or 0)
+                            is_valid_match = False
                             
-                            if best_match.score >= 95:
-                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}' (매칭 점수: {best_match.score}점)")
+                            if best_score >= 95:
+                                is_valid_match = True
+                            elif best_score == 0:
+                                import re
+                                def norm(t): return re.sub(r'[^a-zA-Z0-9가-힣]', '', str(t).lower())
+                                if norm(plex_item.title) == norm(getattr(best_match, 'name', '')):
+                                    is_valid_match = True
+
+                            if is_valid_match:
+                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}'")
                                 task.log("         ➔ 매칭 데이터 적용 중...")
                                 plex_item.fixMatch(best_match)
                                 task.log("         ➔ 🟢 자동 매칭 완료!")
                             else:
-                                task.log(f"      ⚠️ 최상위 매칭 점수가 너무 낮아({best_match.score}점 < 95점) 오매칭 방지를 위해 건너뜁니다.")
+                                task.log(f"      ⚠️ 신뢰할 수 있는 매칭 후보가 없어 오매칭 방지를 위해 건너뜁니다.")
                                 core_api['cache'].mark_as_error('rating_key', str(rk))
-                        else: 
+                        else:
                             task.log("      ⚠️ Plex 서버에서 매칭 후보를 전혀 찾지 못했습니다. 수동 매칭이 필요합니다.")
                             core_api['cache'].mark_as_error('rating_key', str(rk))
 
@@ -676,9 +720,6 @@ def worker(task_data, core_api, start_index):
                     if task.is_cancelled(): return
                     time.sleep(0.5)
 
-        # -------------------------------------------------------------
-        # [일괄 검증 및 종료 처리]
-        # -------------------------------------------------------------
         if not task_data.get('_is_single'):
             analyze_rks = [str(i['rating_key']) for i in items if i['fix_type'] == 'analyze']
             if analyze_rks:

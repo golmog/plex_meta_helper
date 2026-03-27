@@ -37,17 +37,21 @@ def format_duration(ms):
 # 1. UI 스키마 정의
 # =====================================================================
 def get_ui(core_api):
-    sections = [{"value": "all", "text": "전체 라이브러리 (All)"}]
+    sections = []
+    default_secs = []
     try:
-        for r in core_api['query']("SELECT id, name FROM library_sections ORDER BY name"):
-            sections.append({"value": str(r['id']), "text": r['name']})
-    except Exception: pass
+        rows = core_api['query']("SELECT id, name FROM library_sections ORDER BY name")
+        for r in rows: 
+            sec_val = str(r['id'])
+            sections.append({"value": sec_val, "text": r['name']})
+            default_secs.append(sec_val)
+    except: pass
 
     return {
         "title": "라이브러리 종합 통계 분석",
         "description": "선택한 라이브러리의 메타 데이터를 분석하여 요약 대시보드를 생성합니다.<br><span style='color:#777; font-size:11px;'>(이 툴은 데이터 변경을 수행하지 않는 조회 전용 툴입니다.)</span>",
         "inputs": [
-            {"id": "target_sections", "type": "multi_select", "label": "분석할 라이브러리 섹션", "options": sections, "default": "all"},
+            {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},
             
             {"id": "media_types", "type": "checkbox_group", "label": "분석 대상 미디어 (실제 파일 단위)", "options": [
                 {"id": "type_movie", "label": "영화 (Movies)", "default": True},
@@ -165,16 +169,18 @@ def worker(task_data, core_api, start_index):
 
     try:
         # -----------------------------------------------------------------
-        # STEP 1: 개수, 용량, 재생시간, 해상도를 한 번의 쿼리로 긁어와서 파이썬으로 계산 (초고속)
+        # STEP 1: 개수, 용량, 재생시간, 해상도 계산
         # -----------------------------------------------------------------
         task.update_state('running', progress=20, total=100)
         task.log("📂 기본 미디어 통계(개수, 용량, 해상도)를 분석 중입니다...")
         
         q_basic = f"""
-            SELECT mi.metadata_type, m.duration, mp.size, m.width
+            SELECT 
+                mi.metadata_type, 
+                (SELECT duration FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) as duration,
+                (SELECT SUM(size) FROM media_parts WHERE media_item_id IN (SELECT id FROM media_items WHERE metadata_item_id = mi.id)) as total_size,
+                (SELECT width FROM media_items WHERE metadata_item_id = mi.id ORDER BY width DESC LIMIT 1) as max_width
             FROM metadata_items mi 
-            LEFT JOIN media_items m ON m.metadata_item_id = mi.id 
-            LEFT JOIN media_parts mp ON mp.media_item_id = m.id 
             {base_where}
         """
         
@@ -185,9 +191,9 @@ def worker(task_data, core_api, start_index):
             if m_type in counts_map: counts_map[m_type] += 1
             
             if row['duration']: total_duration += row['duration']
-            if row['size']: total_size += row['size']
+            if row['total_size']: total_size += row['total_size']
             
-            w = row['width']
+            w = row['max_width']
             if w and w > 0:
                 total_res_count += 1
                 if w >= 7000: res_dict["8K"] += 1
@@ -198,16 +204,16 @@ def worker(task_data, core_api, start_index):
                 else: res_dict["SD"] += 1
 
         # -----------------------------------------------------------------
-        # STEP 2: 오디오/비디오 코덱 추출 (별도 테이블 JOIN)
+        # STEP 2: 오디오/비디오 코덱 추출
         # -----------------------------------------------------------------
         task.update_state('running', progress=60, total=100)
         task.log("🎵 스트림 코덱 통계를 분석 중입니다...")
         
         q_codec = f"""
             SELECT ms.stream_type_id, ms.codec, COUNT(*) as cnt 
-            FROM metadata_items mi 
-            JOIN media_items m ON m.metadata_item_id = mi.id 
-            JOIN media_streams ms ON ms.media_item_id = m.id 
+            FROM media_streams ms
+            JOIN media_items m ON ms.media_item_id = m.id
+            JOIN metadata_items mi ON m.metadata_item_id = mi.id
             {base_where} AND ms.codec != '' AND ms.codec IS NOT NULL 
             GROUP BY ms.stream_type_id, ms.codec
         """

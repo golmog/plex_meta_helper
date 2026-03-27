@@ -18,7 +18,6 @@ DEFAULT_DISCORD_TEMPLATE = """**🔍 다중 경로(병합 오류 의심) 검색 
 웹 UI에서 상세 목록을 확인하고 분할(Split) 조치를 취해주세요.
 """
 
-# 💡 [핵심 최적화 1] 정규식을 미리 컴파일(Compile)하여 루프 내 CPU 부하를 100배 줄입니다.
 SEASON_PATTERN = re.compile(r'^(season|시즌|series|s)\s*\d+\b', re.IGNORECASE)
 SPECIAL_PATTERN = re.compile(r'^(specials?|스페셜|extras?|특집|ova|ost)(\s*\d+)?$', re.IGNORECASE)
 
@@ -45,21 +44,24 @@ def get_unique_root_path(raw_file):
     return "/".join(parts).lower()
 
 # =====================================================================
-# 1. UI 스키마 정의 (동일)
+# 1. UI 스키마 정의 
 # =====================================================================
 def get_ui(core_api):
-    sections = [{"value": "all", "text": "전체 라이브러리 (All)"}]
+    sections = []
+    default_secs = []
     try:
         rows = core_api['query']("SELECT id, name FROM library_sections ORDER BY name")
-        for r in rows:
-            sections.append({"value": str(r['id']), "text": r['name']})
-    except Exception: pass
+        for r in rows: 
+            sec_val = str(r['id'])
+            sections.append({"value": sec_val, "text": r['name']})
+            default_secs.append(sec_val)
+    except: pass
 
     return {
         "title": "다중 경로(병합 오류 의심) 항목 검색",
         "description": "서로 다른 폴더 경로를 가진 파일들이 하나의 메타로 잘못 병합된 항목을 찾습니다.<br><span style='color:#777; font-size:11px;'>(이 툴은 데이터 변경을 수행하지 않는 조회 전용 툴입니다.)</span>",
         "inputs": [
-            {"id": "target_sections", "type": "multi_select", "label": "검사할 라이브러리 선택", "options": sections, "default": "all"}
+            {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs}
         ],
         "settings_inputs": [
             {"id": "s_h_cron", "type": "header", "label": "<i class='fas fa-clock'></i> 자동 실행 스케줄러"},
@@ -112,7 +114,7 @@ def run(data, core_api):
     return {"status": "error", "message": f"지원하지 않는 명령입니다 ({action})"}, 400
 
 # =====================================================================
-# 3. 백그라운드 워커 (단일 쿼리 최적화)
+# 3. 백그라운드 워커 
 # =====================================================================
 def worker(task_data, core_api, start_index):
     task = core_api['task']
@@ -155,7 +157,7 @@ def worker(task_data, core_api, start_index):
         if all_lib_ids:
             try:
                 ids_str = ",".join(all_lib_ids)
-                count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({ids_str}) AND metadata_type IN (1, 4)"
+                count_q = f"SELECT COUNT(*) as cnt FROM metadata_items WHERE library_section_id IN ({ids_str}) AND metadata_type IN (1, 2, 3, 4, 8, 9, 10)"
                 count_res = core_api['query'](count_q)
                 if count_res: total_scanned = count_res[0]['cnt']
             except Exception: pass
@@ -179,13 +181,14 @@ def worker(task_data, core_api, start_index):
                 if task.is_cancelled(): return
                 
                 rk = row['id']
-                title_map[rk] = row['title']
+                # [수정점] 영화의 경우 제목 폴백 처리
+                title_map[rk] = row['title'] or os.path.basename(row['file']) or f"Unknown Movie (ID: {rk})"
                 sec_id_map[rk] = row['library_section_id']
                 
                 paths_map[rk].add(get_unique_root_path(unicodedata.normalize('NFC', row['file'])))
 
         # -----------------------------------------------------------------
-        # STEP 3: 가벼운 쿼리로 TV 쇼 라이브러리 일괄 조회 (최적화 됨)
+        # STEP 3: 가벼운 쿼리로 TV 쇼 라이브러리 일괄 조회
         # -----------------------------------------------------------------
         if show_lib_ids:
             task.log("📺 TV 쇼 라이브러리 파일 경로를 분석 중입니다...")
@@ -243,10 +246,13 @@ def worker(task_data, core_api, start_index):
                 for r in core_api['query'](q, tuple(chunk)):
                     rk_id = r['id']
                     path_count = len(paths_map[rk_id])
+                    
+                    fallback_title = r['title'] or f"Unknown Show (ID: {rk_id})"
+                    
                     results.append({
                         "rating_key": str(rk_id), 
                         "section": lib_name_map.get(str(r['library_section_id']), 'Unknown'), 
-                        "title": r['title'],
+                        "title": fallback_title,
                         "count_html": f"<span style='color:#e5a00d; font-weight:bold;'>{path_count}</span>", 
                         "raw_count": path_count
                     })

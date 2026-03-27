@@ -1,10 +1,23 @@
 title: "Plex Meta Helper(PMH)"
-version: "0.7.58-server"
+version: "0.8.59-server"
 package_name: "plex_meta_helper"
 developer: "golmog"
-description: "Plex Web UI 개선 스크립트"
+description: "Plex Web UI 관리 기능 개선 프로젝트"
 home: "https://github.com/golmog/plex_meta_helper"
 more: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/README.md"
+
+static_assets:
+  - name: "index.html"
+    url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/index.html"
+  - name: "pmh_ui_core.js"
+    url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.js"
+  - name: "pmh_ui_core.css"
+    url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.css"
+  - name: "apple-touch-icon.png"
+    url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/apple-touch-icon.png"
+  - name: "favicon-96x96.png"
+    url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/favicon-96x96.png"
+
 bundled_tools:
   - id: "batch_scanner"
     url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/tools/batch_scanner/info.yaml"

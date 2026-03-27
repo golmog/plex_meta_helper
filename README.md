@@ -1,82 +1,20 @@
-# Plex Meta Helper
+# Plex Meta Helper (PMH)
 
-Plex Web UI를 강화하는 Tampermonkey 유저스크립트입니다. Plex 컨텐츠의 상세 메타 정보를 표시하고, 캐시 관리, 외부 플레이어 연동 등 다양한 편의 기능을 제공합니다.
-
-특히 `plex_mate`와의 연동을 통해 VFS 새로고침 및 라이브러리 스캔을 웹 UI에서 직접 실행할 수 있습니다.
+Plex Web UI를 강화하는 Tampermonkey 유저스크립트 및 백엔드 툴 관리 시스템입니다.
+Plex 컨텐츠의 상세 메타 정보를 표시하고, 캐시 관리, 외부 플레이어 연동 및 서버 툴 관리 등 다양한 편의 기능을 제공합니다.
 
 ## 업데이트
 
-v0.7.58 (2026-03-22)
-- 툴 실행중 업데이트 로직 안전성 개선
-- 쇼 목록 에피소드 리매칭 로직 개선
+v0.8.59 (2026-03-27)
+- **서버 마스터/노드 아키텍처 도입**: 프론트엔드는 마스터 노드(Gateway)에만 접속하며, 마스터가 각 워커 노드로 API를 릴레이(Relay).
+- **모바일 PWA 앱 지원**: 브라우저 확장프로그램이 없는 모바일 기기에서도 홈 화면에 앱을 추가하여 툴 박스를 관리할 수 있는 독립 페이지(`index.html`) 제공.
+- **UI 코어 분리**: PC와 모바일이 동일한 렌더링 엔진(`pmh_ui_core.js`, `pmh_ui_core.css`)을 공유하도록 구조 개선.
+- **Plex Mate 연동 방식 변경**: 프론트엔드에서 직접 통신하지 않고 백엔드(pmh_server)를 프록시로 거쳐 통신하도록 변경.
 
-v0.7.56 (2026-03-20)
-- 업데이트 로직 개선
-- Plex 메타데이터 매칭 로직 수정
-- 목록 GUID Shift+클릭시 자동 리매칭 기능 추가
-- 기타 개선, 버그 수정
+v0.7.x
+- 사용자 툴 도입
 
-v0.7.55 (2026-03-19)
-- 캐시 시스템 로직 개선
-- 툴 로직/UI 개선
-- 음악 라이브러 지원
-- 기타 로직 개선, 버그 수정
-
-v0.7.54 (2026-03-18)
-- 서버 업데이트 로직 개선
-- 기타 로직 개선, 버그 수정
-
-v0.7.53 (2026-03-17)
-- 툴/서버 로직/UI 개선, 버그 수정
-
-v0.7.51 (2026-03-16)
-- 서버 설정에 `PLEX_SQLITE_BIN: "/usr/lib/plexmediaserver/Plex SQLite"`(기본값) 추가: PMS가 꺼져 있거나 Plex DB 쓰기 작업시 필수
-- 기타 로직 개선
-
-v0.7.50 (2026-03-15)
-- 백엔드(서버)/프론트엔드(JS): 툴 관련 실행 구조 변경
-- 구조 변경에 따른 번들 툴 업데이트
-
-v0.7.49 (2026-03-15)
-- 툴/서버: 스케줄러/디스코드 로직 개선, 버그 수정
-- 업데이트 버그 수정
-
-v0.7.46 (2026-03-14)
-- 툴/서버: 주요 로직 변경으로 툴 전체 업데이트 필요
-  - 자동실행 스케줄러 추가(crontab 방식)
-  - 디스코드 알림 설정 항목 추가(개별 툴 환경 설정)
-  - 향후 번들 툴(@golmog)을 헬퍼 업데이트시 같이 자동 업데이트(설치돼있는 경우)
-  - 화면 감지/리프레시 타이머를 150ms -> 400ms로 조정(부하 감소 vs 리프레시 속도 늦춤 트레이드 오프)
-  - 기타 로직 개선, 버그 수정
-- 헬퍼 업데이트시 실행중인 툴 작업이 있는 경우 업데이트 차단
-
-v0.7.45 (2026-03-13)
-- 툴/서버: UI/UX 개선, 버그 수정
-
-v0.7.44 (2026-03-12)
-- 툴 개선
-  - `환경 설정` 탭 추가
-  - 툴 제작시 커스텀 옵션 설정 가능
-  - 디스코드 알림(서버/툴별) 설정 추가: 업데이트/설정 후 서버 재시작 필요
-  - 기타 기능/UI 개선
-
-v0.7.43 (2026-03-12)
-- 백엔드/프론트엔드 성능 최적화
-
-v0.7.42 (2026-03-12)
-- 툴/UI 로직 개선
-- 기타 기능 개선, 버그 수정
-
-v0.7.41 (2026-03-10)
-- 툴: Task UI 조회/실행 옵션 분리. 기타 수정
-
-v0.7.40 (2026-03-10)
-- 사용자 툴(API) 도입: 사용자가 만든 스크립트를 툴에 설치해서 PMH 인터페이스에 통합할 수 있습니다.
-  - API: UI / DB / Task(비동기 스레드 실행/상태/취소 등) / 로깅 등
-  - tools에 레퍼런스 툴 3종(Type: datatable / dashboard / asyncTask) 확인
-- 설정메뉴 접힘/펼침 기능 추가
-
-v0.6.x 주요 업데이트
+v0.6.x
 - Flask 서버 시스템 도입
 - 목록에 태그(뱃지) 기능 추가
 
@@ -85,101 +23,61 @@ v0.6.x 주요 업데이트
 
 이 스크립트의 모든 기능을 사용하려면 다음이 필요합니다.
 
-1.  **Tampermonkey**: 브라우저에 [Tampermonkey](https://www.tampermonkey.net/)와 같은 유저스크립트 매니저가 설치되어 있어야 합니다.
-2.  '외부 플레이어 재생' 및 '폴더 열기' 기능을 사용하려면, `plexplay://`, `plexstream://`, `plexfolder://` 등의 주소 형식을 열 수 있도록 하는 작업이 필요합니다.(현재 문서 하단 `외부 재생/폴더 열기` 참고)
+1.  **Tampermonkey**: PC 브라우저에 [Tampermonkey](https://www.tampermonkey.net/) 확장이 설치되어 있어야 합니다.
+2.  **PMH 백엔드 서버**: `pmh_server.py`가 구동되는 백엔드 서버(컨테이너 또는 호스트)가 최소 1대 이상 필요합니다.
+3.  **외부 플레이어 연동 설정 (선택)**: `plexplay://`, `plexstream://`, `plexfolder://` URL 스킴을 로컬 OS에서 인식하도록 설정해야 외부 플레이어나 탐색기 열기가 가능합니다. (문서 하단 참고)
 
 
 ## 주요 기능
 
-*   **추가 메타 정보 표시**:
-    *   콘텐츠 상세 페이지에 GUID, 원본 파일 경로, 파일 크기, 재생 시간 등 추가 정보를 표시합니다.
-    *   인트로/크레딧 건너뛰기 시간 정보를 표시합니다.
-    *   목록 보기에서 각 항목에 GUID, 태그(포스터 뱃지) 등을 표시할 수 있습니다.
+*   **추가 메타 정보 표시 (Web UI)**:
+    *   상세 페이지: GUID, 원본 파일 경로, 해상도, 오디오/비디오 코덱, 재생 시간, 마커(인트로/크레딧) 시간 정보 표시.
+    *   목록 페이지: 각 항목에 GUID, 해상도 및 HDR 뱃지, 다중 경로 뱃지 등을 표시.
 *   **Plex Mate 연동**:
-    *   파일 경로를 클릭하여 `plex_mate`를 통해 VFS 새로고침 및 라이브러리 스캔을 요청할 수 있습니다.
-    *   `YAML/TMDB 반영`: Plex 기본 에이전트 사용시 YAML 기준 메타데이터 반영작업을 자동화합니다.
+    *   `YAML/TMDB 반영`: Plex Web UI에서 직접 YAML 기준 메타데이터 수동 반영 버튼 제공.
+    *   VFS 및 라이브러리 스캔: 파일 경로를 클릭하여 즉시 VFS 갱신 및 스캔 요청.
+*   **PMH Toolbox (플러그인 툴 관리)**:
+    *   서버에 플러그인 툴(예: 스마트 스캐너, 다중 경로 검색기 등)을 설치하고 Web UI나 모바일 PWA에서 스케줄링(크론) 및 실행 모니터링 가능.
 *   **외부 플레이어 / 폴더 열기**:
-    *   상세 페이지 및 목록 보기에서 아이콘(직접재생/스트리밍)을 클릭하여 로컬 PC에 설치된 외부 플레이어(예: 팟플레이어)로 영상을 재생하거나 해당 파일이 위치한 폴더를 열 수 있습니다. (설치 방법 참고)
-*   **사용자 맞춤형 UI**:
-    *   목록: GUID/태그/재생아이콘 표시 여부를 UI 상단 컨트롤 버튼으로 쉽게 켜고 끌 수 있습니다.
+    *   로컬 경로 매핑을 통해 외부 재생기(팟플레이어 등)로 직접 재생하거나 파일이 위치한 폴더를 엽니다.
 
 
-## 설치 방법
+## 설치 및 설정 방법
 
-1.  [Tampermonkey](https://www.tampermonkey.net/) 설치: https://www.tampermonkey.net/ (베타버전 추천)
-2.  이 스크립트의 **[설치 링크](https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js)**를 클릭하여 Tampermonkey에 설치합니다.(설치 후 확장프로그램 관리에서 실행 권한 체크 필요)
-3.  운영체제에 맞는 실행 스크립트를 다운로드 받고 본인 환경에 맞게 수정합니다.
-4.  헬퍼가 반환하는 URL 형식(외부재생: `plexplay://` / 스트림재생: `plexstream://` / 폴더열기: `plexfolder://`)을 열 수 있도록 환경 설정 작업을 해야 합니다.
-5. `pmh_server.py`가 항상 실행되는 환경이 필요합니다(FF 내 `Command` 이용 추천. 포트(기본: 8899, 서버 스크립트 내에서 설정 가능) 오픈 필요).
-6. `pmh_config.yaml.sample` 파일을 받아서 이름을 `pmh_config.yaml`로 변경하고, 본인 환경에 맞도록 설정한 뒤 서버를 실행합니다.
+### 1. 백엔드 서버 (`pmh_server.py`) 구동
+1. `pmh_server.py`를 서버 환경에서 실행합니다. (기본 포트: 8899)
+2. 최초 실행 시 `pmh_config.yaml` 템플릿 파일이 생성됩니다.
+3. 생성된 `pmh_config.yaml`을 열어 `PLEX_URL`, `PLEX_TOKEN`, `PLEX_DB_PATH`, `APIKEY`(마스터 키) 등을 설정합니다.
+   * 다중 서버를 운영할 경우, `MASTER` 섹션에 다른 워커 노드들을 등록하여 릴레이를 구성합니다.
+4. 설정을 마친 후 서버를 재시작합니다.
 
+### 2. 프론트엔드 (PC 브라우저) 설정
+1. 브라우저에 [Tampermonkey 스크립트 설치](https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js) 링크를 클릭하여 설치합니다.
+2. Plex Web UI에 접속 후 상단 메뉴의 톱니바퀴(<i class="fas fa-cog"></i>) 아이콘(PMH 클라이언트 설정)을 클릭합니다.(첫 접속시 자동 팝)
+3. `마스터 서버 주소`와 `접속 키(APIKEY)`를 입력하고 연결을 테스트한 후 저장합니다.
 
-## 설정 방법
-
-Plex 웹앱 페이지에서 브라우저 상단의(확장 프로그램) Tampermonkey 아이콘을 클릭한 후, `PMH 설정 (JSON)` 메뉴를 선택하여 스크립트 설정을 열 수 있습니다. 아래는 기본 설정 템플릿과 각 항목에 대한 설명입니다.
-
-### 기본 설정 템플릿
-
-```json
-{
-    "INFO": "아래 설정을 JSON 형식에 맞게 수정하세요.",
-    "MAX_CACHE_SIZE": 5000,
-    "DISPLAY_PATH_PREFIXES_TO_REMOVE": ["/mnt/gds", "/mnt/content"],
-    "LOG_LEVEL": "INFO",
-    "USER_TAGS": {
-        "PRIORITY_GROUP": [
-            { "name": "LEAK", "pattern": "(leaked|유출)", "target": "filename" },
-            { "name": "UNCEN", "pattern": "(mopa|uncen|모파|모자이크제거)", "target": "path" }
-        ],
-        "INDEPENDENT": [
-            { "name": "REMUX", "pattern": "remux", "target": "path" }
-        ]
-    },
-    "PATH_MAPPINGS": [
-        { "serverPrefix": "/mnt/gds/", "localPrefix": "Z:/gds/" },
-        { "serverPrefix": "/mnt/content/", "localPrefix": "Z:/content/" }
-    ],
-    "SERVERS": [
-        {
-            "name": "My Main Server",
-            "machineIdentifier": "SERVER_MACHINE_IDENTIFIER_HERE",
-            "pmhServerUrl": "http://127.0.0.1:8899",
-            "plexMateUrl": "https://ff1.yourdomain.com",
-            "plexMateApiKey": "_YOUR_APIKEY_"
-        }
-    ]
-}
-```
-
-### 설정 항목 설명
-
-| 키 | 설명 |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `MAX_CACHE_SIZE`                   | 최대 메모리 캐시 건수 사용자 설정(기본값 5000)
-| `DISPLAY_PATH_PREFIXES_TO_REMOVE`  | UI에 표시될 파일 경로에서 제거할 앞부분을 지정합니다. 경로가 너무 길 경우 간결하게 표시하기 위해 사용합니다. (예: `/mnt/gds/Movies/Avatar (2009)/...` -> `/Movies/Avatar (2009)/...`) |
-| `LOG_LEVEL`                        | `INFO`(기본값), `DEBUG` 레벨 지원 |
-| `USER_TAGS`                        | 파일명에 포함된 문자열 패턴을 기반으로 사용자 태그를 지정할 수 있습니다. `PRIORITY_GROUP`: 설정한 태그 중 먼저 해당하는 한 가지만 출력합니다(우선순위). / `INDEPENDENT`: 개별 태그를 설정합니다. `target`은 `path`(전체경로)/`filename`(파일명만) 중 선택 가능합니다. |
-| `PATH_MAPPINGS`                    | 서버의 파일 경로를 로컬 PC의 경로로 변환하는 규칙입니다(외부 플레이어/폴더 열기 기능 사용시 필요). `serverPrefix`는 Plex 서버가 인식하는 경로, `localPrefix`는 로컬 PC에서 접근 가능한 경로(네트워크 드라이브 등)를 입력합니다. 최근 Windows에서는 백슬래시를 사용하지 않고 슬래시를 사용해도 문제가 없습니다. |
-| `SERVERS`                          | 서버를 그룹별 리스트로 설정합니다. |
-| - `name`                           | 알아보기 편한 이름으로 지정하세요. |
-| - `machineIdentifier`              | Plex 서버의 Machine Identifier를 입력합니다. |
-| - `pmhServerUrl`                   | PMH Server의 url을 입력합니다. |
-| - `plexMateUrl`                    | Plex 와 연동 설정된(PLEX MATE) FF의 url을 입력합니다. |
-| - `plexMateApiKey`                 | PLEX MATE 연동을 위해 FF의 APIKEY를 입력합니다. |
+### 3. 모바일 PWA 접속 (선택)
+1. 스마트폰이나 태블릿의 브라우저에서 마스터 서버 주소(예: `http://192.168.x.x:8899`)로 접속합니다.
+2. 설정 탭에서 API Key를 입력하여 로그인합니다.
+3. 브라우저 메뉴에서 **[홈 화면에 추가]**를 선택하여 전체 화면 앱(PWA) 모드로 쾌적하게 사용하세요.
 
 서버 설정은 샘플 yaml 내의 설명을 참고하세요.
 
 
-## 외부 재생/폴더 열기
+## 외부 재생/폴더 열기 설정 (로컬 PC)
+
+Plex 서버의 파일 경로를 로컬 PC가 인식할 수 있는 네트워크 드라이브 경로로 변환(클라이언트 설정의 `로컬 경로 매핑` 활용)한 뒤, OS별로 URL 스킴을 등록해야 합니다.
+
 ### Windows
 
-1. `plexhelper.vbs`: PowerShell을 통해 재생기/탐색기를 실행하는 스크립트입니다. 스트림 재생은 팟플레이어 기준으로 작성되었습니다. 팟플레이어의 경로를 확인/수정해주세요.
-2. `plexhelper.reg`: 텍스트 편집기로 열어서 plexhelper.vbs 경로를 본인 환경에 맞게 수정한 뒤에 더블 클릭으로 레지스트리에 추가해 줍니다.
+1. `plexhelper.vbs`: 재생기/탐색기를 실행하는 스크립트입니다. 팟플레이어 경로를 확인/수정해주세요.
+2. `plexhelper.reg`: 텍스트 편집기로 열어 `plexhelper.vbs` 파일이 위치한 절대 경로로 수정한 뒤, 더블클릭하여 레지스트리에 병합합니다.
 
 ### Ubuntu
 
-1. `plexhelper.sh`: 우분투 데스크탑 환경에서 동영상 재생기를 실행하는 쉘 스크립트입니다. 다운로드 받은 스크립트에 `chmod +x plexhelper.sh`로 실행 권한을 줍니다. smplayer 기준으로 샘플이 작성돼있습니다.
-2. `plexhelper-handler.desktop`: 파일을 텍스트 편집기에서 열고 plexhelper.sh 경로를 수정한 뒤 `~/.local/share/applications/`에 넣어줍니다. 아래 명령어를 실행해서 프로토콜을 등록하면 즉시 기본 플레이어로 동영상을 열거나 폴더 열기가 가능합니다.
+1. `plexhelper.sh`: 쉘 스크립트입니다. 다운로드 후 `chmod +x plexhelper.sh`로 실행 권한을 줍니다. (기본값 smplayer 기준)
+2. `plexhelper-handler.desktop`: `plexhelper.sh` 경로를 수정한 뒤 `~/.local/share/applications/` 디렉토리에 복사합니다.
+3. 아래 명령어를 실행하여 데스크톱 데이터베이스를 갱신합니다.
 ```bash
 update-desktop-database ~/.local/share/applications/
 ```
