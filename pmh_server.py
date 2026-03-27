@@ -8,8 +8,27 @@ import urllib.error
 import importlib
 import time
 import yaml
+import hmac
 from flask import Flask, jsonify, request, Response, send_file
 from flask_cors import CORS
+from collections import defaultdict
+
+# ==============================================================================
+# [서버 재시작 감지기]
+# ==============================================================================
+SERVER_FILE_PATH = os.path.abspath(__file__)
+try:
+    BOOT_FILE_MTIME = os.path.getmtime(SERVER_FILE_PATH)
+except Exception:
+    BOOT_FILE_MTIME = 0
+
+def is_server_restart_required():
+    try:
+        current_mtime = os.path.getmtime(SERVER_FILE_PATH)
+        if current_mtime > BOOT_FILE_MTIME:
+            return True
+    except Exception: pass
+    return False
 
 # ==============================================================================
 # [설정 및 부트스트랩]
@@ -158,6 +177,73 @@ import pmh_core
 pmh_core.start_scheduler_daemon(global_conf)
 
 # ==============================================================================
+# [보안 및 Rate Limiting 모듈]
+# ==============================================================================
+
+if len(API_KEY) < 8:
+    print("\n" + "!"*60)
+    print(" [PMH SECURITY FATAL] API Key 보안 취약 알림!")
+    print(" 설정된 API_KEY가 너무 짧아 무차별 대입 공격에 취약합니다.")
+    print(" 외부 망에 서버를 노출할 경우 최소 16자 이상의 복잡한 문자열 사용을 권장합니다.")
+    print(" 서버를 안전하게 보호하기 위해 구동을 중단합니다. pmh_config.yaml을 수정하세요.")
+    print("!"*60 + "\n")
+    sys.exit(1)
+elif len(API_KEY) < 16:
+    print("\n[PMH SECURITY WARNING] API Key 길이가 16자 미만입니다. 더 강력한 키 사용을 권장합니다.")
+
+FAILED_ATTEMPTS = {}
+MAX_FAILURES = 5
+BLOCK_TIME = 600
+MAX_TRACKED_IPS = 10000
+LAST_GC_TIME = time.time()
+
+def _garbage_collect_failed_ips():
+    """메모리 누수 방지를 위해 만료된 IP 기록을 일괄 청소합니다."""
+    global LAST_GC_TIME
+    now = time.time()
+    
+    if now - LAST_GC_TIME < 300:
+        return
+        
+    LAST_GC_TIME = now
+    expired_ips = []
+    
+    for ip, attempts in FAILED_ATTEMPTS.items():
+        valid_attempts = [t for t in attempts if now - t < BLOCK_TIME]
+        if not valid_attempts:
+            expired_ips.append(ip)
+        else:
+            FAILED_ATTEMPTS[ip] = valid_attempts
+            
+    for ip in expired_ips:
+        del FAILED_ATTEMPTS[ip]
+        
+    print(f"[PMH SECURITY] 🧹 Fail2Ban 메모리 청소 완료. (추적 중인 IP: {len(FAILED_ATTEMPTS)}개)")
+
+def is_ip_blocked(ip_addr):
+    _garbage_collect_failed_ips()
+    
+    now = time.time()
+    if ip_addr in FAILED_ATTEMPTS:
+        valid_attempts = [t for t in FAILED_ATTEMPTS[ip_addr] if now - t < BLOCK_TIME]
+        FAILED_ATTEMPTS[ip_addr] = valid_attempts
+        
+        if len(valid_attempts) >= MAX_FAILURES:
+            return True
+    return False
+
+def record_failed_attempt(ip_addr):
+    now = time.time()
+    
+    if ip_addr not in FAILED_ATTEMPTS:
+        if len(FAILED_ATTEMPTS) >= MAX_TRACKED_IPS:
+            print("[PMH SECURITY WARNING] 🚨 비정상적인 대규모 분산 공격 감지! Fail2Ban 메모리를 강제 초기화합니다.")
+            FAILED_ATTEMPTS.clear()
+        FAILED_ATTEMPTS[ip_addr] = []
+        
+    FAILED_ATTEMPTS[ip_addr].append(now)
+
+# ==============================================================================
 # [Flask 앱 초기화]
 # ==============================================================================
 app = Flask(__name__)
@@ -170,13 +256,30 @@ def check_api_key():
     if request.method == "OPTIONS":
         return
     
+    allowed_restart_paths = ['/api/admin/update', '/api/ping', '/favicon.ico', '/']
+    if request.path not in allowed_restart_paths and is_server_restart_required():
+        print("[PMH SECURITY] 🛑 서버 스크립트가 업데이트되었으나 파이썬 재시작이 누락되었습니다. 모든 API 요청을 거부합니다.")
+        return jsonify({
+            "error": "SERVER_RESTART_REQUIRED",
+            "message": "서버(pmh_server.py)가 최신 버전으로 업데이트되었습니다. 반드시 파이썬 프로세스(컨테이너)를 수동으로 껐다 켜서 재시작해주세요!"
+        }), 426
+
     allowed_paths = ['/', '/favicon.ico']
     if request.path in allowed_paths or request.path.startswith('/api/client/'):
         return
         
-    provided_key = request.headers.get("X-API-Key")
-    if not provided_key or provided_key != API_KEY:
-        print(f"[PMH SECURITY] 🚫 인증 실패. (IP: {request.remote_addr}, Path: {request.path})")
+    client_ip = request.remote_addr or "Unknown IP"
+    
+    if is_ip_blocked(client_ip):
+        print(f"[PMH SECURITY] 🛑 다중 인증 실패로 차단된 IP의 접근 시도 거부: {client_ip}")
+        return jsonify({"error": "Too Many Failed Attempts. Try again later."}), 429
+        
+    provided_key = request.headers.get("X-API-Key", "")
+    
+    if not provided_key or not hmac.compare_digest(provided_key, API_KEY):
+        record_failed_attempt(client_ip)
+        fail_count = len(FAILED_ATTEMPTS.get(client_ip, []))
+        print(f"[PMH SECURITY] 🚫 잘못된 API Key 접근 시도. (IP: {client_ip}, 누적 실패: {fail_count}/{MAX_FAILURES})")
         return jsonify({"error": "Unauthorized. Invalid API Key."}), 401
 
 # ==============================================================================

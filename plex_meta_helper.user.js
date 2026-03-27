@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.60
+// @version      0.8.61
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -260,7 +260,7 @@ GM_addStyle(`
     // ==========================================
     const CURRENT_VERSION = typeof GM_info !== 'undefined' ? GM_info.script.version : "0.0.0";
     const INFO_YAML_URL = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/info.yaml";
-    const CLIENT_SETTINGS_KEY = 'pmh_v2_client_settings';
+    const CLIENT_SETTINGS_KEY = 'pmh_client_settings';
     let ServerConfig = { USER_TAGS: {}, DISPLAY_PATH_PREFIXES_TO_REMOVE: [], SERVERS: [] };
 
     function isIgnoredItem(url, iid) {
@@ -370,7 +370,7 @@ GM_addStyle(`
                 method: "GET", 
                 url: `${ClientSettings.masterUrl}/api/master/check_update?force=${force}`,
                 headers: { "X-API-Key": ClientSettings.masterApiKey },
-                timeout: 10000,
+                timeout: 8000,
                 onload: (res) => {
                     if (res.status === 200) {
                         try {
@@ -387,7 +387,6 @@ GM_addStyle(`
                                 GM_setValue('pmh_latest_version', latestVer);
                                 GM_setValue('pmh_server_restart_required', reqRestart);
                                 GM_setValue('pmh_last_update_check', Date.now());
-                                
                                 GM_setValue('pmh_bundled_tools', JSON.stringify(data.bundled_tools || []));
 
                                 resolve({ skipped: false, targetVer: latestVer, localPyVers: localServerVersions, msg: "성공", error: false, reqRestart });
@@ -398,12 +397,47 @@ GM_addStyle(`
                             resolve({ skipped: false, targetVer: null, msg: "JSON 파싱 실패", error: true });
                         }
                     } else {
-                        resolve({ skipped: false, targetVer: null, msg: `서버 응답 오류 (${res.status})`, error: true });
+                        fallbackToGitHub(resolve, localServerVersions);
                     }
                 },
-                onerror: () => resolve({ skipped: false, targetVer: null, msg: "마스터 서버 연결 실패", error: true }),
-                ontimeout: () => resolve({ skipped: false, targetVer: null, msg: "마스터 서버 응답 지연", error: true })
+                onerror: () => fallbackToGitHub(resolve, localServerVersions),
+                ontimeout: () => fallbackToGitHub(resolve, localServerVersions)
             });
+        });
+    }
+
+    function fallbackToGitHub(resolve, localServerVersions) {
+        log(`[Update] Master Server timeout/error. Fallback to GitHub directly (${INFO_YAML_URL})...`);
+        const noCacheUrl = `${INFO_YAML_URL}?t=${Date.now()}`;
+
+        GM_xmlhttpRequest({
+            method: "GET", url: noCacheUrl,
+            timeout: 5000,
+            onload: (res) => {
+                if (res.status === 200) {
+                    const match = res.responseText.match(/version:\s*['"]?([^'"\r\n]+)['"]?/);
+                    let latestVer = match ? match[1] : null;
+                    let reqRestart = false;
+
+                    if (latestVer) {
+                        if (latestVer.includes('-server')) {
+                            reqRestart = true;
+                            latestVer = latestVer.replace('-server', '');
+                        }
+                        GM_setValue('pmh_latest_version', latestVer);
+                        GM_setValue('pmh_server_restart_required', reqRestart);
+                        GM_setValue('pmh_last_update_check', Date.now());
+                        
+                        resolve({ skipped: false, targetVer: latestVer, localPyVers: localServerVersions, msg: "마스터 통신 실패 (GitHub 확인 성공)", error: false, reqRestart });
+                    } else {
+                        resolve({ skipped: false, targetVer: null, msg: "GitHub 버전 파싱 오류", error: true });
+                    }
+                } else {
+                    resolve({ skipped: false, targetVer: null, msg: "마스터 서버 & GitHub 동시 장애", error: true });
+                }
+            },
+            onerror: () => resolve({ skipped: false, targetVer: null, msg: "전체 네트워크 장애", error: true }),
+            ontimeout: () => resolve({ skipped: false, targetVer: null, msg: "응답 지연 초과", error: true })
         });
     }
 
@@ -608,7 +642,8 @@ GM_addStyle(`
             masterUrl: "http://127.0.0.1:8899",
             masterApiKey: "",
             logLevel: "INFO",
-            pathMappings: [ { serverPrefix: "/mnt/gds/", localPrefix: "Z:/gds/" } ]
+            maxCacheSize: 5000,
+            pathMappings: []
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
     }
@@ -753,11 +788,11 @@ GM_addStyle(`
 
     let state = {
         listGuid: GM_getValue(STATE_KEYS.GUID, false),
-        listTag: GM_getValue(STATE_KEYS.TAG, true),
+        listTag: GM_getValue(STATE_KEYS.TAG, false),
         listPlay: GM_getValue(STATE_KEYS.PLAY, false),
         listMultiPath: GM_getValue(STATE_KEYS.MULTIPATH, false),
         guidLen: GM_getValue(STATE_KEYS.LEN, 20),
-        detailInfo: GM_getValue(STATE_KEYS.DETAIL, true)
+        detailInfo: GM_getValue(STATE_KEYS.DETAIL, false)
     };
 
     let isFetchingDetail = false;
@@ -3322,13 +3357,17 @@ GM_addStyle(`
     // 7. 상세 모드 (Detail View) 처리
     // ==========================================
     function renderLoadingBox(container) {
-        document.getElementById('plex-guid-box')?.remove();
+        const existingBox = document.getElementById('plex-guid-box');
+        if (existingBox && existingBox.dataset.state === 'loading') return;
+        
+        if (existingBox) existingBox.remove();
+        
         const loadingHtml = `
-        <div id="plex-guid-box" style="margin-top: 15px; margin-bottom: 10px; width: 100%;">
+        <div id="plex-guid-box" data-state="loading" style="margin-top: 15px; margin-bottom: 10px; width: 100%;">
             <div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold; display:flex; align-items:center;">
                 미디어 정보
             </div>
-            <div style="display: flex; align-items: center; justify-content: center; padding: 20px 0; color: #adb5bd; font-size: 14px;">
+            <div style="display: flex; align-items: center; justify-content: center; padding: 20px 0; color: #adb5bd; font-size: 14px; background: rgba(0,0,0,0.2); border: 1px dashed #333; border-radius: 4px;">
                 <i class="fas fa-spinner fa-spin" style="margin-right: 8px; font-size: 18px;"></i>
                 데이터를 가져오고 있습니다...
             </div>
@@ -3345,8 +3384,8 @@ GM_addStyle(`
         const { serverId, itemId } = extractIds();
         if (isIgnoredItem(null, itemId)) return;
         if (!serverId || !itemId) return;
-
-        if (!isManualRefresh && currentDisplayedItemId === itemId && document.getElementById('plex-guid-box')) return;
+        if (isFetchingDetail && !isManualRefresh) return;
+        if (!isManualRefresh && currentDisplayedItemId === itemId && document.getElementById('plex-guid-box')?.dataset.state !== 'loading') return;
 
         let container = document.querySelector('div[data-testid="metadata-starRatings"]')?.parentElement
                      || document.querySelector('div[data-testid="metadata-ratings"]')?.parentElement
@@ -3367,7 +3406,8 @@ GM_addStyle(`
         if (!isManualRefresh) {
             const cData = getMemoryCache(cacheKey);
             if (cData) {
-                document.getElementById('plex-guid-box')?.remove();
+                const box = document.getElementById('plex-guid-box');
+                if (box) box.remove();
                 renderDetailHtml(cData, serverId, srvConfig, container);
                 currentDisplayedItemId = itemId;
                 isFetchingDetail = false;
@@ -3478,7 +3518,7 @@ GM_addStyle(`
         } catch (e) {
             const box = document.getElementById('plex-guid-box');
             if (box && !getMemoryCache(cacheKey)) {
-                box.innerHTML = `<div style="color:red; font-size:13px; padding:10px;">데이터를 불러오는 중 오류가 발생했습니다.</div>`;
+                box.innerHTML = `<div style="color:#bd362f; font-size:13px; padding:15px; background:rgba(0,0,0,0.2); border:1px dashed #333; text-align:center;"><i class="fas fa-exclamation-triangle"></i> 데이터를 불러오는 중 오류가 발생했습니다.</div>`;
             }
         } finally {
             isFetchingDetail = false;
@@ -4605,7 +4645,10 @@ GM_addStyle(`
                         
                         <div class="pmh-form-group">
                             <label class="pmh-form-label"><i class="fas fa-key"></i> 접속 키 (API Key)</label>
-                            <input type="password" id="pmh-set-api-key" class="pmh-input-text" value="${ClientSettings.masterApiKey}" placeholder="마스터 서버의 BASE.APIKEY 입력">
+                            <div style="display:flex; gap:10px;">
+                                <input type="password" id="pmh-set-api-key" class="pmh-input-text" value="${ClientSettings.masterApiKey}" placeholder="마스터 서버의 BASE.APIKEY 입력" style="flex:1;">
+                                <button id="pmh-settings-copy-key" style="display:flex; justify-content:center; align-items:center; width:45px; background:#333; color:#aaa; border:1px solid #444; border-radius:4px; cursor:pointer; font-size:16px; transition:all 0.2s ease;" title="API Key를 클립보드에 복사합니다." onmouseover="this.style.color='#fff'; this.style.borderColor='#e5a00d'; this.style.background='rgba(229,160,13,0.1)';" onmouseout="this.style.color='#aaa'; this.style.borderColor='#444'; this.style.background='#333';"><i class="fas fa-copy"></i></button>
+                            </div>
                         </div>
 
                         <div style="display:flex; gap:15px;">
@@ -4631,9 +4674,12 @@ GM_addStyle(`
                         </div>
                     </div>
 
-                    <div style="padding: 15px; background: #111; border-top: 1px solid #333; border-radius: 0 0 8px 8px; text-align: right;">
-                        <button id="pmh-settings-test" style="padding: 8px 15px; background: #2f96b4; color: #fff; border: none; border-radius: 4px; cursor: pointer; float: left;"><i class="fas fa-plug"></i> 연결 테스트</button>
-                        <button id="pmh-settings-save" style="padding: 8px 20px; background: #51a351; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight:bold;"><i class="fas fa-save"></i> 저장 및 재시작</button>
+                    <div style="padding: 15px; background: #111; border-top: 1px solid #333; border-radius: 0 0 8px 8px; display: flex; justify-content: space-between; align-items: center;">
+                        <button id="pmh-settings-factory-reset" style="padding: 8px 15px; background: #bd362f; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;" title="저장된 모든 PMH 프론트엔드 데이터를 삭제합니다."><i class="fas fa-trash-alt"></i> 공장 초기화</button>
+                        <div>
+                            <button id="pmh-settings-test" style="padding: 8px 15px; background: #2f96b4; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-right: 8px;"><i class="fas fa-plug"></i> 연결 테스트</button>
+                            <button id="pmh-settings-save" style="padding: 8px 20px; background: #51a351; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight:bold;"><i class="fas fa-save"></i> 저장 및 재시작</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -4643,6 +4689,36 @@ GM_addStyle(`
 
         document.getElementById('pmh-settings-close').onclick = () => document.getElementById('pmh-client-settings-modal').remove();
         
+        document.getElementById('pmh-settings-close').onclick = () => document.getElementById('pmh-client-settings-modal').remove();
+
+        document.getElementById('pmh-settings-copy-key').onclick = (e) => {
+            e.preventDefault();
+            const keyInput = document.getElementById('pmh-set-api-key');
+            if (!keyInput.value) {
+                toastr.warning("복사할 API Key가 없습니다.");
+                return;
+            }
+            
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(keyInput.value).then(() => {
+                    toastr.success("API Key가 클립보드에 복사되었습니다!");
+                }).catch(err => {
+                    toastr.error("복사 실패. 브라우저 권한을 확인하세요.");
+                });
+            } else {
+                keyInput.type = "text"; 
+                keyInput.select();
+                try {
+                    document.execCommand("copy");
+                    toastr.success("API Key가 클립보드에 복사되었습니다!");
+                } catch (err) {
+                    toastr.error("복사 실패. 수동으로 복사해주세요.");
+                }
+                keyInput.type = "password"; 
+                window.getSelection().removeAllRanges();
+            }
+        };
+
         document.getElementById('pmh-btn-add-map').onclick = () => {
             const container = document.getElementById('pmh-path-mapping-container');
             const noMsg = container.querySelector('.pmh-no-map-msg');
@@ -4710,6 +4786,38 @@ GM_addStyle(`
             toastr.success("설정이 저장되었습니다. 페이지를 새로고침합니다.");
             setTimeout(() => location.reload(), 500);
         };
+
+        document.getElementById('pmh-settings-factory-reset').onclick = () => {
+            if (confirm("⚠️ 경고: 정말로 공장 초기화를 진행하시겠습니까?\n\n이 작업은 캐시, 설정, 패널 위치 정보 등 PMH가 브라우저에 저장한 모든 데이터를 영구적으로 삭제합니다.\n(Plex 서버나 백엔드 데이터는 삭제되지 않습니다.)")) {
+                
+                const btn = document.getElementById('pmh-settings-factory-reset');
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 초기화 중...';
+                btn.disabled = true;
+
+                try {
+                    const allKeys = GM_listValues();
+                    let deletedCount = 0;
+                    
+                    allKeys.forEach(key => {
+                        if (key.startsWith('pmh') || key.startsWith('pmhc_')) {
+                            GM_deleteValue(key);
+                            deletedCount++;
+                        }
+                    });
+
+                    log(`[Factory Reset] 💥 ${deletedCount}개의 로컬 스토리지/캐시 키가 영구 삭제되었습니다.`);
+                    toastr.success(`총 ${deletedCount}개의 캐시 및 설정 데이터가 초기화되었습니다.<br>새로고침합니다.`);
+
+                    setTimeout(() => location.reload(), 1500);
+                    
+                } catch (e) {
+                    errorLog("[Factory Reset Error]", e);
+                    toastr.error("초기화 중 오류가 발생했습니다.");
+                    btn.innerHTML = '<i class="fas fa-trash-alt"></i> 공장 초기화';
+                    btn.disabled = false;
+                }
+            }
+        };
     }
 
     let isProcessingMatchModal = false;
@@ -4752,6 +4860,7 @@ GM_addStyle(`
     async function bootstrapPMH() {
         if (!ClientSettings.masterUrl || !ClientSettings.masterApiKey) {
             console.warn("[PMH] 마스터 서버 정보가 없습니다. 설정 창을 엽니다.");
+            injectControlUI(); 
             openClientSettingsModal();
             return;
         }
@@ -4765,6 +4874,10 @@ GM_addStyle(`
                     timeout: 8000,
                     onload: r => {
                         if (r.status === 200) resolve(JSON.parse(r.responseText));
+                        else if (r.status === 426) {
+                            toastr.error("서버 스크립트가 업데이트되었습니다.<br><b>반드시 서버(컨테이너)를 수동으로 껐다 켜주세요!</b><br>재시작 전까지 툴 사용이 제한됩니다.", "서버 재시작 필수!", {timeOut: 15000});
+                            reject("SERVER_RESTART_REQUIRED");
+                        }
                         else reject(`HTTP ${r.status}`);
                     },
                     onerror: () => reject("Network Error"),
@@ -4782,26 +4895,74 @@ GM_addStyle(`
                 };
             });
 
+            const LOCAL_UI_CSS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.css?t=${Date.now()}`;
+            const GITHUB_UI_CSS = `https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.css?t=${Date.now()}`;
+
             if(!document.getElementById('pmh-shared-css')) {
                 const link = document.createElement('link');
                 link.id = 'pmh-shared-css';
                 link.rel = 'stylesheet';
-                link.href = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.css?t=${Date.now()}`;
+                link.href = LOCAL_UI_CSS;
+                link.onerror = () => { link.href = GITHUB_UI_CSS; };
                 document.head.appendChild(link);
             }
 
             await new Promise((resolve, reject) => {
-                if(document.getElementById('pmh-shared-js')) return resolve();
-                const script = document.createElement('script');
-                script.id = 'pmh-shared-js';
-                script.src = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.js?t=${Date.now()}`;
-                script.onload = resolve;
-                script.onerror = () => reject("UI Core JS 로드 실패");
-                document.head.appendChild(script);
+                if(typeof window.PmhUICore !== 'undefined') return resolve();
+
+                const GITHUB_UI_JS = `https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.js?t=${Date.now()}`;
+                const LOCAL_UI_JS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.js?t=${Date.now()}`;
+
+                const injectScriptText = (codeText) => {
+                    try {
+                        const scriptEl = document.createElement('script');
+                        scriptEl.textContent = codeText;
+                        document.head.appendChild(scriptEl);
+                        resolve();
+                    } catch (err) { reject("UI Core JS 실행(Injection) 실패"); }
+                };
+
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url: LOCAL_UI_JS,
+                    timeout: 3000,
+                    onload: (r) => {
+                        if (r.status === 200) {
+                            infoLog("[PMH Boot] Local Server에서 UI Core 스크립트를 가져왔습니다.");
+                            injectScriptText(r.responseText);
+                        } else {
+                            warnLog(`[PMH Boot] Local Server UI Core 로드 실패 (HTTP ${r.status}). GitHub 우회 시도...`);
+                            fallbackToGitHub();
+                        }
+                    },
+                    onerror: () => {
+                        warnLog(`[PMH Boot] Local Server 접근 차단됨 (Mixed Content 등). GitHub 우회 시도...`);
+                        fallbackToGitHub();
+                    },
+                    ontimeout: () => fallbackToGitHub()
+                });
+
+                function fallbackToGitHub() {
+                    GM_xmlhttpRequest({
+                        method: "GET",
+                        url: GITHUB_UI_JS,
+                        timeout: 5000,
+                        onload: (r) => {
+                            if (r.status === 200) {
+                                infoLog("[PMH Boot] GitHub에서 UI Core 스크립트를 성공적으로 가져왔습니다.");
+                                injectScriptText(r.responseText);
+                            } else {
+                                reject(`GitHub UI Core 로드 실패 (HTTP ${r.status})`);
+                            }
+                        },
+                        onerror: () => reject("GitHub 네트워크 오류"),
+                        ontimeout: () => reject("GitHub 응답 시간 초과")
+                    });
+                }
             });
 
             infoLog(`[PMH Boot] 설정 동기화 및 UI 코어 로드 완료! (노드 수: ${ServerConfig.SERVERS.length})`);
-            
+
             checkUpdate();
             observer.observe(document.body, { childList: true, subtree: true });
             checkUrlChange(true);
@@ -4825,15 +4986,20 @@ GM_addStyle(`
 
         } catch (e) {
             errorLog("[PMH Boot Error]", e);
-            toastr.error("마스터 서버에서 설정을 불러오지 못했습니다.<br>설정을 확인하세요.", "PMH 부팅 실패", {timeOut: 8000});
-            openClientSettingsModal();
+            injectControlUI();
+            
+            if (e !== "SERVER_RESTART_REQUIRED") {
+                toastr.error("서버와 통신할 수 없거나 구버전 서버입니다.<br>상단 메뉴에서 서버를 업데이트(재시작) 하거나 설정을 확인하세요.", "PMH 부팅 실패", {timeOut: 8000});
+                checkUpdate();
+            }
+            
+            observer.observe(document.body, { childList: true, subtree: true });
+            checkUrlChange(true);
         }
     }
 
     window.addEventListener('load', () => {
-        checkUpdate();
-        observer.observe(document.body, { childList: true, subtree: true });
-        checkUrlChange(true);
+        injectControlUI();
         bootstrapPMH();
     });
 
