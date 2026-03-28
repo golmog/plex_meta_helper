@@ -17,6 +17,8 @@ BASE:
 
   DISCORD_WEBHOOK: ""
 
+  ENABLE_FAIL2BAN: true
+
   DEV_MODE: false
 
 # 일반 노드에서는 MASTER 설정 제거

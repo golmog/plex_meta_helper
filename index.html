@@ -263,22 +263,52 @@
             });
         });
 
+        async function generateSecureHeader(apiKey) {
+            if (!apiKey) return "";
+            
+            const timestamp = Math.floor(Date.now() / 10000) * 10;
+            const payload = `${apiKey}:${timestamp}`;
+            const encoder = new TextEncoder();
+            const data = encoder.encode(payload);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            return `${timestamp}.${hashHex}`;
+        }
+
         const PmhAPI = {
             call: async function(endpoint, method="GET", data=null) {
                 if(!AppState.url || !AppState.key) throw new Error("서버 정보가 설정되지 않았습니다.");
-                const options = { method: method, headers: { "X-API-Key": AppState.key } };
-                if (data) { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(data); }
+                
+                const secureToken = await generateSecureHeader(AppState.key);
+                
+                const options = { 
+                    method: method, 
+                    headers: { "X-PMH-Signature": secureToken } // [변경점]
+                };
+                if (data) { 
+                    options.headers["Content-Type"] = "application/json"; 
+                    options.body = JSON.stringify(data); 
+                }
                 
                 try {
                     const res = await fetch(`${AppState.url}/api${endpoint}`, options);
+                    
+                    if (!res.ok) {
+                        try {
+                            const errJson = await res.json();
+                            throw new Error(errJson.error || errJson.message || `HTTP ${res.status}`);
+                        } catch(e) {
+                            throw new Error(`서버 응답 오류 (HTTP ${res.status})`);
+                        }
+                    }
+
                     const contentType = res.headers.get("content-type");
                     if (contentType && contentType.includes("application/json")) {
-                        const json = await res.json();
-                        if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-                        return json;
+                        return await res.json();
                     }
                     
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     return await res.text();
                     
                 } catch(e) {
@@ -323,6 +353,7 @@
 
             try {
                 AppState.url = url; AppState.key = key; 
+                
                 const conf = await PmhAPI.call('/client/config');
                 
                 if(isTest) {
@@ -358,23 +389,22 @@
                     showToast("복사할 API Key가 없습니다.", true);
                     return;
                 }
-                
                 if (navigator.clipboard && window.isSecureContext) {
                     navigator.clipboard.writeText(keyInput.value).then(() => {
-                        showToast("API Key가 클립보드에 복사되었습니다!");
+                        showToast("API Key가 복사되었습니다.");
                     }).catch(err => {
                         showToast("복사 실패. 브라우저 권한을 확인하세요.", true);
                     });
                 } else {
-                    keyInput.type = "text";
+                    keyInput.type = "text"; 
                     keyInput.select();
                     try {
                         document.execCommand("copy");
-                        showToast("API Key가 클립보드에 복사되었습니다!");
+                        showToast("API Key가 복사되었습니다.");
                     } catch (err) {
                         showToast("복사 실패. 수동으로 복사해주세요.", true);
                     }
-                    keyInput.type = "password";
+                    keyInput.type = "password"; 
                     window.getSelection().removeAllRanges();
                 }
             });
@@ -424,7 +454,7 @@
                             <div class="tool-card ${isRunning ? 'running' : ''}" onclick="openTool('${t.id}')">
                                 <div class="tool-icon"><i class="${t.icon || 'fas fa-wrench'}"></i></div>
                                 <div class="tool-info">
-                                    <div class="tool-title" style="display:flex; flex-wrap:wrap; gap:6px; white-space:normal;">
+                                    <div class="tool-title" style="display:flex; align-items:center; flex-wrap:wrap; gap:6px; white-space:normal;">
                                         ${t.name || t.id} 
                                         <span style="font-size:11px; color:#777; font-weight:normal;">v${t.version || '1.0'}</span>
                                         ${isRunning ? '<i class="fas fa-spinner fa-spin" style="font-size:12px; color:var(--primary);"></i>' : ''}
@@ -439,7 +469,7 @@
                         `);
                     });
                 }
-                
+
                 document.getElementById('portal-loading').style.display = 'none';
                 document.getElementById('portal-content').style.display = 'block';
 
@@ -450,7 +480,7 @@
             }
         }
 
-        async function openTool(toolId) {
+        async function openTool(toolId, forceSrvIdx = null) {
             AppState.activeToolId = toolId;
             
             const tabTool = document.getElementById('tab-tool');
@@ -462,7 +492,16 @@
             const container = document.getElementById('tool-form-container');
             container.innerHTML = '<div style="text-align:center; padding:30px;"><i class="fas fa-spinner fa-spin fa-2x" style="color:var(--primary);"></i></div>';
 
-            const activeServerNode = AppState.servers[0] || {};
+            const globalCacheStr = localStorage.getItem(`pmh_tool_cache_global_${toolId}`) || "{}";
+            let globalCache = {}; try { globalCache = JSON.parse(globalCacheStr); } catch(e) {}
+            
+            let srvIdx = (forceSrvIdx !== null && forceSrvIdx !== undefined) ? Number(forceSrvIdx) : (globalCache['target_server_idx'] || 0);
+            if (srvIdx >= AppState.servers.length) srvIdx = 0;
+            
+            globalCache['target_server_idx'] = srvIdx; 
+            localStorage.setItem(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
+
+            const activeServerNode = AppState.servers[srvIdx] || {};
             const activeServerId = activeServerNode.id || 'master_node';
             const activeMachineId = activeServerNode.machine_id || 'default';
             
@@ -477,7 +516,8 @@
                     toolId: toolId,
                     uiSchema: uiSchema,
                     servers: AppState.servers,
-                    activeServerIdx: 0,
+                    activeServerIdx: srvIdx,
+                    
                     apiAdapter: {
                         run: async (data) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/run`, "POST", data),
                         status: async (taskId) => await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/status?task_id=${taskId}&server_id=${activeMachineId}`, "GET"),
@@ -485,6 +525,18 @@
                     },
                     toast: { success: (m)=>showToast(m), error: (m)=>showToast(m, true), info: (m)=>showToast(m) }
                 });
+
+                setTimeout(() => {
+                    const srvSelectEl = document.getElementById('pmh_srv_select');
+                    if (srvSelectEl) {
+                        srvSelectEl.addEventListener('change', (e) => {
+                            const newIdx = Number(e.target.value);
+                            globalCache['target_server_idx'] = newIdx;
+                            localStorage.setItem(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
+                            openTool(toolId, newIdx);
+                        });
+                    }
+                }, 100);
 
                 if (!window.dualPaneObserver) {
                     window.dualPaneObserver = new MutationObserver(() => {

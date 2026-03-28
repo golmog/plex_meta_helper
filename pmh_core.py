@@ -14,6 +14,8 @@ import threading
 import subprocess
 import csv
 import io
+import hmac
+import hashlib
 from datetime import datetime
 from contextlib import contextmanager
 from urllib.request import Request, urlopen
@@ -23,7 +25,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.61"
+__version__ = "0.8.62"
 
 def get_version():
     return __version__
@@ -38,12 +40,20 @@ _TOOL_SERVER_LOCKS = {}
 _TOOL_SERVER_LOCKS_GUARD = threading.Lock()
 
 def get_tool_lock(tool_id, server_id):
-    """특정 툴과 서버 조합에 대한 고유한 Lock 객체를 반환합니다."""
     lock_key = f"{tool_id}_{server_id}"
     with _TOOL_SERVER_LOCKS_GUARD:
         if lock_key not in _TOOL_SERVER_LOCKS:
             _TOOL_SERVER_LOCKS[lock_key] = threading.Lock()
         return _TOOL_SERVER_LOCKS[lock_key]
+
+def generate_secure_header(api_key):
+    if not api_key: return ""
+    
+    timestamp = int(time.time() / 10) * 10
+    payload = f"{api_key}:{timestamp}".encode('utf-8')
+    hash_hex = hashlib.sha256(payload).hexdigest()
+    
+    return f"{timestamp}.{hash_hex}"
 
 # ==============================================================================
 # [코어 중앙 자연 정렬 엔진]
@@ -53,7 +63,6 @@ def core_natural_sort(data_list, default_sort):
     def n_key(s): return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
     
     rules = default_sort if isinstance(default_sort, list) else [default_sort]
-    # 안정 정렬(Stable Sort)을 위해 역순으로 다중 정렬 적용
     for rule in reversed(rules):
         k = rule.get('key')
         d = rule.get('dir', 'asc').lower()
@@ -524,7 +533,7 @@ def handle_library_batch(data, max_batch_size, db_path):
                                         has_sub = True
                                         score = 0
                                         if s_url: score += 100
-                                        if s_codec in ['srt', 'ass', 'smi', 'vtt', 'ssa', 'sub']: score += 50
+                                        if s_codec in ['srt', 'ass', 'smi', 'vtt', 'ssa', 'sub', 'sup']: score += 50
                                         kor_subs.append((score, s_id, s_url))
                             
                             if kor_subs:

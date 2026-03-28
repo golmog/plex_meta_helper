@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.61
+// @version      0.8.62
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -256,6 +256,24 @@ GM_addStyle(`
     };
 
     // ==========================================
+    // API Key 보안 서명 생성 함수
+    // ==========================================
+    async function generateSecureHeader(apiKey) {
+        if (!apiKey) return "";
+        
+        const timestamp = Math.floor(Date.now() / 10000) * 10;
+        const payload = `${apiKey}:${timestamp}`;
+        
+        const encoder = new TextEncoder();
+        const data = encoder.encode(payload);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        
+        return `${timestamp}.${hashHex}`;
+    }
+
+    // ==========================================
     // 1. 설정 및 로깅 / 업데이트 체크
     // ==========================================
     const CURRENT_VERSION = typeof GM_info !== 'undefined' ? GM_info.script.version : "0.0.0";
@@ -295,13 +313,14 @@ GM_addStyle(`
         if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) return {};
         log("[Ping] Checking versions for all registered local python servers...");
 
+        const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
         const results = {};
         const promises = ServerConfig.SERVERS.map(srv => {
             if (!srv.relayUrl) return Promise.resolve();
             return new Promise((resolve) => {
                 GM_xmlhttpRequest({
                     method: "GET", url: `${srv.relayUrl}/ping`,
-                    headers: { "X-API-Key": ClientSettings.masterApiKey },
+                    headers: { "X-PMH-Signature": secureToken },
                     timeout: 2000,
                     onload: (res) => {
                         if (res.status === 200) {
@@ -365,11 +384,12 @@ GM_addStyle(`
 
             log(`[Update] Requesting full update info from Master Server... (force: ${force})`);
             const localServerVersions = await pingLocalServer();
+            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
 
             GM_xmlhttpRequest({
                 method: "GET", 
                 url: `${ClientSettings.masterUrl}/api/master/check_update?force=${force}`,
-                headers: { "X-API-Key": ClientSettings.masterApiKey },
+                headers: { "X-PMH-Signature": secureToken },
                 timeout: 8000,
                 onload: (res) => {
                     if (res.status === 200) {
@@ -489,13 +509,14 @@ GM_addStyle(`
             showStatusMsg(`${spinner}서버 상태 확인 및 업데이트 요청 중...`, '#ccc', 0);
         }
 
-        const updatePromises = targetServers.map(srv => {
+        const updatePromises = targetServers.map(async srv => {
+            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
             return new Promise((resolve) => {
                 log(`[Server Update] Sending update POST request to: ${srv.name}`);
                 GM_xmlhttpRequest({
                     method: "POST", 
                     url: `${srv.relayUrl}/admin/update`,
-                    headers: { "Content-Type": "application/json", "X-API-Key": ClientSettings.masterApiKey },
+                    headers: { "Content-Type": "application/json", "X-PMH-Signature": secureToken },
                     data: JSON.stringify({ force: force }),
                     timeout: 30000,
                     onload: (res) => {
@@ -583,13 +604,14 @@ GM_addStyle(`
         if (bundledTools.length > 0) {
             showStatusMsg(`${spinner}번들 툴 버전 확인 및 동기화 중...`, '#2f96b4', 0);
             log(`[Bundle Update] Checking ${bundledTools.length} bundled tools for sync in parallel...`);
-            
+            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+
             const bundlePromises = targetServers.map(async (srv) => {
                 try {
                     const toolsRes = await new Promise(r => {
                         GM_xmlhttpRequest({
                             method: "GET", url: `${srv.relayUrl}/tools`,
-                            headers: { "X-API-Key": ClientSettings.masterApiKey },
+                            headers: { "X-PMH-Signature": secureToken },
                             timeout: 15000,
                             onload: r, onerror: r, ontimeout: r
                         });
@@ -611,7 +633,7 @@ GM_addStyle(`
                                 installPromises.push(new Promise(r => {
                                     GM_xmlhttpRequest({
                                         method: "POST", url: `${srv.relayUrl}/tools/install`,
-                                        headers: { "Content-Type": "application/json", "X-API-Key": ClientSettings.masterApiKey },
+                                        headers: { "Content-Type": "application/json", "X-PMH-Signature": secureToken },
                                         data: JSON.stringify({ url: bundle.url, target_id: expectedId }), 
                                         timeout: 20000,
                                         onload: r, onerror: r, ontimeout: r
@@ -906,12 +928,15 @@ GM_addStyle(`
         return null;
     }
 
-    function makeRequest(url, method = "GET", data = null, apiKey = null) {
+    async function makeRequest(url, method = "GET", data = null, apiKey = null) {
         log(`[API Req] [${method}] ${url}`);
+        
+        const secureToken = await generateSecureHeader(apiKey);
+        
         return new Promise((resolve, reject) => {
             const headers = {};
             if (data) headers["Content-Type"] = "application/json";
-            if (apiKey) headers["X-API-Key"] = apiKey;
+            if (apiKey) headers["X-PMH-Signature"] = secureToken;
 
             const req = GM_xmlhttpRequest({
                 method: method, url: url, timeout: 5000,
@@ -987,7 +1012,7 @@ GM_addStyle(`
         });
     }
 
-    function triggerPlexMediaAction(itemId, action, plexSrv, srvConfig) {
+    async function triggerPlexMediaAction(itemId, action, plexSrv, srvConfig) {
         if (!srvConfig || !plexSrv) {
             errorLog(`[API] ❌ Cannot trigger '${action}' for Item ${itemId}: Missing Server Config or Token.`);
             return Promise.resolve(false);
@@ -995,11 +1020,13 @@ GM_addStyle(`
         
         infoLog(`[API] 🚀 Requesting PMH Backend to perform '${action}' on Item: ${itemId} ...`);
         
+        const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+        
         return new Promise((resolve) => {
             const req = GM_xmlhttpRequest({
                 method: 'POST',
                 url: `${srvConfig.relayUrl}/media/${itemId}/${action}`,
-                headers: { 'Content-Type': 'application/json', 'X-API-Key': ClientSettings.masterApiKey },
+                headers: { 'Content-Type': 'application/json', 'X-PMH-Signature': secureToken },
                 data: JSON.stringify({ _plex_url: plexSrv.url, _plex_token: plexSrv.token }),
                 timeout: 45000,
                 onload: (res) => {
@@ -1214,16 +1241,29 @@ GM_addStyle(`
     // 5-1. Tool UI 렌더링 및 모니터링
     // ==========================================
     const PmhToolAPI = {
-        call: function(targetSrv, endpoint, method = "POST", data = null) {
+        call: async function(targetSrv, endpoint, method = "POST", data = null) {
+            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+            
             return new Promise((resolve, reject) => {
                 const req = {
                     method: method,
                     url: `${targetSrv.relayUrl}${endpoint}`,
-                    headers: { "X-API-Key": ClientSettings.masterApiKey },
+                    headers: { "X-PMH-Signature": secureToken },
                     timeout: 45000,
-                    onload: (r) => resolve(r),
-                    onerror: () => reject("Network Error"),
-                    ontimeout: () => reject("Timeout")
+                    onload: (r) => {
+                        if (r.status >= 200 && r.status < 300) {
+                            resolve(r);
+                        } else {
+                            try {
+                                const errJson = JSON.parse(r.responseText);
+                                reject(errJson.error || errJson.message || `HTTP ${r.status}`);
+                            } catch(e) {
+                                reject(`서버 응답 오류 (HTTP ${r.status})`);
+                            }
+                        }
+                    },
+                    onerror: () => reject("네트워크 연결 실패 (서버 다운 또는 방화벽)"),
+                    ontimeout: () => reject("서버 응답 시간 초과")
                 };
                 if (data) {
                     req.headers["Content-Type"] = "application/json";
@@ -1272,15 +1312,9 @@ GM_addStyle(`
         window.showPmhToolPanel(toolId, "로딩 중...", `<div id="pmh_common_tool_container" style="padding:10px; text-align:center;"><i class="fas fa-spinner fa-spin fa-2x" style="color:#e5a00d;"></i><br><br>UI 스키마 로드 중...</div>`);
 
         try {
-            const res = await new Promise((resolve) => {
-                GM_xmlhttpRequest({
-                    method: "GET", url: `${targetSrv.relayUrl}/tool/${toolId}/ui?server_id=${targetSrv.machineIdentifier}&_t=${Date.now()}`,
-                    headers: { "X-API-Key": ClientSettings.masterApiKey }, onload: resolve, onerror: resolve
-                });
-            });
-            if(res.status !== 200) throw new Error(`HTTP ${res.status}`);
-            
+            const res = await PmhToolAPI.getUi(toolId, targetSrv);
             const uiSchema = JSON.parse(res.responseText);
+            
             document.getElementById('pmh-panel-title-text').innerText = uiSchema.title || toolId;
 
             PmhUICore.createToolInstance({
@@ -1290,28 +1324,22 @@ GM_addStyle(`
                 servers: ServerConfig.SERVERS,
                 availableServerIndices: availableServerIndices,
                 activeServerIdx: srvIdx,
+                
                 apiAdapter: {
-                    run: (data) => new Promise((resolve, reject) => {
-                        GM_xmlhttpRequest({
-                            method: "POST", url: `${targetSrv.relayUrl}/tool/${toolId}/run`,
-                            headers: { "X-API-Key": ClientSettings.masterApiKey, "Content-Type": "application/json" },
-                            data: JSON.stringify(data), onload: r => resolve(JSON.parse(r.responseText)), onerror: reject
-                        });
-                    }),
-                    status: (taskId) => new Promise((resolve, reject) => {
-                        GM_xmlhttpRequest({
-                            method: "GET", url: `${targetSrv.relayUrl}/tool/${toolId}/status?task_id=${taskId}&server_id=${targetSrv.machineIdentifier}`,
-                            headers: { "X-API-Key": ClientSettings.masterApiKey }, onload: r => resolve(JSON.parse(r.responseText)), onerror: reject
-                        });
-                    }),
-                    cancel: (taskId) => new Promise((resolve, reject) => {
-                        GM_xmlhttpRequest({
-                            method: "POST", url: `${targetSrv.relayUrl}/tool/${toolId}/cancel`,
-                            headers: { "X-API-Key": ClientSettings.masterApiKey, "Content-Type": "application/json" },
-                            data: JSON.stringify({ task_id: taskId, _server_id: targetSrv.machineIdentifier }), onload: r => resolve(JSON.parse(r.responseText)), onerror: reject
-                        });
-                    })
+                    run: async (data) => {
+                        const r = await PmhToolAPI.run(toolId, targetSrv, data);
+                        return JSON.parse(r.responseText);
+                    },
+                    status: async (taskId) => {
+                        const r = await PmhToolAPI.status(toolId, targetSrv, taskId);
+                        return JSON.parse(r.responseText);
+                    },
+                    cancel: async (taskId) => {
+                        const r = await PmhToolAPI.cancel(toolId, targetSrv, taskId);
+                        return JSON.parse(r.responseText);
+                    }
                 },
+                
                 toast: {
                     success: (msg) => toastr.success(msg),
                     error: (msg) => toastr.error(msg),
@@ -1334,7 +1362,7 @@ GM_addStyle(`
         } catch(e) {
             document.getElementById('pmh_common_tool_container').innerHTML = `
                 <div style="color:#bd362f; background:rgba(189,54,47,0.1); padding:15px; border-radius:4px; border:1px solid #bd362f;">
-                    UI 스키마 로드 실패<br><br>해당 서버에 툴이 없거나 마스터 노드 통신 오류입니다.
+                    UI 스키마 로드 실패<br><br>${e}<br><br>서버 연결 상태나 API Key 설정을 확인하세요.
                 </div>`;
         }
     }
@@ -1461,14 +1489,37 @@ GM_addStyle(`
         const clearCacheBtn = document.createElement('button');
         clearCacheBtn.textContent = '캐시 초기화'; clearCacheBtn.style.marginLeft = '10px';
         clearCacheBtn.addEventListener('click', () => {
-            if (confirm("전체 캐시를 삭제하고 초기화하시겠습니까?")) {
+            if (confirm("UI 코어 캐시 및 메모리를 초기화하시겠습니까?\n(설정은 유지되며, 최신 스크립트로 다시 로드합니다.)")) {
+                
+                if(window.PmhUICore && window.PmhUICore.destroyActiveInstance) {
+                    window.PmhUICore.destroyActiveInstance();
+                    delete window.PmhUICore;
+                }
+                const oldCss = document.getElementById('pmh-shared-css-inline');
+                if (oldCss) oldCss.remove();
+                const oldJs = document.getElementById('pmh-shared-js-inline');
+                if (oldJs) oldJs.remove();
+                const toolPanel = document.getElementById('pmh-tool-panel');
+                if (toolPanel) toolPanel.remove();
+
+                GM_deleteValue('pmh_ui_core_css_cache');
+                GM_deleteValue('pmh_ui_core_js_cache');
+                GM_deleteValue('pmh_ui_cache_version');
+
                 clearMemoryCache(); 
-                showStatusMsg("캐시 초기화 완료", "#51a351"); 
                 forceReRenderAll();
+                
                 if(document.getElementById('plex-guid-box')) { 
                     currentDisplayedItemId = null; 
                     processDetail(true); 
                 }
+
+                showStatusMsg("캐시 초기화 중...", "#e5a00d"); 
+                bootstrapPMH().then(() => {
+                    showStatusMsg("캐시 및 UI 코어 갱신 완료", "#51a351"); 
+                }).catch(() => {
+                    showStatusMsg("코어 갱신 실패", "#bd362f"); 
+                });
             }
         });
 
@@ -2285,8 +2336,25 @@ GM_addStyle(`
                 }
 
                 if (serverSuccess) {
+                    infoLog(`[Update] Server update successful to v${targetVer}. Auto-clearing all caches to prevent schema conflicts...`);
+                    
+                    try {
+                        clearMemoryCache();
+                        
+                        GM_deleteValue('pmh_ui_core_css_cache');
+                        GM_deleteValue('pmh_ui_core_js_cache');
+                        GM_deleteValue('pmh_ui_cache_version');
+                        
+                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear();
+                        
+                        showStatusMsg(`업데이트 및 캐시 최적화 완료!`, '#51a351', 3000);
+                        toastr.info("서버 업데이트가 완료되었으며, 안전을 위해 기존 데이터 캐시를 자동으로 비웠습니다.", "캐시 최적화 완료");
+                    } catch (err) {
+                        errorLog("[Update] Auto-clearing cache failed", err);
+                    }
+
                     if (needsJsUpdate) {
-                        showStatusMsg(`서버 완료! 스크립트를 업데이트합니다...`, '#51a351', 3000);
+                        showStatusMsg(`스크립트를 업데이트합니다...`, '#51a351', 3000);
                         setTimeout(() => { 
                             let scriptUrl = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js";
                             if (typeof GM_info !== 'undefined' && GM_info.script) {
@@ -2294,65 +2362,18 @@ GM_addStyle(`
                             }
                             
                             window.open(`${scriptUrl}?t=${Date.now()}`, "_blank"); 
+                            
+                            setTimeout(() => location.reload(), 1500);
                         }, 1500);
+                    } else {
+                        setTimeout(() => location.reload(), 2000);
                     }
+                    
                     defaultMsg = ''; defaultColor = '#aaa';
                 } else {
                     delete updateLinkBtn.dataset.updating; updateLinkBtn.innerHTML = originalHtml;
                 }
                 return;
-            }
-
-            const updateBtn = e.target.closest('#pmh-manual-update-btn');
-            if (updateBtn) {
-                e.preventDefault(); 
-                e.stopPropagation();
-                
-                if (updateBtn.dataset.fetching === "true") return;
-                updateBtn.dataset.fetching = "true";
-
-                log("[UI] Manual update check button clicked.");
-                
-                const icon = updateBtn.querySelector('.pmh-sync-icon');
-                if (icon) icon.classList.add('fa-spin');
-                
-                showStatusMsg(`업데이트 확인 중...`, '#ccc', 0);
-
-                const result = await checkUpdate(true);
-                const liveBtn = document.getElementById('pmh-manual-update-btn');
-                if (liveBtn) {
-                    delete liveBtn.dataset.fetching;
-                    const liveIcon = liveBtn.querySelector('.pmh-sync-icon');
-                    if (liveIcon) liveIcon.classList.remove('fa-spin');
-                }
-
-                if (result && result.error) {
-                    showStatusMsg(result.msg, '#bd362f', 4000);
-                } else if (result) {
-                    needsJsUpdate = isNewerVersion(CURRENT_VERSION, result.targetVer);
-                    serversToUpdate = [];
-
-                    if (ServerConfig.SERVERS) {
-                        for (const srv of ServerConfig.SERVERS) {
-                            const curVer = result.localPyVers[srv.machineIdentifier];
-                            if (!curVer || isNewerVersion(curVer, result.targetVer)) {
-                                serversToUpdate.push({...srv, targetVer: result.targetVer});
-                            }
-                        }
-                    }
-
-                    if (needsJsUpdate || serversToUpdate.length > 0) {
-                        log(`[Update] Needs update. JS: ${needsJsUpdate}, Servers: ${serversToUpdate.length}`);
-                        const btnText = result.reqRestart ? `업데이트(v${result.targetVer}): 서버 재시작 필요` : `업데이트(v${result.targetVer})`;
-                        defaultMsg = `<a href="#" id="pmh-unified-update-link" data-ver="${result.targetVer}" style="color:#e5a00d; text-decoration:none;" title="클릭 시 전체 업데이트 진행">${btnText}</a>`;
-                        defaultColor = '#e5a00d';
-                        showStatusMsg(`업데이트 발견!`, '#e5a00d', 3000);
-                    } else {
-                        defaultMsg = ''; defaultColor = '#aaa';
-                        showStatusMsg(`최신 버전입니다 (v${CURRENT_VERSION})`, '#51a351', 3000);
-                        if (typeof pmhToolListCache !== 'undefined') pmhToolListCache = null;
-                    }
-                }
             }
         });
     }
@@ -4320,14 +4341,16 @@ GM_addStyle(`
 
         if (!srvConfig) return;
 
-        const callPlexMateViaRelay = (endpoint, paramsObj) => {
+        const callPlexMateViaRelay = async (endpoint, paramsObj) => {
+            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+            
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: 'POST',
                     url: `${srvConfig.relayUrl}/mate${endpoint}`,
                     headers: { 
                         'Content-Type': 'application/json',
-                        'X-API-Key': ClientSettings.masterApiKey 
+                        'X-PMH-Signature': secureToken 
                     },
                     data: JSON.stringify(paramsObj),
                     timeout: 60000,
@@ -4354,9 +4377,20 @@ GM_addStyle(`
                     if (lastSlash > -1) scanPath = scanPath.substring(0, lastSlash);
                 }
 
-                const originalHtml = el.innerHTML;
-                el.style.pointerEvents = 'none';
-                el.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 스캔 요청 중...`;
+                const parentDiv = el.closest('div');
+                let overlay = null;
+                
+                if (parentDiv) {
+                    parentDiv.style.position = 'relative';
+                    parentDiv.style.pointerEvents = 'none';
+                    
+                    overlay = document.createElement('div');
+                    overlay.className = 'pmh-path-scan-overlay';
+                    overlay.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; background-color:rgba(0,0,0,0.4); border-radius:4px; z-index:10;';
+                    overlay.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size:16px; color:#e5a00d;"></i>`;
+                    
+                    parentDiv.appendChild(overlay);
+                }
 
                 try {
                     toastr.info(`[1/2] VFS/Refresh 요청 중...<br>${scanPath}`, "Web 스캔 시작", {timeOut: 3000});
@@ -4373,12 +4407,14 @@ GM_addStyle(`
                     } else {
                         throw new Error(scanRes.msg || "스캔 요청 실패");
                     }
-                } catch (err) { 
+                } catch (err) {
                     errorLog(`[PlexMate] Scan error:`, err);
-                    toastr.error(`오류 발생: ${err.message || err}`, '스캔 실패'); 
-                } finally { 
-                    el.style.pointerEvents = 'auto'; 
-                    el.innerHTML = originalHtml; 
+                    toastr.error(`오류 발생: ${err.message || err}`, '스캔 실패');
+                } finally {
+                    if (parentDiv) {
+                        if (overlay) overlay.remove();
+                        parentDiv.style.pointerEvents = 'auto';
+                    }
                 }
             });
         });
@@ -4747,7 +4783,7 @@ GM_addStyle(`
             }
         });
 
-        document.getElementById('pmh-settings-test').onclick = () => {
+        document.getElementById('pmh-settings-test').onclick = async () => {
             const url = document.getElementById('pmh-set-master-url').value.trim().replace(/\/$/, '');
             const key = document.getElementById('pmh-set-api-key').value.trim();
             if(!url || !key) return toastr.warning("URL과 API Key를 입력하세요.");
@@ -4755,8 +4791,10 @@ GM_addStyle(`
             const btn = document.getElementById('pmh-settings-test');
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 확인 중...';
             
+            const secureToken = await generateSecureHeader(key);
+            
             GM_xmlhttpRequest({
-                method: "GET", url: `${url}/api/ping`, headers: { "X-API-Key": key }, timeout: 5000,
+                method: "GET", url: `${url}/api/ping`, headers: { "X-PMH-Signature": secureToken }, timeout: 5000,
                 onload: (r) => {
                     btn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트';
                     if(r.status === 200) toastr.success("마스터 서버 연결 성공!");
@@ -4867,10 +4905,12 @@ GM_addStyle(`
 
         try {
             console.log(`[PMH Boot] 마스터 서버(${ClientSettings.masterUrl})에 접속하여 설정을 동기화합니다...`);
+            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+
             const res = await new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: "GET", url: `${ClientSettings.masterUrl}/api/client/config`,
-                    headers: { "X-API-Key": ClientSettings.masterApiKey },
+                    headers: { "X-PMH-Signature": secureToken },
                     timeout: 8000,
                     onload: r => {
                         if (r.status === 200) resolve(JSON.parse(r.responseText));
@@ -4895,74 +4935,81 @@ GM_addStyle(`
                 };
             });
 
-            const LOCAL_UI_CSS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.css?t=${Date.now()}`;
-            const GITHUB_UI_CSS = `https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.css?t=${Date.now()}`;
+            const GITHUB_UI_CSS = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.css";
+            const GITHUB_UI_JS = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.js";
+            
+            const latestVer = GM_getValue('pmh_latest_version', CURRENT_VERSION);
+            const savedVer = GM_getValue('pmh_ui_cache_version', '');
+            
+            let cachedCss = GM_getValue('pmh_ui_core_css_cache', null);
+            let cachedJs = GM_getValue('pmh_ui_core_js_cache', null);
 
-            if(!document.getElementById('pmh-shared-css')) {
-                const link = document.createElement('link');
-                link.id = 'pmh-shared-css';
-                link.rel = 'stylesheet';
-                link.href = LOCAL_UI_CSS;
-                link.onerror = () => { link.href = GITHUB_UI_CSS; };
-                document.head.appendChild(link);
+            if (!cachedCss || !cachedJs || savedVer !== latestVer) {
+                infoLog(`[PMH Boot] UI Core 캐시 없음 또는 버전 변경(${savedVer} -> ${latestVer}). GitHub에서 새로 다운로드합니다...`);
+                
+                cachedCss = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: "GET", url: `${GITHUB_UI_CSS}?t=${Date.now()}`, timeout: 10000,
+                        onload: (r) => r.status === 200 ? resolve(r.responseText) : reject(`CSS 로드 실패 (${r.status})`),
+                        onerror: () => reject("CSS 네트워크 오류"), ontimeout: () => reject("CSS 시간 초과")
+                    });
+                });
+                
+                cachedJs = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: "GET", url: `${GITHUB_UI_JS}?t=${Date.now()}`, timeout: 10000,
+                        onload: (r) => r.status === 200 ? resolve(r.responseText) : reject(`JS 로드 실패 (${r.status})`),
+                        onerror: () => reject("JS 네트워크 오류"), ontimeout: () => reject("JS 시간 초과")
+                    });
+                });
+                
+                GM_setValue('pmh_ui_core_css_cache', cachedCss);
+                GM_setValue('pmh_ui_core_js_cache', cachedJs);
+                GM_setValue('pmh_ui_cache_version', latestVer);
+                infoLog(`[PMH Boot] UI Core (v${latestVer}) 로컬 캐시 저장 완료!`);
+            } else {
+                infoLog(`[PMH Boot] ⚡ 로컬 캐시 UI Core (v${savedVer}) 즉시 렌더링!`);
             }
 
-            await new Promise((resolve, reject) => {
-                if(typeof window.PmhUICore !== 'undefined') return resolve();
+            let styleEl = document.getElementById('pmh-shared-css-inline');
+            if (styleEl) styleEl.remove();
+            styleEl = document.createElement('style');
+            styleEl.id = 'pmh-shared-css-inline';
+            styleEl.textContent = cachedCss; 
+            document.head.appendChild(styleEl);
 
-                const GITHUB_UI_JS = `https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.js?t=${Date.now()}`;
-                const LOCAL_UI_JS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.js?t=${Date.now()}`;
-
-                const injectScriptText = (codeText) => {
+            if (typeof window.PmhUICore === 'undefined') {
+                await new Promise((resolve, reject) => {
                     try {
+                        const oldScript = document.getElementById('pmh-shared-js-inline');
+                        if (oldScript) oldScript.remove();
+
+                        const blob = new Blob([cachedJs], { type: 'application/javascript' });
+                        const blobUrl = URL.createObjectURL(blob);
+                        
                         const scriptEl = document.createElement('script');
-                        scriptEl.textContent = codeText;
-                        document.head.appendChild(scriptEl);
-                        resolve();
-                    } catch (err) { reject("UI Core JS 실행(Injection) 실패"); }
-                };
-
-                GM_xmlhttpRequest({
-                    method: "GET",
-                    url: LOCAL_UI_JS,
-                    timeout: 3000,
-                    onload: (r) => {
-                        if (r.status === 200) {
-                            infoLog("[PMH Boot] Local Server에서 UI Core 스크립트를 가져왔습니다.");
-                            injectScriptText(r.responseText);
-                        } else {
-                            warnLog(`[PMH Boot] Local Server UI Core 로드 실패 (HTTP ${r.status}). GitHub 우회 시도...`);
-                            fallbackToGitHub();
-                        }
-                    },
-                    onerror: () => {
-                        warnLog(`[PMH Boot] Local Server 접근 차단됨 (Mixed Content 등). GitHub 우회 시도...`);
-                        fallbackToGitHub();
-                    },
-                    ontimeout: () => fallbackToGitHub()
+                        scriptEl.id = 'pmh-shared-js-inline';
+                        scriptEl.src = blobUrl;
+                        
+                        scriptEl.onload = () => {
+                            URL.revokeObjectURL(blobUrl);
+                            infoLog("[PMH Boot] UI Core JS Blob Injection 및 메모리 적재 완료!");
+                            resolve();
+                        };
+                        scriptEl.onerror = () => {
+                            URL.revokeObjectURL(blobUrl);
+                            reject("Blob 스크립트 실행 실패");
+                        };
+                        
+                        document.body.appendChild(scriptEl);
+                    } catch (err) {
+                        reject(`Blob 주입 에러: ${err.message}`);
+                    }
                 });
-
-                function fallbackToGitHub() {
-                    GM_xmlhttpRequest({
-                        method: "GET",
-                        url: GITHUB_UI_JS,
-                        timeout: 5000,
-                        onload: (r) => {
-                            if (r.status === 200) {
-                                infoLog("[PMH Boot] GitHub에서 UI Core 스크립트를 성공적으로 가져왔습니다.");
-                                injectScriptText(r.responseText);
-                            } else {
-                                reject(`GitHub UI Core 로드 실패 (HTTP ${r.status})`);
-                            }
-                        },
-                        onerror: () => reject("GitHub 네트워크 오류"),
-                        ontimeout: () => reject("GitHub 응답 시간 초과")
-                    });
-                }
-            });
+            }
 
             infoLog(`[PMH Boot] 설정 동기화 및 UI 코어 로드 완료! (노드 수: ${ServerConfig.SERVERS.length})`);
-
+            
             checkUpdate();
             observer.observe(document.body, { childList: true, subtree: true });
             checkUrlChange(true);
@@ -4976,13 +5023,24 @@ GM_addStyle(`
                 });
             }
 
-            setTimeout(() => {
-                const lastTool = GM_getValue('pmh_last_open_tool', '');
-                if (lastTool && ServerConfig.SERVERS.length > 0) {
-                    window._pmh_is_minimized = GM_getValue('pmh_last_minimize_state', false); 
-                    openPmhToolUI(lastTool);
-                }
-            }, 500);
+            const lastTool = GM_getValue('pmh_last_open_tool', '');
+            if (lastTool && ServerConfig.SERVERS.length > 0) {
+                window._pmh_is_minimized = GM_getValue('pmh_last_minimize_state', false); 
+                
+                let checkUiCount = 0;
+                const checkUiReady = setInterval(() => {
+                    if (typeof window.showPmhToolPanel === 'function') {
+                        clearInterval(checkUiReady);
+                        openPmhToolUI(lastTool);
+                    } else {
+                        checkUiCount++;
+                        if (checkUiCount > 30) {
+                            clearInterval(checkUiReady);
+                            errorLog("[PMH Boot] 마지막 실행 툴 복구 실패 (UI 초기화 시간 초과)");
+                        }
+                    }
+                }, 100);
+            }
 
         } catch (e) {
             errorLog("[PMH Boot Error]", e);

@@ -9,6 +9,9 @@ import importlib
 import time
 import yaml
 import hmac
+import hashlib
+import tempfile
+import traceback
 from flask import Flask, jsonify, request, Response, send_file
 from flask_cors import CORS
 from collections import defaultdict
@@ -62,6 +65,9 @@ BASE:
   
   # (선택) 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
+
+  # Fail2Ban 기능 활성화 여부
+  ENABLE_FAIL2BAN: true
 
   # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
   DEV_MODE: false
@@ -179,51 +185,51 @@ pmh_core.start_scheduler_daemon(global_conf)
 # ==============================================================================
 # [보안 및 Rate Limiting 모듈]
 # ==============================================================================
+ENABLE_FAIL2BAN = BASE_CFG.get("ENABLE_FAIL2BAN", True)
 
 if len(API_KEY) < 8:
     print("\n" + "!"*60)
     print(" [PMH SECURITY FATAL] API Key 보안 취약 알림!")
     print(" 설정된 API_KEY가 너무 짧아 무차별 대입 공격에 취약합니다.")
-    print(" 외부 망에 서버를 노출할 경우 최소 16자 이상의 복잡한 문자열 사용을 권장합니다.")
     print(" 서버를 안전하게 보호하기 위해 구동을 중단합니다. pmh_config.yaml을 수정하세요.")
     print("!"*60 + "\n")
     sys.exit(1)
 elif len(API_KEY) < 16:
     print("\n[PMH SECURITY WARNING] API Key 길이가 16자 미만입니다. 더 강력한 키 사용을 권장합니다.")
 
+# 인메모리 Fail2Ban (연속 실패 기반 IP 차단 기록)
 FAILED_ATTEMPTS = {}
-MAX_FAILURES = 5
-BLOCK_TIME = 600
-MAX_TRACKED_IPS = 10000
-LAST_GC_TIME = time.time()
+MAX_FAILURES = 10            # 최대 허용 연속 실패 횟수
+BLOCK_TIME = 300             # 차단 유지 시간 (초 단위, 5분)
+MAX_TRACKED_IPS = 10000      # [보안] 메모리 보호를 위한 동시 추적 최대 IP 개수
+LAST_GC_TIME = time.time()   # 가비지 컬렉션 타이머
 
 def _garbage_collect_failed_ips():
-    """메모리 누수 방지를 위해 만료된 IP 기록을 일괄 청소합니다."""
+    if not ENABLE_FAIL2BAN: return
     global LAST_GC_TIME
     now = time.time()
     
-    if now - LAST_GC_TIME < 300:
-        return
-        
+    # 5분(300초)마다 한 번씩 청소 실행
+    if now - LAST_GC_TIME < 300: return
     LAST_GC_TIME = now
-    expired_ips = []
     
+    expired_ips = []
     for ip, attempts in FAILED_ATTEMPTS.items():
         valid_attempts = [t for t in attempts if now - t < BLOCK_TIME]
-        if not valid_attempts:
+        if not valid_attempts: 
             expired_ips.append(ip)
-        else:
+        else: 
             FAILED_ATTEMPTS[ip] = valid_attempts
             
     for ip in expired_ips:
         del FAILED_ATTEMPTS[ip]
-        
-    print(f"[PMH SECURITY] 🧹 Fail2Ban 메모리 청소 완료. (추적 중인 IP: {len(FAILED_ATTEMPTS)}개)")
 
 def is_ip_blocked(ip_addr):
-    _garbage_collect_failed_ips()
+    if not ENABLE_FAIL2BAN: return False
     
+    _garbage_collect_failed_ips()
     now = time.time()
+    
     if ip_addr in FAILED_ATTEMPTS:
         valid_attempts = [t for t in FAILED_ATTEMPTS[ip_addr] if now - t < BLOCK_TIME]
         FAILED_ATTEMPTS[ip_addr] = valid_attempts
@@ -233,15 +239,46 @@ def is_ip_blocked(ip_addr):
     return False
 
 def record_failed_attempt(ip_addr):
-    now = time.time()
+    if not ENABLE_FAIL2BAN: return
     
+    now = time.time()
     if ip_addr not in FAILED_ATTEMPTS:
         if len(FAILED_ATTEMPTS) >= MAX_TRACKED_IPS:
-            print("[PMH SECURITY WARNING] 🚨 비정상적인 대규모 분산 공격 감지! Fail2Ban 메모리를 강제 초기화합니다.")
             FAILED_ATTEMPTS.clear()
         FAILED_ATTEMPTS[ip_addr] = []
         
     FAILED_ATTEMPTS[ip_addr].append(now)
+
+def reset_failed_attempt(ip_addr):
+    if not ENABLE_FAIL2BAN: return
+    
+    if ip_addr in FAILED_ATTEMPTS:
+        del FAILED_ATTEMPTS[ip_addr]
+
+def generate_secure_header(api_key):
+    if not api_key: return ""
+    timestamp = int(time.time() / 10) * 10
+    payload = f"{api_key}:{timestamp}".encode('utf-8')
+    hash_hex = hashlib.sha256(payload).hexdigest()
+    return f"{timestamp}.{hash_hex}"
+
+def verify_signature(signature, api_key):
+    if not signature or "." not in signature: return False
+    
+    try:
+        req_ts_str, req_hash = signature.split('.')
+        req_ts = int(req_ts_str)
+        current_ts = int(time.time() / 10) * 10
+        
+        if abs(current_ts - req_ts) > 40:
+            return False
+            
+        payload = f"{api_key}:{req_ts}".encode('utf-8')
+        expected_hash = hashlib.sha256(payload).hexdigest()
+        
+        return hmac.compare_digest(req_hash, expected_hash)
+    except Exception:
+        return False
 
 # ==============================================================================
 # [Flask 앱 초기화]
@@ -253,20 +290,14 @@ log.setLevel(logging.ERROR)
 
 @app.before_request
 def check_api_key():
-    if request.method == "OPTIONS":
-        return
+    if request.method == "OPTIONS": return
     
+    allowed_paths = ['/', '/favicon.ico']
+    if request.path in allowed_paths or request.path.startswith('/api/client/'): return
+        
     allowed_restart_paths = ['/api/admin/update', '/api/ping', '/favicon.ico', '/']
     if request.path not in allowed_restart_paths and is_server_restart_required():
-        print("[PMH SECURITY] 🛑 서버 스크립트가 업데이트되었으나 파이썬 재시작이 누락되었습니다. 모든 API 요청을 거부합니다.")
-        return jsonify({
-            "error": "SERVER_RESTART_REQUIRED",
-            "message": "서버(pmh_server.py)가 최신 버전으로 업데이트되었습니다. 반드시 파이썬 프로세스(컨테이너)를 수동으로 껐다 켜서 재시작해주세요!"
-        }), 426
-
-    allowed_paths = ['/', '/favicon.ico']
-    if request.path in allowed_paths or request.path.startswith('/api/client/'):
-        return
+        return jsonify({"error": "SERVER_RESTART_REQUIRED", "message": "서버 수동 재시작 필요"}), 426
         
     client_ip = request.remote_addr or "Unknown IP"
     
@@ -274,22 +305,73 @@ def check_api_key():
         print(f"[PMH SECURITY] 🛑 다중 인증 실패로 차단된 IP의 접근 시도 거부: {client_ip}")
         return jsonify({"error": "Too Many Failed Attempts. Try again later."}), 429
         
-    provided_key = request.headers.get("X-API-Key", "")
+    signature = request.headers.get("X-PMH-Signature", "")
     
-    if not provided_key or not hmac.compare_digest(provided_key, API_KEY):
+    # [호환성 백도어] X-API-Key 헤더 지원 (평문 통신 허용 여부)
+    legacy_key = request.headers.get("X-API-Key", "")
+    if legacy_key and hmac.compare_digest(legacy_key, API_KEY):
+        reset_failed_attempt(client_ip)
+        return 
+    
+    if not verify_signature(signature, API_KEY):
         record_failed_attempt(client_ip)
         fail_count = len(FAILED_ATTEMPTS.get(client_ip, []))
-        print(f"[PMH SECURITY] 🚫 잘못된 API Key 접근 시도. (IP: {client_ip}, 누적 실패: {fail_count}/{MAX_FAILURES})")
-        return jsonify({"error": "Unauthorized. Invalid API Key."}), 401
+        print(f"[PMH SECURITY] 🚫 잘못된 서명 토큰 접근 시도. (IP: {client_ip}, 연속 실패: {fail_count}/{MAX_FAILURES})")
+        return jsonify({"error": "Unauthorized. Invalid Signature."}), 401
+        
+    reset_failed_attempt(client_ip)
 
 # ==============================================================================
 # [서버 전용 라우팅] (코어 업데이트)
 # ==============================================================================
+def safe_download_and_replace(url, target_filepath):
+    ts = int(time.time())
+    no_cache_url = f"{url}?t={ts}"
+    
+    req = urllib.request.Request(no_cache_url, headers={
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+    })
+    
+    temp_fd, temp_path = tempfile.mkstemp(suffix='.tmp', prefix='pmh_update_')
+    os.close(temp_fd)
+    
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            code_content = response.read().decode('utf-8')
+            
+        if len(code_content) < 100 or "def " not in code_content:
+            raise Exception("다운로드된 코드의 크기가 너무 작거나 비정상적입니다.")
+            
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            f.write(code_content)
+            
+        if os.path.exists(target_filepath):
+            backup_path = target_filepath + ".bak"
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            try:
+                os.rename(target_filepath, backup_path)
+            except Exception as e:
+                os.remove(target_filepath)
+                
+        os.rename(temp_path, target_filepath)
+        print(f"[PMH UPDATE] ✅ 성공: {os.path.basename(target_filepath)} 업데이트 완료.")
+        return True
+        
+    except Exception as e:
+        print(f"[PMH UPDATE ERROR] ❌ 실패: {os.path.basename(target_filepath)} 다운로드/교체 오류: {e}")
+        if os.path.exists(temp_path):
+            try: os.remove(temp_path)
+            except: pass
+        raise e
+
 def background_update_task():
-    print("[PMH UPDATE BACKGROUND] 워커 스레드 완전 종료 대기 및 코어 업데이트를 시작합니다...")
+    print("[PMH UPDATE BACKGROUND] 워커 스레드 종료 대기 및 코어 업데이트 시작...")
     
     if DEV_MODE:
-        print("[PMH DEV] 🛠️ DEV_MODE 가 활성화되어 있습니다. 깃허브 원격 덮어쓰기를 생략하고 모듈만 리로드합니다.")
+        print("[PMH DEV] 🛠️ DEV_MODE: GitHub 다운로드를 생략하고 로컬 모듈만 리로드합니다.")
         try:
             importlib.reload(pmh_core)
             pmh_core.start_scheduler_daemon(global_conf)
@@ -299,8 +381,9 @@ def background_update_task():
         return
 
     try:
-        time.sleep(3)
+        time.sleep(2)
         import threading
+        
         active_workers = [t for t in threading.enumerate() if t.name.startswith("Worker_")]
         max_wait = 15
         waited = 0
@@ -310,46 +393,67 @@ def background_update_task():
             active_workers = [t for t in threading.enumerate() if t.name.startswith("Worker_")]
         
         if active_workers:
-            print(f"[PMH UPDATE WARNING] {waited}초 대기 후에도 {len(active_workers)}개의 스레드가 종료되지 않아 강제로 코드를 덮어씁니다.")
+            print(f"[PMH UPDATE WARNING] ⚠️ {waited}초 대기 초과! {len(active_workers)}개의 워커를 무시하고 강제 업데이트 진행.")
         else:
-            print("[PMH UPDATE BACKGROUND] 모든 워커 종료 확인 완료. 최신 코드를 다운로드합니다.")
+            print("[PMH UPDATE BACKGROUND] 워커 종료 확인 완료. 다운로드 시작.")
 
-        ts = int(time.time())
-        
-        req_core = urllib.request.Request(f"{CORE_URL}?t={ts}", headers={'Cache-Control': 'no-cache'})
-        with urllib.request.urlopen(req_core, timeout=10) as response:
-            with open(CORE_FILE_PATH, 'w', encoding='utf-8') as f:
-                f.write(response.read().decode('utf-8'))
-                
-        def update_file(url, filename):
-            try:
-                req = urllib.request.Request(f"{url}?t={ts}", headers={'Cache-Control': 'no-cache'})
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    with open(os.path.join(BASE_DIR, filename), 'w', encoding='utf-8') as f:
-                        f.write(resp.read().decode('utf-8'))
-                print(f"[PMH UPDATE] {filename} 업데이트 완료.")
-            except Exception as e:
-                print(f"[PMH UPDATE WARNING] {filename} 업데이트 실패: {e}")
-        
+        # ---------------------------------------------------------
+        # 1. 코어 파일 (pmh_core.py) 안전 업데이트
+        # ---------------------------------------------------------
+        safe_download_and_replace(CORE_URL, CORE_FILE_PATH)
+            
+        # ---------------------------------------------------------
+        # 2. 정적 에셋 (UI JS/CSS 등) 안전 업데이트
+        # ---------------------------------------------------------
         assets = get_static_assets_from_github()
         for asset in assets:
-            update_file(asset['url'], asset['name'])
+            asset_path = os.path.join(BASE_DIR, asset['name'])
+            try:
+                safe_download_and_replace(asset['url'], asset_path)
+            except Exception as e:
+                print(f"[PMH UPDATE WARNING] 에셋({asset['name']}) 업데이트 건너뜀: {e}")
             
+        # 코어 리로드 및 데몬 재시작
         importlib.reload(pmh_core)
         pmh_core.start_scheduler_daemon(global_conf)
-        print(f"[PMH UPDATE BACKGROUND] 코어 업데이트 및 리로드 완료! (v{pmh_core.get_version()})")
+        print(f"[PMH UPDATE BACKGROUND] 🎉 코어 핫-리로드 완료! (현재 버전: v{pmh_core.get_version()})")
 
+        # ---------------------------------------------------------
+        # 3. 서버 자신 (pmh_server.py) 안전 업데이트
+        # ---------------------------------------------------------
+        print("[PMH UPDATE BACKGROUND] 서버 스크립트 업데이트를 시도합니다...")
+        
         try:
-            req_svr = urllib.request.Request(f"{SERVER_URL}?t={ts}", headers={'Cache-Control': 'no-cache'})
-            with urllib.request.urlopen(req_svr, timeout=5) as response_svr:
-                with open(os.path.abspath(__file__), 'w', encoding='utf-8') as f:
-                    f.write(response_svr.read().decode('utf-8'))
-            print("[PMH UPDATE BACKGROUND] 서버 스크립트 갱신 성공 (다음 재시작 시 반영됨).")
-        except Exception as e: 
-            print(f"[PMH UPDATE WARNING] 서버 스크립트 갱신 실패 (무시됨): {e}")
+            with open(SERVER_FILE_PATH, 'r', encoding='utf-8') as f:
+                old_server_code = f.read()
+        except Exception:
+            old_server_code = ""
+
+        ts = int(time.time())
+        req_svr = urllib.request.Request(f"{SERVER_URL}?t={ts}", headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
+        
+        with urllib.request.urlopen(req_svr, timeout=10) as response_svr:
+            new_server_code = response_svr.read().decode('utf-8')
+            
+            if new_server_code != old_server_code:
+                temp_fd, temp_path = tempfile.mkstemp(suffix='.tmp', prefix='pmh_server_')
+                os.close(temp_fd)
+                
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    f.write(new_server_code)
+                    
+                backup_path = SERVER_FILE_PATH + ".bak"
+                if os.path.exists(backup_path): os.remove(backup_path)
+                try: os.rename(SERVER_FILE_PATH, backup_path)
+                except: os.remove(SERVER_FILE_PATH)
+                
+                os.rename(temp_path, SERVER_FILE_PATH)
+                print("[PMH UPDATE BACKGROUND] 🔄 서버 스크립트가 성공적으로 변경되었습니다! (반드시 파이썬 프로세스를 수동으로 재시작하세요.)")
+            else:
+                print("[PMH UPDATE BACKGROUND] 서버 스크립트는 이미 최신 상태입니다. (재시작 불필요)")
 
     except Exception as e:
-        print(f"[PMH UPDATE FATAL ERROR] 백그라운드 업데이트 실패: {e}")
+        print(f"[PMH UPDATE FATAL ERROR] 백그라운드 업데이트가 치명적 오류로 중단되었습니다:\n{traceback.format_exc()}")
 
 @app.route('/api/admin/update', methods=['POST'])
 def api_admin_update():
@@ -486,6 +590,15 @@ def check_update_from_github():
 # ==============================================================================
 # 동적 라우팅 게이트웨이 & 릴레이(Proxy)
 # ==============================================================================
+def generate_secure_header(api_key):
+    if not api_key: return ""
+    
+    timestamp = int(time.time() / 10) * 10
+    payload = f"{api_key}:{timestamp}".encode('utf-8')
+    hash_hex = hashlib.sha256(payload).hexdigest()
+    
+    return f"{timestamp}.{hash_hex}"
+
 @app.route('/api/relay/<node_id>/<path:subpath>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def relay_to_node(node_id, subpath):
     if not IS_MASTER:
@@ -504,7 +617,9 @@ def relay_to_node(node_id, subpath):
     qs = request.query_string.decode('utf-8')
     if qs: target_url += f"?{qs}"
 
-    headers = { "X-API-Key": node_info['apikey'] }
+    secure_token = generate_secure_header(node_info['apikey'])
+    
+    headers = { "X-PMH-Signature": secure_token }
     content_type = request.headers.get("Content-Type")
     if content_type: headers["Content-Type"] = content_type
 
