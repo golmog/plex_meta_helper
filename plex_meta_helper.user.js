@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.62
+// @version      0.8.63
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2311,69 +2311,142 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 if (updateLinkBtn.dataset.updating) return;
                 updateLinkBtn.dataset.updating = "true";
+                
                 const originalHtml = updateLinkBtn.innerHTML;
                 updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 서버 확인 중...`;
                 
                 const targetVer = updateLinkBtn.dataset.ver;
-                const localPyVers = await pingLocalServer();
-                let actualServersToUpdate = [];
-                if (ServerConfig.SERVERS) {
-                    for (const srv of ServerConfig.SERVERS) {
-                        const curVer = localPyVers[srv.machineIdentifier];
-                        if (!curVer || isNewerVersion(curVer, targetVer)) {
-                            actualServersToUpdate.push(srv);
+                
+                try {
+                    const localPyVers = await pingLocalServer();
+                    let actualServersToUpdate = [];
+                    if (ServerConfig.SERVERS) {
+                        for (const srv of ServerConfig.SERVERS) {
+                            const curVer = localPyVers[srv.machineIdentifier];
+                            if (!curVer || isNewerVersion(curVer, targetVer)) {
+                                actualServersToUpdate.push(srv);
+                            }
                         }
                     }
-                }
-                
-                if (actualServersToUpdate.length > 0) {
-                    updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 서버/툴 업데이트 중...`;
-                }
-                
-                let serverSuccess = true;
-                if (actualServersToUpdate.length > 0) {
-                    serverSuccess = await triggerServerUpdate(showStatusMsg, actualServersToUpdate);
-                }
-
-                if (serverSuccess) {
-                    infoLog(`[Update] Server update successful to v${targetVer}. Auto-clearing all caches to prevent schema conflicts...`);
                     
-                    try {
-                        clearMemoryCache();
-                        
-                        GM_deleteValue('pmh_ui_core_css_cache');
-                        GM_deleteValue('pmh_ui_core_js_cache');
-                        GM_deleteValue('pmh_ui_cache_version');
-                        
-                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear();
-                        
-                        showStatusMsg(`업데이트 및 캐시 최적화 완료!`, '#51a351', 3000);
-                        toastr.info("서버 업데이트가 완료되었으며, 안전을 위해 기존 데이터 캐시를 자동으로 비웠습니다.", "캐시 최적화 완료");
-                    } catch (err) {
-                        errorLog("[Update] Auto-clearing cache failed", err);
+                    if (actualServersToUpdate.length > 0) {
+                        updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 서버/툴 업데이트 중...`;
+                    }
+                    
+                    let serverSuccess = true;
+                    if (actualServersToUpdate.length > 0) {
+                        serverSuccess = await triggerServerUpdate(showStatusMsg, actualServersToUpdate);
                     }
 
-                    if (needsJsUpdate) {
-                        showStatusMsg(`스크립트를 업데이트합니다...`, '#51a351', 3000);
-                        setTimeout(() => { 
-                            let scriptUrl = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js";
-                            if (typeof GM_info !== 'undefined' && GM_info.script) {
-                                scriptUrl = GM_info.script.downloadURL || GM_info.script.updateURL || scriptUrl;
-                            }
+                    if (serverSuccess) {
+                        infoLog(`[Update] Server update successful to v${targetVer}. Auto-clearing all caches to prevent schema conflicts...`);
+                        
+                        try {
+                            clearMemoryCache();
+                            GM_deleteValue('pmh_ui_core_css_cache');
+                            GM_deleteValue('pmh_ui_core_js_cache');
+                            GM_deleteValue('pmh_ui_cache_version');
                             
-                            window.open(`${scriptUrl}?t=${Date.now()}`, "_blank"); 
-                            
-                            setTimeout(() => location.reload(), 1500);
-                        }, 1500);
+                            if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear();
+                            showStatusMsg(`업데이트 및 캐시 최적화 완료!`, '#51a351', 3000);
+                            toastr.info("서버 업데이트가 완료되었으며, 기존 데이터 캐시를 비웠습니다.", "캐시 최적화 완료");
+                        } catch (err) {
+                            errorLog("[Update] Auto-clearing cache failed", err);
+                        }
+
+                        const isJsUpdateNeeded = isNewerVersion(CURRENT_VERSION, targetVer);
+
+                        if (isJsUpdateNeeded) {
+                            showStatusMsg(`스크립트를 업데이트합니다...`, '#51a351', 3000);
+                            setTimeout(() => { 
+                                let scriptUrl = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js";
+                                if (typeof GM_info !== 'undefined' && GM_info.script) {
+                                    scriptUrl = GM_info.script.downloadURL || GM_info.script.updateURL || scriptUrl;
+                                }
+                                window.open(`${scriptUrl}?t=${Date.now()}`, "_blank"); 
+                                setTimeout(() => location.reload(), 1500);
+                            }, 1500);
+                        } else {
+                            setTimeout(() => location.reload(), 2000);
+                        }
+                        
+                        defaultMsg = ''; defaultColor = '#aaa';
                     } else {
-                        setTimeout(() => location.reload(), 2000);
+                        delete updateLinkBtn.dataset.updating; 
+                        updateLinkBtn.innerHTML = originalHtml;
                     }
-                    
-                    defaultMsg = ''; defaultColor = '#aaa';
-                } else {
-                    delete updateLinkBtn.dataset.updating; updateLinkBtn.innerHTML = originalHtml;
+                } catch (e) {
+                    errorLog("[Update Link Error]", e);
+                    toastr.error("업데이트 중 치명적인 오류가 발생했습니다.");
+                    delete updateLinkBtn.dataset.updating; 
+                    updateLinkBtn.innerHTML = originalHtml;
                 }
                 return;
+            }
+
+            const updateBtn = e.target.closest('#pmh-manual-update-btn');
+            if (updateBtn) {
+                e.preventDefault(); 
+                e.stopPropagation();
+                
+                if (updateBtn.dataset.fetching === "true") return;
+                updateBtn.dataset.fetching = "true";
+
+                log("[UI] Manual update check button clicked.");
+                
+                const icon = updateBtn.querySelector('.pmh-sync-icon');
+                if (icon) icon.classList.add('fa-spin');
+                
+                showStatusMsg(`업데이트 확인 중...`, '#ccc', 0);
+
+                try {
+                    const result = await checkUpdate(true);
+                    
+                    const liveBtn = document.getElementById('pmh-manual-update-btn');
+                    if (liveBtn) {
+                        delete liveBtn.dataset.fetching;
+                        const liveIcon = liveBtn.querySelector('.pmh-sync-icon');
+                        if (liveIcon) liveIcon.classList.remove('fa-spin');
+                    }
+
+                    if (result && result.error) {
+                        showStatusMsg(result.msg, '#bd362f', 4000);
+                    } else if (result) {
+                        let isJsUpdateNeeded = isNewerVersion(CURRENT_VERSION, result.targetVer);
+                        serversToUpdate = [];
+
+                        if (ServerConfig.SERVERS) {
+                            for (const srv of ServerConfig.SERVERS) {
+                                const curVer = result.localPyVers[srv.machineIdentifier];
+                                if (!curVer || isNewerVersion(curVer, result.targetVer)) {
+                                    serversToUpdate.push({...srv, targetVer: result.targetVer});
+                                }
+                            }
+                        }
+
+                        if (isJsUpdateNeeded || serversToUpdate.length > 0) {
+                            log(`[Update] Needs update. JS: ${isJsUpdateNeeded}, Servers: ${serversToUpdate.length}`);
+                            const btnText = result.reqRestart ? `업데이트(v${result.targetVer}): 서버 재시작 필요` : `업데이트(v${result.targetVer})`;
+                            defaultMsg = `<a href="#" id="pmh-unified-update-link" data-ver="${result.targetVer}" style="color:#e5a00d; text-decoration:none;" title="클릭 시 전체 업데이트 진행">${btnText}</a>`;
+                            defaultColor = '#e5a00d';
+                            showStatusMsg(`업데이트 발견!`, '#e5a00d', 3000);
+                        } else {
+                            defaultMsg = ''; defaultColor = '#aaa';
+                            showStatusMsg(`최신 버전입니다 (v${CURRENT_VERSION})`, '#51a351', 3000);
+                            if (typeof pmhToolListCache !== 'undefined') pmhToolListCache = null;
+                        }
+                    }
+                } catch (err) {
+                    errorLog("[Manual Update Error]", err);
+                    showStatusMsg(`확인 실패`, '#bd362f', 4000);
+                    
+                    const liveBtn = document.getElementById('pmh-manual-update-btn');
+                    if (liveBtn) {
+                        delete liveBtn.dataset.fetching;
+                        const liveIcon = liveBtn.querySelector('.pmh-sync-icon');
+                        if (liveIcon) liveIcon.classList.remove('fa-spin');
+                    }
+                }
             }
         });
     }
