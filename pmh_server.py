@@ -334,9 +334,6 @@ def safe_download_and_replace(url, target_filepath):
         'Expires': '0'
     })
     
-    temp_fd, temp_path = tempfile.mkstemp(suffix='.tmp', prefix='pmh_update_')
-    os.close(temp_fd)
-    
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
             code_content = response.read().decode('utf-8')
@@ -344,27 +341,14 @@ def safe_download_and_replace(url, target_filepath):
         if len(code_content) < 100 or "def " not in code_content:
             raise Exception("다운로드된 코드의 크기가 너무 작거나 비정상적입니다.")
             
-        with open(temp_path, 'w', encoding='utf-8') as f:
+        with open(target_filepath, 'w', encoding='utf-8') as f:
             f.write(code_content)
             
-        if os.path.exists(target_filepath):
-            backup_path = target_filepath + ".bak"
-            if os.path.exists(backup_path):
-                os.remove(backup_path)
-            try:
-                os.rename(target_filepath, backup_path)
-            except Exception as e:
-                os.remove(target_filepath)
-                
-        os.rename(temp_path, target_filepath)
         print(f"[PMH UPDATE] ✅ 성공: {os.path.basename(target_filepath)} 업데이트 완료.")
         return True
         
     except Exception as e:
-        print(f"[PMH UPDATE ERROR] ❌ 실패: {os.path.basename(target_filepath)} 다운로드/교체 오류: {e}")
-        if os.path.exists(temp_path):
-            try: os.remove(temp_path)
-            except: pass
+        print(f"[PMH UPDATE ERROR] ❌ 실패: {os.path.basename(target_filepath)} 다운로드/덮어쓰기 오류: {e}")
         raise e
 
 def background_update_task():
@@ -429,26 +413,15 @@ def background_update_task():
         except Exception:
             old_server_code = ""
 
-        ts = int(time.time())
         req_svr = urllib.request.Request(f"{SERVER_URL}?t={ts}", headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
         
         with urllib.request.urlopen(req_svr, timeout=10) as response_svr:
             new_server_code = response_svr.read().decode('utf-8')
             
             if new_server_code != old_server_code:
-                temp_fd, temp_path = tempfile.mkstemp(suffix='.tmp', prefix='pmh_server_')
-                os.close(temp_fd)
-                
-                with open(temp_path, 'w', encoding='utf-8') as f:
+                with open(SERVER_FILE_PATH, 'w', encoding='utf-8') as f:
                     f.write(new_server_code)
-                    
-                backup_path = SERVER_FILE_PATH + ".bak"
-                if os.path.exists(backup_path): os.remove(backup_path)
-                try: os.rename(SERVER_FILE_PATH, backup_path)
-                except: os.remove(SERVER_FILE_PATH)
-                
-                os.rename(temp_path, SERVER_FILE_PATH)
-                print("[PMH UPDATE BACKGROUND] 🔄 서버 스크립트가 성공적으로 변경되었습니다! (반드시 파이썬 프로세스를 수동으로 재시작하세요.)")
+                print("[PMH UPDATE BACKGROUND] 🔄 서버 스크립트가 성공적으로 덮어씌워졌습니다! (반드시 파이썬 프로세스를 수동으로 재시작하세요.)")
             else:
                 print("[PMH UPDATE BACKGROUND] 서버 스크립트는 이미 최신 상태입니다. (재시작 불필요)")
 
