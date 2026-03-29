@@ -30,6 +30,8 @@
 
 /* 2. 툴 폼(Form) 요소 공통 */
 .pmh-form-group { margin-bottom: 15px; transition: 0.2s; text-align: left; }
+.pmh-form-group:last-child { margin-bottom: 0 !important; }
+#pmh_exec_frame .pmh-form-group { margin-bottom: 8px; }
 .pmh-form-label { display: block; color: #e5a00d; font-size: 12px; margin-bottom: 6px; font-weight: bold; text-align: left; }
 .pmh-form-header { margin-top: 20px; margin-bottom: 12px; font-size: 14px; font-weight: bold; color: #2f96b4; border-bottom: 1px solid #333; padding-bottom: 6px; text-align: left; }
 .pmh-input-text { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; transition: border-color 0.2s; box-sizing: border-box; text-align: left; }

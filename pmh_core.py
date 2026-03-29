@@ -25,7 +25,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.64"
+__version__ = "0.8.65"
 
 def get_version():
     return __version__
@@ -1284,15 +1284,18 @@ def dispatch_request(subpath, method, args, data, global_config):
                 rating_key = parts[1]
                 action = parts[2] # unmatch, match, refresh, analyze
 
-                plex_url = data.get('_plex_url') if data else ''
-                plex_token = data.get('_plex_token') if data else ''
+                plex_url = global_config.get("plex_url")
+                plex_token = global_config.get("plex_token")
 
                 if not plex_url or not plex_token:
-                    plex_url = global_config.get("plex_url")
-                    plex_token = global_config.get("plex_token")
+                    plex_url = data.get('_plex_url') if data else ''
+                    plex_token = data.get('_plex_token') if data else ''
 
                 if not plex_url or not plex_token:
-                    return {"error": "Plex credentials missing"}, 400
+                    return {"error": "Plex 접속 정보(URL/Token)가 누락되었습니다."}, 400
+
+                masked_token = f"{plex_token[:4]}...{plex_token[-4:]}" if len(plex_token) > 8 else "****"
+                print(f"[PMH API] 📡 Plex 통신 시도 -> URL: {plex_url}, Action: {action}, Item: {rating_key}, Token: {masked_token}")
 
                 try:
                     from plexapi.server import PlexServer
@@ -1303,80 +1306,39 @@ def dispatch_request(subpath, method, args, data, global_config):
 
                     if action == 'unmatch':
                         item.unmatch()
+                        print(f"[PMH API] ✅ Unmatch 성공 (Item: {rating_key})")
                         return {"status": "success"}, 200
                         
                     elif action == 'match':
-                        import urllib.parse
-                        
                         section = item.section()
-                        target_agent = section.agent
-                        target_title = item.title
-                        target_year = item.year
                         
-                        query_params = {
-                            'X-Plex-Token': plex_token,
-                            'language': 'ko',
-                            'manual': '1',
-                            'agent': target_agent
-                        }
-                        if target_title: query_params['title'] = target_title
-                        if target_year: query_params['year'] = str(target_year)
+                        success, msg, score = perform_smart_match(
+                            plex_url=plex_url, 
+                            plex_token=plex_token, 
+                            rating_key=rating_key, 
+                            item_title=item.title, 
+                            item_year=item.year, 
+                            target_agent=section.agent,
+                            plex_inst=plex
+                        )
                         
-                        matches_url = f"{plex_url}/library/metadata/{rating_key}/matches?{urlencode(query_params)}"
-                        req = Request(matches_url, headers={'Accept': 'application/json'})
-                        
-                        try:
-                            with urlopen(req, timeout=30) as response:
-                                matches_data = json.loads(response.read())
-                        except Exception as e:
-                            return {"error": f"Match search API failed: {e}"}, 500
-                            
-                        results = matches_data.get('MediaContainer', {}).get('SearchResult', [])
-                        if not results:
-                            return {"error": f"No matches found for agent '{target_agent}'"}, 404
-                            
-                        results.sort(key=lambda r: r.get('score', 0), reverse=True)
-                        best_match = results[0]
-                        
-                        best_score = int(best_match.get('score', 0) or 0)
-                        is_valid_match = False
-
-                        if best_score >= 95:
-                            is_valid_match = True
-                        elif best_score == 0:
-                            import re
-                            def norm(t): return re.sub(r'[^a-zA-Z0-9가-힣]', '', str(t).lower())
-                            
-                            if norm(target_title) == norm(best_match.get('name', '')):
-                                is_valid_match = True
-
-                        if not is_valid_match:
-                            return {"error": f"신뢰할 수 있는 매칭 후보를 찾지 못했습니다. (수동 매칭 필요)"}, 404
-
-                        match_params = {
-                            'X-Plex-Token': plex_token,
-                            'guid': best_match.get('guid'),
-                            'name': best_match.get('name')
-                        }
-                        if best_match.get('year'): match_params['year'] = str(best_match.get('year'))
-                        
-                        apply_url = f"{plex_url}/library/metadata/{rating_key}/match?{urlencode(match_params)}"
-                        req_apply = Request(apply_url, method='PUT')
-                        
-                        try:
-                            with urlopen(req_apply, timeout=30) as response:
-                                return {"status": "success"}, 200
-                        except Exception as e:
-                            return {"error": f"Match apply API failed: {e}"}, 500
+                        if success:
+                            print(f"[PMH API] ✅ Match 성공 (Item: {rating_key}): {msg}")
+                            return {"status": "success"}, 200
+                        else:
+                            print(f"[PMH API] ❌ Match 실패 (Item: {rating_key}): {msg}")
+                            return {"error": msg}, 404 if "점수 미달" in msg or "후보 없음" in msg else 500
 
                     elif action == 'refresh':
                         item.refresh()
+                        print(f"[PMH API] ✅ Refresh 성공 (Item: {rating_key})")
                         return {"status": "success"}, 200
                         
                     elif action == 'analyze':
                         item.analyze()
+                        print(f"[PMH API] ✅ Analyze 성공 (Item: {rating_key})")
                         return {"status": "success"}, 200
-                        
+
                     else:
                         return {"error": f"Unknown action: {action}"}, 400
 
@@ -1751,3 +1713,105 @@ def dispatch_request(subpath, method, args, data, global_config):
         import traceback
         traceback.print_exc()
         return {"error": str(e)}, 500
+
+# ==============================================================================
+# [공용 미디어 관리 엔진] - 스마트 매칭 / 리프레시 / 분석
+# ==============================================================================
+def perform_smart_match(plex_url, plex_token, rating_key, item_title, item_year, target_agent, plex_inst=None, try_refresh_first=True, do_unmatch_first=True):
+    import urllib.parse
+    
+    if not plex_inst:
+        from plexapi.server import PlexServer
+        plex_inst = PlexServer(plex_url, plex_token, timeout=120)
+        
+    ekey = f"/library/metadata/{rating_key}"
+    item = plex_inst.fetchItem(ekey)
+    
+    if try_refresh_first:
+        item.refresh()
+        
+        match_success = False
+        for _ in range(6):
+            time.sleep(2.5)
+            temp_item = plex_inst.fetchItem(ekey)
+            temp_guid = (temp_item.guid or '').lower()
+            if temp_guid and not temp_guid.startswith('local://') and not temp_guid.startswith('none://'):
+                match_success = True
+                return True, f"Refresh를 통한 자동 매칭 완료! (새 GUID: {temp_item.guid})", 100
+                
+        if match_success:
+            return True, "", 100
+            
+        print(f"[PMH API] ⚠️ Refresh 자동 매칭 유도 실패. 수동 매칭 폴백으로 전환합니다.")
+
+    if do_unmatch_first:
+        temp_guid = (item.guid or '').lower()
+        if temp_guid.startswith('local://') or temp_guid.startswith('none://') or temp_guid == '-':
+            print(f"[PMH API] 💡 이미 미매칭 상태이므로 Unmatch를 스킵합니다. (GUID: {temp_guid})")
+        else:
+            try:
+                print(f"[PMH API] 🗑️ 매칭 전 기존 메타데이터 Unmatch 진행 중...")
+                item.unmatch()
+                time.sleep(1.5)
+                item = plex_inst.fetchItem(ekey)
+            except Exception as e:
+                print(f"[PMH API] ⚠️ Unmatch 실패 (무시하고 매칭 속행): {e}")
+
+    query_params = {
+        'X-Plex-Token': plex_token,
+        'language': 'ko',
+        'manual': '1',
+        'agent': target_agent
+    }
+    if item_title: query_params['title'] = item_title
+    if item_year: query_params['year'] = str(item_year)
+    
+    matches_url = f"{plex_url}/library/metadata/{rating_key}/matches?{urllib.parse.urlencode(query_params)}"
+    req = Request(matches_url, headers={'Accept': 'application/json'})
+    
+    try:
+        with urlopen(req, timeout=45) as response:
+            matches_data = json.loads(response.read())
+    except Exception as e:
+        return False, f"Match 검색 실패: {e}", 0
+        
+    results = matches_data.get('MediaContainer', {}).get('SearchResult', [])
+    if not results:
+        return False, f"후보 없음 (Agent: {target_agent})", 0
+        
+    results.sort(key=lambda r: int(r.get('score', 0) or 0), reverse=True)
+    best_match = results[0]
+    
+    best_score = int(best_match.get('score', 0) or 0)
+    is_valid_match = False
+
+    if best_score >= 95:
+        is_valid_match = True
+    else:
+        import re
+        def norm(t): return re.sub(r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]', '', str(t).lower())
+        
+        norm_target = norm(item_title)
+        norm_result = norm(best_match.get('name', ''))
+        
+        if norm_target == norm_result or (norm_target and norm_target in norm_result) or (norm_result and norm_result in norm_target):
+            is_valid_match = True
+
+    if not is_valid_match:
+        return False, f"신뢰 점수 미달 ({best_score}점) 및 제목 불일치 ({item_title} != {best_match.get('name', '')})", best_score
+
+    match_params = {
+        'X-Plex-Token': plex_token,
+        'guid': best_match.get('guid'),
+        'name': best_match.get('name')
+    }
+    if best_match.get('year'): match_params['year'] = str(best_match.get('year'))
+    
+    apply_url = f"{plex_url}/library/metadata/{rating_key}/match?{urllib.parse.urlencode(match_params)}"
+    req_apply = Request(apply_url, method='PUT')
+    
+    try:
+        with urlopen(req_apply, timeout=45):
+            return True, f"수동 매칭 적용 완료 ({best_match.get('name')})", best_score
+    except Exception as e:
+        return False, f"Match 적용 실패: {e}", best_score

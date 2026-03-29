@@ -656,9 +656,8 @@ def api_gateway(subpath):
     if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/run')):
         print(f"[PMH API] 💻 {method} /{subpath}")
     
-    json_data = None
-    if method in ['POST', 'PUT'] and request.is_json:
-        json_data = request.get_json()
+    json_data = request.get_json(silent=True) if request.method in ['POST', 'PUT'] else None
+    if json_data is None: json_data = {}
 
     result, status_code = pmh_core.dispatch_request(
         subpath=subpath,

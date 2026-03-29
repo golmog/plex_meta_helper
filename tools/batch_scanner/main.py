@@ -93,7 +93,9 @@ def get_ui(core_api):
             {"id": "scan_depth", "type": "number", "label": "경로 스캔 Depth (기본: 1)", "default": 1, "layout": "plain", "width": "60px", "show_if": {"mode": "path_scan"}}
         ],
         "execute_inputs": [
-            {"id": "opt_vfs", "type": "checkbox", "label": "스캔 전 vfs/refresh 수행 (Plex Mate 연동)", "default": True, "show_if": {"mode": "path_scan"}}
+            {"id": "opt_vfs", "type": "checkbox", "label": "스캔 전 vfs/refresh 수행 (Plex Mate 연동)", "default": True, "show_if": {"mode": "path_scan"}},
+            {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 Refresh(자동 매칭) 우선 시도", "default": True, "show_if": {"mode": "rematch"}},
+            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}}
         ],
         "settings_inputs": [
             {"id": "s_h1", "type": "header", "label": "<i class='fas fa-tachometer-alt'></i> 실행 속도 제어"},
@@ -611,43 +613,38 @@ def worker(task_data, core_api, start_index):
 
                     elif mode == 'rematch':
                         task.log("   -> 🔗 매칭 대상 검색 중...")
-                        target_agent = plex_item.section().agent
-                        matches = plex_item.matches(agent=target_agent, title=plex_item.title, year=plex_item.year, language='ko')
+
+                        import pmh_core
+                        try_refresh = task_data.get('opt_try_refresh', True)
+                        do_unmatch = task_data.get('opt_unmatch_first', True)
+
+                        success, msg, score = pmh_core.perform_smart_match(
+                            plex_url=plex.url, 
+                            plex_token=plex._token, 
+                            rating_key=mid, 
+                            item_title=plex_item.title, 
+                            item_year=plex_item.year, 
+                            target_agent=plex_item.section().agent,
+                            plex_inst=plex,
+                            try_refresh_first=try_refresh,
+                            do_unmatch_first=do_unmatch
+                        )
+                        
                         if task.is_cancelled(): return
-                        if matches:
-                            matches.sort(key=lambda m: int(getattr(m, 'score', 0) or 0), reverse=True)
-                            best_match = matches[0]
-
-                            best_score = int(getattr(best_match, 'score', 0) or 0)
-                            is_valid_match = False
-
-                            if best_score >= 95:
-                                is_valid_match = True
-                            elif best_score == 0:
-                                import re
-                                def norm(t): return re.sub(r'[^a-zA-Z0-9가-힣]', '', str(t).lower())
-                                if norm(plex_item.title) == norm(getattr(best_match, 'name', '')):
-                                    is_valid_match = True
-
-                            if is_valid_match:
-                                task.log(f"      ✅ 최적의 매칭 후보 발견: '{best_match.name}'")
-                                task.log("         ➔ 매칭 데이터 적용 중...")
-                                plex_item.fixMatch(best_match)
-                                task.log("         ➔ 🟢 자동 매칭 완료!")
-                            else:
-                                task.log(f"      ⚠️ 신뢰할 수 있는 매칭 후보가 없어 오매칭 방지를 위해 건너뜁니다.")
-                                core_api['cache'].mark_as_error('rating_key', str(mid))
+                        
+                        if success:
+                            task.log(f"      ✅ {msg}")
                         else:
-                            task.log("      ⚠️ Plex 서버에서 매칭 후보를 전혀 찾지 못했습니다. 수동 매칭이 필요합니다.")
+                            task.log(f"      ⚠️ {msg}")
                             core_api['cache'].mark_as_error('rating_key', str(mid))
 
-                if not task_data.get('_is_single') and action != 'execute_instant':
+                if action != 'execute_instant':
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
                     core_api['cache'].mark_keys_as_done(key_name, [str(mid)])
 
             except Exception as e:
                 task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
-                if not task_data.get('_is_single') and action != 'execute_instant':
+                if action != 'execute_instant':
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
                     core_api['cache'].mark_as_error(key_name, str(mid))
 

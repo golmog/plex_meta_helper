@@ -285,7 +285,7 @@
                 
                 const options = { 
                     method: method, 
-                    headers: { "X-PMH-Signature": secureToken } // [변경점]
+                    headers: { "X-PMH-Signature": secureToken }
                 };
                 if (data) { 
                     options.headers["Content-Type"] = "application/json"; 

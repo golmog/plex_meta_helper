@@ -266,12 +266,12 @@ window.PmhUICore = {
                 </div>
                 
                 <div id="pmh_tab_form" class="pmh-tab-content" style="display:flex; flex-direction:column; flex-grow:1; min-height:0;">
-                    ${config.servers.length > 1 ? `<div class="pmh-form-group"><label class="pmh-form-label"><i class="fas fa-server"></i> 대상 서버</label><select id="pmh_srv_select" class="pmh-input-select" title="명령을 내릴 대상 서버를 변경합니다.">${srvOptionsHtml}</select></div>` : ''}
+                    ${config.servers.length > 1 ? `<div class="pmh-form-group"><label class="pmh-form-label"><i class="fas fa-server"></i> 대상 서버</label><select id="pmh_srv_select" class="pmh-input-select" title="작업 대상 서버를 변경합니다.">${srvOptionsHtml}</select></div>` : ''}
 
-                    <div style="border-bottom:1px solid #333; padding-bottom:25px; margin-bottom:25px; position:relative; flex-shrink:0;">
+                    <div style="border-bottom:1px solid #333; padding-bottom:25px; margin-bottom:15px; position:relative; flex-shrink:0;">
                         <div id="${uniqFormBodyId}" style="display:${formDisplay};">
                             ${ctx.ui.inputs ? `<div style="background:rgba(0,0,0,0.2); padding:15px; border-radius:8px; border:1px solid #333; margin-bottom:15px;"><div style="color:#51a351; font-size:13px; font-weight:bold; margin-bottom:10px;"><i class="fas fa-search"></i> 조회 조건</div>${this.renderInputsHtml(ctx.ui.inputs, ctx.opts)}</div>` : ''}
-                            ${ctx.ui.execute_inputs ? `<div id="pmh_exec_frame" style="background:rgba(60,20,20,0.1); padding:15px; border-radius:8px; border:1px solid #4a2121; margin-bottom:15px;"><div style="color:#e06c6c; font-size:13px; font-weight:bold; margin-bottom:10px;"><i class="fas fa-cogs"></i> 작업 실행 옵션 설정</div>${this.renderInputsHtml(ctx.ui.execute_inputs, ctx.opts)}</div>` : ''}
+                            
                             <div id="pmh_action_container" style="display:flex; flex-wrap:wrap; gap:10px; justify-content:center;">
                                 ${ctx.ui.buttons ? ctx.ui.buttons.map(b => {
                                     const isRed = (b.color === '#bd362f' || b.color === 'red');
@@ -284,7 +284,8 @@ window.PmhUICore = {
                             <i class="fas fa-chevron-up pmh-toggle-btn ${collapsedClass}" id="${uniqToggleBtnId}" title="조회 및 실행 옵션창 접기/펼치기"></i>
                         </div>
                     </div>
-                    
+                    ${ctx.ui.execute_inputs ? `<div id="pmh_exec_frame" style="background:rgba(60,20,20,0.1); padding:15px; border-radius:8px; border:1px solid #4a2121; margin-bottom:15px; flex-shrink:0;"><div style="color:#e06c6c; font-size:13px; font-weight:bold; margin-bottom:10px;"><i class="fas fa-cogs"></i> 작업 실행 옵션</div>${this.renderInputsHtml(ctx.ui.execute_inputs, ctx.opts)}</div>` : ''}
+
                     <div id="pmh_data_table_res" style="flex-grow:1; display:none; flex-direction:column; position:relative; min-height:0; overflow-y:auto; padding-right:4px;"></div>
                 </div>
 
