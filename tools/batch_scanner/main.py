@@ -506,7 +506,9 @@ def worker(task_data, core_api, start_index):
                 with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
-                    c.execute("SELECT * FROM data ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
+                    
+                    c.execute("SELECT * FROM data WHERE pmh_status != 'done' ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
+                    
                     for r in c.fetchall():
                         row_dict = dict(r)
                         row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
@@ -516,7 +518,10 @@ def worker(task_data, core_api, start_index):
                             except: row_dict['files'] = []
                         results.append(row_dict)
                 return results
+            
             items = load_all_items(start_index)
+            total = len(items) + start_index
+
         else:
             items = task_data.get('target_items', [])
 
@@ -580,6 +585,8 @@ def worker(task_data, core_api, start_index):
             if mode in ['refresh', 'rematch']:
                 if not wait_until_stable_idle(): return
 
+            item_has_error = False
+
             try:
                 if mode == 'path_scan':
                     if not mate_url or not mate_apikey:
@@ -612,12 +619,12 @@ def worker(task_data, core_api, start_index):
                         task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 진행)")
 
                     elif mode == 'rematch':
-                        task.log("   -> 🔗 매칭 대상 검색 중...")
-
+                        task.log("   -> 🔗 스마트 하이브리드 매칭 엔진 가동 중...")
+                        
                         import pmh_core
                         try_refresh = task_data.get('opt_try_refresh', True)
-                        do_unmatch = task_data.get('opt_unmatch_first', True)
-
+                        do_unmatch = task_data.get('opt_unmatch_first', False)
+                        
                         success, msg, score = pmh_core.perform_smart_match(
                             plex_url=plex.url, 
                             plex_token=plex._token, 
@@ -636,14 +643,19 @@ def worker(task_data, core_api, start_index):
                             task.log(f"      ✅ {msg}")
                         else:
                             task.log(f"      ⚠️ {msg}")
+                            item_has_error = True
                             core_api['cache'].mark_as_error('rating_key', str(mid))
 
                 if action != 'execute_instant':
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
-                    core_api['cache'].mark_keys_as_done(key_name, [str(mid)])
+                    
+                    if item_has_error:
+                        core_api['cache'].mark_as_error(key_name, str(mid))
+                    else:
+                        core_api['cache'].mark_keys_as_done(key_name, [str(mid)])
 
             except Exception as e:
-                task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
+                task.log(f"   -> ❌ 작업 중 치명적 오류 발생: {e}")
                 if action != 'execute_instant':
                     key_name = 'id' if mode == 'path_scan' else 'rating_key'
                     core_api['cache'].mark_as_error(key_name, str(mid))

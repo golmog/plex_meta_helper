@@ -1,6 +1,6 @@
 id: "batch_scanner"
 name: "배치 스캐너"
 description: "대량의 스캔, 메타데이터 새로고침/리매칭 등을 안전하게 순차 실행합니다."
-version: "0.8.17"
+version: "0.8.18"
 icon: "fas fa-cogs"
 entry_file: "main.py"
