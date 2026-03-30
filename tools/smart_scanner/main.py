@@ -93,7 +93,8 @@ def get_ui(core_api):
                 {"id": "opt_refresh", "label": "포스터 등 메타데이터 유실 의심 항목 새로고침", "default": True},
                 {"id": "opt_yaml_season", "label": "3자리 시즌 에피소드 중 YAML 미적용 항목 감지", "default": True},
                 {"id": "opt_yaml_marker", "label": "인트로/크레딧 마커 누락 항목 YAML 적용", "default": True}
-            ]}
+            ]},
+            {"id": "opt_analyze_audio", "type": "checkbox", "label": "비디오 분석 시 오디오 코덱 검사 포함", "default": True, "show_if": {"opt_analyze": True}}
         ],
         "execute_inputs": [
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 Refresh(자동 매칭) 우선 시도", "default": True, "show_if": {"mode": "rematch"}},
@@ -270,10 +271,18 @@ def get_target_issues(req_data, core_api, task=None):
 
             query = ""
             if fix_type == 'analyze':
-                query = base_from + """
+                opt_audio = req_data.get('opt_analyze_audio', True)
+                
+                audio_check_sql = "OR m.audio_codec IS NULL OR m.audio_codec = ''" if opt_audio else ""
+                
+                query = base_from + f"""
                     mi.metadata_type IN (1, 4, 10) AND mi.id IN (
                         SELECT m.metadata_item_id FROM media_items m 
-                        WHERE (m.width IS NULL OR m.width = 0 OR m.audio_codec IS NULL OR m.audio_codec = '')
+                        WHERE (
+                            (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0 {audio_check_sql}))
+                            OR
+                            (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
+                        )
                     ) AND (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) IS NOT NULL
                 """
             elif fix_type == 'match':
@@ -542,7 +551,9 @@ def worker(task_data, core_api, start_index):
                 with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
-                    c.execute("SELECT * FROM data ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
+                    
+                    c.execute("SELECT * FROM data WHERE pmh_status != 'done' ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
+                    
                     for r in c.fetchall():
                         row_dict = dict(r)
                         row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id', '')))
@@ -561,6 +572,7 @@ def worker(task_data, core_api, start_index):
                 return results
             
             items = load_all_items(start_index)
+            total = len(items) + start_index
         else:
             items = task_data.get('target_items', [])
 
@@ -627,6 +639,7 @@ def worker(task_data, core_api, start_index):
 
             if not wait_until_stable(): return
             skip_delay = False 
+            item_has_error = False
 
             try:
                 if fix_type in ['yaml_season', 'yaml_marker']:
@@ -650,13 +663,15 @@ def worker(task_data, core_api, start_index):
                     elif not mate_url or not mate_apikey:
                         task.log("      ⚠️ Plex Mate 연결 설정(URL/API Key)이 누락되어 YAML 적용이 불가합니다.")
                         skip_delay = True 
+                        item_has_error = True
                     else:
                         task.log("      ✅ YAML 파일 확인 완료. Plex Mate로 동기화 API를 호출합니다...")
                         if call_plexmate_refresh(mate_url, mate_apikey, rk): 
                             task.log("         ➔ 🟢 Plex Mate 연동 성공! (YAML 정보가 Plex에 반영됩니다)")
                         else: 
                             task.log("         ➔ 🔴 Plex Mate 연동 실패 (서버 응답 오류)")
-                            
+                            item_has_error = True
+
                 else:
                     safe_endpoint = f"/library/metadata/{str(rk).strip()}"
                     plex_item = plex.fetchItem(safe_endpoint)
@@ -664,16 +679,50 @@ def worker(task_data, core_api, start_index):
                     if task.is_cancelled(): return
                     
                     if fix_type == 'analyze':
-                        task.log("   -> [미분석] 강제 분석(Analyze) 호출 중...")
+                        task.log("   -> [미분석] 분석(Analyze) 호출 및 완료 대기 중...")
                         plex_item.analyze()
-                        task.log("      ✅ 분석 요청 완료 (Plex 백그라운드에서 파일 스캔 진행)")
+                        
+                        analyze_success = False
+                        opt_audio = task_data.get('opt_analyze_audio', True)
+                        
+                        for _ in range(10):
+                            if task.is_cancelled(): return
+                            time.sleep(2.5)
+                            
+                            plex_item.reload()
+                            
+                            if plex_item.media:
+                                is_fully_analyzed = True
+                                for m in plex_item.media:
+                                    if m_type in (1, 4):
+                                        has_width = bool(getattr(m, 'width', None))
+                                        has_audio = bool(getattr(m, 'audioCodec', None))
+                                        
+                                        if not has_width or (opt_audio and not has_audio):
+                                            is_fully_analyzed = False
+                                            break
+                                    elif m_type == 10:
+                                        if not getattr(m, 'audioCodec', None):
+                                            is_fully_analyzed = False
+                                            break
+                                            
+                                if is_fully_analyzed:
+                                    analyze_success = True
+                                    break
+                                    
+                        if analyze_success:
+                            task.log("      ✅ 분석 완료 및 미디어 정보 갱신 확인!")
+                        else:
+                            msg_detail = "(해상도 및 오디오 코덱)" if opt_audio else "(해상도)"
+                            task.log(f"      ❌ 분석 실패: 제한 시간 내에 유효한 미디어 정보{msg_detail}를 읽지 못했습니다. (클라우드 로딩 지연 또는 손상 의심)")
+                            item_has_error = True
 
                     elif fix_type == 'match':
-                        task.log("   -> [미매칭] 매칭 대상 검색 요청 중...")
-
+                        task.log("   -> [미매칭] 스마트 하이브리드 매칭 엔진 가동 중...")
+                        
                         import pmh_core
                         try_refresh = task_data.get('opt_try_refresh', True)
-                        do_unmatch = task_data.get('opt_unmatch_first', True)
+                        do_unmatch = task_data.get('opt_unmatch_first', False)
                         
                         success, msg, score = pmh_core.perform_smart_match(
                             plex_url=plex.url, 
@@ -693,6 +742,7 @@ def worker(task_data, core_api, start_index):
                             task.log(f"      ✅ {msg}")
                         else:
                             task.log(f"      ⚠️ {msg}")
+                            item_has_error = True
                             core_api['cache'].mark_as_error('rating_key', str(rk))
 
                     elif fix_type == 'refresh':
@@ -701,14 +751,18 @@ def worker(task_data, core_api, start_index):
                         task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 에이전트 데이터 갱신 진행)")
                 
                 actual_fix_counts[fix_type] += 1
+                
                 if action != 'execute_instant':
-                    core_api['cache'].mark_keys_as_done('rating_key', [str(rk)])
+                    if item_has_error:
+                        core_api['cache'].mark_as_error('rating_key', str(rk))
+                    else:
+                        core_api['cache'].mark_keys_as_done('rating_key', [str(rk)])
 
             except Exception as e:
-                task.log(f"   -> ❌ 작업 중 오류 발생: {e}")
+                task.log(f"   -> ❌ 작업 중 치명적 오류 발생: {e}")
                 if action != 'execute_instant':
                     core_api['cache'].mark_as_error('rating_key', str(rk))
-                
+
             if task.is_cancelled(): return
             
             task.update_state('running', progress=idx)
