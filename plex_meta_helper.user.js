@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.66
+// @version      0.8.67
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2501,6 +2501,7 @@ GM_addStyle(`
         marker.className = 'pmh-render-marker';
         marker.style.display = 'none';
         marker.setAttribute('data-iid', id);
+        
         if (currentStateHash) marker.setAttribute('data-state-hash', currentStateHash);
         poster.appendChild(marker);
 
@@ -3068,7 +3069,6 @@ GM_addStyle(`
                     log(`[List] UI State changed for ID: ${iid}. Forcing re-validation (preserving UI).`);
                     changedItems.add(iid); 
                     sessionRevalidated.delete(iid);
-                    marker.setAttribute('data-state-hash', currentStateHash);
                     isAlreadyRendered = false;
                 } else {
                     const isIgnored = marker.getAttribute('data-ignored') === 'true';
@@ -3279,7 +3279,9 @@ GM_addStyle(`
                     const rawG = (info.raw_g || '').toLowerCase();
                     const isDummyGuid = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
                     const oldGuidAttr = item.cont.querySelector('.plex-guid-list-box')?.getAttribute('title') || '';
-                    const dbStillNotSynced = changedItems.has(item.iid) && (isDummyGuid || oldGuidAttr.includes(info.g));
+                    const isCurrentlyShowingDummy = oldGuidAttr.includes('local://') || oldGuidAttr.includes('none://');
+                    
+                    const dbStillNotSynced = (changedItems.has(item.iid) || isCurrentlyShowingDummy) && (isDummyGuid || oldGuidAttr.includes(info.g));
 
                     let logTitle = "Unknown Title";
                     if (item.currentStateHash) {
