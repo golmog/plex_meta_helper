@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.65
+// @version      0.8.66
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -468,6 +468,11 @@ GM_addStyle(`
     }
 
     async function checkUpdate(force = false) {
+        if (ClientSettings.devMode) {
+            log("[Update] DEV_MODE is enabled. Skipping checkUpdate entirely.");
+            return null;
+        }
+
         const result = await fetchLatestVersion(force);
         
         if (result.skipped) {
@@ -1406,11 +1411,26 @@ GM_addStyle(`
             }
         };
 
+        let updateBtnHtml = "";
+        if (ClientSettings.devMode) {
+            updateBtnHtml = `
+                <div style="display:flex; align-items:center; justify-content:center; margin-right:12px;">
+                    <span style="border:1px solid rgba(229, 160, 13, 0.5); color:#e5a00d; font-size:10px; font-weight:bold; padding:2px 6px; border-radius:4px; letter-spacing:0.5px;" title="프론트엔드 개발 모드 활성화 상태 (로컬 소스 사용, 업데이트 확인 중지)">DEV</span>
+                </div>`;
+        } else {
+            updateBtnHtml = `
+                <a href="#" id="pmh-manual-update-btn" style="display:flex; align-items:center; justify-content:center; color:#adb5bd; font-size:14px; margin-right:12px; transition:0.2s; text-decoration:none;" title="PMH 업데이트 확인" onmouseover="this.style.color='white'" onmouseout="this.style.color='#adb5bd'">
+                    <i class="fas fa-sync-alt pmh-sync-icon"></i>
+                </a>`;
+        }
+
         ctrl.insertAdjacentHTML('afterbegin', `
             <div id="pmh-status-message" style="margin-right: 5px; font-size: 11px; font-weight: bold; white-space: nowrap; transition: color 0.3s;"></div>
             <div style="display:flex; align-items:center; margin-right: 8px; height: 100%;">
-                <a href="#" id="pmh-manual-update-btn" style="display:flex; align-items:center; justify-content:center; color:#adb5bd; font-size:14px; margin-right:12px; transition:0.2s; text-decoration:none;" title="PMH 업데이트 확인" onmouseover="this.style.color='white'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-sync-alt pmh-sync-icon"></i></a>
-                <a href="https://github.com/golmog/plex_meta_helper" target="_blank" style="display:flex; align-items:center; justify-content:center; color:white; font-size:16px; transition:0.2s; text-decoration:none;" title="PMH GitHub 페이지" onmouseover="this.style.color='#e5a00d'" onmouseout="this.style.color='white'"><i class="fab fa-github"></i></a>
+                ${updateBtnHtml}
+                <a href="https://github.com/golmog/plex_meta_helper" target="_blank" style="display:flex; align-items:center; justify-content:center; color:white; font-size:16px; transition:0.2s; text-decoration:none;" title="PMH GitHub 페이지" onmouseover="this.style.color='#e5a00d'" onmouseout="this.style.color='white'">
+                    <i class="fab fa-github"></i>
+                </a>
             </div>
         `);
 
@@ -5105,7 +5125,9 @@ GM_addStyle(`
 
             infoLog(`[PMH Boot] 설정 동기화 및 UI 코어 로드 완료! (노드 수: ${ServerConfig.SERVERS.length})`);
             
-            checkUpdate();
+            if (!ClientSettings.devMode) {
+                checkUpdate();
+            }
             observer.observe(document.body, { childList: true, subtree: true });
             checkUrlChange(true);
 
