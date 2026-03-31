@@ -25,7 +25,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.67"
+__version__ = "0.8.68"
 
 def get_version():
     return __version__
@@ -498,14 +498,17 @@ def handle_library_batch(data, max_batch_size, db_path):
                         if not filepath:
                             result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None, "sub_id": "", "sub_url": "", "path_count": path_count }
                             continue
+                            
                         tags, res_tag = [], None
                         width = width if width else 0
-                        if width >= 7000: res_tag = "8K"
-                        elif width >= 5000: res_tag = "6K"
-                        elif width >= 3400: res_tag = "4K"
-                        elif width >= 1900: res_tag = "FHD"
-                        elif width >= 1200: res_tag = "HD"
-                        elif width > 0: res_tag = "SD"
+                        
+                        if width > 0:
+                            if width >= 7000: res_tag = "8K"
+                            elif width >= 5000: res_tag = "6K"
+                            elif width >= 3400: res_tag = "4K"
+                            elif width >= 1900: res_tag = "FHD"
+                            elif width >= 1200: res_tag = "HD"
+                            else: res_tag = "SD"
                         
                         hdr_badges = set()
                         if raw_data:

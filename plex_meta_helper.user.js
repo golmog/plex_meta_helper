@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.67
+// @version      0.8.68
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3631,6 +3631,7 @@ GM_addStyle(`
 
     function renderDetailHtml(data, serverId, srvConfig, container) {
         let versionsHtml = '';
+        let mediaInfoPlaceholder = '<span style="color:#777;">-</span>';
         const plexSrv = extractPlexServerInfo(serverId);
 
         const formatBitrate = (bps) => {
@@ -3780,13 +3781,16 @@ GM_addStyle(`
             `;
 
             versionsHtml += data.versions.map((v) => {
-                const vRes = v.width >= 7000 ? '8K' : v.width >= 5000 ? '6K' : v.width >= 3400 ? '4K' : v.width >= 1900 ? 'FHD' : v.width >= 1200 ? 'HD' : 'SD';
+                let vRes = mediaInfoPlaceholder;
+                if (v.width && v.width > 0) {
+                    vRes = v.width >= 7000 ? '8K' : v.width >= 5000 ? '6K' : v.width >= 3400 ? '4K' : v.width >= 1900 ? 'FHD' : v.width >= 1200 ? 'HD' : 'SD';
+                }
 
                 const vbTxt = formatBitrate(v.v_bitrate);
                 const abTxt = formatBitrate(v.a_bitrate);
-                const vTxt = `${(v.v_codec||'').toUpperCase()}${v.video_extra || ''} ${vbTxt ? `(${vbTxt})` : ''}`;
+                const vTxt = (v.v_codec || v.v_bitrate) ? `${(v.v_codec||'').toUpperCase()}${v.video_extra || ''} ${vbTxt ? `(${vbTxt})` : ''}`.trim() : mediaInfoPlaceholder;
                 const ch = v.a_ch==6 ? '5.1' : v.a_ch==8 ? '7.1' : v.a_ch==2 ? '2.0' : v.a_ch ? `${v.a_ch}ch` : '';
-                const aTxt = `${(v.a_codec||'').toUpperCase()} ${ch} ${abTxt ? `(${abTxt})` : ''}`;
+                const aTxt = (v.a_codec || v.a_bitrate) ? `${(v.a_codec||'').toUpperCase()} ${ch} ${abTxt ? `(${abTxt})` : ''}`.trim() : mediaInfoPlaceholder;
 
                 let videoFilename = 'subtitle';
                 if (v.file) {
@@ -3812,7 +3816,7 @@ GM_addStyle(`
                     bestSub = korSubs[0];
                 }
 
-                let subHtml = '<span style="color:#777;">없음</span>';
+                let subHtml = mediaInfoPlaceholder;
                 if (bestSub) {
                     const isExternal = bestSub.key && bestSub.key.trim() !== '';
                     if (isExternal) {
