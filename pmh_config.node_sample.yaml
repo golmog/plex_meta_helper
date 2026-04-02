@@ -18,6 +18,10 @@ BASE:
   DISCORD_WEBHOOK: ""
 
   ENABLE_FAIL2BAN: true
+  FAIL2BAN_WHITELIST:
+    - "127.0.0.1"
+    - "192.168.0.*"
+    - "10.0.*.*"
 
   DEV_MODE: false
 

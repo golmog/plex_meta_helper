@@ -27,8 +27,12 @@ BASE:
   # (선택) 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
 
-  # Fail2Ban 기능 활성화 여부
+  # Fail2Ban 기능 활성화 여부 및 예외 IP 목록
   ENABLE_FAIL2BAN: true
+  FAIL2BAN_WHITELIST:
+    - "127.0.0.1"
+    - "192.168.0.*"
+    - "10.0.*.*"
 
   # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
   DEV_MODE: false

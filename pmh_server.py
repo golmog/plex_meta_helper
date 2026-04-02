@@ -66,8 +66,12 @@ BASE:
   # (선택) 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
 
-  # Fail2Ban 기능 활성화 여부
+  # Fail2Ban 기능 활성화 여부 및 예외 IP 목록
   ENABLE_FAIL2BAN: true
+  FAIL2BAN_WHITELIST:
+    - "127.0.0.1"
+    - "192.168.0.*"
+    - "10.0.*.*"
 
   # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
   DEV_MODE: false
@@ -186,6 +190,9 @@ pmh_core.start_scheduler_daemon(global_conf)
 # [보안 및 Rate Limiting 모듈]
 # ==============================================================================
 ENABLE_FAIL2BAN = BASE_CFG.get("ENABLE_FAIL2BAN", True)
+FAIL2BAN_WHITELIST = BASE_CFG.get("FAIL2BAN_WHITELIST", [])
+if not isinstance(FAIL2BAN_WHITELIST, list):
+    FAIL2BAN_WHITELIST = [FAIL2BAN_WHITELIST]
 
 if len(API_KEY) < 8:
     print("\n" + "!"*60)
@@ -204,12 +211,28 @@ BLOCK_TIME = 300             # 차단 유지 시간 (초 단위, 5분)
 MAX_TRACKED_IPS = 10000      # [보안] 메모리 보호를 위한 동시 추적 최대 IP 개수
 LAST_GC_TIME = time.time()   # 가비지 컬렉션 타이머
 
+def _is_ip_whitelisted(ip_addr):
+    if not FAIL2BAN_WHITELIST: return False
+    
+    for pattern in FAIL2BAN_WHITELIST:
+        pattern = str(pattern).strip()
+        if not pattern: continue
+        
+        if pattern == ip_addr: 
+            return True
+            
+        if pattern.endswith("*"):
+            prefix = pattern.rstrip("*")
+            if ip_addr.startswith(prefix):
+                return True
+                
+    return False
+
 def _garbage_collect_failed_ips():
     if not ENABLE_FAIL2BAN: return
     global LAST_GC_TIME
     now = time.time()
     
-    # 5분(300초)마다 한 번씩 청소 실행
     if now - LAST_GC_TIME < 300: return
     LAST_GC_TIME = now
     
@@ -226,6 +249,7 @@ def _garbage_collect_failed_ips():
 
 def is_ip_blocked(ip_addr):
     if not ENABLE_FAIL2BAN: return False
+    if _is_ip_whitelisted(ip_addr): return False
     
     _garbage_collect_failed_ips()
     now = time.time()
@@ -240,6 +264,7 @@ def is_ip_blocked(ip_addr):
 
 def record_failed_attempt(ip_addr):
     if not ENABLE_FAIL2BAN: return
+    if _is_ip_whitelisted(ip_addr): return
     
     now = time.time()
     if ip_addr not in FAILED_ATTEMPTS:
@@ -251,7 +276,6 @@ def record_failed_attempt(ip_addr):
 
 def reset_failed_attempt(ip_addr):
     if not ENABLE_FAIL2BAN: return
-    
     if ip_addr in FAILED_ATTEMPTS:
         del FAILED_ATTEMPTS[ip_addr]
 
@@ -413,6 +437,7 @@ def background_update_task():
         except Exception:
             old_server_code = ""
 
+        ts = int(time.time())
         req_svr = urllib.request.Request(f"{SERVER_URL}?t={ts}", headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
         
         with urllib.request.urlopen(req_svr, timeout=10) as response_svr:
@@ -589,15 +614,6 @@ def check_update_from_github():
 # ==============================================================================
 # 동적 라우팅 게이트웨이 & 릴레이(Proxy)
 # ==============================================================================
-def generate_secure_header(api_key):
-    if not api_key: return ""
-    
-    timestamp = int(time.time() / 10) * 10
-    payload = f"{api_key}:{timestamp}".encode('utf-8')
-    hash_hex = hashlib.sha256(payload).hexdigest()
-    
-    return f"{timestamp}.{hash_hex}"
-
 @app.route('/api/relay/<node_id>/<path:subpath>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def relay_to_node(node_id, subpath):
     if not IS_MASTER:
