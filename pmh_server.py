@@ -455,6 +455,32 @@ def api_admin_update():
         "version": pmh_core.get_version()
     })
 
+@app.route('/api/admin/reload_core', methods=['POST'])
+def api_admin_reload_core():
+    try:
+        is_ready, running_count, msg = pmh_core.check_update_readiness(BASE_DIR, force_update=False)
+        
+        if not is_ready:
+            print(f"[PMH RELOAD] 거부됨: {msg}")
+            return jsonify({"status": "error", "running_count": running_count, "message": msg}), 400
+            
+        print("[PMH RELOAD] pmh_core.py 모듈 리로드를 시작합니다...")
+        
+        if hasattr(pmh_core, 'stop_scheduler_daemon'):
+            pmh_core.stop_scheduler_daemon()
+            time.sleep(1.0)
+            
+        importlib.reload(pmh_core)
+        
+        pmh_core.start_scheduler_daemon(global_conf)
+        
+        print(f"[PMH RELOAD] ✅ 코어 리로드 완료! (v{pmh_core.get_version()})")
+        return jsonify({"status": "success", "message": "코어 모듈 리로드 완료"}), 200
+        
+    except Exception as e:
+        print(f"[PMH RELOAD ERROR] 코어 리로드 실패: {e}")
+        return jsonify({"status": "error", "message": f"코어 리로드 실패: {e}"}), 500
+
 # ==============================================================================
 # 프론트엔드 클라이언트 초기화 동기화 라우팅
 # ==============================================================================
@@ -603,7 +629,8 @@ def relay_to_node(node_id, subpath):
 
     try:
         req = urllib.request.Request(target_url, data=req_data, headers=headers, method=request.method)
-        with urllib.request.urlopen(req, timeout=45) as response:
+        req.add_header('Connection', 'close') 
+        with urllib.request.urlopen(req, timeout=120) as response:
             resp_data = response.read()
             resp_headers = {}
             if response.headers.get('Content-Type'):

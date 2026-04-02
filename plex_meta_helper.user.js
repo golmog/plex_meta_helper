@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.68
+// @version      0.8.69
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -75,15 +75,15 @@ GM_addStyle(`
 
     .pmh-video-header-line { background-color: transparent !important; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px !important; }
     .pmh-video-header-label { margin: 0 !important; font-size: 11px !important; }
-    .pmh-video-version-block { border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 6px; }
-    .pmh-video-version-block:last-child { border-bottom: none; padding-bottom: 0; margin-bottom: 0; }
+    .pmh-video-version-block { border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 6px; margin-bottom: 8px; }
+    .pmh-video-version-block:last-child { border-bottom: none; padding-bottom: 0; margin-bottom: 4px; }
     .pmh-video-data-line { margin-bottom: 2px !important; }
 
     /* 3. Plex 목록 페이지 포스터 아이콘/태그 (Plex UI 오버레이) */
     div[data-testid^="cellItem"] div[class*="PosterCard-card-"], div[class*="ListItem-container"] div[class*="ThumbCard-card-"], div[class*="ListItem-container"] div[class*="ThumbCard-imageContainer"], div[class*="MetadataPosterCard-container"] div[class*="Card-card-"] { position: relative; overflow: hidden; }
 
     .pmh-top-right-wrapper { position: absolute; top: 2px; right: 2px; z-index: 10; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; pointer-events: none; }
-    .plex-list-res-tag { position: relative; background-color: rgba(0, 0, 0, 0.7); color: #ffffff; font-size: 10px; font-weight: bold; padding: 1px 3px; border-radius: 3px; pointer-events: none; border: 1px solid rgba(255,255,255,0.1); opacity: 1; }
+    .plex-list-res-tag { position: relative; background-color: rgba(0, 0, 0, 0.7); color: #ffffff; font-size: 10px; font-weight: normal; padding: 1px 3px; border-radius: 3px; pointer-events: none; border: 1px solid rgba(255,255,255,0.1); opacity: 1; }
     .plex-list-play-external { position: relative; background-color: rgba(0, 0, 0, 0.6); color: #adb5bd; border-radius: 3px; width: 22px; height: 18px; display: flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; border: 1px solid rgba(255, 255, 255, 0.1); opacity: 0; pointer-events: auto; transform: scale(0.9); transition: opacity 0.15s, transform 0.15s, background-color 0.2s; }
     .plex-list-play-external i { font-size: 10px; }
     .friend-fetch-btn { background-color: rgba(0, 0, 0, 0.7); color: #adb5bd; cursor: pointer; pointer-events: auto; opacity: 0.85; transition: opacity 0.15s, transform 0.15s, background-color 0.2s; }
@@ -677,7 +677,9 @@ GM_addStyle(`
             logLevel: "INFO",
             maxCacheSize: 5000,
             devMode: false,
-            pathMappings: []
+            pathMappings: [],
+            matchTryRefreshFirst: false,
+            matchDoUnmatchFirst: false
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
     }
@@ -1024,7 +1026,7 @@ GM_addStyle(`
         });
     }
 
-    async function triggerPlexMediaAction(itemId, action, plexSrv, srvConfig) {
+    async function triggerPlexMediaAction(itemId, action, plexSrv, srvConfig, extraData = {}) {
         if (!srvConfig) {
             errorLog(`[API] ❌ Cannot trigger '${action}' for Item ${itemId}: Missing Server Config.`);
             return Promise.resolve(false);
@@ -1033,7 +1035,8 @@ GM_addStyle(`
         infoLog(`[API] 🚀 Requesting PMH Backend to perform '${action}' on Item: ${itemId} ...`);
         
         try {
-            const res = await PmhToolAPI.call(srvConfig, `/media/${itemId}/${action}`, 'POST', {});
+            const reqData = { ...extraData };
+            const res = await PmhToolAPI.call(srvConfig, `/media/${itemId}/${action}`, 'POST', reqData);
             
             infoLog(`[API] ✅ PMH Backend Action '${action}' successfully completed for Item: ${itemId}`);
             return true;
@@ -1225,6 +1228,57 @@ GM_addStyle(`
         return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}` : `${m}:${s.toString().padStart(2, '0')}`;
     }
 
+    function invalidateVisibleCaches(serverId) {
+        const visibleMarkers = document.querySelectorAll('.pmh-render-marker');
+        let count = 0;
+        visibleMarkers.forEach(m => {
+            const iid = m.getAttribute('data-iid');
+            if (iid) {
+                deleteMemoryCache(`L_${serverId}_${iid}`);
+                deleteMemoryCache(`F_${serverId}_${iid}`);
+                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(iid);
+                count++;
+            }
+        });
+        log(`[Cache] Invalidated ${count} visible items from memory cache for server ${serverId}.`);
+    }
+
+    function encodePathSafe(pathStr) {
+        if (!pathStr) return '';
+        let encoded = encodeURIComponent(pathStr.replace(/\\/g, '/'));
+        return encoded.replace(/\(/g, '%28')
+                      .replace(/\)/g, '%29')
+                      .replace(/'/g, '%27')
+                      .replace(/"/g, '%22');
+    }
+
+    async function callPlexMateViaRelay(srvConfig, endpoint, paramsObj) {
+        if (!srvConfig || !srvConfig.relayUrl) return Promise.reject("Invalid Server Config");
+        const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+        
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: `${srvConfig.relayUrl}/mate${endpoint}`,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-PMH-Signature': secureToken
+                },
+                data: JSON.stringify(paramsObj),
+                timeout: 60000,
+                onload: r => { 
+                    try {
+                        const parsed = JSON.parse(r.responseText);
+                        resolve(parsed);
+                    }
+                    catch(e) { reject("Parse Error"); }
+                },
+                onerror: () => reject("Network Error"),
+                ontimeout: () => reject("Timeout Error")
+            });
+        });
+    }
+
     // ==========================================
     // 5-1. Tool UI 렌더링 및 모니터링
     // ==========================================
@@ -1236,8 +1290,11 @@ GM_addStyle(`
                 const req = {
                     method: method,
                     url: `${targetSrv.relayUrl}${endpoint}`,
-                    headers: { "X-PMH-Signature": secureToken },
-                    timeout: 45000,
+                    headers: { 
+                        "X-PMH-Signature": secureToken,
+                        "Connection": "close"
+                    },
+                    timeout: 120000,
                     onload: (r) => {
                         if (r.status >= 200 && r.status < 300) {
                             resolve(r);
@@ -1496,13 +1553,13 @@ GM_addStyle(`
         
         const clearCacheBtn = document.createElement('button');
         clearCacheBtn.textContent = '캐시 초기화'; clearCacheBtn.style.marginLeft = '10px';
-        clearCacheBtn.addEventListener('click', () => {
-            if (confirm("UI 코어 캐시 및 메모리를 초기화하시겠습니까?\n(설정은 유지되며, 최신 스크립트로 다시 로드합니다.)")) {
-                
-                if(window.PmhUICore && window.PmhUICore.destroyActiveInstance) {
+        clearCacheBtn.addEventListener('click', async () => {
+            if (confirm("브라우저/메모리 캐시를 초기화하고 서버 코어 모듈을 재시작하시겠습니까?\n(설정은 유지됩니다.)")) {
+                if (window.PmhUICore && window.PmhUICore.destroyActiveInstance) {
                     window.PmhUICore.destroyActiveInstance();
                     delete window.PmhUICore;
                 }
+
                 const oldCss = document.getElementById('pmh-shared-css-inline');
                 if (oldCss) oldCss.remove();
                 const oldJs = document.getElementById('pmh-shared-js-inline');
@@ -1517,14 +1574,47 @@ GM_addStyle(`
                 clearMemoryCache(); 
                 forceReRenderAll();
                 
-                if(document.getElementById('plex-guid-box')) { 
+                if (document.getElementById('plex-guid-box')) { 
                     currentDisplayedItemId = null; 
                     processDetail(true); 
                 }
 
-                showStatusMsg("캐시 초기화 중...", "#e5a00d"); 
+                showStatusMsg("캐시 초기화 및 서버 코어 리로드 중...", "#e5a00d"); 
+
+                try {
+                    const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+                    
+                    const reloadPromises = ServerConfig.SERVERS.map(srv => {
+                        return new Promise((resolve) => {
+                            GM_xmlhttpRequest({
+                                method: "POST", 
+                                url: `${srv.relayUrl}/admin/reload_core`,
+                                headers: { "X-PMH-Signature": secureToken },
+                                timeout: 10000,
+                                onload: (r) => {
+                                    if (r.status === 200) {
+                                        infoLog(`[Core Reload] Successfully reloaded core on Server: ${srv.name}`);
+                                        resolve(true);
+                                    } else {
+                                        warnLog(`[Core Reload] Failed on Server: ${srv.name} (HTTP ${r.status})`);
+                                        resolve(false);
+                                    }
+                                },
+                                onerror: () => resolve(false), 
+                                ontimeout: () => resolve(false)
+                            });
+                        });
+                    });
+
+                    await Promise.all(reloadPromises);
+
+                } catch (e) {
+                    errorLog("[Core Reload] Server Sync Error:", e);
+                }
+
                 bootstrapPMH().then(() => {
-                    showStatusMsg("캐시 및 UI 코어 갱신 완료", "#51a351"); 
+                    showStatusMsg("캐시 초기화 및 UI 코어 갱신 완료", "#51a351"); 
+                    toastr.success("로컬 캐시 초기화 및 서버 코어 재시작이 완료되었습니다.");
                 }).catch(() => {
                     showStatusMsg("코어 갱신 실패", "#bd362f"); 
                 });
@@ -2563,7 +2653,7 @@ GM_addStyle(`
 
         if (state.listPlay) {
             if (srvConfig && info.p) {
-                const lPath = encodeURIComponent(getLocalPath(info.p).replace(/\\/g, '/')).replace(/\(/g, '%28').replace(/\)/g, '%29');
+                const lPath = encodePathSafe(getLocalPath(info.p));
                 const pBtn = document.createElement('a');
                 pBtn.href = `plexplay://${lPath}`;
                 pBtn.className = 'plex-list-play-external';
@@ -2573,7 +2663,8 @@ GM_addStyle(`
                 pBtn.addEventListener('click', (e) => {
                     e.preventDefault(); e.stopPropagation();
                     infoLog(`[List] Local protocol (plexplay://) invoked for path: ${info.p}`);
-                    toastr.info('로컬재생 호출 중...');
+                    const fileName = info.p.split(/[\\/]/).pop() || info.p;
+                    toastr.info(`로컬 재생을 시도합니다.<br>[${fileName}]`);
                     window.location.assign(pBtn.href);
                 });
                 wrapper.appendChild(pBtn);
@@ -2601,7 +2692,7 @@ GM_addStyle(`
                         }
                     }
 
-                    const streamPayload = encodeURIComponent(vUrl) + '%7C' + encodeURIComponent(sUrl) + '%7C' + encodeURIComponent(justFileName);
+                    const streamPayload = encodePathSafe(vUrl) + '%7C' + encodePathSafe(sUrl) + '%7C' + encodePathSafe(justFileName);
 
                     const sBtn = document.createElement('a');
                     sBtn.href = `plexstream://${streamPayload}`;
@@ -2612,7 +2703,7 @@ GM_addStyle(`
                     sBtn.addEventListener('click', (e) => {
                         e.preventDefault(); e.stopPropagation();
                         infoLog(`[List] Streaming protocol (plexstream://) invoked for part: ${info.part_id}`);
-                        toastr.info('스트리밍 호출 중...');
+                        toastr.info(`스트리밍 플레이어를 호출합니다.<br>[${justFileName}]`);
                         window.location.assign(sBtn.href);
                     });
                     wrapper.appendChild(sBtn);
@@ -2690,7 +2781,7 @@ GM_addStyle(`
                 }
 
                 if (gBox.dataset.refreshing === 'true') {
-                    if (gBox.textContent.includes('갱신') || gBox.textContent.includes('불러오는') || gBox.textContent.includes('리매칭') || gBox.textContent.includes('매칭')) {
+                    if (gBox.textContent.includes('갱신') || gBox.textContent.includes('불러오는') || gBox.textContent.includes('리매칭') || gBox.textContent.includes('매칭') || gBox.textContent.includes('상위') || gBox.textContent.includes('YAML')) {
                         abortPolling = true;
                         gBox.innerHTML = '<i class="fas fa-times"></i> 취소됨';
                         gBox.title = "";
@@ -2714,7 +2805,6 @@ GM_addStyle(`
 
                 abortPolling = false;
                 gBox.dataset.refreshing = 'true';
-                
                 const originHTML = gBox.innerHTML; 
                 gBox.style.color = '#ccc';
 
@@ -2723,29 +2813,7 @@ GM_addStyle(`
 
                 let actionTargetId = id;
                 let isParentUnmatched = isUnmatched;
-                let initialUpdated = 0;
-
-                if (srvConfig && plexSrv) {
-                    const currentMeta = await fetchPlexMetaFallback(id, plexSrv);
-                    if (currentMeta) {
-                        initialUpdated = currentMeta.updatedAt || 0;
-                        
-                        if (currentMeta.type === 'episode' && currentMeta.grandparentRatingKey) {
-                            actionTargetId = currentMeta.grandparentRatingKey;
-                        } else if (currentMeta.type === 'season' && currentMeta.parentRatingKey) {
-                            actionTargetId = currentMeta.parentRatingKey;
-                        }
-                        
-                        if (actionTargetId !== id) {
-                            const parentMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
-                            if (parentMeta) {
-                                const pGuid = (parentMeta.guid || '').toLowerCase();
-                                isParentUnmatched = !pGuid || pGuid === '-' || pGuid.includes('local://') || pGuid.includes('none://');
-                            }
-                        }
-                    }
-                }
-
+                
                 if (srvConfig && plexSrv && !info.g) {
                     gBox.title = '클릭 시 취소';
                     gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>로딩 중...`;
@@ -2784,72 +2852,81 @@ GM_addStyle(`
                     }
                     return;
                 }
+                
+                let isCustomVersionSeason = false;
+                if (srvConfig && plexSrv) {
+                    const currentMeta = await fetchPlexMetaFallback(id, plexSrv);
+                    if (currentMeta) {
+                        if (currentMeta.type === 'episode') {
+                            if (currentMeta.grandparentRatingKey) actionTargetId = currentMeta.grandparentRatingKey;
+                            const parentSeasonIndex = currentMeta.parentIndex;
+                            if (parentSeasonIndex && parseInt(parentSeasonIndex) >= 100) {
+                                isCustomVersionSeason = true;
+                            }
+                        } else if (currentMeta.type === 'season') {
+                            if (currentMeta.parentRatingKey) actionTargetId = currentMeta.parentRatingKey;
+                            const seasonIndex = currentMeta.index;
+                            if (seasonIndex && parseInt(seasonIndex) >= 100) {
+                                isCustomVersionSeason = true;
+                            }
+                        }
+                        
+                        if (actionTargetId !== id) {
+                            const parentMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
+                            if (parentMeta) {
+                                const parentGuid = (parentMeta.guid || '').toLowerCase();
+                                isParentUnmatched = !parentGuid || parentGuid === '-' || parentGuid.includes('local://') || parentGuid.includes('none://');
+                                infoLog(`[List] Parent Show ID: ${actionTargetId}, Parent Unmatched Status: ${isParentUnmatched}`);
+                            }
+                        }
+                    }
+                }
 
                 if (srvConfig && !isUnmatched && info.g) {
                     gBox.title = '클릭 시 취소';
                     
                     if (isShiftClick && plexSrv) {
-                        infoLog(`[List] 🔄 Shift-Click detected: Starting Meta Rematch process for Target: ${actionTargetId} (Clicked: ${id})`);
+                        infoLog(`[List] 🔄 Shift-Click detected: Starting Meta Rematch process for Target: ${actionTargetId}`);
                         if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>리매칭중...`;
-                        toastr.info("1/3: 기존 메타 언매치 중...", "리매칭 시작", {timeOut: 3000});
+                        
+                        const matchOptions = {
+                            _try_refresh_first: ClientSettings.matchTryRefreshFirst,
+                            _do_unmatch_first: ClientSettings.matchDoUnmatchFirst
+                        };
+                        toastr.info("서버에 매칭 작업을 지시했습니다.<br>완료될 때까지 대기합니다...", "매칭 진행 중", {timeOut: 8000});
 
                         try {
-                            infoLog(`[List] ➔ Step 1: Unmatching current metadata...`);
-                            const unmatchOk = await triggerPlexMediaAction(actionTargetId, 'unmatch', plexSrv, srvConfig);
-                            if (!unmatchOk) throw new Error("Unmatch Action Failed");
+                            const matchSuccess = await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig, matchOptions);
                             if (abortPolling) return;
+                            if (!matchSuccess) throw new Error("서버에서 매칭 처리에 실패했습니다.");
+                            
+                            infoLog(`[List] ➔ ✅ Match Process completed on server.`);
+                            toastr.info("데이터 안정화 대기 및 화면 갱신 중... (약 5초 소요)", "리매칭 처리 중", {timeOut: 6000});
 
-                            toastr.info("2/3: 최적 후보 자동 매칭 중...", "리매칭 진행", {timeOut: 3000});
-                            
-                            infoLog(`[List] ➔ Step 2: Triggering Auto-Match...`);
-                            const matchSuccess = await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig);
-                            if (!matchSuccess) throw new Error("Auto Match Failed or No Candidates Found");
-                            if (abortPolling) return;
-                            
-                            infoLog(`[List] ➔ Step 3: Waiting for Plex to apply match and generate new GUID...`);
-                            let matchVerified = false;
-                            let finalGuid = '';
-                            
-                            for (let i = 0; i < 15; i++) {
-                                if (abortPolling) return;
-                                await new Promise(r => setTimeout(r, 2000));
-                                const tempMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
-                                if (tempMeta) {
-                                    const tempGuid = (tempMeta.guid || '').toLowerCase();
-                                    if (!tempGuid.includes('local://') && !tempGuid.includes('none://') && tempGuid !== '-' && tempGuid !== '') {
-                                        matchVerified = true;
-                                        finalGuid = tempMeta.guid;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!matchVerified) throw new Error("Match Polling Timeout");
-                            
-                            infoLog(`[List] ➔ ✅ Match Verified! New GUID: ${finalGuid}`);
-                            toastr.info("3/3: 메타데이터 갱신 및 UI 동기화 중...", "리매칭 진행", {timeOut: 3000});
-
-                            infoLog(`[List] ➔ Step 4: Refreshing metadata and syncing with PMH DB...`);
                             triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
                             if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
                             
-                            const dbData = await makeRequest(`${srvConfig.relayUrl}/library/batch`, 'POST', { ids: [id], check_multi_path: state.listMultiPath }, ClientSettings.masterApiKey);
+                            await new Promise(r => setTimeout(r, 4500));
                             if (abortPolling) return;
+                            
+                            invalidateVisibleCaches(targetServerId);
 
-                            if (dbData[id]) {
-                                setMemoryCache(`L_${targetServerId}_${id}`, dbData[id]);
+                            const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
+                            if (finalMeta) {
+                                const localData = convertPlexMetaToLocalData(finalMeta, id);
+                                setMemoryCache(`L_${targetServerId}_${id}`, localData);
                                 sessionRevalidated.add(id);
                                 
                                 if (gBox.isConnected) {
-                                    const displayData = { ...dbData[id], tags: applyUserTags(dbData[id].p, dbData[id].tags) };
+                                    const displayData = { ...localData, tags: applyUserTags(localData.p, localData.tags) };
                                     renderListBadges(cont, poster, link, displayData, srvConfig, id);
                                 }
-                                
-                                infoLog(`[List] 🎉 Rematch Pipeline Completed Successfully for Item: ${id}`);
                                 toastr.success("리매칭이 성공적으로 완료되었습니다!", "성공", {timeOut: 4000});
-                            } else { throw new Error("No data returned from PMH DB"); }
+                            }
+                            
+                            processList();
 
                         } catch (err) {
-                            errorLog(`[List] ❌ Rematch Pipeline Failed for Item ${id}: ${err.message}`);
                             if (!abortPolling) {
                                 toastr.error(`리매칭 실패: ${err.message}`, "오류", {timeOut: 4000});
                                 if (gBox.isConnected) {
@@ -2865,28 +2942,21 @@ GM_addStyle(`
 
                         triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
                         if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
-                        
                         toastr.info("Plex 서버에 메타 갱신을 요청했습니다.<br>작업은 백그라운드에서 진행됩니다.", "메타 갱신 요청", {timeOut: 3000});
 
                         try {
-                            const dbData = await makeRequest(`${srvConfig.relayUrl}/library/batch`, 'POST', { ids: [id], check_multi_path: state.listMultiPath }, ClientSettings.masterApiKey);
+                            const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
                             if (abortPolling) return;
-
-                            if (dbData[id]) {
-                                setMemoryCache(`L_${targetServerId}_${id}`, dbData[id]);
+                            if (finalMeta) {
+                                const localData = convertPlexMetaToLocalData(finalMeta, id);
+                                setMemoryCache(`L_${targetServerId}_${id}`, localData);
                                 sessionRevalidated.add(id);
                                 if (gBox.isConnected) {
-                                    const displayData = { ...dbData[id], tags: applyUserTags(dbData[id].p, dbData[id].tags) };
+                                    const displayData = { ...localData, tags: applyUserTags(localData.p, localData.tags) };
                                     renderListBadges(cont, poster, link, displayData, srvConfig, id);
                                 }
-                            } else { throw new Error("No data"); }
-                        } catch (err) {
-                            if (!abortPolling && gBox.isConnected) {
-                                gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 갱신 실패';
-                                gBox.style.color = 'red';
-                                setTimeout(() => { if (gBox.isConnected) renderListBadges(cont, poster, link, info, srvConfig, id); }, 2000);
                             }
-                        }
+                        } catch (err) {}
                     }
                     return;
                 }
@@ -2894,113 +2964,131 @@ GM_addStyle(`
                 if (srvConfig && plexSrv && (isUnmatched || !info.g)) {
                     
                     if (actionTargetId !== id && !isParentUnmatched) {
-                        infoLog(`[List] Parent is already matched. Refreshing episode instead of matching. (ID: ${id})`);
-                        gBox.title = '클릭 시 취소';
-                        if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>갱신중...`;
-                        toastr.info("상위 쇼(Show) 항목은 이미 매칭되어 있습니다.<br>해당 항목의 메타 갱신을 요청합니다.", "메타 갱신", {timeOut: 3000});
                         
-                        triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
-                        if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
-                        
-                        try {
-                            const dbData = await makeRequest(`${srvConfig.relayUrl}/library/batch`, 'POST', { ids: [id], check_multi_path: state.listMultiPath }, ClientSettings.masterApiKey);
-                            if (abortPolling) return;
-
-                            if (dbData[id]) {
-                                setMemoryCache(`L_${targetServerId}_${id}`, dbData[id]);
-                                sessionRevalidated.add(id);
+                        if (isCustomVersionSeason) {
+                            infoLog(`[List] Parent is matched. Custom Season(>=100) detected. Triggering Plex Mate (YAML/TMDB/Marker) for Parent Show: ${actionTargetId}`);
+                            gBox.title = '클릭 시 취소';
+                            if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>YAML 반영중...`;
+                            
+                            toastr.info("커스텀 시즌이 감지되었습니다.<br>상위 쇼에 YAML 반영을 요청합니다.", "Plex Mate 연동", {timeOut: 4000});
+                            
+                            try {
+                                const mateRes = await callPlexMateViaRelay(srvConfig, '/scan/manual_refresh', { metadata_item_id: actionTargetId });
+                                
+                                if (mateRes.ret === 'success') {
+                                    toastr.success('YAML 반영 완료!<br>화면 동기화 중...', '성공', {timeOut: 4000});
+                                    infoLog(`[PlexMate] Manual Refresh (YAML/Marker Sync) successful for Parent Show: ${actionTargetId}`);
+                                    
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    if (abortPolling) return;
+                                    
+                                    invalidateVisibleCaches(targetServerId);
+                                    
+                                    const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
+                                    if (finalMeta) {
+                                        const localData = convertPlexMetaToLocalData(finalMeta, id);
+                                        setMemoryCache(`L_${targetServerId}_${id}`, localData);
+                                        sessionRevalidated.add(id);
+                                        if (gBox.isConnected) {
+                                            const displayData = { ...localData, tags: applyUserTags(localData.p, localData.tags) };
+                                            renderListBadges(cont, poster, link, displayData, srvConfig, id);
+                                        }
+                                    }
+                                    processList();
+                                } else {
+                                    throw new Error(mateRes.msg || "Plex Mate 반영 오류");
+                                }
+                            } catch (e) {
+                                errorLog(`[PlexMate] YAML Sync Error for Parent Show ${actionTargetId}:`, e);
+                                toastr.error(`YAML 반영 실패: ${e.message || e}`, '오류');
                                 if (gBox.isConnected) {
-                                    const displayData = { ...dbData[id], tags: applyUserTags(dbData[id].p, dbData[id].tags) };
-                                    renderListBadges(cont, poster, link, displayData, srvConfig, id);
+                                    gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 반영 실패';
+                                    gBox.style.color = 'red';
+                                    setTimeout(() => { if (gBox.isConnected) renderListBadges(cont, poster, link, info, srvConfig, id); }, 2000);
                                 }
                             }
-                        } catch (e) {}
-                        return;
+                            return;
+
+                        } else {
+                            infoLog(`[List] Parent is already matched. Normal Season detected. Refreshing Parent Show: ${actionTargetId}`);
+                            gBox.title = '클릭 시 취소';
+                            if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>상위 갱신중...`;
+                            toastr.info("상위 쇼가 이미 매칭되어 있습니다.<br>상위 쇼에 리프레시를 요청합니다.", "상위 갱신", {timeOut: 3000});
+                            
+                            triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
+                            
+                            try {
+                                await new Promise(r => setTimeout(r, 4000)); 
+                                if (abortPolling) return;
+                                
+                                invalidateVisibleCaches(targetServerId);
+
+                                const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
+                                if (finalMeta) {
+                                    const localData = convertPlexMetaToLocalData(finalMeta, id);
+                                    setMemoryCache(`L_${targetServerId}_${id}`, localData);
+                                    sessionRevalidated.add(id);
+                                    if (gBox.isConnected) {
+                                        const displayData = { ...localData, tags: applyUserTags(localData.p, localData.tags) };
+                                        renderListBadges(cont, poster, link, displayData, srvConfig, id);
+                                    }
+                                }
+                                processList();
+                            } catch (e) {
+                                errorLog(`[List] Parent Show Refresh Error: ${e}`);
+                            }
+                            return;
+                        }
                     }
 
-                    infoLog(`[List] Auto-Match requested via PMH Backend for unmatched Target: ${actionTargetId}`);
+                    infoLog(`[List] Parent Show is unmatched. Auto-Match requested for Target: ${actionTargetId}`);
                     gBox.title = '클릭 시 취소';
                     if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>자동 매칭중...`;
-                    toastr.info("미매칭 항목입니다.<br>서버에 자동 매칭을 요청합니다.", "매칭 시도", {timeOut: 3000});
+                    
+                    const matchOptions = {
+                        _try_refresh_first: ClientSettings.matchTryRefreshFirst,
+                        _do_unmatch_first: ClientSettings.matchDoUnmatchFirst
+                    };
+                    toastr.info("미매칭 항목입니다.<br>서버에 매칭을 요청합니다...", "매칭 시도", {timeOut: 8000});
 
-                    const matchSuccess = await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig);
+                    const matchSuccess = await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig, matchOptions);
                     
                     if (!matchSuccess && !abortPolling) {
-                        toastr.error("자동 매칭 대상을 찾지 못했거나 매칭에 실패했습니다.<br>수동 매칭이 필요합니다.", "매칭 실패", {timeOut: 5000});
+                        toastr.error("자동 매칭 대상을 찾지 못했거나 실패했습니다.<br>수동 매칭이 필요합니다.", "매칭 실패", {timeOut: 5000});
                         if (gBox.isConnected) {
                             gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 매칭 실패';
                             gBox.style.color = 'red';
-                            setTimeout(() => {
-                                if (gBox.isConnected) {
-                                    gBox.innerHTML = originHTML;
-                                    gBox.style.color = '#a68241';
-                                    delete gBox.dataset.refreshing;
-                                }
-                            }, 2000);
+                            setTimeout(() => { if (gBox.isConnected) renderListBadges(cont, poster, link, info, srvConfig, id); }, 2000);
                         }
                         return;
-                    }
-
-                    let pollSuccess = false;
-                    let finalMeta = null; 
-
-                    for (let attempt = 1; attempt <= 20; attempt++) {
-                        if (abortPolling) return;
-                        
-                        const tempMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
-
-                        if (tempMeta) {
-                            const tempUpdated = tempMeta.updatedAt || 0;
-                            const tempGuid = (tempMeta.guid || '').toLowerCase();
-                            const isNowMatched = !tempGuid.includes('local://') && !tempGuid.includes('none://') && tempGuid !== '-' && tempGuid !== '';
-
-                            if (tempUpdated !== initialUpdated || isNowMatched) {
-                                pollSuccess = true;
-                                finalMeta = tempMeta; 
-                                break;
-                            }
-                        }
-                        await new Promise(r => setTimeout(r, 2500));
-                    }
-
-                    if (!pollSuccess && !abortPolling) {
-                        toastr.warning("응답 지연으로 대기를 종료합니다.<br>매칭은 서버에서 백그라운드로 진행됩니다.", "시간 초과", {timeOut: 4000});
                     }
 
                     if (abortPolling) return;
 
-                    if (pollSuccess && finalMeta) {
-                        toastr.success("자동 매칭 완료!", "성공", {timeOut: 3000});
-                        triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
-                        if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
-                        
-                        try {
-                            const dbData = await makeRequest(`${srvConfig.relayUrl}/library/batch`, 'POST', { ids: [id], check_multi_path: state.listMultiPath }, ClientSettings.masterApiKey);
-                            if (dbData[id]) {
-                                setMemoryCache(`L_${targetServerId}_${id}`, dbData[id]);
-                                sessionRevalidated.add(id);
-                                if (gBox.isConnected) {
-                                    const displayData = { ...dbData[id], tags: applyUserTags(dbData[id].p, dbData[id].tags) };
-                                    renderListBadges(cont, poster, link, displayData, srvConfig, id);
-                                }
-                                return;
-                            }
-                        } catch (e) {
-                            errorLog(`[List] Error syncing PMH DB after match for ID: ${id}`, e);
-                        }
-                    }
+                    toastr.success("자동 매칭 완료! 잠시 후 UI에 반영됩니다.", "성공", {timeOut: 5000});
+                    
+                    triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
+                    if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
+                    
+                    await new Promise(r => setTimeout(r, 4000));
+                    if (abortPolling) return;
 
-                    if (gBox.isConnected && !abortPolling) {
-                        gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 갱신 지연';
-                        gBox.style.color = 'red';
-                        setTimeout(() => {
+                    invalidateVisibleCaches(targetServerId);
+
+                    try {
+                        const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
+                        if (finalMeta) {
+                            const localData = convertPlexMetaToLocalData(finalMeta, id);
+                            setMemoryCache(`L_${targetServerId}_${id}`, localData);
+                            sessionRevalidated.add(id);
                             if (gBox.isConnected) {
-                                gBox.innerHTML = originHTML;
-                                gBox.title = "클릭 시 강제 새로고침";
-                                gBox.style.color = '#a68241';
-                                delete gBox.dataset.refreshing;
+                                const displayData = { ...localData, tags: applyUserTags(localData.p, localData.tags) };
+                                renderListBadges(cont, poster, link, displayData, srvConfig, id);
                             }
-                        }, 2000);
+                        }
+                        processList();
+                    } catch (e) {
+                        errorLog(`[List] Error fetching final meta: ${e}`);
                     }
                 }
             });
@@ -3020,6 +3108,11 @@ GM_addStyle(`
 
     async function processList() {
         if (!state.listGuid && !state.listTag && !state.listPlay && !state.listMultiPath) return;
+
+        if (globalFallbackQueue.length > 0) {
+            infoLog(`[Queue] Screen or scroll changed. Nuking old analysis queue (${globalFallbackQueue.length} items).`);
+            globalFallbackQueue.length = 0;
+        }
 
         const itemWrappers = document.querySelectorAll(`
             div[data-testid^="cellItem"],
@@ -3064,9 +3157,10 @@ GM_addStyle(`
             
             if (marker && marker.getAttribute('data-iid') === iid) {
                 const markerHash = marker.getAttribute('data-state-hash');
+                const isStale = marker.getAttribute('data-stale') === 'true';
                 
-                if (markerHash && currentStateHash && markerHash !== currentStateHash) {
-                    log(`[List] UI State changed for ID: ${iid}. Forcing re-validation (preserving UI).`);
+                if (isStale || (markerHash && currentStateHash && markerHash !== currentStateHash)) {
+                    log(`[List] UI State changed or marked stale for ID: ${iid}. Forcing bypass validation.`);
                     changedItems.add(iid); 
                     sessionRevalidated.delete(iid);
                     isAlreadyRendered = false;
@@ -3109,21 +3203,10 @@ GM_addStyle(`
         let instantRenderCount = 0;
         pendingItems.forEach(item => {
             const srvConfig = getServerConfig(item.sid);
-            
             let cData = getMemoryCache(`L_${item.sid}_${item.iid}`) || getMemoryCache(`F_${item.sid}_${item.iid}`);
 
             if (cData) {
-                if (cData.saved_state_hash && item.currentStateHash && cData.saved_state_hash !== item.currentStateHash) {
-                    changedItems.add(item.iid);
-                    let displayData = { ...cData, tags: applyUserTags(cData.p, cData.tags) };
-                    renderListBadges(item.cont, item.poster, item.link, displayData, srvConfig, item.iid);
-                    item.isRendered = true; 
-
-                    cData.saved_state_hash = item.currentStateHash;
-                    setMemoryCache(`L_${item.sid}_${item.iid}`, cData);
-                    sessionRevalidated.delete(item.iid);
-                    return; 
-                }
+                if (changedItems.has(item.iid)) return;
 
                 if (cData.ignored) {
                     let marker = item.poster.querySelector('.pmh-render-marker');
@@ -3190,17 +3273,18 @@ GM_addStyle(`
                 }
 
                 const idsToFetch = [];
+                const idsToFallbackBypass = [];
+
                 idSet.forEach(id => {
                     if (!sessionRevalidated.has(id)) {
-                        idsToFetch.push(id);
+                        if (changedItems.has(id)) idsToFallbackBypass.push(id);
+                        else idsToFetch.push(id);
                     }
                 });
 
-                let fetchedDbData = {};
-
                 if (idsToFetch.length > 0) {
                     try {
-                        fetchedDbData = await makeRequest(
+                        const fetchedDbData = await makeRequest(
                             `${srvConfig.relayUrl}/library/batch`, 
                             'POST', 
                             { ids: idsToFetch, check_multi_path: state.listMultiPath }, 
@@ -3212,13 +3296,9 @@ GM_addStyle(`
                             if (a.ignored !== b.ignored) return false;
                             if (a.g !== b.g || a.raw_g !== b.raw_g || a.p !== b.p || a.path_count !== b.path_count) return false;
                             if (a.part_id !== b.part_id || a.sub_id !== b.sub_id || a.sub_url !== b.sub_url) return false;
-                            
-                            const tagsA = a.tags || [];
-                            const tagsB = b.tags || [];
+                            const tagsA = a.tags || []; const tagsB = b.tags || [];
                             if (tagsA.length !== tagsB.length) return false;
-                            for (let i = 0; i < tagsA.length; i++) {
-                                if (tagsA[i] !== tagsB[i]) return false;
-                            }
+                            for (let i = 0; i < tagsA.length; i++) { if (tagsA[i] !== tagsB[i]) return false; }
                             return true;
                         };
 
@@ -3245,6 +3325,21 @@ GM_addStyle(`
                                 
                                 pendingItems.filter(p => p.sid === serverId && p.iid === id).forEach(item => {
                                     item.poster.querySelector('.pmh-render-marker')?.remove();
+                                    
+                                    if (!newData.ignored) {
+                                        let displayData = { ...newData, tags: applyUserTags(newData.p, newData.tags) };
+                                        renderListBadges(item.cont, item.poster, item.link, displayData, srvConfig, id);
+                                        item.isRendered = true;
+                                    }
+                                });
+                            } else {
+                                pendingItems.filter(p => p.sid === serverId && p.iid === id && !p.isRendered).forEach(item => {
+                                    item.poster.querySelector('.pmh-render-marker')?.remove();
+                                    if (!newData.ignored) {
+                                        let displayData = { ...newData, tags: applyUserTags(newData.p, newData.tags) };
+                                        renderListBadges(item.cont, item.poster, item.link, displayData, srvConfig, id);
+                                        item.isRendered = true;
+                                    }
                                 });
                             }
                         });
@@ -3256,13 +3351,110 @@ GM_addStyle(`
                 const addedToNewQueue = new Set();
                 let queueCount = 0;
 
+                idsToFallbackBypass.forEach(id => {
+                    if (addedToNewQueue.has(id)) return;
+                    const existsInPending = pendingItems.some(p => p.iid === id && p.sid === serverId);
+                    if (!existsInPending) return;
+                    
+                    addedToNewQueue.add(id);
+                    queueCount++;
+
+                    globalFallbackQueue.push({
+                        id: id,
+                        session: session,
+                        task: async () => {
+                            if (session !== currentRenderSession) return;
+                            try {
+                                let logTitle = "Unknown Title";
+                                const representativeItem = itemsToRevalidate.find(p => p.iid === id);
+                                if (representativeItem) {
+                                    if (representativeItem.currentStateHash) {
+                                        const hashParts = representativeItem.currentStateHash.split('|');
+                                        logTitle = hashParts.find(p => p && isNaN(p)) || "Unknown Title";
+                                    }
+                                    if (logTitle === "Unknown Title" && representativeItem.link) {
+                                        logTitle = representativeItem.link.getAttribute('aria-label') || representativeItem.link.title || representativeItem.link.textContent.trim() || "Unknown Title";
+                                    }
+                                }
+
+                                infoLog(`[List Fallback] DB WAL Delay Bypassed. Fetching fresh data directly from Plex API for [${logTitle}] (ID: ${id})`);
+                                let meta = await fetchPlexMetaFallback(id, plexSrv);
+                                if (!meta) return;
+
+                                const fallbackTags = parsePlexFallbackTags(meta);
+                                const updatedInfo = convertPlexMetaToLocalData(meta, id);
+                                
+                                const oldCache = getMemoryCache(`L_${serverId}_${id}`);
+                                if (oldCache) {
+                                    updatedInfo.analyze_count = oldCache.analyze_count || 0;
+                                    updatedInfo.last_analyze_time = oldCache.last_analyze_time || 0;
+                                    updatedInfo.corrupt_logged = oldCache.corrupt_logged || false;
+                                    updatedInfo.last_cooldown_log = oldCache.last_cooldown_log || 0;
+                                }
+
+                                if (meta && meta.Media && meta.Media.length > 0) {
+                                    const topMedia = meta.Media.sort((a, b) => (b.width || 0) - (a.width || 0))[0];
+                                    if (topMedia.Part && topMedia.Part[0] && topMedia.Part[0].Stream) {
+                                        const korSubs = topMedia.Part[0].Stream.filter(s => s.streamType === 3 && (s.languageCode === 'kor' || s.languageCode === 'ko'));
+                                        if (korSubs.length > 0) {
+                                            korSubs.sort((a, b) => {
+                                                let sA = 0, sB = 0;
+                                                if(a.key && a.key.trim() !== '') sA+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(a.codec)) sA+=50;
+                                                if(b.key && b.key.trim() !== '') sB+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(b.codec)) sB+=50;
+                                                return sB - sA;
+                                            });
+                                            if (korSubs[0].key && korSubs[0].key !== updatedInfo.sub_url) {
+                                                updatedInfo.sub_id = korSubs[0].id;
+                                                updatedInfo.sub_url = korSubs[0].key;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (representativeItem && representativeItem.currentStateHash) {
+                                    updatedInfo.saved_state_hash = representativeItem.currentStateHash;
+                                }
+
+                                if (session === currentRenderSession) {
+                                    setMemoryCache(`L_${serverId}_${id}`, updatedInfo);
+                                    sessionRevalidated.add(id);
+                                    
+                                    let displayData = { ...updatedInfo, tags: applyUserTags(updatedInfo.p, updatedInfo.tags) };
+
+                                    const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
+                                    for (const live of liveWrappers) {
+                                        let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
+                                        if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                                        if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
+                                            let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+                                            if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+                                            if (livePoster) {
+                                                livePoster.querySelector('.pmh-render-marker')?.remove();
+                                                renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
+                                                
+                                                const matchedPending = pendingItems.find(p => p.poster === livePoster);
+                                                if (matchedPending) matchedPending.isRendered = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                                errorLog(`[Fallback Task] Error fetching Plex API for ${id}:`, e);
+                            }
+                        }
+                    });
+                });
+
                 itemsToRevalidate.filter(p => p.sid === serverId).forEach(item => {
+                    if (changedItems.has(item.iid) || addedToNewQueue.has(item.iid)) return;
+
                     const cacheKey = `L_${serverId}_${item.iid}`;
                     const info = getMemoryCache(cacheKey);
                     if (!info || info.ignored) return;
 
-                    const pItem = pendingItems.find(p => p.iid === item.iid);
-                    if (pItem && (!pItem.isRendered || changedItems.has(item.iid))) {
+                    const pItem = pendingItems.find(p => p.iid === item.iid && !p.isRendered);
+                    
+                    if (pItem) {
                         let displayData = { ...info, tags: applyUserTags(info.p, info.tags) };
                         renderListBadges(item.cont, pItem.poster, item.link, displayData, srvConfig, item.iid);
                         pItem.isRendered = true;
@@ -3296,7 +3488,6 @@ GM_addStyle(`
                         if (info.last_cooldown_log !== analyzeCount) {
                             const timeLeft = ((10000 - (now - lastAnalyzeTime)) / 1000).toFixed(1);
                             infoLog(`[Analyze] ⏳ Cooldown active for [${logTitle}] (ID: ${item.iid}). Waiting ${timeLeft}s before Attempt ${analyzeCount + 1}/3...`);
-                            
                             let tempCache = getMemoryCache(`L_${serverId}_${item.iid}`);
                             if (tempCache) {
                                 tempCache.last_cooldown_log = analyzeCount;
@@ -3354,8 +3545,8 @@ GM_addStyle(`
                                     let fallbackTags = parsePlexFallbackTags(meta);
                                     const m = meta.Media && meta.Media[0] ? meta.Media[0] : null;
 
-                                    let currentAnalyzeCount = latestCache ? (latestCache.analyze_count || 0) : analyzeCount;
-                                    let currentAnalyzeTime = latestCache ? (latestCache.last_analyze_time || 0) : lastAnalyzeTime;
+                                    let currentAnalyzeCount = analyzeCount;
+                                    let currentAnalyzeTime = lastAnalyzeTime;
 
                                     if (!m || ((!m.width || m.width === 0) && !m.videoResolution)) {
                                         currentAnalyzeCount += 1;
@@ -3370,9 +3561,10 @@ GM_addStyle(`
                                         part_id: info.part_id, sub_id: info.sub_id, sub_url: info.sub_url, path_count: info.path_count,
                                         analyze_count: currentAnalyzeCount,
                                         last_analyze_time: currentAnalyzeTime,
-                                        corrupt_logged: latestCache ? latestCache.corrupt_logged : false,
-                                        last_cooldown_log: latestCache ? latestCache.last_cooldown_log : 0
+                                        corrupt_logged: info.corrupt_logged,
+                                        last_cooldown_log: info.last_cooldown_log
                                     };
+                                    
                                     let needsUpdate = false;
                                     
                                     if (isUnanalyzed) needsUpdate = true;
@@ -3440,8 +3632,11 @@ GM_addStyle(`
                                                 let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
                                                 if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
                                                 if (livePoster) {
+                                                    livePoster.querySelector('.pmh-render-marker')?.remove();
                                                     renderListBadges(live, livePoster, liveLink, displayData, srvConfig, item.iid);
-                                                    break;
+                                                    
+                                                    const matchedPending = pendingItems.find(p => p.poster === livePoster);
+                                                    if (matchedPending) matchedPending.isRendered = true;
                                                 }
                                             }
                                         }
@@ -3685,8 +3880,8 @@ GM_addStyle(`
 
                 if (srvConfig) {
                     const localPath = getLocalPath(serverPath);
-                    const ePath = encodeURIComponent(localPath.replace(/\\/g, '/')).replace(/\(/g, '%28').replace(/\)/g, '%29');
-                    folderIconHtml = `<a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열기"><i class="fas fa-folder-open"></i></a>`;
+                    const ePath = encodePathSafe(localPath);
+                    folderIconHtml = `<a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열기" data-path="${localPath}"><i class="fas fa-folder-open"></i></a>`;
                     pathLinkHtml = `<a href="#" class="plex-path-scan-link" data-path="${serverPath}" data-section-id="${data.librarySectionID}" data-type="directory" title="클릭하여 Plex Mate로 스캔">${displayPath}</a>`;
                 }
 
@@ -3727,10 +3922,10 @@ GM_addStyle(`
                     let streamBtn = `<span style="color:#555;" title="지원하지 않음"><i class="fas fa-wifi"></i></span>`;
                     
                     if (srvConfig && t.file) {
-                        const ePath = encodeURIComponent(getLocalPath(t.file).replace(/\\/g, '/')).replace(/\(/g, '%28').replace(/\)/g, '%29');
+                        const ePath = encodePathSafe(getLocalPath(t.file));
                         const btnStyle = "display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:4px; background:rgba(0,0,0,0.2); border:1px solid rgba(255,255,255,0.05); transition:0.2s;";
                         
-                        playExtBtn = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" style="${btnStyle} color:#2f96b4;" title="로컬 재생" onmouseover="this.style.background='rgba(47,150,180,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-play"></i></a>`;
+                        playExtBtn = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" style="${btnStyle} color:#2f96b4;" title="로컬 재생" data-filename="${t.file.split(/[\\/]/).pop() || t.file}" onmouseover="this.style.background='rgba(47,150,180,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-play"></i></a>`;
                         
                         if (t.part_id && plexSrv) {
                             const vUrl = `${plexSrv.url}/library/parts/${t.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${data.itemId}`;
@@ -3738,9 +3933,9 @@ GM_addStyle(`
                             const pathParts = t.file.split(/[\\/]/);
                             justFileName = pathParts[pathParts.length - 1];
                             
-                            const streamPayload = encodeURIComponent(vUrl) + '%7C%7C' + encodeURIComponent(justFileName);
+                            const streamPayload = encodePathSafe(vUrl) + '%7C%7C' + encodePathSafe(justFileName);
                             
-                            streamBtn = `<a href="plexstream://${streamPayload}" class="plex-guid-action plex-play-stream" style="${btnStyle} color:#e5a00d;" title="스트리밍" onmouseover="this.style.background='rgba(229,160,13,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-wifi"></i></a>`;
+                            streamBtn = `<a href="plexstream://${streamPayload}" class="plex-guid-action plex-play-stream" style="${btnStyle} color:#e5a00d;" title="스트리밍" data-filename="${justFileName}" onmouseover="this.style.background='rgba(229,160,13,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-wifi"></i></a>`;
                         }
                     }
 
@@ -3852,8 +4047,8 @@ GM_addStyle(`
                         justFileName = pathParts[pathParts.length - 1];
                     }
 
-                    const streamPayload = encodeURIComponent(vUrl) + '%7C' + encodeURIComponent(sUrl) + '%7C' + encodeURIComponent(justFileName);
-                    streamHtml = `<a href="plexstream://${streamPayload}" class="plex-guid-action plex-play-stream" title="스트리밍"><i class="fas fa-wifi"></i></a>`;
+                    const streamPayload = encodePathSafe(vUrl) + '%7C' + encodePathSafe(sUrl) + '%7C' + encodePathSafe(justFileName);
+                    streamHtml = `<a href="plexstream://${streamPayload}" class="plex-guid-action plex-play-stream" title="스트리밍" data-filename="${justFileName}"><i class="fas fa-wifi"></i></a>`;
                 }
 
                 let playExternalHtml = `<span style="color:#555;" title="친구 서버는 지원하지 않습니다."><i class="fas fa-play"></i></span>`;
@@ -3861,9 +4056,14 @@ GM_addStyle(`
                 let pathLinkHtml = '';
 
                 if (srvConfig) {
-                    const ePath = encodeURIComponent(getLocalPath(v.file).replace(/\\/g, '/')).replace(/\(/g, '%28').replace(/\)/g, '%29');
-                    playExternalHtml = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" title="로컬 재생"><i class="fas fa-play"></i></a>`;
-                    openFolderHtml = `<a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열기"><i class="fas fa-folder-open"></i></a>`;
+                    const ePath = encodePathSafe(getLocalPath(v.file));
+                    let justFileName = v.file.split(/[\\/]/).pop() || v.file;
+                    
+                    playExternalHtml = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" title="로컬 재생" data-filename="${justFileName}"><i class="fas fa-play"></i></a>`;
+                    
+                    const folderPath = getLocalPath(v.file.substring(0, v.file.lastIndexOf('/') > v.file.lastIndexOf('\\') ? v.file.lastIndexOf('/') : v.file.lastIndexOf('\\')));
+                    const eFolderPath = encodePathSafe(folderPath);
+                    openFolderHtml = `<a href="plexfolder://${eFolderPath}" class="plex-guid-action plex-open-folder" title="폴더 열기" data-path="${folderPath}"><i class="fas fa-folder-open"></i></a>`;
 
                     const uTags = applyUserTags(v.file, []);
                     const uTagsHtml = uTags.length > 0
@@ -3909,7 +4109,7 @@ GM_addStyle(`
         }
 
         const mateBtnHtml = srvConfig ?
-            `<div style="margin-top: 8px; display:flex; align-items:center;">
+            `<div style="margin:4px 0; display:flex; align-items:center;">
                 <div style="width: 95px; flex-shrink: 0; color: #bababa; font-size:13px; font-weight:500;">PLEX MATE</div>
                 <a href="#" id="plex-mate-refresh-button" data-itemid="${data.itemId}"><i class="fas fa-bolt"></i> YAML/TMDB 반영</a>
              </div>` : '';
@@ -4041,7 +4241,12 @@ GM_addStyle(`
                     }
                 } catch(e) {}
             });
-            document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e => e.remove());
+            
+            document.querySelectorAll('.pmh-render-marker').forEach(e => {
+                e.setAttribute('data-stale', 'true');
+            });
+            document.querySelectorAll('.pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e => e.remove());
+            
             setTimeout(() => { if (typeof processList === 'function' && renderSessionAtClick === currentRenderSession) processList(); }, 150);
         };
 
@@ -4198,73 +4403,25 @@ GM_addStyle(`
                 isObserverLocked = true;
                 showBoxLoading();
                 infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
-                toastr.info("메타 리매칭 작업을 시작합니다...<br>버튼을 다시 누르면 취소합니다.", "리매칭 시작", {timeOut: 5000});
-
-                const rawG = (data.guid || '').toLowerCase();
-                const isUnmatched = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
+                
+                const matchOptions = {
+                    _try_refresh_first: ClientSettings.matchTryRefreshFirst,
+                    _do_unmatch_first: ClientSettings.matchDoUnmatchFirst
+                };
+                toastr.info("서버에서 메타 리매칭을 수행합니다.", "리매칭 시작", {timeOut: 8000});
 
                 try {
-                    if (!isUnmatched) {
-                        toastr.info("1단계: 기존 메타 언매치 중...", "리매칭 진행", {timeOut: 3000});
-                        infoLog(`[Detail] Rematch Step 1: Unmatching Item: ${data.itemId}`);
-                        const unmatchSuccess = await triggerPlexMediaAction(data.itemId, 'unmatch', plexSrv, srvConfig);
+                    const matchSuccess = await triggerPlexMediaAction(data.itemId, 'match', plexSrv, srvConfig, matchOptions);
+                    
+                    if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
+                    if (!matchSuccess) throw new Error("매칭 대상을 찾지 못했거나 서버 매칭에 실패했습니다.");
 
-                        if (!unmatchSuccess) throw new Error("언매치 API 호출에 실패했습니다.");
-
-                        let unmatchVerified = false;
-                        for (let i = 0; i < 20; i++) {
-                            if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
-                            await new Promise(r => setTimeout(r, 2500));
-                            if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
-
-                            const tempMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
-                            const tempGuid = tempMeta ? (tempMeta.guid || '').toLowerCase() : '';
-                            if (tempGuid.includes('local://') || tempGuid.includes('none://')) {
-                                unmatchVerified = true;
-                                break;
-                            }
-                        }
-                        if (!unmatchVerified) throw new Error("언매치 상태 확인 시간 초과 (1단계 실패)");
-                    } else {
-                        infoLog(`[Detail] Rematch Step 1 Skipped: Already unmatched (ID: ${data.itemId})`);
-                    }
-
+                    infoLog(`[Detail] Rematch successful. Waiting for Plex DB stabilization.`);
+                    
+                    await new Promise(r => setTimeout(r, 4500));
                     if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
 
-                    toastr.info("2단계: 메타 데이터 자동 매칭 요청 중...", "리매칭 진행", {timeOut: 3000});
-                    infoLog(`[Detail] Rematch Step 2: Triggering Auto-Match for Item: ${data.itemId}`);
-                    
-                    const matchSuccess = await triggerPlexMediaAction(data.itemId, 'match', plexSrv, srvConfig);
-
-                    if (!matchSuccess) {
-                        throw new Error("자동 매칭 대상을 찾지 못했거나 매칭 API 호출에 실패했습니다.");
-                    }
-
-                    let matchVerified = false;
-                    for (let i = 0; i < 24; i++) {
-                        if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
-                        await new Promise(r => setTimeout(r, 2500));
-                        if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
-
-                        const tempMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
-                        if (tempMeta) {
-                            const tempGuid = (tempMeta.guid || '').toLowerCase();
-                            const isNowMatched = !tempGuid.includes('local://') && !tempGuid.includes('none://') && tempGuid !== '-' && tempGuid !== '';
-
-                            if (isNowMatched) {
-                                matchVerified = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!matchVerified) throw new Error("매칭 완료 상태 확인 시간 초과 (수동 매칭이 필요할 수 있습니다)");
-
-                    infoLog(`[Detail] Rematch successful. Triggering background metadata refresh for Item: ${data.itemId}`);
-                    triggerPlexMediaAction(data.itemId, 'refresh', plexSrv, srvConfig);
-
-                    toastr.success("메타 리매칭 완료!<br>매칭된 메타로 새로고침합니다.", "성공", {timeOut: 4000});
-                    infoLog(`[Detail] Rematch process completed successfully for Item: ${data.itemId}`);
+                    toastr.success("메타 리매칭 완료!", "성공", {timeOut: 4000});
 
                 } catch (err) {
                     if (err.message === "Cancelled") {
@@ -4277,12 +4434,11 @@ GM_addStyle(`
                     isObserverLocked = false;
 
                     if (renderSessionAtClick === currentRenderSession && !abortDetailRefresh) {
+                        invalidateVisibleCaches(serverId);
                         deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                        deleteMemoryCache(`L_${serverId}_${data.itemId}`);
-                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
                         
                         currentDisplayedItemId = null;
-                        processDetail(true);      
+                        processDetail(true);
                         forceRefreshChildUI(); 
                     }
                 }
@@ -4386,8 +4542,25 @@ GM_addStyle(`
             });
         }
 
-        document.querySelectorAll('#plex-guid-box .plex-play-external, #plex-guid-box .plex-open-folder, #plex-guid-box .plex-play-stream').forEach(el => {
-            el.addEventListener('click', () => { toastr.info('명령을 실행합니다.'); });
+        document.querySelectorAll('#plex-guid-box .plex-play-external').forEach(el => {
+            el.addEventListener('click', () => { 
+                const fname = el.dataset.filename || '미디어 파일';
+                toastr.info(`로컬 외부 플레이어로 재생을 시도합니다.<br>[${fname}]`, '로컬 재생'); 
+            });
+        });
+        
+        document.querySelectorAll('#plex-guid-box .plex-open-folder').forEach(el => {
+            el.addEventListener('click', () => { 
+                const path = el.dataset.path || '로컬 폴더';
+                toastr.info(`로컬 탐색기로 경로를 엽니다.<br>[${path}]`, '폴더 열기'); 
+            });
+        });
+        
+        document.querySelectorAll('#plex-guid-box .plex-play-stream').forEach(el => {
+            el.addEventListener('click', () => { 
+                const fname = el.dataset.filename || '스트리밍 영상';
+                toastr.info(`네트워크 스트리밍을 호출합니다.<br>[${fname}]`, '스트리밍'); 
+            });
         });
 
         document.querySelectorAll('#plex-guid-box .plex-kor-subtitle-download').forEach(el => {
@@ -4428,29 +4601,6 @@ GM_addStyle(`
 
         if (!srvConfig) return;
 
-        const callPlexMateViaRelay = async (endpoint, paramsObj) => {
-            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
-            
-            return new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'POST',
-                    url: `${srvConfig.relayUrl}/mate${endpoint}`,
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'X-PMH-Signature': secureToken 
-                    },
-                    data: JSON.stringify(paramsObj),
-                    timeout: 60000,
-                    onload: r => { 
-                        try { resolve(JSON.parse(r.responseText)); } 
-                        catch(e) { reject("Parse Error"); } 
-                    },
-                    onerror: () => reject("Network Error"),
-                    ontimeout: () => reject("Timeout Error")
-                });
-            });
-        };
-
         document.querySelectorAll('#plex-guid-box .plex-path-scan-link').forEach(el => {
             el.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
@@ -4482,11 +4632,12 @@ GM_addStyle(`
                 try {
                     toastr.info(`[1/2] VFS/Refresh 요청 중...<br>${scanPath}`, "Web 스캔 시작", {timeOut: 3000});
                     
-                    const vfsRes = await callPlexMateViaRelay('/scan/vfs_refresh', { target: scanPath, recursive: 'true', async: 'false' });
+                    const vfsRes = await callPlexMateViaRelay(srvConfig, '/scan/vfs_refresh', { target: scanPath, recursive: 'true', async: 'false' });
                     if (vfsRes.ret !== 'success') throw new Error(vfsRes.msg || "VFS 갱신 실패");
 
                     toastr.info(`[2/2] VFS/Refresh 완료. 라이브러리 스캔 요청 중...`, "스캔", {timeOut: 3000});
-                    const scanRes = await callPlexMateViaRelay('/scan/do_scan', { target: scanPath, target_section_id: sectionId, scanner: 'web' });
+                    
+                    const scanRes = await callPlexMateViaRelay(srvConfig, '/scan/do_scan', { target: scanPath, target_section_id: sectionId, scanner: 'web' });
 
                     if (scanRes.ret === 'success') {
                         toastr.success('Plex Mate 스캔 요청 완료!', '성공');
@@ -4510,19 +4661,20 @@ GM_addStyle(`
         if (mateBtn) {
             mateBtn.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
-                infoLog(`[PlexMate] Manual Refresh (YAML/TMDB Sync) requested for PMH Item: ${data.itemId}`);
+                infoLog(`[PlexMate] Manual Refresh (YAML/TMDB/Marker Sync) requested for PMH Item: ${data.itemId}`);
 
                 const originalHtml = mateBtn.innerHTML;
                 mateBtn.style.pointerEvents = 'none';
                 mateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 요청 중...`;
-                toastr.info('plex_mate에 YAML/TMDB 반영을 요청합니다...');
+                toastr.info('Plex Mate에 YAML 반영을 요청합니다...');
 
                 try {
-                    const res = await callPlexMateViaRelay('/scan/manual_refresh', { metadata_item_id: mateBtn.dataset.itemid });
+                    const payload = { metadata_item_id: data.itemId };
+                    const res = await callPlexMateViaRelay(srvConfig, '/scan/manual_refresh', payload);
                     
                     if (res.ret === 'success') {
-                        toastr.success('YAML/TMDB 반영 완료!<br>(제목/포스터는 화면 이동시 갱신됨)', '성공', {timeOut: 5000});
-                        infoLog(`[PlexMate] Manual Refresh successful for Item: ${data.itemId}`);
+                        toastr.success('YAML 반영 완료!<br>(제목/포스터는 화면 이동시 갱신됨)', '성공', {timeOut: 5000});
+                        infoLog(`[PlexMate] Manual Refresh (YAML/Marker Sync) successful for Item: ${data.itemId}`);
 
                         deleteMemoryCache(`D_${serverId}_${data.itemId}`);
                         deleteMemoryCache(`L_${serverId}_${data.itemId}`);
@@ -4536,14 +4688,14 @@ GM_addStyle(`
                     }
                 } catch (err) { 
                     errorLog(`[PlexMate] Manual refresh error:`, err);
-                    toastr.error(`반영 실패: ${err.message || err}`, '오류'); 
+                    toastr.error(`YAML 반영 실패: ${err.message || err}`, '오류'); 
                 } finally { 
                     mateBtn.style.pointerEvents = 'auto'; 
                     mateBtn.innerHTML = originalHtml; 
                 }
             });
         }
-        
+
         currentDetailStateHash = getDetailStateHash();
     }
 
@@ -4797,7 +4949,21 @@ GM_addStyle(`
                         </div>
 
                         <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(229, 160, 13, 0.4); padding: 10px; border-radius: 4px;">
-                            <label class="pmh-check-label" style="color:#e5a00d; font-weight:bold; cursor:pointer; display:flex; align-items:center; gap:8px;" title="깃허브 대신 무조건 로컬 서버에서 UI Core JS/CSS를 불러오며 캐시를 사용하지 않습니다.">
+                            <label class="pmh-form-label" style="margin-bottom:8px;"><i class="fas fa-link"></i> 스마트 매칭 / 리매칭 동작 설정</label>
+                            
+                            <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="매칭 시도 전 새로고침(Refresh)으로 자동 매칭을 우선 유도합니다. (Plex 기본 에이전트 전용)">
+                                <input type="checkbox" id="pmh-set-match-refresh" style="width:14px; height:14px;" ${ClientSettings.matchTryRefreshFirst ? 'checked' : ''}>
+                                <span style="color:#ddd;">매칭 시 리프레시 우선 시도 <span style="color:#777; font-size:11px;">(Plex 기본 에이전트 전용)</span></span>
+                            </label>
+                            
+                            <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="매칭 시도 전 대상 항목을 명시적으로 언매칭(Unmatch) 처리합니다.">
+                                <input type="checkbox" id="pmh-set-match-unmatch" style="width:14px; height:14px;" ${ClientSettings.matchDoUnmatchFirst ? 'checked' : ''}>
+                                <span style="color:#ddd;">매칭 전 언매칭 우선 실행</span>
+                            </label>
+                        </div>
+                        
+                        <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(47, 150, 180, 0.4); padding: 10px; border-radius: 4px;">
+                            <label class="pmh-check-label" style="color:#2f96b4; font-weight:bold; cursor:pointer; display:flex; align-items:center; gap:8px;" title="깃허브 대신 무조건 로컬 서버에서 UI Core JS/CSS를 불러오며 캐시를 사용하지 않습니다.">
                                 <input type="checkbox" id="pmh-set-dev-mode" style="width:16px; height:16px; cursor:pointer;" ${ClientSettings.devMode ? 'checked' : ''}>
                                 <i class="fas fa-laptop-code"></i> 프론트엔드 개발 모드 (Local Assets Only)
                             </label>
@@ -4912,7 +5078,9 @@ GM_addStyle(`
                 logLevel: document.getElementById('pmh-set-log-level').value,
                 maxCacheSize: parseInt(document.getElementById('pmh-set-cache-size').value, 10) || 5000,
                 devMode: document.getElementById('pmh-set-dev-mode').checked,
-                pathMappings: newMaps
+                pathMappings: newMaps,
+                matchTryRefreshFirst: document.getElementById('pmh-set-match-refresh').checked,
+                matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked
             };
 
             GM_setValue(CLIENT_SETTINGS_KEY, ClientSettings);
