@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.71
+// @version      0.8.72
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -308,8 +308,9 @@ GM_addStyle(`
     }
 
     function isNewerVersion(current, latest) {
-        const c = current.split('.').map(Number);
-        const l = latest.split('.').map(Number);
+        if (!current || !latest) return false;
+        const c = String(current).split('.').map(Number);
+        const l = String(latest).split('.').map(Number);
         for(let i=0; i<3; i++) {
             if((l[i]||0) > (c[i]||0)) return true;
             if((l[i]||0) < (c[i]||0)) return false;
@@ -503,7 +504,7 @@ GM_addStyle(`
                 const ctrl = document.getElementById('pmdv-controls');
                 if (ctrl) { ctrl.remove(); injectControlUI(); }
             }
-            return null; 
+            return null;
         }
 
         if (!result.error) {
@@ -996,23 +997,38 @@ GM_addStyle(`
                 data: data ? JSON.stringify(data) : undefined,
                 onload: r => {
                     activeRequests.delete(req);
-                    if (r.status === 401) return reject(new Error("Unauthorized: API Key 불일치"));
+                    if (r.status === 401) {
+                        return reject(new Error("Unauthorized: API Key가 일치하지 않거나 만료되었습니다."));
+                    }
                     
                     if (r.status >= 200 && r.status < 300) {
-                        try { resolve(JSON.parse(r.responseText)); } 
-                        catch(e) { reject(new Error("JSON Parse Error")); }
+                        try { 
+                            resolve(JSON.parse(r.responseText)); 
+                        } catch(e) { 
+                            reject(new Error("JSON Parse Error: 서버 응답을 해석할 수 없습니다.")); 
+                        }
                     } else {
                         try {
                             const errJson = JSON.parse(r.responseText);
-                            reject(new Error(errJson.error || errJson.message || `HTTP ${r.status} 에러`));
+                            const errMsg = errJson.error || errJson.message || `서버 오류 (HTTP ${r.status})`;
+                            reject(new Error(errMsg));
                         } catch(e) {
-                            reject(new Error(`서버 처리 실패 (HTTP ${r.status})`));
+                            reject(new Error(`서버 처리 실패 (HTTP ${r.status}): ${r.statusText || ''}`));
                         }
                     }
                 },
-                onerror: () => { activeRequests.delete(req); reject(new Error("Network Error")); },
-                ontimeout: () => { activeRequests.delete(req); reject(new Error("Timeout")); },
-                onabort: () => { activeRequests.delete(req); reject(new Error("Aborted")); }
+                onerror: () => { 
+                    activeRequests.delete(req); 
+                    reject(new Error("Network Error: 서버에 연결할 수 없습니다.")); 
+                },
+                ontimeout: () => { 
+                    activeRequests.delete(req); 
+                    reject(new Error("Timeout: 서버 응답 시간 초과")); 
+                },
+                onabort: () => { 
+                    activeRequests.delete(req); 
+                    reject(new Error("Aborted: 사용자에 의해 요청이 취소되었습니다.")); 
+                }
             });
             activeRequests.add(req);
 
@@ -1514,13 +1530,11 @@ GM_addStyle(`
         
         if (hasServerError) {
             let tooltipText = "일부 PMH 파이썬 서버에 연결할 수 없습니다.&#10;";
-            
             if (errorDetails.length > 0) {
                 tooltipText += errorDetails.join("&#10;"); 
             } else {
                 tooltipText += "서버가 꺼져 있거나 API 키 설정이 잘못되었습니다.";
             }
-            
             defaultMsg = `<span style="color:#bd362f; cursor:help;" title="${tooltipText}"><i class="fas fa-exclamation-triangle"></i> 서버 연결 오류</span>`;
             defaultColor = '#bd362f';
         } else if (isNewerVersion(CURRENT_VERSION, latestKnownVer)) {
@@ -2494,8 +2508,8 @@ GM_addStyle(`
                     let actualServersToUpdate = [];
                     if (ServerConfig.SERVERS) {
                         for (const srv of ServerConfig.SERVERS) {
-                            const curVer = localPyVers[srv.machineIdentifier];
-                            if (!curVer || isNewerVersion(curVer, targetVer)) {
+                            const pRes = localPyVers[srv.machineIdentifier];
+                            if (!pRes || pRes.status !== 'ok' || isNewerVersion(pRes.version, targetVer)) {
                                 actualServersToUpdate.push(srv);
                             }
                         }
@@ -2587,10 +2601,11 @@ GM_addStyle(`
                         let isJsUpdateNeeded = isNewerVersion(CURRENT_VERSION, result.targetVer);
                         serversToUpdate = [];
 
+                        // [에러 해결됨] 이 부분도 마찬가지로 version 프로퍼티를 꺼내도록 수정했습니다.
                         if (ServerConfig.SERVERS) {
                             for (const srv of ServerConfig.SERVERS) {
-                                const curVer = result.localPyVers[srv.machineIdentifier];
-                                if (!curVer || isNewerVersion(curVer, result.targetVer)) {
+                                const pRes = result.localPyVers[srv.machineIdentifier];
+                                if (!pRes || pRes.status !== 'ok' || isNewerVersion(pRes.version, result.targetVer)) {
                                     serversToUpdate.push({...srv, targetVer: result.targetVer});
                                 }
                             }

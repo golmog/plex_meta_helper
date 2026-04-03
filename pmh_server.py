@@ -314,11 +314,14 @@ log.setLevel(logging.ERROR)
 
 @app.before_request
 def check_api_key():
+    if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
+        _ = request.get_data()
+
     if request.method == "OPTIONS": return
     
     allowed_paths = ['/', '/favicon.ico']
     if request.path in allowed_paths or request.path.startswith('/api/client/'): return
-        
+    
     allowed_restart_paths = ['/api/admin/update', '/api/ping', '/favicon.ico', '/']
     if request.path not in allowed_restart_paths and is_server_restart_required():
         return jsonify({"error": "SERVER_RESTART_REQUIRED", "message": "서버 수동 재시작 필요"}), 426
@@ -331,7 +334,6 @@ def check_api_key():
         
     signature = request.headers.get("X-PMH-Signature", "")
     
-    # [호환성 백도어] X-API-Key 헤더 지원 (평문 통신 허용 여부)
     legacy_key = request.headers.get("X-API-Key", "")
     if legacy_key and hmac.compare_digest(legacy_key, API_KEY):
         reset_failed_attempt(client_ip)
@@ -650,7 +652,6 @@ def check_update_from_github():
 # ==============================================================================
 @app.route('/api/relay/<node_id>/<path:subpath>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def relay_to_node(node_id, subpath):
-    # [핵심] 소켓에 찌꺼기가 남아 Bad Request(행잉)가 뜨는 것을 방지하기 위해 강제로 데이터를 다 읽습니다!
     raw_body = None
     if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
         raw_body = request.get_data()
