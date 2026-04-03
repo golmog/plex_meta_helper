@@ -482,6 +482,9 @@ def api_admin_update():
 
 @app.route('/api/admin/reload_core', methods=['POST'])
 def api_admin_reload_core():
+    global cfg, BASE_CFG, MASTER_CFG, IS_MASTER, DEV_MODE, API_KEY
+    global ENABLE_FAIL2BAN, FAIL2BAN_WHITELIST, global_conf, NODE_INFO_CACHE
+    
     try:
         is_ready, running_count, msg = pmh_core.check_update_readiness(BASE_DIR, force_update=False)
         
@@ -489,7 +492,38 @@ def api_admin_reload_core():
             print(f"[PMH RELOAD] 거부됨: {msg}")
             return jsonify({"status": "error", "running_count": running_count, "message": msg}), 400
             
-        print("[PMH RELOAD] pmh_core.py 모듈 리로드를 시작합니다...")
+        print("[PMH RELOAD] 1. pmh_config.yaml 설정을 다시 불러옵니다...")
+        try:
+            cfg = load_config()
+            BASE_CFG = cfg.get("BASE", {})
+            MASTER_CFG = cfg.get("MASTER", None)
+            IS_MASTER = MASTER_CFG is not None
+            DEV_MODE = BASE_CFG.get("DEV_MODE", False)
+            API_KEY = BASE_CFG.get("APIKEY", "")
+            
+            ENABLE_FAIL2BAN = BASE_CFG.get("ENABLE_FAIL2BAN", True)
+            FAIL2BAN_WHITELIST = BASE_CFG.get("FAIL2BAN_WHITELIST", [])
+            if not isinstance(FAIL2BAN_WHITELIST, list):
+                FAIL2BAN_WHITELIST = [FAIL2BAN_WHITELIST]
+
+            global_conf.update({
+                "plex_db_path": BASE_CFG.get("PLEX_DB_PATH", ""),
+                "plex_url": BASE_CFG.get("PLEX_URL", ""),
+                "plex_token": BASE_CFG.get("PLEX_TOKEN", ""),
+                "plex_sqlite_bin": BASE_CFG.get("PLEX_SQLITE_BIN", ""),
+                "mate_apikey": BASE_CFG.get("FF_APIKEY", ""),
+                "mate_url": BASE_CFG.get("FF_URL", ""),
+                "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
+                "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
+                "is_master": IS_MASTER
+            })
+            
+            NODE_INFO_CACHE.clear()
+            print("[PMH RELOAD] 설정 파일(YAML) 반영 완료.")
+        except Exception as cfg_err:
+            print(f"[PMH RELOAD WARNING] 설정 파일 다시 읽기 실패 (기존 설정 유지): {cfg_err}")
+
+        print("[PMH RELOAD] 2. pmh_core.py 모듈 리로드를 시작합니다...")
         
         if hasattr(pmh_core, 'stop_scheduler_daemon'):
             pmh_core.stop_scheduler_daemon()
@@ -499,12 +533,12 @@ def api_admin_reload_core():
         
         pmh_core.start_scheduler_daemon(global_conf)
         
-        print(f"[PMH RELOAD] ✅ 코어 리로드 완료! (v{pmh_core.get_version()})")
-        return jsonify({"status": "success", "message": "코어 모듈 리로드 완료"}), 200
+        print(f"[PMH RELOAD] ✅ 설정 및 코어 리로드 완료! (v{pmh_core.get_version()})")
+        return jsonify({"status": "success", "message": "설정 및 코어 모듈 리로드 완료"}), 200
         
     except Exception as e:
-        print(f"[PMH RELOAD ERROR] 코어 리로드 실패: {e}")
-        return jsonify({"status": "error", "message": f"코어 리로드 실패: {e}"}), 500
+        print(f"[PMH RELOAD ERROR] 리로드 실패: {e}")
+        return jsonify({"status": "error", "message": f"리로드 실패: {e}"}), 500
 
 # ==============================================================================
 # 프론트엔드 클라이언트 초기화 동기화 라우팅
@@ -616,13 +650,23 @@ def check_update_from_github():
 # ==============================================================================
 @app.route('/api/relay/<node_id>/<path:subpath>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def relay_to_node(node_id, subpath):
+    # [핵심] 소켓에 찌꺼기가 남아 Bad Request(행잉)가 뜨는 것을 방지하기 위해 강제로 데이터를 다 읽습니다!
+    raw_body = None
+    if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
+        raw_body = request.get_data()
+    
     if not IS_MASTER:
         return jsonify({"error": "이 서버는 마스터 노드가 아닙니다. 릴레이 기능이 비활성화되어 있습니다."}), 400
 
     if node_id in ["master_node", "self"]:
         if subpath == 'admin/update':
             return api_admin_update()
-        return api_gateway(subpath)
+        elif subpath == 'admin/reload_core':
+            return api_admin_reload_core()
+        elif subpath.startswith('mate/'):
+            return api_gateway(subpath)
+        else:
+            return api_gateway(subpath)
 
     node_info = next((n for n in MASTER_CFG.get("NODES", []) if n.get("id") == node_id), None)
     if not node_info:
@@ -638,7 +682,9 @@ def relay_to_node(node_id, subpath):
     content_type = request.headers.get("Content-Type")
     if content_type: headers["Content-Type"] = content_type
 
-    req_data = request.get_data() if request.method in ['POST', 'PUT', 'PATCH', 'DELETE'] else None
+    req_data = raw_body if raw_body else None
+    if req_data:
+        headers['Content-Length'] = str(len(req_data))
 
     if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/run')):
         print(f"[PMH RELAY] 🚀 {request.method} -> {node_info['name']} ({target_url})")
@@ -654,12 +700,15 @@ def relay_to_node(node_id, subpath):
             return Response(resp_data, status=response.status, headers=resp_headers)
 
     except urllib.error.HTTPError as e:
-        resp_headers = {}
-        if e.headers.get('Content-Type'):
-            resp_headers['Content-Type'] = e.headers.get('Content-Type')
-        return Response(e.read(), status=e.code, headers=resp_headers)
+        try:
+            err_body = e.read().decode('utf-8')
+            import json
+            return jsonify(json.loads(err_body)), e.code
+        except Exception:
+            return jsonify({"error": f"워커 노드 에러 (HTTP {e.code})"}), e.code
+    except urllib.error.URLError as e:
+        return jsonify({"error": f"네트워크 연결 실패: {str(e)}"}), 502
     except Exception as e:
-        print(f"[PMH RELAY ERROR] ❌ 워커 노드({node_info['name']}) 통신 실패: {e}")
         return jsonify({"error": f"워커 노드 통신 실패: {str(e)}"}), 502
 
 @app.route('/')
@@ -693,14 +742,23 @@ def serve_static_client(filename):
 
 @app.route('/api/<path:subpath>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def api_gateway(subpath):
+    raw_body = None
+    if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
+        raw_body = request.get_data()
+    
     method = request.method
     args = request.args.to_dict()
     
+    json_data = {}
+    if method in ['POST', 'PUT'] and raw_body:
+        import json
+        try:
+            json_data = json.loads(raw_body.decode('utf-8'))
+        except Exception:
+            pass
+
     if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/run')):
         print(f"[PMH API] 💻 {method} /{subpath}")
-    
-    json_data = request.get_json(silent=True) if request.method in ['POST', 'PUT'] else None
-    if json_data is None: json_data = {}
 
     result, status_code = pmh_core.dispatch_request(
         subpath=subpath,

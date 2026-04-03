@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.70
+// @version      0.8.71
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -281,7 +281,7 @@ GM_addStyle(`
     const CLIENT_SETTINGS_KEY = 'pmh_client_settings';
     let ServerConfig = { USER_TAGS: {}, DISPLAY_PATH_PREFIXES_TO_REMOVE: [], SERVERS: [] };
 
-    function isIgnoredItem(url, iid) {
+    function isIgnoredItem(url, iid, domElement = null) {
         if (!iid || iid === 'undefined') return true;
 
         const targetUrl = url || window.location.hash || window.location.href;
@@ -295,6 +295,14 @@ GM_addStyle(`
         
         if (decodedStr.includes('tv.plex') || decodedStr.includes('plex://') || decodedStr.includes('/provider/')) return true;
         if (!decodedStr.includes('/library/metadata/')) return true;
+
+        if (domElement && domElement.nodeType === 1) {
+            try {
+                const trashIcon = domElement.querySelector('[aria-label*="휴지통"], [class*="trashCircle"], [class*="TrashBadge"]');
+                if (trashIcon) return true;
+            } catch (e) {
+            }
+        }
 
         return false;
     }
@@ -315,6 +323,7 @@ GM_addStyle(`
 
         const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
         const results = {};
+        
         const promises = ServerConfig.SERVERS.map(srv => {
             if (!srv.relayUrl) return Promise.resolve();
             return new Promise((resolve) => {
@@ -326,22 +335,26 @@ GM_addStyle(`
                         if (res.status === 200) {
                             try {
                                 const ver = JSON.parse(res.responseText).version || "0.0.0";
-                                results[srv.machineIdentifier] = ver;
+                                results[srv.machineIdentifier] = { status: 'ok', version: ver, name: srv.name };
                                 log(`[Ping] Server (${srv.name}) responded successfully. Version: ${ver}`);
                             } catch(e) {
-                                errorLog(`[Ping] Parse error for ${srv.name}.`, e);
+                                results[srv.machineIdentifier] = { status: 'error', msg: 'JSON 파싱 오류', name: srv.name };
                             }
+                        } else if (res.status === 401) {
+                            results[srv.machineIdentifier] = { status: 'error', msg: '인증 거부 (API 키 불일치)', name: srv.name };
+                        } else if (res.status === 429) {
+                            results[srv.machineIdentifier] = { status: 'error', msg: 'Fail2Ban IP 차단됨', name: srv.name };
                         } else {
-                            errorLog(`[Ping] Server (${srv.name}) responded with error status: ${res.status}`);
+                            results[srv.machineIdentifier] = { status: 'error', msg: `서버 응답 오류 (HTTP ${res.status})`, name: srv.name };
                         }
                         resolve();
                     },
                     onerror: () => {
-                        errorLog(`[Ping] Server (${srv.name}) is offline or unreachable.`);
+                        results[srv.machineIdentifier] = { status: 'error', msg: '서버 꺼짐 또는 네트워크 단절', name: srv.name };
                         resolve();
                     },
                     ontimeout: () => {
-                        errorLog(`[Ping] Request timed out for ${srv.name}.`);
+                        results[srv.machineIdentifier] = { status: 'error', msg: '서버 응답 시간 초과', name: srv.name };
                         resolve();
                     }
                 });
@@ -371,13 +384,23 @@ GM_addStyle(`
                 if (Date.now() - lastCheck < 24 * 60 * 60 * 1000) {
                     log("[Update] Background update check skipped (checked recently).");
                     const localPyVers = await pingLocalServer();
+                    
                     let hasServerError = false;
+                    let errorDetails = [];
+                    
                     if (ServerConfig.SERVERS) {
                         for (const srv of ServerConfig.SERVERS) {
-                            if (!localPyVers[srv.machineIdentifier]) hasServerError = true;
+                            const pRes = localPyVers[srv.machineIdentifier];
+                            if (!pRes || pRes.status === 'error') {
+                                hasServerError = true;
+                                errorDetails.push(`[${srv.name}] ${pRes ? pRes.msg : '정보 없음'}`);
+                            }
                         }
                     }
+                    
                     const wasError = GM_getValue('pmh_server_connection_error', false);
+                    GM_setValue('pmh_server_error_details', JSON.stringify(errorDetails));
+                    
                     if (wasError !== hasServerError) {
                         GM_setValue('pmh_server_connection_error', hasServerError);
                         resolve({ skipped: true, uiNeedsUpdate: true });
@@ -486,20 +509,24 @@ GM_addStyle(`
         if (!result.error) {
             const latestKnownVer = result.targetVer;
             let needsUpdate = isNewerVersion(CURRENT_VERSION, latestKnownVer);
+            
             let hasServerError = false;
+            let errorDetails = [];
 
             if (ServerConfig.SERVERS) {
                 for (const srv of ServerConfig.SERVERS) {
-                    const curVer = result.localPyVers[srv.machineIdentifier];
-                    if (curVer) {
-                        if (isNewerVersion(curVer, latestKnownVer)) needsUpdate = true;
+                    const pRes = result.localPyVers[srv.machineIdentifier];
+                    if (pRes && pRes.status === 'ok') {
+                        if (isNewerVersion(pRes.version, latestKnownVer)) needsUpdate = true;
                     } else {
                         hasServerError = true;
+                        errorDetails.push(`[${srv.name}] ${pRes ? pRes.msg : '정보 없음'}`);
                     }
                 }
             }
 
             GM_setValue('pmh_server_connection_error', hasServerError);
+            GM_setValue('pmh_server_error_details', JSON.stringify(errorDetails));
 
             const ctrl = document.getElementById('pmdv-controls');
             if (ctrl) { ctrl.remove(); injectControlUI(); }
@@ -845,6 +872,7 @@ GM_addStyle(`
     let isFallbackWorkerRunning = false;
 
     let isObserverLocked = false;
+    let globalAbortFlag = false; 
 
     function getDetailStateHash() {
         let parts = [];
@@ -942,32 +970,59 @@ GM_addStyle(`
         return null;
     }
 
-    async function makeRequest(url, method = "GET", data = null, apiKey = null) {
+    async function makeRequest(url, method = "GET", data = null, apiKey = null, cancelToken = null) {
         log(`[API Req] [${method}] ${url}`);
         
         const secureToken = await generateSecureHeader(apiKey);
         
         return new Promise((resolve, reject) => {
-            const headers = {};
+            const headers = {
+                "Accept": "application/json",
+                "Connection": "close"
+            };
             if (data) headers["Content-Type"] = "application/json";
             if (apiKey) headers["X-PMH-Signature"] = secureToken;
 
+            let reqTimeout = 5000;
+            if (url.includes('/media/') && method === 'POST') {
+                reqTimeout = 60000;
+            }
+
             const req = GM_xmlhttpRequest({
-                method: method, url: url, timeout: 5000,
+                method: method, 
+                url: url, 
+                timeout: reqTimeout,
                 headers: headers,
                 data: data ? JSON.stringify(data) : undefined,
                 onload: r => {
                     activeRequests.delete(req);
-                    if (r.status === 401) return reject(`Unauthorized`);
+                    if (r.status === 401) return reject(new Error("Unauthorized: API Key 불일치"));
+                    
                     if (r.status >= 200 && r.status < 300) {
-                        try { resolve(JSON.parse(r.responseText)); } catch(e) { reject(`Parse Error`); }
-                    } else { reject(`HTTP ${r.status}`); }
+                        try { resolve(JSON.parse(r.responseText)); } 
+                        catch(e) { reject(new Error("JSON Parse Error")); }
+                    } else {
+                        try {
+                            const errJson = JSON.parse(r.responseText);
+                            reject(new Error(errJson.error || errJson.message || `HTTP ${r.status} 에러`));
+                        } catch(e) {
+                            reject(new Error(`서버 처리 실패 (HTTP ${r.status})`));
+                        }
+                    }
                 },
-                onerror: () => { activeRequests.delete(req); reject("Network Error"); },
-                ontimeout: () => { activeRequests.delete(req); reject("Timeout"); },
-                onabort: () => { activeRequests.delete(req); reject("Aborted"); }
+                onerror: () => { activeRequests.delete(req); reject(new Error("Network Error")); },
+                ontimeout: () => { activeRequests.delete(req); reject(new Error("Timeout")); },
+                onabort: () => { activeRequests.delete(req); reject(new Error("Aborted")); }
             });
             activeRequests.add(req);
+
+            if (cancelToken) {
+                cancelToken.abort = () => {
+                    req.abort();
+                    activeRequests.delete(req);
+                    reject(new Error("Aborted"));
+                };
+            }
         });
     }
 
@@ -1026,24 +1081,31 @@ GM_addStyle(`
         });
     }
 
-    async function triggerPlexMediaAction(itemId, action, plexSrv, srvConfig, extraData = {}) {
-        if (!srvConfig) {
+    async function triggerPlexMediaAction(itemId, action, plexSrv, srvConfig, extraData = {}, cancelToken = null) {
+        if (!srvConfig || !srvConfig.relayUrl) {
             errorLog(`[API] ❌ Cannot trigger '${action}' for Item ${itemId}: Missing Server Config.`);
-            return Promise.resolve(false);
+            throw new Error("서버 설정이 없습니다.");
         }
         
         infoLog(`[API] 🚀 Requesting PMH Backend to perform '${action}' on Item: ${itemId} ...`);
         
         try {
             const reqData = { ...extraData };
-            const res = await PmhToolAPI.call(srvConfig, `/media/${itemId}/${action}`, 'POST', reqData);
+            const url = `${srvConfig.relayUrl}/media/${itemId}/${action}`;
+            
+            await makeRequest(url, 'POST', reqData, ClientSettings.masterApiKey, cancelToken);
             
             infoLog(`[API] ✅ PMH Backend Action '${action}' successfully completed for Item: ${itemId}`);
             return true;
             
         } catch (err) {
-            errorLog(`[API] ❌ PMH Backend Action '${action}' failed for Item ${itemId}: ${err}`);
-            return false;
+            const errorMsg = err.message || err || "알 수 없는 오류";
+            if (errorMsg.includes("Aborted")) {
+                infoLog(`[API] 🛑 Action '${action}' was aborted by user.`);
+                throw new Error("Cancelled");
+            }
+            errorLog(`[API] ❌ PMH Backend Action '${action}' failed for Item ${itemId}: ${errorMsg}`);
+            throw new Error(errorMsg); 
         }
     }
 
@@ -1301,14 +1363,15 @@ GM_addStyle(`
                         } else {
                             try {
                                 const errJson = JSON.parse(r.responseText);
-                                reject(errJson.error || errJson.message || `HTTP ${r.status}`);
+
+                                reject(new Error(errJson.error || errJson.message || `HTTP ${r.status} 에러`));
                             } catch(e) {
-                                reject(`서버 응답 오류 (HTTP ${r.status})`);
+                                reject(new Error(`서버 처리 실패 (HTTP ${r.status})`));
                             }
                         }
                     },
-                    onerror: () => reject("네트워크 연결 실패 (서버 다운 또는 방화벽)"),
-                    ontimeout: () => reject("서버 응답 시간 초과")
+                    onerror: () => reject(new Error("네트워크 연결 실패 (서버 다운 또는 방화벽)")),
+                    ontimeout: () => reject(new Error("서버 응답 시간 초과"))
                 };
                 
                 if (data && Object.keys(data).length > 0) {
@@ -1446,8 +1509,19 @@ GM_addStyle(`
         const reqRestart = GM_getValue('pmh_server_restart_required', false);
         const hasServerError = GM_getValue('pmh_server_connection_error', false);
         
+        let errorDetails = [];
+        try { errorDetails = JSON.parse(GM_getValue('pmh_server_error_details', '[]')); } catch(e){}
+        
         if (hasServerError) {
-            defaultMsg = `<span style="color:#bd362f; cursor:help;" title="로컬 PMH 파이썬 서버가 꺼져 있거나 설정이 잘못되었습니다."><i class="fas fa-exclamation-triangle"></i> 서버 연결 오류</span>`;
+            let tooltipText = "일부 PMH 파이썬 서버에 연결할 수 없습니다.&#10;";
+            
+            if (errorDetails.length > 0) {
+                tooltipText += errorDetails.join("&#10;"); 
+            } else {
+                tooltipText += "서버가 꺼져 있거나 API 키 설정이 잘못되었습니다.";
+            }
+            
+            defaultMsg = `<span style="color:#bd362f; cursor:help;" title="${tooltipText}"><i class="fas fa-exclamation-triangle"></i> 서버 연결 오류</span>`;
             defaultColor = '#bd362f';
         } else if (isNewerVersion(CURRENT_VERSION, latestKnownVer)) {
             needsJsUpdate = true;
@@ -2775,7 +2849,6 @@ GM_addStyle(`
                 e.stopPropagation();
                 
                 const isShiftClick = e.shiftKey;
-
                 if (isShiftClick && window.getSelection) {
                     window.getSelection().removeAllRanges();
                 }
@@ -2785,11 +2858,16 @@ GM_addStyle(`
                         abortPolling = true;
                         gBox.innerHTML = '<i class="fas fa-times"></i> 취소됨';
                         gBox.title = "";
+                        
+                        if (gBox.cancelToken && gBox.cancelToken.abort) {
+                            gBox.cancelToken.abort();
+                        }
+                        
                         setTimeout(() => {
                             if (gBox.isConnected) {
                                 if (info.g) {
                                     gBox.textContent = short;
-                                    gBox.title = `${info.g} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
+                                    gBox.title = `${info.g || ''} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
                                     gBox.style.color = isUnmatched ? '#a68241' : '#e5a00d';
                                 } else {
                                     gBox.innerHTML = `<i class="fas fa-redo" style="margin-right:4px;"></i>재시도`;
@@ -2805,6 +2883,7 @@ GM_addStyle(`
 
                 abortPolling = false;
                 gBox.dataset.refreshing = 'true';
+                gBox.cancelToken = {};
                 const originHTML = gBox.innerHTML; 
                 gBox.style.color = '#ccc';
 
@@ -2813,15 +2892,37 @@ GM_addStyle(`
 
                 let actionTargetId = id;
                 let isParentUnmatched = isUnmatched;
+                let isCustomVersionSeason = false;
                 
+                if (srvConfig && plexSrv) {
+                    const currentMeta = await fetchPlexMetaFallback(id, plexSrv);
+                    if (currentMeta) {
+                        if (currentMeta.type === 'episode') {
+                            if (currentMeta.grandparentRatingKey) actionTargetId = currentMeta.grandparentRatingKey;
+                            const parentSeasonIndex = currentMeta.parentIndex;
+                            if (parentSeasonIndex && parseInt(parentSeasonIndex) >= 100) isCustomVersionSeason = true;
+                        } else if (currentMeta.type === 'season') {
+                            if (currentMeta.parentRatingKey) actionTargetId = currentMeta.parentRatingKey;
+                            const seasonIndex = currentMeta.index;
+                            if (seasonIndex && parseInt(seasonIndex) >= 100) isCustomVersionSeason = true;
+                        }
+
+                        if (actionTargetId !== id) {
+                            const parentMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
+                            if (parentMeta) {
+                                const parentGuid = (parentMeta.guid || '').toLowerCase();
+                                isParentUnmatched = !parentGuid || parentGuid === '-' || parentGuid.includes('local://') || parentGuid.includes('none://');
+                            }
+                        }
+                    }
+                }
+
                 if (srvConfig && plexSrv && !info.g) {
                     gBox.title = '클릭 시 취소';
                     gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>로딩 중...`;
-
                     try {
                         const meta = await fetchPlexMetaFallback(id, plexSrv);
                         if (abortPolling) return;
-
                         if (meta) {
                             const localData = convertPlexMetaToLocalData(meta, id);
                             let existingCache = getMemoryCache(`L_${targetServerId}_${id}`);
@@ -2852,87 +2953,62 @@ GM_addStyle(`
                     }
                     return;
                 }
-                
-                let isCustomVersionSeason = false;
-                if (srvConfig && plexSrv) {
-                    const currentMeta = await fetchPlexMetaFallback(id, plexSrv);
-                    if (currentMeta) {
-                        if (currentMeta.type === 'episode') {
-                            if (currentMeta.grandparentRatingKey) actionTargetId = currentMeta.grandparentRatingKey;
-                            const parentSeasonIndex = currentMeta.parentIndex;
-                            if (parentSeasonIndex && parseInt(parentSeasonIndex) >= 100) {
-                                isCustomVersionSeason = true;
-                            }
-                        } else if (currentMeta.type === 'season') {
-                            if (currentMeta.parentRatingKey) actionTargetId = currentMeta.parentRatingKey;
-                            const seasonIndex = currentMeta.index;
-                            if (seasonIndex && parseInt(seasonIndex) >= 100) {
-                                isCustomVersionSeason = true;
-                            }
-                        }
-                        
-                        if (actionTargetId !== id) {
-                            const parentMeta = await fetchPlexMetaFallback(actionTargetId, plexSrv);
-                            if (parentMeta) {
-                                const parentGuid = (parentMeta.guid || '').toLowerCase();
-                                isParentUnmatched = !parentGuid || parentGuid === '-' || parentGuid.includes('local://') || parentGuid.includes('none://');
-                                infoLog(`[List] Parent Show ID: ${actionTargetId}, Parent Unmatched Status: ${isParentUnmatched}`);
-                            }
-                        }
-                    }
-                }
 
                 if (srvConfig && !isUnmatched && info.g) {
                     gBox.title = '클릭 시 취소';
-                    
+
                     if (isShiftClick && plexSrv) {
                         infoLog(`[List] 🔄 Shift-Click detected: Starting Meta Rematch process for Target: ${actionTargetId}`);
                         if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>리매칭중...`;
-                        
-                        const matchOptions = {
-                            _try_refresh_first: ClientSettings.matchTryRefreshFirst,
-                            _do_unmatch_first: ClientSettings.matchDoUnmatchFirst
-                        };
+
+                        const matchOptions = { _try_refresh_first: false, _do_unmatch_first: true };
                         toastr.info("서버에 매칭 작업을 지시했습니다.<br>완료될 때까지 대기합니다...", "매칭 진행 중", {timeOut: 8000});
 
                         try {
-                            const matchSuccess = await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig, matchOptions);
-                            if (abortPolling) return;
-                            if (!matchSuccess) throw new Error("서버에서 매칭 처리에 실패했습니다.");
-                            
-                            infoLog(`[List] ➔ ✅ Match Process completed on server.`);
-                            toastr.info("데이터 안정화 대기 및 화면 갱신 중... (약 5초 소요)", "리매칭 처리 중", {timeOut: 6000});
+                            await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig, matchOptions, gBox.cancelToken);
+                            if (globalAbortFlag || abortPolling) return;
 
-                            triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
-                            if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
-                            
-                            await new Promise(r => setTimeout(r, 4500));
-                            if (abortPolling) return;
-                            
+                            infoLog(`[List] ➔ ✅ Match Process completed on server.`);
+                            toastr.info("데이터 안정화 대기 및 화면 갱신 중...", "리매칭 처리 중", {timeOut: 6000});
+
+                            for(let i=0; i<10; i++) {
+                                if (globalAbortFlag || abortPolling) return;
+                                await new Promise(r => setTimeout(r, 500));
+                            }
+
                             invalidateVisibleCaches(targetServerId);
 
                             const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
-                            if (finalMeta) {
+                            if (finalMeta && !globalAbortFlag) {
                                 const localData = convertPlexMetaToLocalData(finalMeta, id);
                                 setMemoryCache(`L_${targetServerId}_${id}`, localData);
                                 sessionRevalidated.add(id);
-                                
+
                                 if (gBox.isConnected) {
                                     const displayData = { ...localData, tags: applyUserTags(localData.p, localData.tags) };
                                     renderListBadges(cont, poster, link, displayData, srvConfig, id);
                                 }
                                 toastr.success("리매칭이 성공적으로 완료되었습니다!", "성공", {timeOut: 4000});
                             }
-                            
-                            processList();
+
+                            if (!globalAbortFlag) processList();
 
                         } catch (err) {
-                            if (!abortPolling) {
-                                toastr.error(`리매칭 실패: ${err.message}`, "오류", {timeOut: 4000});
+                            if (err.message === "Aborted" || err.message === "Cancelled") return;
+
+                            if (!abortPolling && !globalAbortFlag) {
+                                toastr.error(`${err.message}`, "매칭 실패", {timeOut: 5000});
                                 if (gBox.isConnected) {
-                                    gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 리매칭 실패';
+                                    gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 매칭 실패';
                                     gBox.style.color = 'red';
-                                    setTimeout(() => { if (gBox.isConnected) renderListBadges(cont, poster, link, info, srvConfig, id); }, 2000);
+                                    setTimeout(() => {
+                                        if (gBox.isConnected) {
+                                            gBox.textContent = short;
+                                            gBox.title = `${info.g || ''} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
+                                            gBox.style.color = isUnmatched ? '#a68241' : '#e5a00d';
+                                            delete gBox.dataset.refreshing;
+                                        }
+                                    }, 3000);
                                 }
                             }
                         }
@@ -2962,28 +3038,22 @@ GM_addStyle(`
                 }
 
                 if (srvConfig && plexSrv && (isUnmatched || !info.g)) {
-                    
+
                     if (actionTargetId !== id && !isParentUnmatched) {
-                        
                         if (isCustomVersionSeason) {
                             infoLog(`[List] Parent is matched. Custom Season(>=100) detected. Triggering Plex Mate (YAML/TMDB/Marker) for Parent Show: ${actionTargetId}`);
                             gBox.title = '클릭 시 취소';
                             if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>YAML 반영중...`;
-                            
                             toastr.info("커스텀 시즌이 감지되었습니다.<br>상위 쇼에 YAML 반영을 요청합니다.", "Plex Mate 연동", {timeOut: 4000});
-                            
+
                             try {
                                 const mateRes = await callPlexMateViaRelay(srvConfig, '/scan/manual_refresh', { metadata_item_id: actionTargetId });
-                                
                                 if (mateRes.ret === 'success') {
                                     toastr.success('YAML 반영 완료!<br>화면 동기화 중...', '성공', {timeOut: 4000});
-                                    infoLog(`[PlexMate] Manual Refresh (YAML/Marker Sync) successful for Parent Show: ${actionTargetId}`);
-                                    
                                     await new Promise(r => setTimeout(r, 2000));
                                     if (abortPolling) return;
-                                    
+
                                     invalidateVisibleCaches(targetServerId);
-                                    
                                     const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
                                     if (finalMeta) {
                                         const localData = convertPlexMetaToLocalData(finalMeta, id);
@@ -2999,30 +3069,34 @@ GM_addStyle(`
                                     throw new Error(mateRes.msg || "Plex Mate 반영 오류");
                                 }
                             } catch (e) {
-                                errorLog(`[PlexMate] YAML Sync Error for Parent Show ${actionTargetId}:`, e);
                                 toastr.error(`YAML 반영 실패: ${e.message || e}`, '오류');
                                 if (gBox.isConnected) {
                                     gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 반영 실패';
                                     gBox.style.color = 'red';
-                                    setTimeout(() => { if (gBox.isConnected) renderListBadges(cont, poster, link, info, srvConfig, id); }, 2000);
+                                    setTimeout(() => {
+                                        if (gBox.isConnected) {
+                                            gBox.textContent = short;
+                                            gBox.title = `${info.g || ''} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
+                                            gBox.style.color = isUnmatched ? '#a68241' : '#e5a00d';
+                                            delete gBox.dataset.refreshing;
+                                        }
+                                    }, 3000);
                                 }
                             }
                             return;
-
                         } else {
                             infoLog(`[List] Parent is already matched. Normal Season detected. Refreshing Parent Show: ${actionTargetId}`);
                             gBox.title = '클릭 시 취소';
                             if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>상위 갱신중...`;
                             toastr.info("상위 쇼가 이미 매칭되어 있습니다.<br>상위 쇼에 리프레시를 요청합니다.", "상위 갱신", {timeOut: 3000});
-                            
-                            triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
-                            
-                            try {
-                                await new Promise(r => setTimeout(r, 4000)); 
-                                if (abortPolling) return;
-                                
-                                invalidateVisibleCaches(targetServerId);
 
+                            triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
+
+                            try {
+                                await new Promise(r => setTimeout(r, 4000));
+                                if (abortPolling) return;
+
+                                invalidateVisibleCaches(targetServerId);
                                 const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
                                 if (finalMeta) {
                                     const localData = convertPlexMetaToLocalData(finalMeta, id);
@@ -3034,9 +3108,7 @@ GM_addStyle(`
                                     }
                                 }
                                 processList();
-                            } catch (e) {
-                                errorLog(`[List] Parent Show Refresh Error: ${e}`);
-                            }
+                            } catch (e) {}
                             return;
                         }
                     }
@@ -3044,40 +3116,29 @@ GM_addStyle(`
                     infoLog(`[List] Parent Show is unmatched. Auto-Match requested for Target: ${actionTargetId}`);
                     gBox.title = '클릭 시 취소';
                     if (gBox.isConnected) gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>자동 매칭중...`;
-                    
+
                     const matchOptions = {
                         _try_refresh_first: ClientSettings.matchTryRefreshFirst,
                         _do_unmatch_first: ClientSettings.matchDoUnmatchFirst
                     };
                     toastr.info("미매칭 항목입니다.<br>서버에 매칭을 요청합니다...", "매칭 시도", {timeOut: 8000});
 
-                    const matchSuccess = await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig, matchOptions);
-                    
-                    if (!matchSuccess && !abortPolling) {
-                        toastr.error("자동 매칭 대상을 찾지 못했거나 실패했습니다.<br>수동 매칭이 필요합니다.", "매칭 실패", {timeOut: 5000});
-                        if (gBox.isConnected) {
-                            gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 매칭 실패';
-                            gBox.style.color = 'red';
-                            setTimeout(() => { if (gBox.isConnected) renderListBadges(cont, poster, link, info, srvConfig, id); }, 2000);
-                        }
-                        return;
-                    }
-
-                    if (abortPolling) return;
-
-                    toastr.success("자동 매칭 완료! 잠시 후 UI에 반영됩니다.", "성공", {timeOut: 5000});
-                    
-                    triggerPlexMediaAction(actionTargetId, 'refresh', plexSrv, srvConfig);
-                    if (actionTargetId !== id) triggerPlexMediaAction(id, 'refresh', plexSrv, srvConfig);
-                    
-                    await new Promise(r => setTimeout(r, 4000));
-                    if (abortPolling) return;
-
-                    invalidateVisibleCaches(targetServerId);
-
                     try {
+                        await triggerPlexMediaAction(actionTargetId, 'match', plexSrv, srvConfig, matchOptions, gBox.cancelToken);
+                        
+                        if (globalAbortFlag || abortPolling) return;
+
+                        toastr.success("자동 매칭 완료! 잠시 후 UI에 반영됩니다.", "성공", {timeOut: 5000});
+                        
+                        for(let i=0; i<8; i++) {
+                            if (globalAbortFlag || abortPolling) return;
+                            await new Promise(r => setTimeout(r, 500));
+                        }
+
+                        invalidateVisibleCaches(targetServerId);
+
                         const finalMeta = await fetchPlexMetaFallback(id, plexSrv);
-                        if (finalMeta) {
+                        if (finalMeta && !globalAbortFlag) {
                             const localData = convertPlexMetaToLocalData(finalMeta, id);
                             setMemoryCache(`L_${targetServerId}_${id}`, localData);
                             sessionRevalidated.add(id);
@@ -3086,9 +3147,26 @@ GM_addStyle(`
                                 renderListBadges(cont, poster, link, displayData, srvConfig, id);
                             }
                         }
-                        processList();
-                    } catch (e) {
-                        errorLog(`[List] Error fetching final meta: ${e}`);
+                        if (!globalAbortFlag) processList();
+
+                    } catch (err) {
+                        if (err.message === "Aborted" || err.message === "Cancelled") return;
+
+                        if (!abortPolling && !globalAbortFlag) {
+                            toastr.error(`${err.message}`, "매칭 실패", {timeOut: 5000});
+                            if (gBox.isConnected) {
+                                gBox.innerHTML = '<i class="fas fa-exclamation-circle"></i> 매칭 실패';
+                                gBox.style.color = 'red';
+                                setTimeout(() => {
+                                    if (gBox.isConnected) {
+                                        gBox.textContent = short;
+                                        gBox.title = `${info.g || ''} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
+                                        gBox.style.color = isUnmatched ? '#a68241' : '#e5a00d';
+                                        delete gBox.dataset.refreshing;
+                                    }
+                                }, 3000);
+                            }
+                        }
                     }
                 }
             });
@@ -3146,7 +3224,7 @@ GM_addStyle(`
                 if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
             } catch(e) {}
 
-            if (isIgnoredItem(href, iid)) return;
+            if (isIgnoredItem(href, iid, cont)) return;
             if (!sid || !iid) return;
 
             itemsToRevalidate.push({ sid, iid, cont, link });
@@ -4381,9 +4459,14 @@ GM_addStyle(`
                     abortDetailRefresh = true;
                     btnRematch.innerHTML = `<i class="fas fa-times" style="font-size: 10px; margin-right: 2px;"></i>취소됨`;
                     btnRematch.title = "";
+                    
+                    if (btnRematch.cancelToken && btnRematch.cancelToken.abort) {
+                        btnRematch.cancelToken.abort();
+                    }
+                    
                     hideBoxLoading(); 
                     isObserverLocked = false;
-                    toastr.warning("메타 리매칭 대기가 취소되었습니다.", "취소됨", {timeOut: 2000});
+                    toastr.warning("메타 리매칭이 취소되었습니다.", "취소됨", {timeOut: 2000});
                     
                     setTimeout(() => {
                         if (btnRematch.isConnected) {
@@ -4397,48 +4480,58 @@ GM_addStyle(`
 
                 abortDetailRefresh = false;
                 btnRematch.dataset.refreshing = 'true';
+                btnRematch.cancelToken = {};
+                
                 btnRematch.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>리매칭 진행중`;
-                btnRematch.title = "클릭시 대기 취소";
+                btnRematch.title = "클릭시 강제 취소";
 
                 isObserverLocked = true;
                 showBoxLoading();
                 infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
                 
-                const matchOptions = {
-                    _try_refresh_first: ClientSettings.matchTryRefreshFirst,
-                    _do_unmatch_first: ClientSettings.matchDoUnmatchFirst
-                };
+                const matchOptions = { _try_refresh_first: false, _do_unmatch_first: true };
                 toastr.info("서버에서 메타 리매칭을 수행합니다.", "리매칭 시작", {timeOut: 8000});
 
+                let isRematchSuccess = false;
+
                 try {
-                    const matchSuccess = await triggerPlexMediaAction(data.itemId, 'match', plexSrv, srvConfig, matchOptions);
+                    await triggerPlexMediaAction(data.itemId, 'match', plexSrv, srvConfig, matchOptions, btnRematch.cancelToken);
                     
-                    if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
-                    if (!matchSuccess) throw new Error("매칭 대상을 찾지 못했거나 서버 매칭에 실패했습니다.");
+                    if (globalAbortFlag || renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
 
                     infoLog(`[Detail] Rematch successful. Waiting for Plex DB stabilization.`);
+                    toastr.info("서버 매칭 완료. 화면 동기화 중...", "리매칭 처리 중", {timeOut: 4000});
                     
-                    await new Promise(r => setTimeout(r, 4500));
-                    if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
+                    for(let i=0; i<4; i++) {
+                        if (globalAbortFlag || renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
+                        await new Promise(r => setTimeout(r, 500));
+                    }
 
-                    toastr.success("메타 리매칭 완료!", "성공", {timeOut: 4000});
+                    isRematchSuccess = true;
+                    toastr.success("메타 리매칭 완료!<br>최신 정보로 UI를 다시 그립니다.", "성공", {timeOut: 4000});
 
                 } catch (err) {
-                    if (err.message === "Cancelled") {
-                        infoLog(`[Detail] Rematch process cancelled by user/navigation for Item: ${data.itemId}`);
+                    if (err.message === "Cancelled" || err.message === "Aborted") {
+                        infoLog(`[Detail] Rematch process cancelled by user/navigation.`);
                     } else {
-                        toastr.error(`리매칭 실패: ${err.message}`, "오류", {timeOut: 5000});
+                        toastr.error(`${err.message}`, "매칭 실패", {timeOut: 5000});
                         errorLog(`[Detail] Rematch failed for Item: ${data.itemId}. Reason: ${err.message}`);
                     }
-                } finally {
+                    
+                    hideBoxLoading();
                     isObserverLocked = false;
-
-                    if (renderSessionAtClick === currentRenderSession && !abortDetailRefresh) {
+                    if (btnRematch.isConnected) {
+                        btnRematch.innerHTML = originalHtml;
+                        btnRematch.title = originalTitle;
+                        delete btnRematch.dataset.refreshing;
+                    }
+                } finally {
+                    if (isRematchSuccess && !globalAbortFlag && renderSessionAtClick === currentRenderSession && !abortDetailRefresh) {
+                        isObserverLocked = false;
                         invalidateVisibleCaches(serverId);
                         deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                        
                         currentDisplayedItemId = null;
-                        processDetail(true);
+                        processDetail(true); 
                         forceRefreshChildUI(); 
                     }
                 }
@@ -4707,6 +4800,7 @@ GM_addStyle(`
             currentUrl = window.location.href;
 
             isObserverLocked = false;
+            globalAbortFlag = true;
 
             currentRenderSession++;
             sessionRevalidated.clear();
@@ -4719,8 +4813,11 @@ GM_addStyle(`
             checkUpdate();
             injectControlUI();
 
-            if (window.location.hash.includes('/details?key=')) setTimeout(processDetail, 500);
-            setTimeout(processList, 500);
+            setTimeout(() => {
+                globalAbortFlag = false;
+                if (window.location.hash.includes('/details?key=')) processDetail(false);
+                processList();
+            }, 500);
         }
     }
 

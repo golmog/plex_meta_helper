@@ -16,6 +16,7 @@ import csv
 import io
 import hmac
 import hashlib
+import difflib
 from datetime import datetime
 from contextlib import contextmanager
 from urllib.request import Request, urlopen
@@ -25,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.70"
+__version__ = "0.8.71"
 
 def get_version():
     return __version__
@@ -1321,6 +1322,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                         
                     elif action == 'match':
                         section = item.section()
+                        
                         try_ref = data.get('_try_refresh_first', False)
                         do_unm = data.get('_do_unmatch_first', False)
                         
@@ -1341,7 +1343,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                             return {"status": "success"}, 200
                         else:
                             print(f"[PMH API] ❌ Match 실패 (Item: {rating_key}): {msg}")
-                            return {"error": msg}, 404 if "점수 미달" in msg or "후보 없음" in msg else 500
+                            return {"error": msg}, 404
 
                     elif action == 'refresh':
                         item.refresh()
@@ -1744,123 +1746,198 @@ def perform_smart_match(plex_url, plex_token, rating_key, item_title, item_year,
     ekey = int(rating_key) if str(rating_key).isdigit() else f"/library/metadata/{rating_key}"
     item = plex_inst.fetchItem(ekey)
     
-    is_modern_agent = target_agent in ['tv.plex.agents.movie', 'tv.plex.agents.series']
-    
-    if try_refresh_first and is_modern_agent:
-        print(f"[PMH API] 🔄 매칭 전 리프레시 우선 시도 (Agent: {target_agent})")
-        item.refresh()
+    target_item = item
+    if item.type in ['episode', 'season']:
+        try:
+            if item.type == 'episode':
+                target_item = plex_inst.fetchItem(item.grandparentRatingKey)
+            else:
+                target_item = plex_inst.fetchItem(item.parentRatingKey)
+            print(f"[PMH API] 💡 하위 항목 감지됨. 최상위 쇼({target_item.title}) 기준으로 매칭을 수행합니다.")
+        except Exception as e:
+            print(f"[PMH API] ⚠️ 최상위 쇼 객체를 찾지 못했습니다. 기존 객체로 진행합니다: {e}")
+
+    physical_name = ""
+    try:
+        if hasattr(target_item, 'locations') and target_item.locations:
+            raw_path = target_item.locations[0]
+            physical_name = os.path.basename(os.path.normpath(raw_path))
+        else:
+            raw_path = target_item.media[0].parts[0].file
+            if target_item.type in ['show', 'season', 'episode']:
+                physical_name = os.path.basename(os.path.dirname(raw_path))
+                if re.match(r'^(season|시즌|series|s)\s*\d+\b', physical_name, re.IGNORECASE):
+                    physical_name = os.path.basename(os.path.dirname(os.path.dirname(raw_path)))
+            else:
+                physical_name = os.path.basename(os.path.dirname(raw_path))
+    except Exception as e:
+        print(f"[PMH API] ❌ 실제 경로 추출 실패. 매칭을 중단합니다: {e}")
+        return False, "물리적 경로(폴더/파일)를 확인할 수 없어 매칭을 중단합니다.", 0
+
+    if not physical_name:
+        return False, "물리적 경로명이 비어있어 매칭을 중단합니다.", 0
+
+    extracted_year = None
+    year_match = re.search(r'[\(\[](\d{4})[\)\]]', physical_name)
+    if year_match:
+        extracted_year = year_match.group(1)
         
+    if not item_year and extracted_year:
+        item_year = extracted_year
+        print(f"[PMH API] 💡 폴더명에서 연도를 자동 추출하여 검색에 반영합니다: {item_year}")
+
+    clean_query = re.sub(r'[\(\[\{].*?[\)\]\}]', '', physical_name).strip()
+    clean_query = re.sub(r'[_\.]', ' ', clean_query).strip()
+    
+    if not clean_query:
+        print(f"[PMH API] ❌ 정규식 필터링 후 검색어가 비어있습니다. (원본: '{physical_name}')")
+        return False, "추출된 검색어가 유효하지 않습니다.", 0
+
+    print(f"[PMH API] 🔍 정제된 검색 쿼리: '{clean_query}' (원본 경로명: '{physical_name}')")
+
+    def calc_similarity(a, b):
+        if not a or not b: return 0.0
+        norm_a = re.sub(r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]', '', str(a).lower())
+        norm_b = re.sub(r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]', '', str(b).lower())
+        if not norm_a or not norm_b: return 0.0
+        return difflib.SequenceMatcher(None, norm_a, norm_b).ratio()
+
+    is_db_title_trustable = False
+    db_folder_sim = calc_similarity(clean_query, item_title)
+    if db_folder_sim >= 0.80:
+        is_db_title_trustable = True
+        print(f"[PMH API] 💡 폴더명과 DB 제목('{item_title}')이 {db_folder_sim*100:.1f}% 일치. 이 DB 제목을 검증 매개체로 신뢰합니다.")
+    else:
+        print(f"[PMH API] 🚫 폴더명과 DB 제목('{item_title}') 유사도 미달({db_folder_sim*100:.1f}%). 오염된 제목으로 간주하여 무시합니다.")
+        
+        if try_refresh_first:
+            print(f"[PMH API] 🚫 오염된 DB 제목을 가지고 있으므로, 전역 설정(Refresh 우선)을 강제 취소하고 검색(Match)으로 직행합니다.")
+            try_refresh_first = False
+
+    is_plex_agent = target_agent in ['tv.plex.agents.movie', 'tv.plex.agents.series']
+    is_sjva_agent = target_agent.startswith('com.plexapp.agents.sjva')
+    
+    if try_refresh_first and is_plex_agent:
+        print(f"[PMH API] 🔄 매칭 전 리프레시 우선 시도 (Agent: {target_agent})")
+        
+        initial_guid = (target_item.guid or '').lower()
+        
+        target_item.refresh()
         match_success = False
+        
         for _ in range(8):
             time.sleep(2.5)
-            item.reload()
-            temp_guid = (item.guid or '').lower()
-            if temp_guid and not temp_guid.startswith('local://') and not temp_guid.startswith('none://') and temp_guid != '-':
+            target_item.reload()
+            temp_guid = (target_item.guid or '').lower()
+            
+            if temp_guid and temp_guid != initial_guid and not temp_guid.startswith('local://') and not temp_guid.startswith('none://') and temp_guid != '-':
                 match_success = True
-                return True, f"Refresh를 통한 자동 매칭 완료! (새 GUID: {item.guid})", 100
+                print(f"[PMH API] ✅ Refresh를 통한 자동 매칭 완료! (새 GUID: {target_item.guid})")
+                return True, f"Refresh를 통한 자동 매칭 완료! (새 GUID: {target_item.guid})", 100
                 
         if not match_success:
-            print(f"[PMH API] ⚠️ Refresh 자동 매칭 유도 실패. 수동 매칭/검색 폴백으로 전환합니다.")
+            print(f"[PMH API] ⚠️ Refresh만으로는 정상적인 GUID가 부여되지 않았습니다. (local 유지 또는 변화 없음). 검색(Match) 로직으로 전환합니다.")
 
     if do_unmatch_first:
-        temp_guid = (item.guid or '').lower()
-        if temp_guid.startswith('local://') or temp_guid.startswith('none://') or temp_guid == '-':
-            print(f"[PMH API] 💡 이미 미매칭 상태이므로 Unmatch를 스킵합니다.")
+        temp_guid = (target_item.guid or '').lower()
+        if not temp_guid or temp_guid.startswith('local://') or temp_guid.startswith('none://') or temp_guid == '-':
+            print(f"[PMH API] 💡 이미 미매칭 상태(빈 값 또는 local)이므로 Unmatch 단계를 스킵합니다.")
         else:
             try:
                 print(f"[PMH API] 🗑️ 매칭 전 기존 메타데이터 Unmatch 진행 중...")
-                item.unmatch()
-                unmatch_verified = False
-                for _ in range(5):
+                target_item.unmatch()
+                for _ in range(4):
                     time.sleep(2.0)
-                    item.reload()
-                    check_guid = (item.guid or '').lower()
-                    if check_guid.startswith('local://') or check_guid.startswith('none://') or check_guid == '-':
-                        unmatch_verified = True
+                    target_item.reload()
+                    check_guid = (target_item.guid or '').lower()
+                    if not check_guid or check_guid.startswith('local://') or check_guid.startswith('none://') or check_guid == '-':
                         break
-                
-                if unmatch_verified:
-                    print(f"[PMH API] ✅ Unmatch 상태 확인 완료. 데이터베이스 안정화를 위해 3초 대기합니다.")
-                    time.sleep(3.0)
-                else:
-                    print(f"[PMH API] ⚠️ Unmatch 요청을 보냈으나 확인되지 않았습니다. 매칭을 강제 속행합니다.")
-                    
+                time.sleep(2.0)
             except Exception as e:
                 print(f"[PMH API] ⚠️ Unmatch 실패 (무시하고 매칭 속행): {e}")
 
     try:
         kwargs = {'agent': target_agent, 'language': 'ko'}
-        if item_title: kwargs['title'] = item_title
+        kwargs['title'] = clean_query
         if item_year: kwargs['year'] = str(item_year)
         
-        print(f"[PMH API] 🔍 PlexAPI 매칭 검색 시도... (검색어: '{item_title}', 연도: '{item_year}')")
-        matches = item.matches(**kwargs)
+        print(f"[PMH API] 📡 PlexAPI 매칭 검색 시도... (검색어: '{clean_query}', 연도: '{item_year}')")
+        matches = target_item.matches(**kwargs)
         
+        if not matches and is_db_title_trustable:
+            print(f"[PMH API] ⚠️ 폴더명 검색어('{clean_query}') 결과 없음. 신뢰받은 DB 제목('{item_title}')으로 2차 검색을 시도합니다.")
+            kwargs['title'] = item_title
+            matches = target_item.matches(**kwargs)
+
         if not matches:
-            return False, f"검색된 후보 없음 (Agent: {target_agent})", 0
+            print(f"[PMH API] ❌ 일치하는 후보가 없습니다. (검색어: {clean_query})")
+            return False, f"매칭 실패: 검색 조건에 맞는 후보가 없습니다.", 0
             
         best_match = matches[0]
-        best_score = getattr(best_match, 'score', 0)
-        if best_score is None: best_score = 0
-        best_score = int(best_score)
+        best_score = int(getattr(best_match, 'score', 0) or 0)
+        
+        candidate_name = getattr(best_match, 'name', '')
+        candidate_orig = getattr(best_match, 'originalTitle', '')
         
         print(f"[PMH API] 📋 [검색 결과 1순위 정보]")
-        print(f"    - 반환된 제목 : {best_match.name}")
-        print(f"    - 반환된 연도 : {best_match.year}")
-        print(f"    - 제공된 GUID : {best_match.guid}")
-        print(f"    - 일치 점수   : {best_score}")
-        
+        print(f"    - 반환된 제목(Name)  : {candidate_name}")
+        print(f"    - 반환된 원제(Orig)  : {candidate_orig}")
+        print(f"    - 반환된 연도(Year)  : {getattr(best_match, 'year', 'N/A')}")
+        print(f"    - 일치 점수(Score)   : {best_score}")
+
         is_valid_match = False
-        import re
-        def norm(t): return re.sub(r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]', '', str(t).lower()) if t else ''
-        
-        norm_target = norm(item_title)
-        norm_result = norm(best_match.name)
-        norm_original = norm(getattr(item, 'originalTitle', ''))
-        
-        if best_score >= 95:
-            is_valid_match = True
-            print(f"[PMH API] 💡 신뢰 점수(Score) 기준 통과.")
-            
-        elif norm_target and norm_result and (norm_target == norm_result or norm_target in norm_result or norm_result in norm_target):
-            is_valid_match = True
-            print(f"[PMH API] 💡 검색어 제목 일치 확인됨.")
-            
-        elif norm_original and norm_result and (norm_original == norm_result or norm_original in norm_result or norm_result in norm_original):
-            is_valid_match = True
-            print(f"[PMH API] 💡 원어 제목 일치 확인됨.")
-            
-        elif item_year and best_match.year and str(item_year) == str(best_match.year):
-            if is_modern_agent:
-                print(f"[PMH API] ⚠️ 제목은 다르지만 연도({item_year}) 일치 및 신형 에이전트 1순위 결과를 신뢰하여 매칭을 강제 허용합니다.")
+        reject_reason = ""
+
+        if is_sjva_agent:
+            if best_score >= 95:
                 is_valid_match = True
+                print(f"[PMH API] 💡 [SJVA 모드] 신뢰 점수({best_score}점) 기준 통과.")
+            else:
+                reject_reason = f"매칭 실패: SJVA 반환 점수가 너무 낮습니다. ({best_score}점)"
+        else:
+            sim_name = calc_similarity(clean_query, candidate_name)
+            sim_orig = calc_similarity(clean_query, candidate_orig)
+            highest_sim = max(sim_name, sim_orig)
+            
+            if highest_sim >= 0.85:
+                is_valid_match = True
+                print(f"[PMH API] 💡 [Plex 모드] 폴더명 기반 텍스트 유사도({highest_sim*100:.1f}%) 엄격 검증 통과.")
+            elif is_db_title_trustable:
+                if str(getattr(best_match, 'year', '')) == str(item_year):
+                    is_valid_match = True
+                    print(f"[PMH API] 💡 [Plex 예외 모드] 신뢰된 한글 DB 제목과 발매 연도({item_year}) 일치. 매칭을 승인합니다.")
+                else:
+                    reject_reason = f"유사도 미달 및 연도 불일치 (결과: '{candidate_name}')"
+            else:
+                reject_reason = f"유사도 미달 (최대 {highest_sim*100:.1f}%)"
 
         if not is_valid_match:
-            return False, f"신뢰 점수 미달 ({best_score}점) 및 제목 불일치 ({item_title} != {best_match.name})", best_score
+            print(f"[PMH API] ❌ 매칭 실패: {reject_reason}")
+            return False, reject_reason, best_score
 
-        print(f"[PMH API] ✨ 최적 후보 찾음: {best_match.name} (Score: {best_score}). 매칭을 적용합니다.")
-        initial_guid = (item.guid or '').lower()
+        print(f"[PMH API] ✨ 최적 후보 검증 완료. 매칭을 적용합니다.")
+        initial_guid = (target_item.guid or '').lower()
         
-        item.fixMatch(auto=False, searchResult=best_match)
+        target_item.fixMatch(auto=False, searchResult=best_match)
         
         match_verified = False
         print(f"[PMH API] ⏳ 매칭 적용 중... GUID 갱신을 확인합니다.")
-        for _ in range(6):
+        for _ in range(8):
             time.sleep(2.5)
-            item.reload()
-            new_guid = (item.guid or '').lower()
+            target_item.reload()
+            new_guid = (target_item.guid or '').lower()
             
             if new_guid != initial_guid and not new_guid.startswith('local://') and not new_guid.startswith('none://') and new_guid != '-':
                 match_verified = True
-                print(f"[PMH API] ✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {item.guid})")
+                print(f"[PMH API] ✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
                 break
                 
         if not match_verified:
-            print(f"[PMH API] ⚠️ 매칭을 요청했으나 시간 내에 GUID 변경이 확인되지 않았습니다. (지연 발생)")
+            return False, "Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.", best_score
         
-        return True, f"수동 매칭 적용 완료 ({best_match.name})", best_score
+        return True, f"매칭 성공 ({candidate_name})", best_score
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return False, f"Match 적용 중 오류 발생: {e}", 0
+        return False, f"매칭 작업 중 내부 오류가 발생했습니다: {e}", 0
