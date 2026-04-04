@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.72
+// @version      0.8.73
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -70,12 +70,12 @@ GM_addStyle(`
 
     .media-info-line { display: grid; grid-template-columns: 35px 35px 35px 0.5fr 2.2fr 2.2fr 1.0fr; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 4px; background-color: rgba(0, 0, 0, 0.2); }
     .media-info-line .info-block { display: flex; flex-direction: column; justify-content: center; text-align: center; }
-    .media-info-line .info-label { color: #9E9E9E; font-size: 10px; margin-bottom: 2px; white-space: nowrap; }
+    .media-info-line .info-label { color: #9E9E9E; font-size: 10px; margin-bottom: 2px; white-space: nowrap; text-align: center; }
     .media-info-line .info-value { font-size: 12.5px; color: #E0E0E0; line-height: 1.3; display: flex; align-items: center; justify-content: center; text-align: center; word-break: break-word; }
 
-    .pmh-video-header-line { background-color: transparent !important; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px !important; }
-    .pmh-video-header-label { margin: 0 !important; font-size: 11px !important; }
-    .pmh-video-version-block { border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 6px; margin-bottom: 8px; }
+    .pmh-video-header-line { background-color: transparent !important; border-bottom: 1px solid rgba(255,255,255,0.1); padding: 4px 8px 0 8px !important; border-radius: 0; }
+    .pmh-video-header-label { font-size: 11px !important; }
+    .pmh-video-version-block { border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 6px; }
     .pmh-video-version-block:last-child { border-bottom: none; padding-bottom: 0; margin-bottom: 4px; }
     .pmh-video-data-line { margin-bottom: 2px !important; }
 
@@ -1003,7 +1003,12 @@ GM_addStyle(`
                     
                     if (r.status >= 200 && r.status < 300) {
                         try { 
-                            resolve(JSON.parse(r.responseText)); 
+                            const parsed = JSON.parse(r.responseText);
+                            if (parsed.error || parsed.status === "error") {
+                                reject(new Error(parsed.error || parsed.message || "서버 처리 실패"));
+                            } else {
+                                resolve(parsed); 
+                            }
                         } catch(e) { 
                             reject(new Error("JSON Parse Error: 서버 응답을 해석할 수 없습니다.")); 
                         }
@@ -4007,7 +4012,7 @@ GM_addStyle(`
             }).join('');
 
             if (data.type === 'album' && data.tracks && data.tracks.length > 0) {
-                versionsHtml += `<div style="border-top: 1px dashed #444; padding-top: 10px;">
+                versionsHtml += `<div style="border-top: 1px dashed #444; padding: 10px 8px 0 8px;">
                                     <div style="font-size: 12px; color: #a3a3a3; font-weight: bold; margin-bottom: 8px;"><i class="fas fa-list-ol"></i> 수록곡 목록 (${data.tracks.length} 트랙)</div>`;
                 
                 data.tracks.forEach(t => {
@@ -4202,7 +4207,7 @@ GM_addStyle(`
         }
 
         const mateBtnHtml = srvConfig ?
-            `<div style="margin:4px 0; display:flex; align-items:center;">
+            `<div style="margin:8px 0 4px 0; display:flex; align-items:center; padding: 0 8px;">
                 <div style="width: 95px; flex-shrink: 0; color: #bababa; font-size:13px; font-weight:500;">PLEX MATE</div>
                 <a href="#" id="plex-mate-refresh-button" data-itemid="${data.itemId}"><i class="fas fa-bolt"></i> YAML/TMDB 반영</a>
              </div>` : '';
@@ -4255,12 +4260,12 @@ GM_addStyle(`
             <div id="plex-guid-content">
                 ${versionsHtml}
                 ${mateBtnHtml}
-                <div style="display:flex; align-items:center; margin-bottom: 4px;">
+                <div style="display:flex; align-items:center; margin-bottom: 4px; padding: 0 8px;">
                     <div style="width: 95px; flex-shrink: 0; color: #bababa; font-size:13px; font-weight:500;">GUID</div>
                     ${guidHtml}
                 </div>
                 ${data.duration ? `
-                <div style="display:flex; align-items:center;">
+                <div style="display:flex; align-items:center; padding: 0 8px;">
                     <div style="width: 95px; flex-shrink: 0; color: #bababa; font-size:13px; font-weight:500;">재생 시간</div>
                     <span style="font-size:13px; color:#E0E0E0;"><i class="fas fa-clock" style="color:#bdbdbd; margin-right:4px;"></i>${formatDuration(data.duration)}</span>
                     ${markersHtml}
@@ -4479,8 +4484,7 @@ GM_addStyle(`
                         btnRematch.cancelToken.abort();
                     }
                     
-                    hideBoxLoading(); 
-                    isObserverLocked = false;
+                    hideBoxLoading();
                     toastr.warning("메타 리매칭이 취소되었습니다.", "취소됨", {timeOut: 2000});
                     
                     setTimeout(() => {
@@ -4500,7 +4504,6 @@ GM_addStyle(`
                 btnRematch.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>리매칭 진행중`;
                 btnRematch.title = "클릭시 강제 취소";
 
-                isObserverLocked = true;
                 showBoxLoading();
                 infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
                 
@@ -4534,7 +4537,6 @@ GM_addStyle(`
                     }
                     
                     hideBoxLoading();
-                    isObserverLocked = false;
                     if (btnRematch.isConnected) {
                         btnRematch.innerHTML = originalHtml;
                         btnRematch.title = originalTitle;
@@ -4542,7 +4544,6 @@ GM_addStyle(`
                     }
                 } finally {
                     if (isRematchSuccess && !globalAbortFlag && renderSessionAtClick === currentRenderSession && !abortDetailRefresh) {
-                        isObserverLocked = false;
                         invalidateVisibleCaches(serverId);
                         deleteMemoryCache(`D_${serverId}_${data.itemId}`);
                         currentDisplayedItemId = null;

@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.72"
+__version__ = "0.8.73"
 
 def get_version():
     return __version__
@@ -1343,7 +1343,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                             return {"status": "success"}, 200
                         else:
                             print(f"[PMH API] ❌ Match 실패 (Item: {rating_key}): {msg}")
-                            return {"error": msg}, 404
+                            return {"status": "error", "message": msg, "error": msg}, 200
 
                     elif action == 'refresh':
                         item.refresh()
@@ -1806,12 +1806,12 @@ def perform_smart_match(plex_url, plex_token, rating_key, item_title, item_year,
     db_folder_sim = calc_similarity(clean_query, item_title)
     if db_folder_sim >= 0.80:
         is_db_title_trustable = True
-        print(f"[PMH API] 💡 폴더명과 DB 제목('{item_title}')이 {db_folder_sim*100:.1f}% 일치. 이 DB 제목을 검증 매개체로 신뢰합니다.")
+        print(f"[PMH API] 💡 폴더명과 DB 제목('{item_title}')이 {db_folder_sim*100:.1f}% 일치: 검색/비교 기준.")
     else:
-        print(f"[PMH API] 🚫 폴더명과 DB 제목('{item_title}') 유사도 미달({db_folder_sim*100:.1f}%). 오염된 제목으로 간주하여 무시합니다.")
+        print(f"[PMH API] 🚫 폴더명과 DB 제목('{item_title}') 유사도 미달({db_folder_sim*100:.1f}%): DB 제목 무시.")
         
         if try_refresh_first:
-            print(f"[PMH API] 🚫 오염된 DB 제목을 가지고 있으므로, 전역 설정(Refresh 우선)을 강제 취소하고 검색(Match)으로 직행합니다.")
+            print(f"[PMH API] 🚫 폴더/DB 제목 불일치로, 전역 설정(Refresh 우선)을 무시하고 스킵합니다.")
             try_refresh_first = False
 
     is_plex_agent = target_agent in ['tv.plex.agents.movie', 'tv.plex.agents.series']
@@ -1830,18 +1830,18 @@ def perform_smart_match(plex_url, plex_token, rating_key, item_title, item_year,
             target_item.reload()
             temp_guid = (target_item.guid or '').lower()
             
-            if temp_guid and temp_guid != initial_guid and not temp_guid.startswith('local://') and not temp_guid.startswith('none://') and temp_guid != '-':
+            if temp_guid and temp_guid != initial_guid and 'local://' not in temp_guid and 'none://' not in temp_guid and temp_guid != '-':
                 match_success = True
                 print(f"[PMH API] ✅ Refresh를 통한 자동 매칭 완료! (새 GUID: {target_item.guid})")
                 return True, f"Refresh를 통한 자동 매칭 완료! (새 GUID: {target_item.guid})", 100
                 
         if not match_success:
-            print(f"[PMH API] ⚠️ Refresh만으로는 정상적인 GUID가 부여되지 않았습니다. (local 유지 또는 변화 없음). 검색(Match) 로직으로 전환합니다.")
+            print(f"[PMH API] ⚠️ 자동 매칭(Refresh) 실패. 검색(Match)을 실행합니다.")
 
     if do_unmatch_first:
         temp_guid = (target_item.guid or '').lower()
-        if not temp_guid or temp_guid.startswith('local://') or temp_guid.startswith('none://') or temp_guid == '-':
-            print(f"[PMH API] 💡 이미 미매칭 상태(빈 값 또는 local)이므로 Unmatch 단계를 스킵합니다.")
+        if not temp_guid or 'local://' in temp_guid or 'none://' in temp_guid or temp_guid == '-':
+            print(f"[PMH API] 💡 미매칭 상태이므로 Unmatch 단계를 스킵합니다.")
         else:
             try:
                 print(f"[PMH API] 🗑️ 매칭 전 기존 메타데이터 Unmatch 진행 중...")
@@ -1850,7 +1850,7 @@ def perform_smart_match(plex_url, plex_token, rating_key, item_title, item_year,
                     time.sleep(2.0)
                     target_item.reload()
                     check_guid = (target_item.guid or '').lower()
-                    if not check_guid or check_guid.startswith('local://') or check_guid.startswith('none://') or check_guid == '-':
+                    if not check_guid or 'local://' in check_guid or 'none://' in check_guid or check_guid == '-':
                         break
                 time.sleep(2.0)
             except Exception as e:
@@ -1901,15 +1901,15 @@ def perform_smart_match(plex_url, plex_token, rating_key, item_title, item_year,
             
             if highest_sim >= 0.85:
                 is_valid_match = True
-                print(f"[PMH API] 💡 [Plex 모드] 폴더명 기반 텍스트 유사도({highest_sim*100:.1f}%) 엄격 검증 통과.")
+                print(f"[PMH API] 💡 [Plex 모드] 폴더명 기반 텍스트 유사도({highest_sim*100:.1f}%) 검증 통과.")
             elif is_db_title_trustable:
                 if str(getattr(best_match, 'year', '')) == str(item_year):
                     is_valid_match = True
                     print(f"[PMH API] 💡 [Plex 예외 모드] 신뢰된 한글 DB 제목과 발매 연도({item_year}) 일치. 매칭을 승인합니다.")
                 else:
-                    reject_reason = f"유사도 미달 및 연도 불일치 (결과: '{candidate_name}')"
+                    reject_reason = f"제목 및 연도 불일치 (결과: '{candidate_name}')"
             else:
-                reject_reason = f"유사도 미달 (최대 {highest_sim*100:.1f}%)"
+                reject_reason = f"일치 항목 없음 (최대 점수: {highest_sim*100:.1f}%)"
 
         if not is_valid_match:
             print(f"[PMH API] ❌ 매칭 실패: {reject_reason}")
@@ -1927,7 +1927,7 @@ def perform_smart_match(plex_url, plex_token, rating_key, item_title, item_year,
             target_item.reload()
             new_guid = (target_item.guid or '').lower()
             
-            if new_guid != initial_guid and not new_guid.startswith('local://') and not new_guid.startswith('none://') and new_guid != '-':
+            if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
                 match_verified = True
                 print(f"[PMH API] ✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
                 break

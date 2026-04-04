@@ -12,7 +12,7 @@ import hmac
 import hashlib
 import tempfile
 import traceback
-from flask import Flask, jsonify, request, Response, send_file
+from flask import Flask, jsonify, make_response, request, Response, send_file
 from flask_cors import CORS
 from collections import defaultdict
 
@@ -346,6 +346,11 @@ def check_api_key():
         return jsonify({"error": "Unauthorized. Invalid Signature."}), 401
         
     reset_failed_attempt(client_ip)
+
+@app.after_request
+def add_header(response):
+    response.headers['Connection'] = 'close'
+    return response
 
 # ==============================================================================
 # [서버 전용 라우팅] (코어 업데이트)
@@ -704,13 +709,21 @@ def relay_to_node(node_id, subpath):
         try:
             err_body = e.read().decode('utf-8')
             import json
-            return jsonify(json.loads(err_body)), e.code
+            resp = make_response(jsonify(json.loads(err_body)))
+            resp.status_code = e.code
+            return resp
         except Exception:
-            return jsonify({"error": f"워커 노드 에러 (HTTP {e.code})"}), e.code
+            resp = make_response(jsonify({"error": f"워커 노드 에러 (HTTP {e.code})"}))
+            resp.status_code = e.code
+            return resp
     except urllib.error.URLError as e:
-        return jsonify({"error": f"네트워크 연결 실패: {str(e)}"}), 502
+        resp = make_response(jsonify({"error": f"네트워크 연결 실패: {str(e)}"}))
+        resp.status_code = 502
+        return resp
     except Exception as e:
-        return jsonify({"error": f"워커 노드 통신 실패: {str(e)}"}), 502
+        resp = make_response(jsonify({"error": f"워커 노드 통신 실패: {str(e)}"}))
+        resp.status_code = 502
+        return resp
 
 @app.route('/')
 def serve_index():
@@ -769,7 +782,10 @@ def api_gateway(subpath):
         global_config=global_conf
     )
     
-    return jsonify(result), status_code
+    resp = make_response(jsonify(result))
+    resp.status_code = status_code
+    resp.headers['Connection'] = 'close'
+    return resp
 
 if __name__ == '__main__':
     tz_info = time.strftime('%z (%Z)')
