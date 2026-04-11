@@ -49,6 +49,7 @@ def get_ui(core_api):
 
     return {
         "title": "라이브러리 종합 통계 분석",
+        "icon": "fas fa-chart-pie",
         "description": "선택한 라이브러리의 메타 데이터를 분석하여 요약 대시보드를 생성합니다.<br><span style='color:#777; font-size:11px;'>(이 툴은 데이터 변경을 수행하지 않는 조회 전용 툴입니다.)</span>",
         "inputs": [
             {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},

@@ -509,7 +509,8 @@
                 if (typeof PmhUICore === 'undefined') throw new Error("UI 코어 모듈이 로드되지 않았습니다.");
 
                 const uiSchema = await PmhAPI.call(`/relay/${activeServerId}/tool/${toolId}/ui?server_id=${activeMachineId}`);
-                document.getElementById('tool-view-title').innerText = uiSchema.title || toolId;
+                const toolIconHtml = uiSchema.icon ? `<i class="${uiSchema.icon}" style="margin-right: 6px;"></i>` : '<i class="fas fa-wrench" style="margin-right: 6px;"></i>';
+                document.getElementById('tool-view-title').innerHTML = `${toolIconHtml}${uiSchema.title || toolId}`;
 
                 PmhUICore.createToolInstance({
                     container: container,
@@ -527,14 +528,18 @@
                 });
 
                 setTimeout(() => {
-                    const srvSelectEl = document.getElementById('pmh_srv_select');
-                    if (srvSelectEl) {
-                        srvSelectEl.addEventListener('change', (e) => {
-                            const newIdx = Number(e.target.value);
-                            globalCache['target_server_idx'] = newIdx;
-                            localStorage.setItem(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
-                            openTool(toolId, newIdx);
-                        });
+                    const toolIconHtml = uiSchema.icon ? `<i class="${uiSchema.icon}" style="margin-right: 6px;"></i>` : '<i class="fas fa-wrench" style="margin-right: 6px;"></i>';
+                    
+                    const navTitleEl = document.getElementById('tool-view-title');
+                    if (navTitleEl) navTitleEl.innerHTML = `${toolIconHtml}${uiSchema.title || toolId}`;
+                    
+                    const panelTitleTextEl = document.getElementById('pmh-panel-title-text');
+                    if (panelTitleTextEl) {
+                        panelTitleTextEl.innerText = uiSchema.title || toolId;
+                        const iconI = panelTitleTextEl.previousElementSibling;
+                        if (iconI && iconI.tagName === 'I') {
+                            iconI.className = uiSchema.icon || 'fas fa-wrench';
+                        }
                     }
                 }, 100);
 

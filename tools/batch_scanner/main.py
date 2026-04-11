@@ -12,6 +12,7 @@ import urllib.request
 import urllib.parse
 import json
 import sqlite3
+import pmh_core
 
 # =====================================================================
 # 디스코드 알림 기본 템플릿
@@ -76,6 +77,7 @@ def get_ui(core_api):
 
     return {
         "title": "배치 스캐너",
+        "icon": "fas fa-cogs",
         "description": "대상 항목을 큐 대기열 병목 없이 안전한 속도로 순차 처리합니다.",
         "inputs": [
             {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},
@@ -95,7 +97,9 @@ def get_ui(core_api):
         "execute_inputs": [
             {"id": "opt_vfs", "type": "checkbox", "label": "스캔 전 vfs/refresh 수행 (Plex Mate 연동)", "default": True, "show_if": {"mode": "path_scan"}},
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 Refresh(자동 매칭) 우선 시도", "default": True, "show_if": {"mode": "rematch"}},
-            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}}
+            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}},
+            {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
+
         ],
         "settings_inputs": [
             {"id": "s_h1", "type": "header", "label": "<i class='fas fa-tachometer-alt'></i> 실행 속도 제어"},
@@ -127,8 +131,7 @@ def get_ui(core_api):
              ]}
         ],
         "buttons": [
-            {"label": "대상 목록 조회 (Preview)", "action_type": "preview", "icon": "fas fa-search", "color": "#2f96b4"},
-            {"label": "즉시 전체 실행", "action_type": "execute_instant", "icon": "fas fa-bolt", "color": "#e5a00d"}
+            {"label": "목록 조회", "action_type": "preview", "icon": "fas fa-search", "color": "#2f96b4"}
         ]
     }
 
@@ -417,6 +420,8 @@ def worker(task_data, core_api, start_index):
     mate_url = core_api['config'].get('mate_url', '')
     mate_apikey = core_api['config'].get('mate_apikey', '')
 
+    retry_errors = task_data.get('retry_errors', False)
+
     # -----------------------------------------------------------------
     # [1] Preview 액션
     # -----------------------------------------------------------------
@@ -507,7 +512,12 @@ def worker(task_data, core_api, start_index):
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
                     
-                    c.execute("SELECT * FROM data WHERE pmh_status != 'done' ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
+                    if retry_errors:
+                        status_filter = "('pending', 'error')"
+                    else:
+                        status_filter = "('pending')"
+
+                    c.execute("SELECT * FROM data WHERE pmh_status IN {} ORDER BY pmh_id LIMIT -1 OFFSET ?".format(status_filter), (start_idx,))
                     
                     for r in c.fetchall():
                         row_dict = dict(r)
@@ -621,7 +631,6 @@ def worker(task_data, core_api, start_index):
                     elif mode == 'rematch':
                         task.log("   -> 🔗 스마트 하이브리드 매칭 엔진 가동 중...")
                         
-                        import pmh_core
                         try_refresh = task_data.get('opt_try_refresh', True)
                         do_unmatch = task_data.get('opt_unmatch_first', False)
                         

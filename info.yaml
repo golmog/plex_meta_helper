@@ -1,5 +1,5 @@
 title: "Plex Meta Helper(PMH)"
-version: "0.8.73-server"
+version: "0.8.74-server"
 package_name: "plex_meta_helper"
 developer: "golmog"
 description: "Plex Web UI 관리 기능 개선 프로젝트"
@@ -21,6 +21,8 @@ static_assets:
 bundled_tools:
   - id: "batch_scanner"
     url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/tools/batch_scanner/info.yaml"
+  - id: "jav_manager"
+    url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/tools/jav_manager/info.yaml"
   - id: "library_stats"
     url: "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/tools/library_stats/info.yaml"
   - id: "multipath_finder"

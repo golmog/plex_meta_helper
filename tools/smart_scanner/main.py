@@ -8,6 +8,7 @@ import unicodedata
 import re
 import json
 import sqlite3
+import pmh_core
 
 # =====================================================================
 # 디스코드 알림 기본 템플릿
@@ -84,6 +85,7 @@ def get_ui(core_api):
 
     return {
         "title": "스마트 스캐너",
+        "icon": "fas fa-magic",
         "description": "미분석/미매칭/메타/마커/YAML 적용 누락 등을 감지하고 최적의 순서로 자동 복구합니다.",
         "inputs": [
             {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs},
@@ -98,7 +100,8 @@ def get_ui(core_api):
         ],
         "execute_inputs": [
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트)</span>", "default": True, "show_if": {"mode": "rematch"}},
-            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}}
+            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}},
+            {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
         ],
         "settings_inputs": [
             {"id": "s_h1", "type": "header", "label": "<i class='fas fa-tachometer-alt'></i> 실행 속도 제어"},
@@ -133,18 +136,7 @@ def get_ui(core_api):
              ]}
         ],
         "buttons": [
-            {
-                "label": "대상 조회 (Preview)", 
-                "action_type": "preview", 
-                "icon": "fas fa-search", 
-                "color": "#2f96b4"
-            },
-            {
-                "label": "즉시 전체 복구 시작", 
-                "action_type": "execute_instant", 
-                "icon": "fas fa-magic", 
-                "color": "#e5a00d"
-            }
+            {"label": "목록 조회", "action_type": "preview", "icon": "fas fa-search", "color": "#2f96b4"},
         ]
     }
 
@@ -469,6 +461,8 @@ def worker(task_data, core_api, start_index):
     task = core_api['task']
     action = task_data.get('action_type')
 
+    retry_errors = task_data.get('retry_errors', False)
+
     if action == 'preview':
         task.log("🔍 복구 대상(이슈)을 찾기 위해 라이브러리 검사를 시작합니다...")
         task.update_state('running', progress=0, total=100)
@@ -589,11 +583,18 @@ def worker(task_data, core_api, start_index):
                 cache_db_path = core_api['cache'].db_file
                 results = []
                 
+                retry_errors = task_data.get('retry_errors', False)
+                
                 with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
                     conn.row_factory = sqlite3.Row
                     c = conn.cursor()
                     
-                    c.execute("SELECT * FROM data WHERE pmh_status != 'done' ORDER BY pmh_id LIMIT -1 OFFSET ?", (start_idx,))
+                    if retry_errors:
+                        status_filter = "('pending', 'error')"
+                    else:
+                        status_filter = "('pending')"
+
+                    c.execute("SELECT * FROM data WHERE pmh_status IN {} ORDER BY pmh_id LIMIT -1 OFFSET ?".format(status_filter), (start_idx,))
                     
                     for r in c.fetchall():
                         row_dict = dict(r)
@@ -761,7 +762,6 @@ def worker(task_data, core_api, start_index):
                     elif fix_type == 'match':
                         task.log("   -> [미매칭] 스마트 하이브리드 매칭 엔진 가동 중...")
                         
-                        import pmh_core
                         try_refresh = task_data.get('opt_try_refresh', True)
                         do_unmatch = task_data.get('opt_unmatch_first', False)
                         

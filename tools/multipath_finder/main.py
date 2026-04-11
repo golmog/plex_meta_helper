@@ -59,6 +59,7 @@ def get_ui(core_api):
 
     return {
         "title": "다중 경로(병합 오류 의심) 항목 검색",
+        "icon": "fas fa-copy",
         "description": "서로 다른 폴더 경로를 가진 파일들이 하나의 메타로 잘못 병합된 항목을 찾습니다.<br><span style='color:#777; font-size:11px;'>(이 툴은 데이터 변경을 수행하지 않는 조회 전용 툴입니다.)</span>",
         "inputs": [
             {"id": "target_sections", "type": "multi_select", "label": "조회 대상 섹션", "options": sections, "default": default_secs}
@@ -92,7 +93,7 @@ def get_ui(core_api):
         ],
         "buttons": [
             {
-                "label": "대상 목록 검색", 
+                "label": "목록 조회", 
                 "action_type": "preview", 
                 "icon": "fas fa-search", 
                 "color": "#2f96b4"

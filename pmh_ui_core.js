@@ -153,6 +153,12 @@ window.PmhUICore = {
 
         const isMobileEnv = window.matchMedia('(max-width: 768px)').matches || ('ontouchstart' in window);
 
+        const panelTitleEl = document.querySelector('#pmh-panel-title-text');
+        if (panelTitleEl && panelTitleEl.previousElementSibling && panelTitleEl.previousElementSibling.tagName === 'I') {
+            const toolIcon = config.uiSchema.icon || 'fas fa-wrench';
+            panelTitleEl.previousElementSibling.className = toolIcon;
+        }
+
         function applyMaxHeight() {
             const panel = document.getElementById('pmh-tool-panel');
             if (panel && !isMobileEnv) {
@@ -185,6 +191,9 @@ window.PmhUICore = {
 
         const currentSrv = config.servers[config.activeServerIdx];
         const resolvedSrvId = currentSrv ? (currentSrv.machineIdentifier || currentSrv.machine_id || 'default') : 'default';
+        const storageKeyPage = `pmh_page_${config.toolId}_${resolvedSrvId}`;
+        const savedPageStr = localStorage.getItem(storageKeyPage);
+        const initialPage = savedPageStr ? parseInt(savedPageStr, 10) : 1;
 
         const ctx = {
             c: config.container,
@@ -192,7 +201,7 @@ window.PmhUICore = {
             opts: config.uiSchema.saved_options || {},
             srvId: resolvedSrvId,
             pollTimer: null,
-            currentPage: 1,
+            currentPage: isNaN(initialPage) ? 1 : initialPage,
             itemsPerPage: config.uiSchema.saved_options?.items_per_page || 10,
             sortKey: config.uiSchema.saved_options?._sort_key || null,
             sortDir: config.uiSchema.saved_options?._sort_dir || 'asc',
@@ -337,17 +346,53 @@ window.PmhUICore = {
         const updateShowIf = () => {
             const allInputs = [ ...(ctx.ui.inputs||[]), ...(ctx.ui.execute_inputs||[]), ...(ctx.ui.settings_inputs||[]) ];
             allInputs.forEach(inp => {
-                if (!inp.show_if) return;
+                if (!inp.show_if && !inp.hide_if) return;
+                
                 const wrap = ctx.c.querySelector(`#pmh_inp_${inp.id}`)?.closest('.pmh-form-group') || ctx.c.querySelector(`#pmh_mwrap_${inp.id}`)?.closest('.pmh-form-group');
                 if (!wrap) return;
-                let show = true;
-                for (const [depId, depVal] of Object.entries(inp.show_if)) {
+                
+                let isVisible = true;
+
+                const checkCondition = (depId, expectedVal) => {
                     const el = ctx.c.querySelector(`#pmh_inp_${depId}`);
-                    if (el) { if(el.type==='checkbox'? el.checked!==depVal : String(el.value)!==String(depVal)) { show = false; break; } }
-                    else { const rad = ctx.c.querySelector(`input[name="pmh_rad_${depId}"]:checked`); if(rad && String(rad.value)!==String(depVal)) { show = false; break; } }
+                    let currentVal;
+                    if (el) {
+                        currentVal = (el.type === 'checkbox') ? el.checked : String(el.value);
+                    } else {
+                        const rad = ctx.c.querySelector(`input[name="pmh_rad_${depId}"]:checked`);
+                        currentVal = rad ? String(rad.value) : undefined;
+                    }
+                    
+                    if (currentVal === undefined) return false;
+
+                    if (Array.isArray(expectedVal)) {
+                        return expectedVal.map(String).includes(String(currentVal));
+                    } else {
+                        return String(currentVal) === String(expectedVal);
+                    }
+                };
+
+                if (inp.show_if) {
+                    for (const [depId, expectedVal] of Object.entries(inp.show_if)) {
+                        if (!checkCondition(depId, expectedVal)) {
+                            isVisible = false;
+                            break;
+                        }
+                    }
                 }
-                wrap.style.display = show ? 'block' : 'none';
+
+                if (isVisible && inp.hide_if) {
+                    for (const [depId, expectedVal] of Object.entries(inp.hide_if)) {
+                        if (checkCondition(depId, expectedVal)) {
+                            isVisible = false;
+                            break;
+                        }
+                    }
+                }
+
+                wrap.style.display = isVisible ? 'block' : 'none';
             });
+
             const execFrame = ctx.c.querySelector('#pmh_exec_frame');
             if (execFrame) {
                 const visible = Array.from(execFrame.querySelectorAll('.pmh-form-group')).some(c => c.style.display !== 'none');
@@ -552,12 +597,27 @@ window.PmhUICore = {
 
                 if (ctx.isDestroyed) return;
 
-                if (!r || r.total_items === 0 || !r.data || r.data.length === 0) {
+                if (!r || r.total_items === 0) {
                     if (overlay) overlay.style.display = 'none';
+                    localStorage.setItem(`pmh_page_${config.toolId}_${ctx.srvId}`, "1");
                     renderTable(r);
                     return;
                 }
 
+                if (r.total_pages && page > r.total_pages) {
+                    console.log(`[PMH UI] 요청한 페이지(${page})가 전체 페이지(${r.total_pages})보다 커서 마지막 페이지로 재요청합니다.`);
+                    return loadPage(r.total_pages, sKey, sDir, customLimit, isSilent);
+                }
+
+                if (!r.data || r.data.length === 0) {
+                    if (overlay) overlay.style.display = 'none';
+                    localStorage.setItem(`pmh_page_${config.toolId}_${ctx.srvId}`, "1");
+                    renderTable(r);
+                    return;
+                }
+
+                localStorage.setItem(`pmh_page_${config.toolId}_${ctx.srvId}`, r.page.toString());
+                
                 renderTable(r);
             } catch(e) {
                 if (!ctx.isDestroyed && !isSilent) resEl.innerHTML = `<div style="color:#bd362f; text-align:center; padding:20px;">불러오기 실패: ${e}</div>`;
@@ -569,6 +629,21 @@ window.PmhUICore = {
             const resEl = ctx.c.querySelector('#pmh_data_table_res');
             resEl.style.display = 'flex';
             let html = '';
+
+            const getLocalPath = (serverPath) => {
+                const mappings = config.pathMappings || [];
+                if (!mappings.length || !serverPath) return serverPath;
+                
+                for (const m of mappings) {
+                    const sp = (m.serverPrefix || '').replace(/\\/g, '/');
+                    const lp = (m.localPrefix || '').replace(/\\/g, '/');
+                    
+                    if (sp && serverPath.replace(/\\/g, '/').startsWith(sp)) {
+                        return lp + serverPath.replace(/\\/g, '/').substring(sp.length);
+                    }
+                }
+                return serverPath;
+            };
 
             if (res.summary_cards || res.bar_charts) {
                 html += `<div style="padding-bottom:15px; margin-bottom:15px; border-bottom:1px solid #333; flex-shrink:0;">`;
@@ -653,7 +728,6 @@ window.PmhUICore = {
                             let displayHtml = val;
                             const alignStr = `text-align:${col.align || 'left'};`;
                             
-                            // [수정점] HTML 태그를 완벽하게 제거하여 순수 텍스트만 추출합니다.
                             const rawText = String(val).replace(/<[^>]*>?/gm, '').trim();
                             const safeTitle = rawText.replace(/"/g, '&quot;');
 
@@ -663,11 +737,33 @@ window.PmhUICore = {
                                 } else {
                                     displayHtml = `<a href="#!/server/${res.machine_id}/details?key=${encodeURIComponent('/library/metadata/' + row[col.link_key])}" style="color:${isErr ? '#ff6b6b' : '#2f96b4'}; text-decoration:none; font-weight:bold;" title="${safeTitle}" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${val}</a>`;
                                 }
-                            } else if (col.type === 'action_btn') {
-                                const payload = JSON.stringify({action_type: col.action_type, _is_single: true, ...row}).replace(/"/g, '&quot;');
-                                displayHtml = `${isErr ? `<span style="color:#bd362f; margin-right:4px;" title="이전 작업 실패"><i class="fas fa-exclamation-triangle"></i></span>` : ''}<button class="pmh-tbl-action-btn" data-payload="${payload}" style="background:none; border:none; color:#e5a00d; cursor:pointer; font-size:14px;" title="단독 실행"><i class="${col.icon || 'fas fa-play'}"></i></button>`;
+                            }
+                            else if (col.type === 'folder_link') {
+                                if (isMobileEnv) {
+                                    displayHtml = `<span style="color:#555;" title="모바일 환경에서는 폴더 열기를 지원하지 않습니다."><i class="fas fa-folder"></i></span>`;
+                                } else if (val && val !== '-') {
+                                    const localDir = getLocalPath(val);
+                                    
+                                    let encodedPath = encodeURIComponent(localDir.replace(/\\/g, '/'))
+                                        .replace(/\(/g, '%28')
+                                        .replace(/\)/g, '%29')
+                                        .replace(/'/g, '%27')
+                                        .replace(/"/g, '%22');
+
+                                    displayHtml = `<a href="plexfolder://${encodedPath}" style="color:#e5a00d; font-size:14px; text-decoration:none;" title="로컬 폴더 열기"><i class="fas fa-folder-open"></i></a>`;
+                                    
+                                } else {
+                                    displayHtml = `<span style="color:#777;"><i class="fas fa-folder"></i></span>`;
+                                }
+                            }
+                            else if (col.type === 'action_btn') {
+                                const btnAction = row.action_type || col.action_type || 'execute';
+                                const btnIcon = row.icon || col.icon || 'fas fa-play';
+                                const payload = JSON.stringify({action_type: btnAction, _is_single: true, ...row}).replace(/"/g, '&quot;');
+                                displayHtml = `${isErr ? `<span style="color:#bd362f; margin-right:4px;" title="이전 작업 실패"><i class="fas fa-exclamation-triangle"></i></span>` : ''}<button class="pmh-tbl-action-btn" data-payload="${payload}" style="background:none; border:none; color:#e5a00d; cursor:pointer; font-size:14px;" title="단독 실행"><i class="${btnIcon}"></i></button>`;
                             }
                             html += `       <td style="padding:8px; overflow:hidden; text-overflow:ellipsis; ${alignStr}" title="${safeTitle}">${displayHtml}</td>`;
+
                         });
                         html += `       </tr>`;
                     });
@@ -783,6 +879,9 @@ window.PmhUICore = {
                     try {
                         await config.apiAdapter.run({action_type: 'clear_data', _server_id: ctx.srvId});
                         config.toast.info("목록이 비워졌습니다.");
+                        localStorage.setItem(`pmh_page_${config.toolId}_${ctx.srvId}`, "1");
+                        
+                        resEl.innerHTML = '';
                         loadPage(1, ctx.sortKey, ctx.sortDir);
                     } catch(e){}
                 }
@@ -881,24 +980,51 @@ window.PmhUICore = {
         if (ctx.ui.active_task && ctx.ui.active_task.state === 'running') {
             switchTab('pmh_tab_monitor'); startPolling();
         } else {
-            loadPage(1, ctx.sortKey, ctx.sortDir);
+            loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir);
         }
 
         ctx.c.querySelectorAll('.pmh-main-run-btn').forEach(btn => {
             btn.onclick = async () => {
                 if (ctx.isDestroyed) return;
+                ctx.currentPage = 1;
+                localStorage.setItem(`pmh_page_${config.toolId}_${ctx.srvId}`, "1");
+
                 const wrapper = btn.closest('.pmh-btn-wrapper');
                 const overlay = wrapper ? wrapper.querySelector('.pmh-btn-overlay') : null;
-                btn.disabled = true; if(overlay) overlay.style.display = 'flex';
+                btn.disabled = true; 
+                if(overlay) overlay.style.display = 'flex';
+
+                const isPreview = btn.dataset.action === 'preview';
+                if (isPreview) {
+                    const resForm = ctx.c.querySelector('#pmh_data_table_res');
+                    if (resForm) {
+                        resForm.style.display = 'none';
+                        resForm.innerHTML = '';
+                    }
+                }
 
                 try {
-                    const req = getFormData(); req.action_type = btn.dataset.action;
+                    const req = getFormData(); 
+                    req.action_type = btn.dataset.action;
+                    
                     await config.apiAdapter.run({...req, action_type: 'save_options'});
+                    
                     const r = await config.apiAdapter.run(req);
-                    if (r.type === 'async_task') { config.toast.success("작업 시작!"); switchTab('pmh_tab_monitor'); startPolling(); }
-                    else { config.toast.success("완료!"); loadPage(1, ctx.sortKey, ctx.sortDir); }
-                } catch(e) { config.toast.error("오류: "+e); }
-                finally { btn.disabled = false; if(overlay) overlay.style.display = 'none'; }
+                    
+                    if (r.type === 'async_task') { 
+                        config.toast.success("백그라운드 작업 시작!"); 
+                        switchTab('pmh_tab_monitor'); 
+                        startPolling(); 
+                    } else { 
+                        config.toast.success("완료!"); 
+                        loadPage(1, ctx.sortKey, ctx.sortDir); 
+                    }
+                } catch(e) { 
+                    config.toast.error("오류: "+e); 
+                } finally { 
+                    btn.disabled = false; 
+                    if(overlay) overlay.style.display = 'none'; 
+                }
             };
         });
 

@@ -134,6 +134,7 @@ def get_ui(core_api):
 
     return {
         "title": "섹션 매니저",
+        "icon": "fas fa-layer-group",
         "description": "<span style='color:#bd362f; font-weight:bold;'>경고: 이 툴은 Plex DB를 직접 수정하며 실행 시 주의가 필요합니다.</span><br>"
                        "작업을 실행하기 전 반드시 Plex 서버를 중지하시기 바랍니다.<br>"
                        "작업을 실행하기 전 환경 설정을 확인하고 [설정 적용]을 눌러 저장해 주세요.<br>"
