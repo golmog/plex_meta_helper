@@ -541,6 +541,16 @@
                             iconI.className = uiSchema.icon || 'fas fa-wrench';
                         }
                     }
+
+                    const srvSelectEl = document.getElementById('pmh_srv_select');
+                    if (srvSelectEl) {
+                        srvSelectEl.addEventListener('change', (e) => {
+                            const newIdx = Number(e.target.value);
+                            globalCache['target_server_idx'] = newIdx;
+                            localStorage.setItem(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
+                            openTool(toolId, newIdx);
+                        });
+                    }
                 }, 100);
 
                 if (!window.dualPaneObserver) {
