@@ -1044,11 +1044,9 @@ window.PmhUICore = {
 
             if(confirm(`[${currentSrv.name}] 서버에 저장된 옵션과 결과, 작업 기록을 모두 초기화하시겠습니까?`)) {
                 try {
-                    if (typeof GM_deleteValue === 'function') {
-                        GM_deleteValue(`pmh_panel_geo_${config.toolId}`);
-                        GM_deleteValue(`pmh_tool_cache_global_${config.toolId}`);
-                        GM_deleteValue(`pmh_tool_cache_${config.toolId}`);
-                    }
+                    localStorage.removeItem(`pmh_panel_geo_${config.toolId}`);
+                    localStorage.removeItem(`pmh_tool_cache_global_${config.toolId}`);
+                    localStorage.removeItem(`pmh_tool_cache_${config.toolId}`);
 
                     await config.apiAdapter.run({action_type: 'reset', _server_id: ctx.srvId});
                     config.toast.success("설정 및 데이터 캐시가 초기화되었습니다.");

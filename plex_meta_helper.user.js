@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.75
+// @version      0.8.76
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2702,7 +2702,7 @@ GM_addStyle(`
         poster.appendChild(marker);
 
         let wrapper = null;
-        if (state.listTag || state.listPlay) {
+        if (state.listTag || state.listPlay || info.is_friend_pending) {
             wrapper = document.createElement('div');
             wrapper.className = 'pmh-top-right-wrapper pmh-fade-update';
 
@@ -2715,6 +2715,8 @@ GM_addStyle(`
         }
 
         if (info.is_friend_pending) {
+            marker.setAttribute('data-friend-pending', 'true');
+            
             const fetchBtn = document.createElement('div');
             fetchBtn.className = 'plex-list-res-tag friend-fetch-btn';
             fetchBtn.innerHTML = '<i class="fas fa-sync-alt"></i>';
@@ -3039,9 +3041,13 @@ GM_addStyle(`
                     if (isIgnored) {
                         isAlreadyRendered = true;
                     } else {
+                        const isFriendPending = marker.getAttribute('data-friend-pending') === 'true';
                         let badgeMissing = false;
-                        if ((state.listTag || state.listPlay) && !cont.querySelector('.pmh-top-right-wrapper')) badgeMissing = true;
-                        if ((state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) badgeMissing = true;
+                        
+                        if ((state.listTag || state.listPlay || isFriendPending) && !cont.querySelector('.pmh-top-right-wrapper')) badgeMissing = true;
+                        
+                        if (!isFriendPending && (state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) badgeMissing = true;
+                        
                         if (!badgeMissing) isAlreadyRendered = true;
                     }
                 }
@@ -3073,10 +3079,24 @@ GM_addStyle(`
         let instantRenderCount = 0;
         pendingItems.forEach(item => {
             const srvConfig = getServerConfig(item.sid);
-            let cData = getMemoryCache(`L_${item.sid}_${item.iid}`) || getMemoryCache(`F_${item.sid}_${item.iid}`);
+            let cacheKey = srvConfig ? `L_${item.sid}_${item.iid}` : `F_${item.sid}_${item.iid}`;
+            let cData = getMemoryCache(cacheKey);
+            
+            if (!cData && srvConfig) {
+                cData = getMemoryCache(`F_${item.sid}_${item.iid}`);
+                if (cData) cacheKey = `F_${item.sid}_${item.iid}`;
+            }
 
             if (cData) {
-                if (changedItems.has(item.iid)) return;
+                if (changedItems.has(item.iid)) {
+                    cData.saved_state_hash = item.currentStateHash;
+                    setMemoryCache(cacheKey, cData);
+                    
+                    let displayData = { ...cData, tags: applyUserTags(cData.p, cData.tags) };
+                    renderListBadges(item.cont, item.poster, item.link, displayData, srvConfig, item.iid);
+                    item.isRendered = true;
+                    return; 
+                }
 
                 if (cData.ignored) {
                     let marker = item.poster.querySelector('.pmh-render-marker');
@@ -3102,6 +3122,9 @@ GM_addStyle(`
                 renderListBadges(item.cont, item.poster, item.link, displayData, srvConfig, item.iid);
                 item.isRendered = true;
                 instantRenderCount++;
+            } else if (!srvConfig) {
+                renderListBadges(item.cont, item.poster, item.link, { is_friend_pending: true }, srvConfig, item.iid);
+                item.isRendered = true;
             }
         });
 
@@ -3921,8 +3944,8 @@ GM_addStyle(`
                     streamHtml = `<a href="plexstream://${streamPayload}" class="plex-guid-action plex-play-stream" title="스트리밍" data-filename="${justFileName}"><i class="fas fa-wifi"></i></a>`;
                 }
 
-                let playExternalHtml = `<span style="color:#555;" title="친구 서버는 지원하지 않습니다."><i class="fas fa-play"></i></span>`;
-                let openFolderHtml = `<span style="color:#555;" title="친구 서버는 지원하지 않습니다."><i class="fas fa-folder-open"></i></span>`;
+                let playExternalHtml = `<span style="color:#555;" title="친구 서버는 지원하지 않습니다.">-</span>`;
+                let openFolderHtml = `<span style="color:#555;" title="친구 서버는 지원하지 않습니다.">-</span>`;
                 let pathLinkHtml = '';
 
                 if (srvConfig) {
@@ -3957,7 +3980,7 @@ GM_addStyle(`
                         : '';
 
                     pathLinkHtml = `
-                    <div style="font-size: 12px; color: #777; padding-left: 8px; padding-right: 10px; margin-top: 4px; font-style: italic; word-break: break-all; overflow-wrap: anywhere; line-height: 1.3;">
+                    <div style="font-size: 12px; color: #999; padding-left: 8px; padding-right: 10px; margin-top: 4px; font-style: italic; word-break: break-all; overflow-wrap: anywhere; line-height: 1.3;">
                         ${uTagsHtml}${justFileName}
                     </div>`;
                 }
@@ -4157,8 +4180,7 @@ GM_addStyle(`
                     abortDetailRefresh = true;
                     btnRefreshMeta.innerHTML = `<i class="fas fa-times" style="font-size: 10px; margin-right: 2px;"></i>취소됨`;
                     btnRefreshMeta.title = "";
-                    hideBoxLoading(); 
-                    toastr.warning("대기가 취소되었습니다.", "취소됨", {timeOut: 2000});
+                    toastr.warning("요청이 취소되었습니다.", "취소됨", {timeOut: 2000});
                     
                     setTimeout(() => {
                         if (btnRefreshMeta.isConnected) {
@@ -4172,15 +4194,63 @@ GM_addStyle(`
 
                 abortDetailRefresh = false;
                 btnRefreshMeta.dataset.refreshing = 'true';
-                btnRefreshMeta.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>메타 새로고침 완료 대기중`;
+                btnRefreshMeta.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>요청 전송 중...`;
                 btnRefreshMeta.title = "클릭시 대기 취소";
 
                 const rawG = (data.guid || '').toLowerCase();
                 const isUnmatched = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
+                const oldCacheKey = srvConfig ? `D_${serverId}_${data.itemId}` : `F_${serverId}_${data.itemId}`;
+                const oldDataSnapshot = getMemoryCache(oldCacheKey);
+                const currentSessionAtRequest = currentRenderSession;
 
-                if (!isUnmatched) {
+                if (isUnmatched) {
+                    showBoxLoading();
+                    toastr.info("Plex 메타 새로고침 요청 중...<br>버튼을 다시 누르면 대기를 취소합니다.", "메타 새로고침", {timeOut: 5000});
+
+                    const initialMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
+                    const initialUpdated = initialMeta && initialMeta.updatedAt ? initialMeta.updatedAt : 0;
+
+                    await triggerPlexMediaAction(data.itemId, 'refresh', plexSrv, srvConfig);
+
+                    let pollSuccess = false;
+                    for (let attempt = 0; attempt < 60; attempt++) {
+                        if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return; 
+                        await new Promise(r => setTimeout(r, 2500));
+                        if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return;
+
+                        const tempMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
+                        if (tempMeta) {
+                            const tempUpdated = tempMeta.updatedAt || 0;
+                            const tempGuid = (tempMeta.guid || '').toLowerCase();
+                            const isNowMatched = !tempGuid.includes('local://') && !tempGuid.includes('none://') && tempGuid !== '-' && tempGuid !== '';
+
+                            if (tempUpdated !== initialUpdated || isNowMatched) {
+                                pollSuccess = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return;
+
+                    if (pollSuccess) {
+                        toastr.success("메타 새로고침 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 3000});
+                    } else {
+                        toastr.warning("응답 지연으로 대기를 종료합니다.<br>현재 확보된 데이터로 UI를 새로고침합니다.", "시간 초과", {timeOut: 4000});
+                    }
+                    
+                    deleteMemoryCache(`D_${serverId}_${data.itemId}`);
+                    deleteMemoryCache(`L_${serverId}_${data.itemId}`);
+                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
+                    
+                    currentDisplayedItemId = null;
+                    processDetail(true);      
+                    forceRefreshChildUI();    
+
+                } else {
                     infoLog(`[Detail] Background Metadata Refresh requested for matched Item: ${data.itemId}`);
-                    toastr.success("Plex에 메타 새로고침을 요청합니다.", "메타 새로고침 요청 완료", {timeOut: 4000});
+                    toastr.success("Plex에 메타 새로고침을 요청했습니다.<br>변경 감지시 정보가 갱신됩니다.", "요청 완료", {timeOut: 4000});
+                    
                     triggerPlexMediaAction(data.itemId, 'refresh', plexSrv, srvConfig);
 
                     setTimeout(() => {
@@ -4189,52 +4259,53 @@ GM_addStyle(`
                             btnRefreshMeta.title = originalTitle;
                             delete btnRefreshMeta.dataset.refreshing;
                         }
-                    }, 1500);
-                    return;
+                    }, 1000);
+
+                    const checkDelays = [3000, 6000, 9000];
+                    
+                    checkDelays.forEach(delay => {
+                        setTimeout(async () => {
+                            if (currentSessionAtRequest !== currentRenderSession || abortDetailRefresh) return;
+
+                            try {
+                                const newMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
+                                if (!newMeta) return;
+
+                                const newData = convertPlexMetaToLocalData(newMeta, data.itemId);
+                                if (!newData || !oldDataSnapshot) return;
+
+                                const isSubUrlChanged = (oldDataSnapshot.sub_url !== newData.sub_url);
+                                const isGuidChanged = (oldDataSnapshot.guid !== newData.guid);
+                                const isResChanged = JSON.stringify(oldDataSnapshot.tags) !== JSON.stringify(newData.tags);
+                                
+                                let isSubCountChanged = false;
+                                if (oldDataSnapshot.versions && newData.versions && oldDataSnapshot.versions[0] && newData.versions[0]) {
+                                    const oldSubCount = oldDataSnapshot.versions[0].subs ? oldDataSnapshot.versions[0].subs.length : 0;
+                                    const newSubCount = newData.versions[0].subs ? newData.versions[0].subs.length : 0;
+                                    if (oldSubCount !== newSubCount) isSubCountChanged = true;
+                                }
+
+                                if (isSubUrlChanged || isGuidChanged || isResChanged || isSubCountChanged) {
+                                    infoLog(`[Detail] Background watcher detected metadata changes after ${delay/1000}s. Auto-refreshing UI.`);
+                                    
+                                    if (currentSessionAtRequest === currentRenderSession && document.getElementById('plex-guid-box')) {
+                                        deleteMemoryCache(`D_${serverId}_${data.itemId}`);
+                                        deleteMemoryCache(`L_${serverId}_${data.itemId}`);
+                                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
+                                        
+                                        currentDisplayedItemId = null;
+                                        processDetail(true);
+                                        forceRefreshChildUI();
+                                        
+                                        abortDetailRefresh = true; 
+                                    }
+                                }
+                            } catch (e) {
+                                errorLog("[Detail Watcher Error]", e);
+                            }
+                        }, delay);
+                    });
                 }
-
-                showBoxLoading();
-                toastr.info("Plex 메타 새로고침 요청 중...<br>버튼을 다시 누르면 대기를 취소합니다.", "메타 새로고침", {timeOut: 5000});
-
-                const initialMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
-                const initialUpdated = initialMeta && initialMeta.updatedAt ? initialMeta.updatedAt : 0;
-
-                await triggerPlexMediaAction(data.itemId, 'refresh', plexSrv, srvConfig);
-
-                let pollSuccess = false;
-                for (let attempt = 0; attempt < 60; attempt++) {
-                    if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return; 
-                    await new Promise(r => setTimeout(r, 2500));
-                    if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return;
-
-                    const tempMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
-                    if (tempMeta) {
-                        const tempUpdated = tempMeta.updatedAt || 0;
-                        const tempGuid = (tempMeta.guid || '').toLowerCase();
-                        const isNowMatched = !tempGuid.includes('local://') && !tempGuid.includes('none://') && tempGuid !== '-' && tempGuid !== '';
-
-                        if (tempUpdated !== initialUpdated || isNowMatched) {
-                            pollSuccess = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return;
-
-                if (pollSuccess) {
-                    toastr.success("메타 새로고침 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 3000});
-                } else {
-                    toastr.warning("응답 지연으로 대기를 종료합니다.<br>현재 확보된 데이터로 UI를 새로고침합니다.", "시간 초과", {timeOut: 4000});
-                }
-                
-                deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                deleteMemoryCache(`L_${serverId}_${data.itemId}`);
-                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
-                
-                currentDisplayedItemId = null;
-                processDetail(true);      
-                forceRefreshChildUI();    
             });
         }
 
@@ -4745,9 +4816,12 @@ GM_addStyle(`
 
                                 } else {
                                     const isIgnored = marker.getAttribute('data-ignored') === 'true';
+                                    const isFriendPending = marker.getAttribute('data-friend-pending') === 'true';
+                                    
                                     if (!isIgnored) {
                                         if ((state.listTag || state.listPlay) && !cont.querySelector('.pmh-top-right-wrapper')) needsDraw = true;
-                                        if ((state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) needsDraw = true;
+                                        
+                                        if (!isFriendPending && (state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) needsDraw = true;
                                     }
                                 }
                             }
@@ -4923,7 +4997,6 @@ GM_addStyle(`
                 const container = document.getElementById('pmh-path-mapping-container');
                 btn.closest('.pmh-path-mapping-row').remove();
                 
-                // 모두 삭제되었을 때 메시지 다시 표시
                 if (container.querySelectorAll('.pmh-path-mapping-row').length === 0) {
                     container.innerHTML = '<div class="pmh-no-map-msg" style="color:#777; font-size:12px; text-align:center; padding:5px 0;">등록된 매핑이 없습니다.</div>';
                 }

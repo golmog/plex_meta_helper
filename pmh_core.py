@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.75"
+__version__ = "0.8.76"
 
 def get_version():
     return __version__
@@ -1740,10 +1740,10 @@ DEFAULT_JAV_RULES = {
         r'.*?(?<![0-9])([0-9]{3})(mmc)[-_]?([0-9]+)(?=[^\d]|\b) => {0}{1}|{2}',
         r'.*?(?<![a-z])(s)[-_](cute)[-_]?([0-9]+)(?=[^\d]|\b) => {0}{1}|{2}',
         r'.*?(?<![a-z])(tokyo)247[-_]?([0-9]+)(?=[^\d]|\b) => {0}|{1}',
-        r'.*?(?<![a-z])(wvr)0([1-9])[-_]?([a-z]?[0-9]+)\b => {0}{1}|{2}',
-        r'.*?(?<![a-z])(wvr)0*([1-9])[-_]?([a-z]?\d+)\b => {0}{1}|{2}',
-        r'.*?(?<![a-z])(wvr)[-_]?([1-9])([0-9]{3,})\b => {0}{1}|{2}',
         r'.*?(?<![a-z])(wvr9c)[-_]?([0-9]{3,})\b => {0}|{1}',
+        r'.*?(?<![a-z])(wvr)0([1-9])[-_]?([a-z]?[0-9]+)\b => {0}{1}|{2}',
+        r'.*?(?<![a-z])(wvr)0*([1-9])[-_]?([a-z]?[0-9]+)\b => {0}{1}|{2}',
+        r'.*?(?<![a-z])(wvr)[-_]?([1-9])([0-9]{3,})\b => {0}{1}|{2}',
         r'.*?(?<![0-9])([0-9]{3})(ypp)[-_]?([0-9]+)(?=[^\d]|\b) => {0}{1}|{2}',
         r'.*?(?<![a-z])(cd2[0-9])[-_]?([0-9]+)(?=[^\d]|\b) => {0}|{1}',
         r'.*?(?<![a-z])(ak)[-_](bs)[-_]?([0-9]+)(?=[^\d]|\b) => {0}{1}|{2}',
@@ -1794,7 +1794,8 @@ def pad_numeric_part(num_str, target_length):
     return num_str
 
 def preprocess_jav_filename(base):
-    base = base.lower()
+    if not base: return ""
+    base = unicodedata.normalize('NFKC', str(base)).lower()
     base = re.sub(r'\(\d{6,}\)', ' ', base)
     base = re.sub(r'[\[\]\(\)\{\}]+', ' ', base)
     base = re.sub(r'\b[hn]_\d', '', base)
@@ -1804,7 +1805,7 @@ def preprocess_jav_filename(base):
     
     misc_pattern = r'(?:hd)?720p|(?:fhd)?1080p|2160p|2k|4k|6k|8k|fhd|uhd|'
     misc_pattern += r'h264|h265|hevc|x265|mpeg|wmv[0-9]?|rv(?:[0-9]{,2})?|'
-    misc_pattern += r'aac|dts|mp3|ogg|flac|wav|wma(?:pro|v\d)?|pcm(?:_s16le)?|ac3|eac3|'
+    misc_pattern += r'aac|dts|mp3|ogg|flac|wav|wma(?:pro|v\d)?|pcm(?:_s16le)?|ac3|eac3|vorbis|opus|'
     misc_pattern += r'\d+[.0-9]*fps|\d+kbps|'
     misc_pattern += r'\d{3,}x\d{3,}|\dk[0-9.]+fps'
     base = re.sub(r'\b[-_. ]?(%s)[-_. ]?\b' % misc_pattern, ' ', base).strip()
@@ -2005,7 +2006,6 @@ def perform_smart_match(plex_url, plex_token, rating_key, item_title, item_year,
         except Exception as e:
             print(f"[PMH API] ⚠️ 최상위 쇼 객체를 찾지 못했습니다. 기존 객체로 진행합니다: {e}")
 
-    # 물리적 경로(파일명 및 폴더명) 추출
     raw_file_path = None
     if hasattr(target_item, 'media') and target_item.media and target_item.media[0].parts:
         raw_file_path = target_item.media[0].parts[0].file

@@ -1,9 +1,14 @@
 # Plex Meta Helper (PMH)
 
-Plex Web UI를 강화하는 Tampermonkey 유저스크립트 및 백엔드 툴 관리 시스템입니다.
+Plex Web UI의 관리 기능을 강화하는 Tampermonkey 유저스크립트 및 백엔드 툴 관리 시스템입니다.
 Plex 컨텐츠의 상세 메타 정보를 표시하고, 캐시 관리, 외부 플레이어 연동 및 서버 툴 관리 등 다양한 편의 기능을 제공합니다.
 
 ## 업데이트
+
+v0.8.76 (2026-04-15)
+- 맥 OS용 헬퍼 앱을 Swift로 교체
+- 메타 새로고침시/친구 서버 목록 등의 UI 처리 개선, 버그 수정
+- 기타 개선, 버그 수정
 
 v0.8.75 (2026-04-12)
 - 서버의 매칭 로직에 큐 도입
@@ -126,47 +131,24 @@ update-desktop-database ~/.local/share/applications/
 
 ### macOS
 
-1. macOS에 기본으로 설치된 **스크립트 편집기(Script Editor)**를 엽니다.
-2. 새로운 문서를 열고 AppleScript 파일의 내용을 붙여 넣고, 스크립트를 **응용프로그램(Application)**으로 저장(ex. PlexHelper.app)합니다. 미디어 플레이어는 IINA를 기준으로 작성되었습니다.
-3. 저장된 앱을 마우스 오른쪽 클릭하고 **패키지 내용 보기(Show Package Contents)**를 선택합니다.
-4. Contents 폴더로 들어가 Info.plist 파일을 텍스트 편집기로 엽니다.
-5. 파일의 맨 아래, `</dict>` 태그 바로 위에 아래 내용을 추가합니다.
-```xml
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>Plex Play Handler</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>plexplay</string>
-                <string>plexfolder</string>
-                <string>plexstream</string>
-            </array>
-        </dict>
-    </array>
+macOS의 샌드박싱과 보안 정책으로 인해 AppleScript 방식 대신 **Swift로 컴파일된 작은 Helper App**을 사용해야 합니다.
+
+#### 1단계: Helper App 빌드 (Xcode)
+1. Mac에서 **Xcode**를 열고 `Create a new Xcode project`를 클릭합니다.
+2. **macOS > App**을 선택하고 Product Name을 **PlexMetaHelper**로 지정합니다. (Interface: SwiftUI, Language: Swift)
+3. 좌측 탐색기에서 `PlexMetaHelperApp.swift`를 열고 [이 문서에 있는 Swift 코드](link_to_swift_code_here)로 완전히 교체합니다.
+4. 프로젝트 루트(최상단 파란색 아이콘)를 클릭 > **Info** 탭 선택 > **URL Types** 항목을 펼치고 `+` 버튼을 누릅니다.
+5. **Identifier**에 `Plex Meta Helper Handler`를 입력하고, **URL Schemes**에 `plexplay,plexfolder,plexstream`을 콤마(,)로 구분하여 입력합니다.
+6. `Cmd + B`를 눌러 빌드하거나, `Product > Archive`를 통해 앱을 추출하여 **응용프로그램(Applications)** 폴더에 넣습니다. (한 번 실행해주면 스킴이 등록됩니다.)
+7. 만약 IINA가 실행되지 않는 문제가 발생한다면, Xcode에서 빌드 전 **App Sandbox를 제거**해야 합니다.
+
+#### 2단계: IINA 동기화 스크립트 적용 (`plex_sync.lua`)
+Helper App이 URL을 정리하여 IINA를 실행하면, IINA 내부의 Lua 스크립트가 Plex 서버와 통신하여 자막을 입히고 진행 상황을 동기화합니다.
+IINA에 설정된 mpv 설정 폴더에 스크립트를 추가해줘야 합니다.
+
+1. IINA 앱 환경설정 > 고급(Advanced) > 고급설정에서 mpv 설정 경로를 확인합니다.
+2. Finder를 열고 상단 메뉴에서 `이동 > 폴더로 이동... (Cmd + Shift + G)`를 누릅니다.
+3. `~/.config/mpv` 경로(IINA 설정 기본값)로 이동합니다(없으면 생성하거나 설정에 맞게 이동).
+4. `scripts` 폴더를 생성하고, 저장소의 `plex_sync.lua` 파일을 넣습니다.
+5. 이제 웹 브라우저에서 PMH의 스트리밍(<i class="fas fa-wifi"></i>) 또는 로컬 재생(<i class="fas fa-play"></i>) 버튼을 누르면 IINA가 열리며 재생됩니다.
 ```
-최종적으로 Info.plist 파일의 끝부분은 아래와 같은 모습이 됩니다.
-```xml
-... (기존 내용) ...
-    </dict>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>Plex Play Handler</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>plexplay</string>
-                <string>plexfolder</string>
-                <string>plexstream</string>
-            </array>
-        </dict>
-    </array>
-</plist>
-```
-6. 파일을 저장하고 닫은 뒤 앱을 한번 실행하거나, 재로그인 하거나, 아래 명령어를 실행하면 URL 스킴이 등록됩니다.
-```bash
-/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f /Applications/PlexHelper.app
-```
-macOS는 시스템에 **Python 3 필요**하고, 현재 테스트가 충분하지 않습니다.
