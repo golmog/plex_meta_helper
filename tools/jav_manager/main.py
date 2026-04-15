@@ -312,11 +312,22 @@ def worker(task_data, core_api, start_progress):
         compiled_rules = compile_jav_rules(cfg)
         result_data = []
         
-        pid_cache = {}
-        def get_parsed_pids(text):
-            if text not in pid_cache:
-                pid_cache[text] = extract_jav_pid(text, cfg, compiled_rules)
-            return pid_cache[text]
+        def get_all_pids(text):
+            extracted = []
+            remaining = text
+            for _ in range(10): # 무한루프 방지
+                found = extract_jav_pid(remaining, cfg, compiled_rules)
+                if not found:
+                    break
+                for f_l, f_n in found:
+                    if (f_l, f_n) not in extracted:
+                        extracted.append((f_l, f_n))
+                    # 방금 찾은 패턴을 공백으로 치환하여 뒤에 숨은 패턴을 계속 검색
+                    safe_l = re.escape(f_l)
+                    safe_n = re.escape(f_n)
+                    pattern = r'[a-zA-Z]*' + safe_l + r'[-_]?' + safe_n + r'[a-zA-Z]*'
+                    remaining = re.sub(pattern, ' ', remaining, flags=re.IGNORECASE)
+            return extracted
 
         columns = [
             {"key": "section_name", "label": "라이브러리", "width": "12%"},
@@ -344,22 +355,11 @@ def worker(task_data, core_api, start_progress):
 
                 f_pids_norm = set()
                 f_pids_display = []
-                item_errors = []
                 
                 for fpath in files:
                     fname = os.path.basename(fpath)
                     
-                    extracted_pids = list(get_parsed_pids(fname))
-                    
-                    if extracted_pids:
-                        remaining_text = fname
-                        for f_l, f_n in extracted_pids:
-                            remaining_text = re.sub(f'{f_l}[-_]?{f_n}', '', remaining_text, flags=re.IGNORECASE)
-                        
-                        extra_pids = get_parsed_pids(remaining_text)
-                        for ep in extra_pids:
-                            if ep not in extracted_pids:
-                                extracted_pids.append(ep)
+                    extracted_pids = get_all_pids(fname)
                     
                     for f_l, f_n in extracted_pids:
                         pid_str = f"{f_l}-{f_n}"
@@ -368,14 +368,6 @@ def worker(task_data, core_api, start_progress):
                             f_pids_display.append(pid_str_upper)
                         n_pid = normalize_pid(pid_str)
                         if n_pid: f_pids_norm.add(n_pid)
-                
-                if item_errors:
-                    result_data.append({
-                        "id": item['id'], "section_name": item['section_name'], "title": db_title, 
-                        "reason": f"<span style='color:#bd362f;'><i class='fas fa-exclamation-triangle'></i> 파싱 규칙 포맷 오류 (로그 확인)</span>", 
-                        "op_action": "match", "raw_path": files[0]
-                    })
-                    continue
 
                 if not f_pids_norm: continue
                 
@@ -383,11 +375,12 @@ def worker(task_data, core_api, start_progress):
                 op_action = "match"
                 
                 if db_pid and db_pid in f_pids_norm:
-                    disp_matched = f_pids_display[0] if f_pids_display else match.group(1).upper()
+                    matched_disp = next((p for p in f_pids_display if normalize_pid(p) == db_pid), f_pids_display[0])
+                    
                     if not guid or 'local://' in guid or 'none://' in guid or guid == '-':
-                        reason = f"미매칭 상태 (로컬/없음) / 검출: {disp_matched}"
+                        reason = f"미매칭 상태 (로컬/없음) / 검출: {matched_disp}"
                     elif not guid.startswith('com.plexapp.agents.sjva'):
-                        reason = f"타 에이전트로 매칭됨 / 검출: {disp_matched}"
+                        reason = f"타 에이전트로 매칭됨 / 검출: {matched_disp}"
                 else:
                     if len(f_pids_norm) > 1:
                         if len(files) > 1:
@@ -399,7 +392,7 @@ def worker(task_data, core_api, start_progress):
                     elif not db_pid:
                         reason = "DB 제목 형식 비정상 ([품번] 누락)"
                     else:
-                        reason = f"품번 불일치 (DB: {match.group(1).upper()} / 파일: {f_pids_display[0]})"
+                        reason = f"품번 불일치 (DB: {match.group(1).upper() if match else '없음'} / 파일: {f_pids_display[0]})"
 
                 if reason:
                     result_data.append({
@@ -420,12 +413,23 @@ def worker(task_data, core_api, start_progress):
                 if not files_raw: continue
                 files = files_raw.split('|||')
                 
+                db_title = item.get('title', '').strip()
+                match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
+                db_pid = normalize_pid(match.group(1)) if match else None
+                
                 for fpath in files:
                     fname = os.path.basename(fpath)
-                    extracted_pids = get_parsed_pids(fname)
+                    extracted_pids = get_all_pids(fname)
+                    
                     if extracted_pids:
-                        f_l, f_n = extracted_pids[0]
-                        norm_f = normalize_pid(f"{f_l}-{f_n}")
+                        f_pids_norm = {normalize_pid(f"{l}-{n}") for l, n in extracted_pids if normalize_pid(f"{l}-{n}")}
+                        
+                        if db_pid and db_pid in f_pids_norm:
+                            norm_f = db_pid
+                        else:
+                            f_l, f_n = extracted_pids[0]
+                            norm_f = normalize_pid(f"{f_l}-{f_n}")
+                            
                         if norm_f:
                             pid_item_map[norm_f].append({
                                 "id": item['id'], "title": item['title'], "section_name": item['section_name'], "raw_path": fpath
@@ -646,8 +650,8 @@ def worker(task_data, core_api, start_progress):
                         prefix_str = prefix_match.group(1).strip()
                         bracket_str = " ".join(bracket_strs).strip()
 
-                        pids_prefix = get_parsed_pids(prefix_str)
-                        pids_bracket = get_parsed_pids(bracket_str)
+                        pids_prefix = get_all_pids(prefix_str)
+                        pids_bracket = get_all_pids(bracket_str)
                         
                         norm_prefix = {normalize_pid(f"{l}-{n}") for l, n in pids_prefix if normalize_pid(f"{l}-{n}")}
                         norm_bracket = {normalize_pid(f"{l}-{n}") for l, n in pids_bracket if normalize_pid(f"{l}-{n}")}
