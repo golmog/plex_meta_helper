@@ -92,7 +92,7 @@ def get_ui(core_api):
             {"id": "opt_smart_match", "type": "checkbox", "label": "GUID가 없는 미매칭 항목만 조회", "default": False, "show_if": {"mode": "rematch"}},
 
             {"id": "target_agent", "type": "text", "label": "에이전트 제외 필터", "placeholder": "예: tv.plex.agents.movie (입력 시 해당 에이전트 항목 제외)", "show_if": {"mode": "rematch"}},
-            {"id": "scan_depth", "type": "number", "label": "경로 스캔 Depth (기본: 1)", "default": 1, "layout": "plain", "width": "60px", "show_if": {"mode": "path_scan"}}
+            {"id": "scan_depth", "type": "number", "label": "경로 스캔 Depth (기본: 3)", "default": 3, "layout": "plain", "width": "60px", "show_if": {"mode": "path_scan"}}
         ],
         "execute_inputs": [
             {"id": "opt_vfs", "type": "checkbox", "label": "스캔 전 vfs/refresh 수행 (Plex Mate 연동)", "default": True, "show_if": {"mode": "path_scan"}},
