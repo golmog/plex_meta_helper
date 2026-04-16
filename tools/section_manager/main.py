@@ -205,7 +205,7 @@ def get_ui(core_api):
             {"id": "tmp_action_manage_backup", 
              "type": "sub_action", 
              "action_type": "manage_backups", 
-             "label": "기존 백업 파일 모두 삭제", 
+             "label": "백업 파일 삭제", 
              "color": "#bd362f", 
              "icon": "fas fa-eraser",
              "width": "180px",
