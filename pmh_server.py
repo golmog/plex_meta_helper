@@ -422,6 +422,16 @@ def safe_download_and_replace(url, target_filepath):
         'Expires': '0'
     })
     
+    original_uid = -1
+    original_gid = -1
+    if os.path.exists(target_filepath):
+        try:
+            stat_info = os.stat(target_filepath)
+            original_uid = stat_info.st_uid
+            original_gid = stat_info.st_gid
+        except Exception as e:
+            print(f"[PMH UPDATE WARNING] {os.path.basename(target_filepath)} 소유권 확인 실패 (무시됨): {e}")
+
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
             code_content = response.read().decode('utf-8')
@@ -432,6 +442,13 @@ def safe_download_and_replace(url, target_filepath):
         with open(target_filepath, 'w', encoding='utf-8') as f:
             f.write(code_content)
             
+        if original_uid != -1 and original_gid != -1:
+            try:
+                os.chown(target_filepath, original_uid, original_gid)
+                # print(f"[PMH UPDATE] 소유권 복구 완료 ({original_uid}:{original_gid}) -> {os.path.basename(target_filepath)}")
+            except Exception as e:
+                print(f"[PMH UPDATE WARNING] {os.path.basename(target_filepath)} 소유권 복구 실패 (권한 부족일 수 있음): {e}")
+                
         print(f"[PMH UPDATE] ✅ 성공: {os.path.basename(target_filepath)} 업데이트 완료.")
         return True
         
@@ -501,6 +518,15 @@ def background_update_task():
         except Exception:
             old_server_code = ""
 
+        server_original_uid = -1
+        server_original_gid = -1
+        if os.path.exists(SERVER_FILE_PATH):
+            try:
+                stat_info = os.stat(SERVER_FILE_PATH)
+                server_original_uid = stat_info.st_uid
+                server_original_gid = stat_info.st_gid
+            except: pass
+
         ts = int(time.time())
         req_svr = urllib.request.Request(f"{SERVER_URL}?t={ts}", headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
         
@@ -510,11 +536,18 @@ def background_update_task():
             if new_server_code != old_server_code:
                 with open(SERVER_FILE_PATH, 'w', encoding='utf-8') as f:
                     f.write(new_server_code)
+                
+                if server_original_uid != -1 and server_original_gid != -1:
+                    try:
+                        os.chown(SERVER_FILE_PATH, server_original_uid, server_original_gid)
+                    except: pass
+                    
                 print("[PMH UPDATE BACKGROUND] 🔄 서버 스크립트가 성공적으로 덮어씌워졌습니다! (반드시 파이썬 프로세스를 수동으로 재시작하세요.)")
             else:
                 print("[PMH UPDATE BACKGROUND] 서버 스크립트는 이미 최신 상태입니다. (재시작 불필요)")
 
     except Exception as e:
+        import traceback
         print(f"[PMH UPDATE FATAL ERROR] 백그라운드 업데이트가 치명적 오류로 중단되었습니다:\n{traceback.format_exc()}")
 
 @app.route('/api/admin/update', methods=['POST'])
