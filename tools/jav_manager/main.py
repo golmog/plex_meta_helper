@@ -36,7 +36,7 @@ def get_ui(core_api=None):
     history_db_path = ""
     if core_api and 'config' in core_api:
         base_dir = core_api['config'].get('base_dir', '')
-        history_db_path = os.path.join(base_dir, 'task_logs', 'jav_poster_history.db')
+        history_db_path = os.path.join(base_dir, 'task_logs', 'jav_manager_poster_history.db')
 
     if core_api:
         try:
@@ -171,8 +171,29 @@ def run(data, core_api):
         task_data['_auto_refresh_ui'] = True  
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
+    if action == 'cron_run':
+        task_data = data.copy()
+        return {"status": "success", "type": "async_task", "task_data": task_data}, 200
+
     if action == 'execute':
-        if data.get('_is_single'):
+        if data.get('_is_cron'):
+            task_state = core_api['task'].load()
+            if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
+                cached_page = core_api['cache'].load_page(1, 1)
+                if cached_page and cached_page.get('total_items', 0) > 0:
+                    task_data = data.copy()
+                    task_data['_use_cache_db'] = True
+                    task_data['total'] = cached_page.get('total_items')
+                    task_data['_resume_start_index'] = task_state.get('progress', 0)
+                    task_data['_is_cron'] = True
+                    return {"status": "success", "type": "async_task", "task_data": task_data}, 200
+
+            task_data = data.copy()
+            task_data['action_type'] = 'cron_run'
+            task_data['_is_cron'] = True
+            return {"status": "success", "type": "async_task", "task_data": task_data}, 200
+
+        elif data.get('_is_single'):
             items = [{
                 'id': str(data.get('id')),
                 'title': data.get('title', '단일 항목'),
@@ -265,11 +286,12 @@ def worker(task_data, core_api, start_progress):
     mode = task_data.get('scan_mode', 'mismatch')
     
     # ----------------------------------------------------------------------
-    # 1. Preview 모드 (조회 및 검출)
+    # 1. Preview / Cron_Run 모드 (조회 및 검출)
     # ----------------------------------------------------------------------
-    if action == "preview":
+    if action in ["preview", "cron_run"]:
+        prefix = "[자동 실행] " if action == 'cron_run' else ""
+        task.log(f"{prefix}데이터베이스에서 아이템 목록을 쿼리하는 중입니다. 잠시만 기다려주세요...")
         task.update_state('running', progress=0, total=100)
-        task.log("데이터베이스에서 아이템 목록을 쿼리하는 중입니다. 잠시만 기다려주세요...")
         core_api['cache'].reset_db()
         
         section_ids = task_data.get('target_sections', [])
@@ -548,7 +570,7 @@ def worker(task_data, core_api, start_progress):
                 task.update_state('error')
                 return
 
-            history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'jav_poster_history.db')
+            history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'jav_manager_poster_history.db')
             applied_posters = _get_applied_posters(history_db_path)
             
             task.log(f"스캔 완료. {len(user_posters):,}개의 고유 품번 포스터와 대조를 시작합니다. (이전 적용 완료: {len(applied_posters):,}건 제외)")
@@ -687,7 +709,7 @@ def worker(task_data, core_api, start_progress):
         
         if mode == "file_error":
             columns[-1] = {"key": "raw_path", "label": "파일 선택", "width": "10%", "align": "center", "header_align": "center", "type": "folder_link"}
-            action_btn = None
+            action_btn = None 
         else:
             action_btn = {"label": f"<i class='fas fa-magic'></i> {btn_label}", "payload": {"action_type": "execute"}}
         
@@ -701,55 +723,81 @@ def worker(task_data, core_api, start_progress):
             "columns": columns, "data": result_data
         })
 
-        task.update_state('completed', 100, 100)
-        task.log(f"✅ 검사 완료! 총 {len(result_data):,}개의 항목이 검출되었습니다.")
+        if action == 'preview':
+            task.update_state('completed', 100, 100)
+            if len(result_data) > 0:
+                task.log(f"✅ 검사 완료! 총 {len(result_data):,}개의 항목이 검출되었습니다.")
+            else:
+                task.log("✅ 라이브러리 검사 완료. 모든 항목이 정상입니다! (조치할 대상 없음)")
+            return
+        else: # cron_run 모드일 경우 즉시 실행으로 전환
+            if len(result_data) == 0:
+                task.update_state('completed', progress=100, total=100)
+                task.log("✅ [자동 실행] 조치(복구)가 필요한 항목이 없어 작업을 종료합니다.")
+                return
+            
+            action = 'execute'
+            task_data['_use_cache_db'] = True
+            task_data['total'] = len(result_data)
+            task_data['_resume_start_index'] = 0
+            task.log(f"✅ [자동 실행] 조회 완료. 생성된 목록(총 {len(result_data):,}건)을 바탕으로 즉시 복구 작업을 시작합니다.")
+
 
     # ----------------------------------------------------------------------
     # 2. Execute 모드 (실제 매칭/처리 실행)
     # ----------------------------------------------------------------------
-    elif action == "execute":
-        work_start_time = time.time()
-        
-        retry_errors = task_data.get('retry_errors', False)
-        opts = core_api.get('options', {})
-        try: sleep_time = float(opts.get('sleep_time', 1))
-        except: sleep_time = 1.0
-        
-        if task_data.get('_is_single'):
-            pending_items = task_data.get('target_items', [])
-        else:
-            status_filter = "('pending', 'error')" if retry_errors else "('pending')"
-            with core_api['cache'].transaction_session() as conn:
-                c = conn.cursor()
-                c.execute(f"SELECT * FROM data WHERE pmh_status IN {status_filter} ORDER BY pmh_id ASC")
-                pending_items = [dict(row) for row in c.fetchall()]
+    work_start_time = time.time()
+    
+    retry_errors = task_data.get('retry_errors', False)
+    opts = core_api.get('options', {})
+    try: sleep_time = float(opts.get('sleep_time', 1))
+    except: sleep_time = 1.0
+    
+    total = task_data.get('total', 0)
+    progress = task_data.get('_resume_start_index', start_progress)
+    
+    if task_data.get('_is_single'):
+        pending_items = task_data.get('target_items', [])
+    else:
+        status_filter = "('pending', 'error')" if retry_errors else "('pending')"
+        with core_api['cache'].transaction_session() as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute(f"SELECT * FROM data WHERE pmh_status IN {status_filter} ORDER BY pmh_id ASC")
+            rows = c.fetchall()
+            cols = [desc[0] for desc in c.description] if c.description else []
+            pending_items = [dict(zip(cols, row)) for row in rows]
 
-        total = len(pending_items)
-        if total == 0:
-            task.update_state('completed', 0, 0)
-            task.log("⚠️ 실행할 대상 항목이 없습니다.")
-            return
+    if total == 0:
+        task.update_state('completed', 0, 0)
+        task.log("⚠️ 실행할 대상 항목이 없습니다.")
+        return
 
-        progress = start_progress
-        task.update_state('running', progress, total)
-        prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
+    task.update_state('running', progress, total)
+    prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
+    if progress == 0:
         task.log(f"🚀 {prefix}총 {total:,}개의 아이템에 대해 작업을 시작합니다...")
+    else:
+        task.log(f"🔄 {prefix}중단되었던 {progress}번째 항목부터 이어서 작업을 재개합니다.")
 
-        try:
-            plex = core_api['get_plex']()
-        except Exception as e:
-            task.update_state('error')
-            task.log(f"❌ Plex 서버 연결 실패: {str(e)}")
-            return
+    try:
+        plex = core_api['get_plex']()
+    except Exception as e:
+        task.update_state('error')
+        task.log(f"❌ Plex 서버 연결 실패: {str(e)}")
+        return
 
-        history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'jav_poster_history.db')
+    history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'jav_manager_poster_history.db')
 
+    try:
         for item in pending_items:
             if task.is_cancelled():
                 task.log("🛑 작업이 취소되었습니다.")
                 break
 
             progress += 1
+            task.update_state('running', progress=progress, total=total)
+
             item_id = str(item['id'])
             db_id = item.get('pmh_id')
             title = item.get('title', item_id)
@@ -758,7 +806,6 @@ def worker(task_data, core_api, start_progress):
             task.log(f"[{progress}/{total}] '{title}' 처리 요청 중... (동작: {op_action})")
             
             try:
-                # 파일 에러 모드에서는 아무것도 안하고 패스 (수동 폴더 열기 전용)
                 if op_action == 'open_folder':
                     task.log(f"  -> 📂 수동 폴더 열기 전용 항목입니다. 시스템 자동 처리를 스킵합니다.")
                     if db_id: core_api['cache'].mark_as_done('pmh_id', db_id)
@@ -767,7 +814,6 @@ def worker(task_data, core_api, start_progress):
                 safe_endpoint = f"/library/metadata/{item_id}"
                 plex_item = plex.fetchItem(safe_endpoint)
                 
-                # 분리(Split) 모드
                 if op_action == 'split':
                     if len(plex_item.media) > 1:
                         plex_item.split()
@@ -777,7 +823,6 @@ def worker(task_data, core_api, start_progress):
                         task.log("  -> ⚠️ 분리 불가: 단일 미디어 파일입니다. 분리 대신 매칭(Match)으로 우회합니다.")
                         op_action = 'match'
 
-                # 매칭 모드 (분리 불가능하여 우회된 경우 포함)
                 if op_action == 'match':
                     success, msg, score = pmh_core.perform_smart_match(
                         plex_url=plex._baseurl, 
@@ -835,3 +880,11 @@ def worker(task_data, core_api, start_progress):
                 "scan_mode_label": mode_label
             }
             core_api['notify']("JAV 매니저 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
+            
+    finally:
+        current_state = core_api['task'].load(include_target_items=False)
+        if current_state:
+            real_state = current_state.get('state', 'running')
+            if real_state != 'completed':
+                p_val = locals().get('progress', 0)
+                task.update_state(real_state, progress=p_val)
