@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.76
+// @version      0.8.77
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -59,7 +59,7 @@ GM_addStyle(`
     .toast-progress { position: absolute; left: 0; bottom: 0; height: 4px; background-color: #000; opacity: .4; }
 
     /* 2. Plex 상세페이지 링크 & 상세정보 텍스트 효과 (Plex UI 오버레이) */
-    .plex-guid-link, .plex-path-scan-link, #plex-guid-box .path-text-wrapper { text-decoration: none !important; cursor: pointer; color: #f1f1f1 !important; transition: color 0.2s, opacity 0.2s; }
+    .plex-guid-link, .plex-path-scan-link, #plex-guid-box .path-text-wrapper { text-decoration: none !important; cursor: pointer; color: #ccc !important; transition: color 0.2s, opacity 0.2s; font-size: 12px; line-height: 1.5; }
     .plex-guid-link:hover, .plex-path-scan-link:hover { color: #f0ad4e !important; text-decoration: underline !important; }
     #plex-guid-box .plex-guid-action { font-size: 14px; margin: 0; text-decoration: none; cursor: pointer; vertical-align: middle; color: #adb5bd; opacity: 0.8; transition: opacity 0.2s, transform 0.2s, color 0.2s; }
     #plex-guid-box .plex-guid-action:hover { opacity: 1.0; color: #ffffff; transform: scale(1.1); }
@@ -1308,6 +1308,53 @@ GM_addStyle(`
         const t = Math.floor(Number(ms) / 1000);
         const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
         return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}` : `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function generateSplitPathHtml(fullPath, sectionId, itemType, tagsHtml) {
+        if (!fullPath) return '';
+        let displayPath = fullPath;
+        let removedPrefix = "";
+
+        ServerConfig.DISPLAY_PATH_PREFIXES_TO_REMOVE.forEach(p => { 
+            if (displayPath.startsWith(p)) {
+                displayPath = displayPath.substring(p.length);
+                removedPrefix = p;
+            }
+        });
+
+        const isWin = displayPath.includes('\\');
+        const sep = isWin ? '\\' : '/';
+        const hasLeadingSep = displayPath.startsWith(sep);
+        const segments = displayPath.split(sep).filter(Boolean);
+
+        let html = tagsHtml || '';
+        let currentAccumulatedPath = removedPrefix;
+
+        if (!isWin && fullPath.startsWith('/') && !removedPrefix) {
+            currentAccumulatedPath = '/';
+        }
+
+        if (hasLeadingSep) {
+            html += `<span style="color:#999; margin-right:1px;">${sep}</span>`;
+        }
+
+        segments.forEach((seg, index) => {
+            if (currentAccumulatedPath !== '/' && currentAccumulatedPath !== '') {
+                if (!currentAccumulatedPath.endsWith(sep)) currentAccumulatedPath += sep;
+            }
+            currentAccumulatedPath += seg;
+
+            const isLast = (index === segments.length - 1);
+            const color = isLast ? '#e5a00d' : '#9E9E9E';
+            const fontWeight = isLast ? 'normal' : 'normal';
+            const clickType = isLast ? itemType : 'directory';
+            
+            html += `<a href="#" class="plex-path-scan-link" data-path="${currentAccumulatedPath}" data-section-id="${sectionId}" data-type="${clickType}" title="[ ${currentAccumulatedPath} ] 경로 스캔" style="color:${color}; font-weight:${fontWeight}; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='${color}'; this.style.textDecoration='none';">${seg}</a>`;
+            
+            if (!isLast) html += `<span style="color:#999; margin:0 1px;">${sep}</span>`;
+        });
+
+        return html;
     }
 
     function invalidateVisibleCaches(serverId) {
@@ -3775,7 +3822,12 @@ GM_addStyle(`
                     const localPath = getLocalPath(serverPath);
                     const ePath = encodePathSafe(localPath);
                     folderIconHtml = `<a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열기" data-path="${localPath}"><i class="fas fa-folder-open"></i></a>`;
-                    pathLinkHtml = `<a href="#" class="plex-path-scan-link" data-path="${serverPath}" data-section-id="${data.librarySectionID}" data-type="directory" title="클릭하여 Plex Mate로 스캔">${displayPath}</a>`;
+                    
+                    if (isRoot) {
+                        pathLinkHtml = generateSplitPathHtml(serverPath, data.librarySectionID, 'directory', '');
+                    } else {
+                        pathLinkHtml = `<a href="#" class="plex-path-scan-link" data-path="${serverPath}" data-section-id="${data.librarySectionID}" data-type="directory" title="클릭하여 Plex Mate로 스캔" style="color:#9E9E9E; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='#9E9E9E'; this.style.textDecoration='none';">${displayPath}</a>`;
+                    }
                 }
 
                 let html = `
@@ -3949,14 +4001,13 @@ GM_addStyle(`
                 let pathLinkHtml = '';
 
                 if (srvConfig) {
-                    const ePath = encodePathSafe(getLocalPath(v.file));
+                    const localFilePath = getLocalPath(v.file);
+                    const ePath = encodePathSafe(localFilePath);
                     let justFileName = v.file.split(/[\\/]/).pop() || v.file;
                     
                     playExternalHtml = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" title="로컬 재생" data-filename="${justFileName}"><i class="fas fa-play"></i></a>`;
                     
-                    const folderPath = getLocalPath(v.file.substring(0, v.file.lastIndexOf('/') > v.file.lastIndexOf('\\') ? v.file.lastIndexOf('/') : v.file.lastIndexOf('\\')));
-                    const eFolderPath = encodePathSafe(folderPath);
-                    openFolderHtml = `<a href="plexfolder://${eFolderPath}" class="plex-guid-action plex-open-folder" title="폴더 열기" data-path="${folderPath}"><i class="fas fa-folder-open"></i></a>`;
+                    openFolderHtml = `<a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열고 파일 선택" data-path="${localFilePath}"><i class="fas fa-folder-open"></i></a>`;
 
                     const uTags = applyUserTags(v.file, []);
                     const uTagsHtml = uTags.length > 0
@@ -3965,7 +4016,7 @@ GM_addStyle(`
 
                     pathLinkHtml = `
                     <div style="font-size: 12px; color: #9E9E9E; padding-left: 8px; padding-right: 10px; margin-top: 4px; word-break: break-all; overflow-wrap: anywhere; line-height: 1.3;">
-                        ${uTagsHtml}<a href="#" class="plex-path-scan-link" data-path="${v.file}" data-section-id="${data.librarySectionID}" data-type="video" title="클릭하여 Plex Mate로 스캔">${emphasizeFileName(v.file)}</a>
+                        ${generateSplitPathHtml(v.file, data.librarySectionID, 'video', uTagsHtml)}
                     </div>`;
                 } else {
                     let justFileName = "Unknown File";
@@ -4856,7 +4907,8 @@ GM_addStyle(`
             ClientSettings.pathMappings.forEach((m) => {
                 mappingsHtml += `
                     <div class="pmh-path-mapping-row" style="display:flex; gap:10px; margin-bottom:8px; align-items:center;">
-                        <input type="text" class="pmh-input-text pmh-map-srv" value="${m.serverPrefix}" placeholder="서버 경로 (예: /mnt/gds/)" style="flex:1;">
+                        <input type="text" class="pmh-input-text pmh-map-srv" value="${m.serverPrefix}" placeholder="서버 경로 (예: 
+                        /gds/)" style="flex:1;">
                         <i class="fas fa-arrow-right" style="color:#777;"></i>
                         <input type="text" class="pmh-input-text pmh-map-loc" value="${m.localPrefix}" placeholder="로컬 경로 (예: Z:/gds/)" style="flex:1;">
                         <button class="pmh-btn-remove-row" style="background:#bd362f; color:#fff; border:none; border-radius:4px; padding:6px 10px; cursor:pointer;"><i class="fas fa-times"></i></button>

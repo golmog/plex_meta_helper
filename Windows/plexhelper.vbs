@@ -1,4 +1,4 @@
-' plexhelper.vbs - Windows용 Plex Helper 스크립트
+' plexhelper.vbs - Windows용 Plex Helper 스크립트 (PMH v0.8+ 호환)
 Option Explicit
 Dim WshShell, fso, strArg, potPath
 
@@ -6,6 +6,11 @@ Dim WshShell, fso, strArg, potPath
 ' [설정] 팟플레이어 경로 (x64 및 x86 자동 탐색)
 potPath = "C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe"
 Set fso = CreateObject("Scripting.FileSystemObject")
+
+If Not fso.FileExists(potPath) Then 
+    potPath = "C:\Program Files\DAUM\PotPlayer\PotPlayer64.exe"
+End If
+
 If Not fso.FileExists(potPath) Then 
     potPath = "C:\Program Files (x86)\DAUM\PotPlayer\PotPlayerMini.exe"
 End If
@@ -28,10 +33,11 @@ Else
     WScript.Quit
 End If
 
-' 2. URL 디코딩 함수
+' 2. URL 디코딩 함수 (VBScript에서 안전한 디코딩 처리)
 Function DecodeURL(str)
     Dim html
     Set html = CreateObject("htmlfile")
+    ' JavaScript의 decodeURIComponent를 빌려와서 완벽한 UTF-8 디코딩 수행
     html.parentWindow.execScript "function decode(s){return decodeURIComponent(s);}", "jscript"
     DecodeURL = html.parentWindow.decode(str)
 End Function
@@ -45,7 +51,51 @@ On Error GoTo 0
 ' [처리부] 프로토콜별 동작
 ' =========================================================
 Select Case protocol
+    
+    Case "plexfolder"
+        ' PMH v0.8: %7C 등의 특수문자가 있을 수 있으므로 / 를 \ 로 변환
+        decodedPayload = Replace(decodedPayload, "/", "\")
+        
+        If fso.FileExists(decodedPayload) Then
+            ' 1. 파일이 존재하면: 해당 파일을 하이라이트(Select) 상태로 탐색기 열기
+            WshShell.Run "explorer.exe /select,""" & decodedPayload & """", 1, False
+        ElseIf fso.FolderExists(decodedPayload) Then
+            ' 2. 대상이 폴더이고 존재하면: 해당 폴더 창 열기
+            WshShell.Run "explorer.exe """ & decodedPayload & """", 1, False
+        Else
+            ' 3. 파일/폴더가 없으면 존재하는 가장 가까운 상위 폴더를 찾을 때까지 거슬러 올라감
+            Dim targetPath, parentFound
+            targetPath = decodedPayload
+            parentFound = False
+            
+            Do While Len(targetPath) > 3 ' 최소 드라이브 경로(예: C:\)는 남을 때까지 반복
+                targetPath = fso.GetParentFolderName(targetPath)
+                If targetPath = "" Then Exit Do
+                
+                If fso.FolderExists(targetPath) Then
+                    WshShell.Run "explorer.exe """ & targetPath & """", 1, False
+                    parentFound = True
+                    Exit Do
+                End If
+            Loop
+            
+            If Not parentFound Then
+                MsgBox "경로를 찾을 수 없습니다 (상위 폴더도 모두 삭제됨)." & vbCrLf & decodedPayload, 16, "Plex Helper Error"
+            End If
+        End If
+
+    Case "plexplay"
+        decodedPayload = Replace(decodedPayload, "/", "\")
+        
+        If fso.FileExists(decodedPayload) Then
+            ' 기본 연결 프로그램으로 즉시 실행
+            WshShell.Run """" & decodedPayload & """", 1, False
+        Else
+            MsgBox "파일을 찾을 수 없습니다." & vbCrLf & decodedPayload, 16, "Plex Helper Error"
+        End If
+
     Case "plexstream"
+        ' PMH v0.8은 %7C (파이프 기호) 로 데이터를 구분함
         parts = Split(decodedPayload, "|")
         videoUrl = Trim(parts(0))
         
@@ -76,7 +126,7 @@ Select Case protocol
             http.SetTimeouts 5000, 5000, 5000, 5000
             On Error Resume Next
             http.Open "GET", serverUrl & "/library/metadata/" & ratingKey & "?X-Plex-Token=" & plexToken, False
-            http.Option(4) = 13056
+            http.Option(4) = 13056 ' HTTPS 인증서 오류 무시 (plex.direct 로컬 IP 접근용)
             http.Send
             If http.Status = 200 Then
                 Dim xmlDoc, node
@@ -91,17 +141,18 @@ Select Case protocol
             On Error GoTo 0
         End If
 
-        ' 안전한 파일명 생성
+        ' 안전한 파일명 생성 (특수문자 제거)
         re.Pattern = "[\\/:*?""<>|]"
         Dim safeName, dotPos, baseName
         safeName = re.Replace(fileName, "_")
         dotPos = InStrRev(safeName, ".")
         If dotPos > 1 Then baseName = Left(safeName, dotPos - 1) Else baseName = safeName
 
-        ' 자막 다운로드
+        ' 자막 다운로드 (임시 폴더)
         Dim tempPath, subLocalPath
         tempPath = fso.GetSpecialFolder(2).Path
         subLocalPath = ""
+        
         If subUrl <> "" Then
             Dim ext : ext = "srt"
             If InStr(LCase(subUrl), ".ass") > 0 Then ext = "ass"
@@ -135,7 +186,7 @@ Select Case protocol
                 If fso.FileExists(subLocalPath) Then cmdArgs = cmdArgs & " /sub=""" & subLocalPath & """"
             End If
 
-            ' 이어보기 팝업 처리
+            ' 이어보기 팝업 처리 (PowerShell 이용)
             If offset > 0 Then
                 Dim psMsgScript, msgResult, timeStr
                 timeStr = FormatTime(offset)
@@ -237,24 +288,6 @@ Select Case protocol
             End If
         Else
             MsgBox "팟플레이어를 찾을 수 없습니다." & vbCrLf & potPath, 16, "Plex Helper Error"
-        End If
-
-    Case "plexplay"
-        decodedPayload = Replace(decodedPayload, "/", "\")
-        If fso.FileExists(decodedPayload) Then
-            WshShell.Run """" & decodedPayload & """", 1, False
-        Else
-            MsgBox "파일을 찾을 수 없습니다." & vbCrLf & decodedPayload, 16, "Plex Helper Error"
-        End If
-
-    Case "plexfolder"
-        decodedPayload = Replace(decodedPayload, "/", "\")
-        If fso.FolderExists(decodedPayload) Then
-            WshShell.Run "explorer.exe """ & decodedPayload & """", 1, False
-        ElseIf fso.FileExists(decodedPayload) Then
-            WshShell.Run "explorer.exe /select,""" & decodedPayload & """", 1, False
-        Else
-            MsgBox "경로를 찾을 수 없습니다." & vbCrLf & decodedPayload, 16, "Plex Helper Error"
         End If
 
 End Select
