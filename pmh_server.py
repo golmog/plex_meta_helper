@@ -430,24 +430,38 @@ def safe_download_and_replace(url, target_filepath):
             original_uid = stat_info.st_uid
             original_gid = stat_info.st_gid
         except Exception as e:
-            print(f"[PMH UPDATE WARNING] {os.path.basename(target_filepath)} 소유권 확인 실패 (무시됨): {e}")
+            pass
 
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
-            code_content = response.read().decode('utf-8')
+            raw_data = response.read()
             
-        if len(code_content) < 100 or "def " not in code_content:
-            raise Exception("다운로드된 코드의 크기가 너무 작거나 비정상적입니다.")
+            is_binary = target_filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico'))
+            is_python = target_filepath.lower().endswith('.py')
             
-        with open(target_filepath, 'w', encoding='utf-8') as f:
-            f.write(code_content)
+            if is_binary:
+                if len(raw_data) == 0:
+                    raise Exception("다운로드된 파일(바이너리)의 크기가 0바이트입니다.")
+                with open(target_filepath, 'wb') as f:
+                    f.write(raw_data)
+            else:
+                code_content = raw_data.decode('utf-8')
+                
+                if is_python:
+                    if len(code_content) < 100 or "def " not in code_content:
+                        raise Exception("다운로드된 파이썬 코드의 크기가 너무 작거나 비정상적입니다.")
+                else:
+                    if len(code_content) < 10:
+                        raise Exception(f"다운로드된 {os.path.basename(target_filepath)} 내용이 비어있습니다.")
+                
+                with open(target_filepath, 'w', encoding='utf-8') as f:
+                    f.write(code_content)
             
         if original_uid != -1 and original_gid != -1:
             try:
                 os.chown(target_filepath, original_uid, original_gid)
-                # print(f"[PMH UPDATE] 소유권 복구 완료 ({original_uid}:{original_gid}) -> {os.path.basename(target_filepath)}")
             except Exception as e:
-                print(f"[PMH UPDATE WARNING] {os.path.basename(target_filepath)} 소유권 복구 실패 (권한 부족일 수 있음): {e}")
+                pass
                 
         print(f"[PMH UPDATE] ✅ 성공: {os.path.basename(target_filepath)} 업데이트 완료.")
         return True
