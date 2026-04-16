@@ -664,14 +664,12 @@ def worker(task_data, core_api, start_progress):
                             break
 
                 if reason:
-                    server_folder_path = os.path.dirname(matched_fpath)
-                    
                     result_data.append({
                         "id": item['id'], 
                         "section_name": item['section_name'], 
                         "title": item['title'],
                         "reason": reason,
-                        "folder_path": server_folder_path
+                        "raw_path": matched_fpath
                     })
 
         if task.is_cancelled():
@@ -688,8 +686,8 @@ def worker(task_data, core_api, start_progress):
         elif mode == "file_error": btn_label = "오류 항목 수동 이름 변경 권장"
         
         if mode == "file_error":
-            columns[-1] = {"key": "folder_path", "label": "폴더", "width": "10%", "align": "center", "header_align": "center", "type": "folder_link"}
-            action_btn = None 
+            columns[-1] = {"key": "raw_path", "label": "파일 선택", "width": "10%", "align": "center", "header_align": "center", "type": "folder_link"}
+            action_btn = None
         else:
             action_btn = {"label": f"<i class='fas fa-magic'></i> {btn_label}", "payload": {"action_type": "execute"}}
         
