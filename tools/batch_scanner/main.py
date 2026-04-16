@@ -50,7 +50,6 @@ def call_plexmate_scan(mate_url, apikey, target_path, section_id):
     except Exception: return False
 
 def translate_path(plex_path, mappings):
-    """Plex 컨테이너 내부 경로를 Plex Mate(또는 로컬/호스트)가 인식하는 외부 경로로 변환합니다."""
     if not mappings or not plex_path: return plex_path
     plex_path = plex_path.replace('\\', '/')
     for m in mappings:
@@ -365,7 +364,7 @@ def run(data, core_api):
         task_data['_auto_refresh_ui'] = True
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
-    if action == 'execute_instant':
+    if action == 'cron_run':
         task_data = data.copy()
         return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
@@ -384,12 +383,12 @@ def run(data, core_api):
                     return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
             task_data = data.copy()
-            task_data['action_type'] = 'execute_instant'
+            task_data['action_type'] = 'cron_run'
             task_data['_is_cron'] = True
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
         elif data.get('_is_single'):
-            items = [{'id': str(data.get('rating_key', data.get('id'))), 'title': data.get('title', '단일 실행 항목'), 'section_id': data.get('section_id')}]
+            items = [{'id': str(data.get('id')), 'title': data.get('title', '단일 실행 항목'), 'section_id': data.get('section_id')}]
             task_data = {"mode": current_mode, "opt_vfs": vfs_opt, "target_items": items, "total": len(items)}
             task_data['_is_single'] = True
             task_data['_silent_task'] = True
@@ -419,14 +418,14 @@ def worker(task_data, core_api, start_index):
 
     mate_url = core_api['config'].get('mate_url', '')
     mate_apikey = core_api['config'].get('mate_apikey', '')
-
     retry_errors = task_data.get('retry_errors', False)
 
     # -----------------------------------------------------------------
-    # [1] Preview 액션
+    # [1] Preview 액션 및 Cron_run 초기화
     # -----------------------------------------------------------------
-    if action == 'preview':
-        task.log("🔍 조회 대상을 찾기 위해 라이브러리를 검사합니다...")
+    if action in ['preview', 'cron_run']:
+        prefix = "[자동 실행] " if action == 'cron_run' else ""
+        task.log(f"🔍 {prefix}조회 대상을 찾기 위해 라이브러리를 검사합니다...")
         task.update_state('running', progress=0, total=100)
         items, total_scanned = get_target_items(task_data, core_api, task)
 
@@ -473,76 +472,71 @@ def worker(task_data, core_api, start_index):
             "data": table_data
         }
 
+        # UI 표를 그리기 위한 DB 저장
         core_api['cache'].save(res_payload)
-        task.update_state('completed', progress=100, total=100)
-
-        if len(items) > 0:
-            task.log(f"✅ 조회 완료! 총 {len(items):,}건의 대상을 찾았습니다.")
+        
+        if action == 'preview':
+            task.update_state('completed', progress=100, total=100)
+            if len(items) > 0:
+                task.log(f"✅ 조회 완료! 총 {len(items):,}건의 대상을 찾았습니다.")
+            else:
+                task.log("✅ 라이브러리 검사 완료. 조건에 일치하는 대상이 없습니다.")
+            return
         else:
-            task.log("✅ 라이브러리 검사 완료. 조건에 일치하는 대상이 없습니다.")
-        return
+            if len(items) == 0:
+                task.update_state('completed', progress=100, total=100)
+                task.log("✅ [자동 실행] 실행할 대상 항목이 없어 작업을 종료합니다.")
+                return
+            
+            action = 'execute'
+            task_data['_use_cache_db'] = True
+            task_data['total'] = len(items)
+            start_index = 0
+            task.log(f"✅ [자동 실행] 조회 완료. 생성된 목록(총 {len(items):,}건)을 바탕으로 즉시 작업을 시작합니다.")
 
     # -----------------------------------------------------------------
     # [Execute 액션]
     # -----------------------------------------------------------------
     mode = task_data.get('mode', 'refresh')
 
-    if action == 'execute_instant':
-        task.log(f"🔍 '{mode}' 작업을 위한 대상 항목 조회를 즉시 시작합니다...")
-        items, _ = get_target_items(task_data, core_api, task)
-        total = len(items)
-        task.log(f"✅ 조회 완료. 총 {total:,}건의 항목에 대해 복구 작업을 시작합니다.")
-        task.update_state('running', progress=0, total=total)
-        if total == 0:
-            task.update_state('completed', progress=0, total=0)
-            return
+    total = task_data.get('total', 0)
+    if task_data.get('_resume_start_index') is not None:
+        start_index = task_data['_resume_start_index']
+        task.update_state('running', progress=start_index, total=total)
+        task.log(f"🔄 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
+
+    if task_data.get('_use_cache_db'):
+        def load_all_items(start_idx):
+            cache_db_path = core_api['cache'].db_file
+            results = []
+            with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
+                conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                status_filter = "('pending', 'error')" if retry_errors else "('pending')"
+                c.execute("SELECT * FROM data WHERE pmh_status IN {} ORDER BY pmh_id LIMIT -1 OFFSET ?".format(status_filter), (start_idx,))
+                for r in c.fetchall():
+                    row_dict = dict(r)
+                    row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
+                    row_dict['rating_key'] = row_dict['id']
+                    if isinstance(row_dict.get('files'), str):
+                        try: row_dict['files'] = json.loads(row_dict['files'])
+                        except: row_dict['files'] = []
+                    results.append(row_dict)
+            return results
+        
+        items = load_all_items(start_index)
+        total = len(items) + start_index
 
     else:
-        total = task_data.get('total', 0)
-        if task_data.get('_resume_start_index') is not None:
-            start_index = task_data['_resume_start_index']
-            task.update_state('running', progress=start_index, total=total)
-            task.log(f"🔄 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
+        items = task_data.get('target_items', [])
 
-        if task_data.get('_use_cache_db'):
-            def load_all_items(start_idx):
-                cache_db_path = core_api['cache'].db_file
-                results = []
-                with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
-                    conn.row_factory = sqlite3.Row
-                    c = conn.cursor()
-                    
-                    if retry_errors:
-                        status_filter = "('pending', 'error')"
-                    else:
-                        status_filter = "('pending')"
+    if total == 0:
+        task.update_state('completed', progress=0, total=0)
+        task.log("⚠️ 실행할 대상 항목이 없습니다.")
+        return
 
-                    c.execute("SELECT * FROM data WHERE pmh_status IN {} ORDER BY pmh_id LIMIT -1 OFFSET ?".format(status_filter), (start_idx,))
-                    
-                    for r in c.fetchall():
-                        row_dict = dict(r)
-                        row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
-                        row_dict['rating_key'] = row_dict['id']
-                        if isinstance(row_dict.get('files'), str):
-                            try: row_dict['files'] = json.loads(row_dict['files'])
-                            except: row_dict['files'] = []
-                        results.append(row_dict)
-                return results
-            
-            items = load_all_items(start_index)
-            total = len(items) + start_index
-
-        else:
-            items = task_data.get('target_items', [])
-
-        if total == 0:
-            task.update_state('completed', progress=0, total=0)
-            task.log("⚠️ 실행할 대상 항목이 없습니다.")
-            return
-
-        if not task_data.get('_resume_start_index'):
-            mode = task_data.get('mode', 'refresh')
-            task.log(f"🚀 총 {total:,}건 작업을 시작합니다.")
+    if not task_data.get('_resume_start_index'):
+        task.log(f"🚀 총 {total:,}건 작업을 시작합니다.")
 
     opts = core_api.get('options', {})
     try: sleep_time = float(opts.get('sleep_time', 2))
@@ -553,7 +547,8 @@ def worker(task_data, core_api, start_index):
         try:
             plex = core_api['get_plex']()
             if start_index == 0:
-                task.log("🔌 Plex 연결 완료.")
+                prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
+                task.log(f"{prefix}Plex 연결 완료.")
         except Exception as e:
             task.update_state('error'); task.log(f"❌ Plex 연결 실패: {str(e)}"); return
 
@@ -643,7 +638,8 @@ def worker(task_data, core_api, start_index):
                             target_agent=plex_item.section().agent,
                             plex_inst=plex,
                             try_refresh_first=try_refresh,
-                            do_unmatch_first=do_unmatch
+                            do_unmatch_first=do_unmatch,
+                            global_config=core_api['config']
                         )
                         
                         if task.is_cancelled(): return
