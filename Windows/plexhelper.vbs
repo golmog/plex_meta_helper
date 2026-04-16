@@ -50,20 +50,31 @@ On Error GoTo 0
 ' =========================================================
 ' [처리부] 프로토콜별 동작
 ' =========================================================
+Function RemoveTrailingSlash(strPath)
+    Dim tempPath
+    tempPath = Trim(strPath)
+    
+    Do While (Right(tempPath, 1) = "/") Or (Right(tempPath, 1) = "\")
+        tempPath = Left(tempPath, Len(tempPath) - 1)
+    Loop
+    
+    RemoveTrailingSlash = tempPath
+End Function
+
+decodedPayload = Replace(decodedPayload, "/", "\")
+decodedPayload = RemoveTrailingSlash(decodedPayload)
+
 Select Case protocol
     
     Case "plexfolder"
-        ' PMH v0.8: %7C 등의 특수문자가 있을 수 있으므로 / 를 \ 로 변환
-        decodedPayload = Replace(decodedPayload, "/", "\")
-        
         If fso.FileExists(decodedPayload) Then
-            ' 1. 파일이 존재하면: 해당 파일을 하이라이트(Select) 상태로 탐색기 열기
+            ' 파일인 경우: 해당 파일을 하이라이트(Select) 상태로 탐색기 열기
             WshShell.Run "explorer.exe /select,""" & decodedPayload & """", 1, False
         ElseIf fso.FolderExists(decodedPayload) Then
-            ' 2. 대상이 폴더이고 존재하면: 해당 폴더 창 열기
+            ' 폴더인 경우: 해당 폴더 창 열기
             WshShell.Run "explorer.exe """ & decodedPayload & """", 1, False
         Else
-            ' 3. 파일/폴더가 없으면 존재하는 가장 가까운 상위 폴더를 찾을 때까지 거슬러 올라감
+            ' 파일/폴더가 없으면 존재하는 가장 가까운 상위 폴더를 찾을 때까지 거슬러 올라감
             Dim targetPath, parentFound
             targetPath = decodedPayload
             parentFound = False
@@ -85,8 +96,6 @@ Select Case protocol
         End If
 
     Case "plexplay"
-        decodedPayload = Replace(decodedPayload, "/", "\")
-        
         If fso.FileExists(decodedPayload) Then
             ' 기본 연결 프로그램으로 즉시 실행
             WshShell.Run """" & decodedPayload & """", 1, False
