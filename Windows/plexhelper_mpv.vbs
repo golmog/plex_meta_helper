@@ -55,16 +55,17 @@ Function RemoveTrailingSlash(strPath)
     RemoveTrailingSlash = tempPath
 End Function
 
+If protocol <> "plexstream" Then
+    decodedPayload = Replace(decodedPayload, "/", "\")
+    decodedPayload = RemoveTrailingSlash(decodedPayload)
+End If
+
 ' =========================================================
 ' [처리부] 프로토콜별 동작
 ' =========================================================
 Select Case protocol
     
     Case "plexfolder"
-        ' 로컬 폴더 열기는 윈도우 경로(\)로 변환
-        decodedPayload = Replace(decodedPayload, "/", "\")
-        decodedPayload = RemoveTrailingSlash(decodedPayload)
-        
         If fso.FileExists(decodedPayload) Then
             WshShell.Run "explorer.exe /select,""" & decodedPayload & """", 1, False
         ElseIf fso.FolderExists(decodedPayload) Then
@@ -91,10 +92,6 @@ Select Case protocol
         End If
 
     Case "plexplay"
-        ' ? [로컬 재생] 팟플레이어로 즉시 실행
-        decodedPayload = Replace(decodedPayload, "/", "\")
-        decodedPayload = RemoveTrailingSlash(decodedPayload)
-        
         If fso.FileExists(decodedPayload) Then
             If fso.FileExists(potPath) Then
                 WshShell.Run """" & potPath & """ """ & decodedPayload & """", 1, False

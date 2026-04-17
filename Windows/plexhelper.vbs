@@ -61,8 +61,10 @@ Function RemoveTrailingSlash(strPath)
     RemoveTrailingSlash = tempPath
 End Function
 
-decodedPayload = Replace(decodedPayload, "/", "\")
-decodedPayload = RemoveTrailingSlash(decodedPayload)
+If protocol <> "plexstream" Then
+    decodedPayload = Replace(decodedPayload, "/", "\")
+    decodedPayload = RemoveTrailingSlash(decodedPayload)
+End If
 
 Select Case protocol
     
