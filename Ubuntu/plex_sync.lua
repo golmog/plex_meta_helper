@@ -30,11 +30,11 @@ math.randomseed(os.time() + math.floor(mp.get_time() * 1000))
 local random_suffix = tostring(math.random(10000, 99999))
 
 local CLIENT_ID_BASE = "PlexMetaHelper"
-local CURRENT_CLIENT_ID = "" 
+local CURRENT_CLIENT_ID = ""
 
-local PLEX_PRODUCT = "MPV"  
-local PLEX_DEVICE = "MacOS"            
-local PLEX_DEVICE_NAME = "Plex Meta Helper" 
+local PLEX_PRODUCT = "MPV"
+local PLEX_DEVICE = "Linux"
+local PLEX_DEVICE_NAME = "Plex Meta Helper"
 
 -- ==================================================================================
 -- [2] 전역 변수
