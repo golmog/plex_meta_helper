@@ -1,4 +1,10 @@
 # -*- coding: utf-8 -*-
+"""
+====================================================================================
+ [PMH Bundle Tool] - JAV 매니저 (JAV Manager)
+====================================================================================
+"""
+
 import os
 import re
 import sqlite3
@@ -280,7 +286,7 @@ def _mark_poster_applied(db_path, section_id, pid):
 # ==============================================================================
 # 워커 쓰레드 로직 (백그라운드 처리)
 # ==============================================================================
-def worker(task_data, core_api, start_progress):
+def worker(task_data, core_api, start_index):
     task = core_api['task']
     action = task_data.get('action_type')
     mode = task_data.get('scan_mode', 'mismatch')
@@ -700,12 +706,8 @@ def worker(task_data, core_api, start_progress):
 
         result_data = core_api['sort'](result_data, [{"key": "section_name", "dir": "asc"}, {"key": "title", "dir": "asc"}])
 
-        btn_label = "일괄 매칭 시작 (Unmatch -> Rematch)"
-        if mode == "mismatch": btn_label = "불일치/오매칭 일괄 재매칭"
-        elif mode == "dupes": btn_label = "분리/중복 아이템 일괄 재매칭"
-        elif mode == "actor": btn_label = "배우 이름 한글화 일괄 적용 (메타 갱신)"
-        elif mode == "user_poster": btn_label = "유저 커스텀 포스터 일괄 적용 (메타 갱신)"
-        elif mode == "file_error": btn_label = "오류 항목 수동 이름 변경 권장"
+        btn_label = "일괄 리매칭 시작"
+        if mode == "file_error": btn_label = "수동 확인 필요"
         
         if mode == "file_error":
             columns[-1] = {"key": "raw_path", "label": "파일 선택", "width": "10%", "align": "center", "header_align": "center", "type": "folder_link"}
@@ -754,8 +756,8 @@ def worker(task_data, core_api, start_progress):
     except: sleep_time = 1.0
     
     total = task_data.get('total', 0)
-    progress = task_data.get('_resume_start_index', start_progress)
-    
+    progress = task_data.get('_resume_start_index', start_index)
+
     if task_data.get('_is_single'):
         pending_items = task_data.get('target_items', [])
     else:
@@ -763,7 +765,7 @@ def worker(task_data, core_api, start_progress):
         with core_api['cache'].transaction_session() as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
-            c.execute(f"SELECT * FROM data WHERE pmh_status IN {status_filter} ORDER BY pmh_id ASC")
+            c.execute(f"SELECT * FROM data WHERE pmh_status IN {status_filter} ORDER BY pmh_id LIMIT -1 OFFSET ?", (progress,))
             rows = c.fetchall()
             cols = [desc[0] for desc in c.description] if c.description else []
             pending_items = [dict(zip(cols, row)) for row in rows]
@@ -799,16 +801,16 @@ def worker(task_data, core_api, start_progress):
             task.update_state('running', progress=progress, total=total)
 
             item_id = str(item['id'])
-            db_id = item.get('pmh_id')
             title = item.get('title', item_id)
             op_action = item.get('op_action', 'match')
             
             task.log(f"[{progress}/{total}] '{title}' 처리 요청 중... (동작: {op_action})")
             
+            item_has_error = False
+
             try:
                 if op_action == 'open_folder':
                     task.log(f"  -> 📂 수동 폴더 열기 전용 항목입니다. 시스템 자동 처리를 스킵합니다.")
-                    if db_id: core_api['cache'].mark_as_done('pmh_id', db_id)
                     continue
 
                 safe_endpoint = f"/library/metadata/{item_id}"
@@ -818,44 +820,45 @@ def worker(task_data, core_api, start_progress):
                     if len(plex_item.media) > 1:
                         plex_item.split()
                         task.log(f"  -> ✂️ 항목이 분리되었습니다.")
-                        if db_id: core_api['cache'].mark_as_done('pmh_id', db_id)
                     else:
                         task.log("  -> ⚠️ 분리 불가: 단일 미디어 파일입니다. 분리 대신 매칭(Match)으로 우회합니다.")
                         op_action = 'match'
 
                 if op_action == 'match':
-                    success, msg, score = pmh_core.perform_smart_match(
+                    success, msg, score = pmh_core.perform_smart_media_action(
                         plex_url=plex._baseurl, 
                         plex_token=plex._token, 
                         rating_key=item_id, 
+                        action_type='match',
                         item_title=plex_item.title, 
                         item_year=plex_item.year, 
                         target_agent=plex_item.section().agent,
                         plex_inst=plex,
                         try_refresh_first=False,
                         do_unmatch_first=True,
-                        global_config=core_api['config']
+                        global_config=core_api['config'],
+                        cancel_checker=task.is_cancelled
                     )
                     
                     if success:
                         task.log(f"  -> ✅ 매칭 처리 완료: {msg}")
-                        if db_id: core_api['cache'].mark_as_done('pmh_id', db_id)
-                        
                         if mode == "user_poster":
                             _raw_db_pid = item.get('_raw_db_pid')
                             _raw_sec_id = item.get('_raw_sec_id')
                             if _raw_db_pid and _raw_sec_id:
                                 _mark_poster_applied(history_db_path, _raw_sec_id, _raw_db_pid)
                                 task.log(f"  -> 💾 영구 DB에 포스터 적용 이력 저장 완료 ({_raw_sec_id}_{_raw_db_pid})")
-                            else:
-                                task.log(f"  -> ⚠️ 영구 DB 저장 누락 (품번 또는 섹션ID 정보가 없음)")
                     else:
                         task.log(f"  -> ❌ 매칭 실패/반려: {msg}")
-                        if db_id: core_api['cache'].mark_as_error('pmh_id', db_id)
+                        item_has_error = True
+
+                if not task_data.get('_is_single'):
+                    if item_has_error: core_api['cache'].mark_as_error('id', item_id)
+                    else: core_api['cache'].mark_keys_as_done('id', [item_id])
 
             except Exception as e:
                 task.log(f"  -> ❌ Plex 제어 에러: {e}")
-                if db_id: core_api['cache'].mark_as_error('pmh_id', db_id)
+                if not task_data.get('_is_single'): core_api['cache'].mark_as_error('id', item_id)
                 
             if sleep_time > 0 and progress < total:
                 loops = max(1, int(sleep_time * 2))
@@ -865,20 +868,14 @@ def worker(task_data, core_api, start_progress):
 
         if not task.is_cancelled():
             task.update_state('completed', progress, total)
-            
             elapsed_sec = int(time.time() - work_start_time)
             elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
-            
             task.log(f"✅ 모든 작업 요청이 완료되었습니다! (소요시간: {elapsed_str})")
             
             mode_label = "품번 불일치/오매칭 복구" if mode == "mismatch" else "중복 아이템 재매칭" if mode == "dupes" else "배우 한글화 갱신" if mode == "actor" else "유저 포스터 일괄 갱신"
-            if mode == "file_error": mode_label = "파일명 오류 항목 수동 이름 변경 유도"
+            if mode == "file_error": mode_label = "파일명 오류 항목(수동 확인/작업 필요)"
             
-            tool_vars = {
-                "total": f"{total:,}",
-                "elapsed_time": elapsed_str,
-                "scan_mode_label": mode_label
-            }
+            tool_vars = {"total": f"{total:,}", "elapsed_time": elapsed_str, "scan_mode_label": mode_label}
             core_api['notify']("JAV 매니저 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
             
     finally:
@@ -886,5 +883,4 @@ def worker(task_data, core_api, start_progress):
         if current_state:
             real_state = current_state.get('state', 'running')
             if real_state != 'completed':
-                p_val = locals().get('progress', 0)
-                task.update_state(real_state, progress=p_val)
+                task.update_state(real_state, progress=progress)
