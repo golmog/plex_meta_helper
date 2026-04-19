@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ====================================================================================
- [PMH Tool Reference Template] - 배치 스캐너 (Batch Scanner)
+ [PMH Bundle Tool] - 배치 스캐너 (Batch Scanner)
 ====================================================================================
 """
 
@@ -453,7 +453,7 @@ def worker(task_data, core_api, start_index):
         action_btn = None
         if len(items) > 0:
             action_btn = {
-                "label": f"<i class='fas fa-rocket'></i> 검색된 {len(items):,}건 전체 작업 시작",
+                "label": "<i class='fas fa-rocket'></i> 전체 작업 시작",
                 "payload": {"action_type": "execute", "mode": task_data.get('mode', 'refresh')}
             }
 
@@ -498,199 +498,145 @@ def worker(task_data, core_api, start_index):
     # [Execute 액션]
     # -----------------------------------------------------------------
     mode = task_data.get('mode', 'refresh')
-
-    total = task_data.get('total', 0)
-    if task_data.get('_resume_start_index') is not None:
-        start_index = task_data['_resume_start_index']
-        task.update_state('running', progress=start_index, total=total)
-        task.log(f"🔄 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
-
-    if task_data.get('_use_cache_db'):
-        def load_all_items(start_idx):
-            cache_db_path = core_api['cache'].db_file
-            results = []
-            with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
-                conn.row_factory = sqlite3.Row
-                c = conn.cursor()
-                status_filter = "('pending', 'error')" if retry_errors else "('pending')"
-                c.execute("SELECT * FROM data WHERE pmh_status IN {} ORDER BY pmh_id LIMIT -1 OFFSET ?".format(status_filter), (start_idx,))
-                for r in c.fetchall():
-                    row_dict = dict(r)
-                    row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id')))
-                    row_dict['rating_key'] = row_dict['id']
-                    if isinstance(row_dict.get('files'), str):
-                        try: row_dict['files'] = json.loads(row_dict['files'])
-                        except: row_dict['files'] = []
-                    results.append(row_dict)
-            return results
-        
-        items = load_all_items(start_index)
-        total = len(items) + start_index
-
-    else:
-        items = task_data.get('target_items', [])
-
-    if total == 0:
-        task.update_state('completed', progress=0, total=0)
-        task.log("⚠️ 실행할 대상 항목이 없습니다.")
-        return
-
-    if not task_data.get('_resume_start_index'):
-        task.log(f"🚀 총 {total:,}건 작업을 시작합니다.")
-
+    retry_errors = task_data.get('retry_errors', False)
     opts = core_api.get('options', {})
     try: sleep_time = float(opts.get('sleep_time', 2))
     except: sleep_time = 2.0
+    
+    total = task_data.get('total', 0)
+    progress = task_data.get('_resume_start_index', start_index)
+    prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
 
+    # [1] 실행 대상 목록 로드
+    if task_data.get('_is_single'):
+        items = task_data.get('target_items', [])
+    else:
+        status_filter = "('pending', 'error')" if retry_errors else "('pending')"
+        with core_api['cache'].transaction_session() as conn:
+            c = conn.cursor()
+            c.execute(f"SELECT * FROM data WHERE pmh_status IN {status_filter} ORDER BY pmh_id LIMIT -1 OFFSET ?", (progress,))
+            rows = c.fetchall()
+            cols = [desc[0] for desc in c.description] if c.description else []
+            items = [dict(zip(cols, row)) for row in rows]
+
+    if total == 0:
+        task.update_state('completed', 0, 0)
+        task.log("⚠️ 실행할 대상 항목이 없습니다.")
+        return
+
+    task.update_state('running', progress, total)
+    if progress == 0: task.log(f"🚀 {prefix}총 {total:,}건 작업을 시작합니다...")
+    else: task.log(f"🔄 {prefix}중단되었던 {progress}번째 항목부터 작업을 재개합니다.")
+
+    # [2] Plex 및 Mate 연결
     plex = None
     if mode in ['refresh', 'rematch']:
         try:
             plex = core_api['get_plex']()
-            if start_index == 0:
-                prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
-                task.log(f"{prefix}Plex 연결 완료.")
+            if progress == 0: task.log("🔌 Plex 연결 완료.")
         except Exception as e:
-            task.update_state('error'); task.log(f"❌ Plex 연결 실패: {str(e)}"); return
+            task.update_state('error'); task.log(f"❌ Plex 서버 연결 실패: {str(e)}"); return
 
-    def wait_until_stable_idle(max_wait_seconds=30):
-        if plex is None: return True
-        stable_count = 0
-        waited_time = 0
-        while waited_time < max_wait_seconds:
-            if task.is_cancelled(): return False
-            try:
-                if len(plex.query('/activities').findall('Activity')) == 0:
-                    stable_count += 1
-                    if stable_count >= 2: return True
-                else:
-                    stable_count = 0
-            except: pass
-
-            for _ in range(4):
-                if task.is_cancelled(): return False
-                time.sleep(0.5)
-            waited_time += 2
-
-        task.log("⚠️ Plex 작업 큐 대기 시간 초과. 강제로 다음 항목을 진행합니다.")
-        return True
-
+    mate_url = core_api['config'].get('mate_url', '')
+    mate_apikey = core_api['config'].get('mate_apikey', '')
     opt_vfs = task_data.get('opt_vfs', True)
-    idx = start_index
 
+    work_start_time = time.time()
+
+    # [3] 메인 루프
     try:
-        for idx, item in enumerate(items, start=start_index + 1):
-
+        for item in items:
             if task.is_cancelled():
                 task.log("🛑 사용자 요청에 의해 작업을 중단합니다.")
                 return
+                
+            progress += 1
+            task.update_state('running', progress, total)
 
-            mid, title = item['id'], item['title']
-            task.log(f"[{idx}/{total}] 🎬 '{title}' 처리 중...")
-
-            if mode in ['refresh', 'rematch']:
-                if not wait_until_stable_idle(): return
+            mid = str(item.get('rating_key', item.get('id', '')))
+            title = item.get('title', mid)
+            
+            task.log(f"[{progress}/{total}] 🎬 '{title}' 처리 중...")
 
             item_has_error = False
 
             try:
                 if mode == 'path_scan':
                     if not mate_url or not mate_apikey:
-                        raise Exception("Plex Mate 서버 URL 또는 API Key가 설정되지 않았습니다.")
+                        raise Exception("Plex Mate 서버 연결 설정이 누락되었습니다.")
 
                     sec_id = item.get('section_id')
-
                     if opt_vfs:
                         task.log(f"   -> 📂 Plex Mate VFS/Refresh 호출 중...")
-                        if call_plexmate_vfs_refresh(mate_url, mate_apikey, mid):
-                            task.log("      ✅ VFS 갱신 성공")
-                        else:
-                            task.log("      ⚠️ VFS 갱신 실패 (무시하고 스캔을 속행합니다)")
+                        if call_plexmate_vfs_refresh(mate_url, mate_apikey, mid): task.log("      ✅ VFS 갱신 성공")
+                        else: task.log("      ⚠️ VFS 갱신 실패 (무시하고 스캔을 속행합니다)")
 
                     task.log(f"   -> 🔍 Plex Mate 경로 스캔 호출 중...")
-                    if call_plexmate_scan(mate_url, mate_apikey, mid, sec_id):
-                        task.log("      ✅ 스캔 요청 성공 (백그라운드 처리)")
-                    else:
-                        raise Exception("Plex Mate 응답 오류 또는 연결 실패")
+                    if call_plexmate_scan(mate_url, mate_apikey, mid, sec_id): task.log("      ✅ 스캔 요청 성공 (백그라운드 처리)")
+                    else: raise Exception("Plex Mate 응답 오류 또는 연결 실패")
 
-                else:
-                    safe_endpoint = f"/library/metadata/{str(mid).strip()}"
-                    plex_item = plex.fetchItem(safe_endpoint)
-
-                    if task.is_cancelled(): return
-
-                    if mode == 'refresh':
-                        task.log("   -> 🔄 메타데이터 새로고침(Refresh) 호출 중...")
-                        plex_item.refresh()
-                        task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 진행)")
-
-                    elif mode == 'rematch':
-                        task.log("   -> 🔗 스마트 하이브리드 매칭 엔진 가동 중...")
-                        
-                        try_refresh = task_data.get('opt_try_refresh', True)
-                        do_unmatch = task_data.get('opt_unmatch_first', False)
-                        
-                        success, msg, score = pmh_core.perform_smart_match(
-                            plex_url=plex.url, 
-                            plex_token=plex._token, 
-                            rating_key=mid, 
-                            item_title=plex_item.title, 
-                            item_year=plex_item.year, 
-                            target_agent=plex_item.section().agent,
-                            plex_inst=plex,
-                            try_refresh_first=try_refresh,
-                            do_unmatch_first=do_unmatch,
-                            global_config=core_api['config']
-                        )
-                        
-                        if task.is_cancelled(): return
-                        
-                        if success:
-                            task.log(f"      ✅ {msg}")
-                        else:
-                            task.log(f"      ⚠️ {msg}")
-                            item_has_error = True
-                            core_api['cache'].mark_as_error('rating_key', str(mid))
-
-                if action != 'execute_instant':
-                    key_name = 'id' if mode == 'path_scan' else 'rating_key'
+                elif mode in ['refresh', 'rematch']:
+                    try_ref = task_data.get('opt_try_refresh', True) if mode == 'rematch' else False
+                    do_unm = task_data.get('opt_unmatch_first', False) if mode == 'rematch' else False
                     
-                    if item_has_error:
-                        core_api['cache'].mark_as_error(key_name, str(mid))
+                    if mode == 'refresh': task.log("   -> 🔄 새로고침(Refresh) 호출 및 대기 중...")
+                    else: task.log("   -> 🔗 스마트 하이브리드 매칭 엔진 가동 중...")
+                    
+                    success, msg, score = pmh_core.perform_smart_media_action(
+                        plex_url=plex._baseurl, 
+                        plex_token=plex._token, 
+                        rating_key=mid, 
+                        action_type='match' if mode == 'rematch' else 'refresh',
+                        item_title=title, 
+                        item_year=None, 
+                        target_agent=None,
+                        plex_inst=plex,
+                        try_refresh_first=try_ref,
+                        do_unmatch_first=do_unm,
+                        global_config=core_api['config'],
+                        cancel_checker=task.is_cancelled
+                    )
+                    
+                    if task.is_cancelled(): return
+                    
+                    if success:
+                        task.log(f"      ✅ {msg}")
                     else:
-                        core_api['cache'].mark_keys_as_done(key_name, [str(mid)])
+                        task.log(f"      ❌ 작업 실패: {msg}")
+                        item_has_error = True
+
+                if not task_data.get('_is_single'):
+                    if item_has_error: core_api['cache'].mark_as_error('id' if mode == 'path_scan' else 'rating_key', str(mid))
+                    else: core_api['cache'].mark_keys_as_done('id' if mode == 'path_scan' else 'rating_key', [str(mid)])
 
             except Exception as e:
                 task.log(f"   -> ❌ 작업 중 치명적 오류 발생: {e}")
-                if action != 'execute_instant':
-                    key_name = 'id' if mode == 'path_scan' else 'rating_key'
-                    core_api['cache'].mark_as_error(key_name, str(mid))
+                if not task_data.get('_is_single'):
+                    core_api['cache'].mark_as_error('id' if mode == 'path_scan' else 'rating_key', str(mid))
 
             if task.is_cancelled(): return
 
-            task.update_state('running', progress=idx)
-
-            if sleep_time > 0 and idx < total:
+            if sleep_time > 0 and progress < total:
                 loops = max(1, int(sleep_time * 2))
                 for _ in range(loops):
                     if task.is_cancelled(): return
                     time.sleep(0.5)
 
-        task.update_state('completed', progress=total)
-
-        if task_data.get('_is_single'):
-            task.log("✅ 단일 실행 작업이 정상적으로 완료되었습니다!")
-        else:
+        if not task.is_cancelled():
+            task.update_state('completed', progress, total)
             elapsed_sec = int(time.time() - work_start_time)
             elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
-            prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
-            task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
-
-            tool_vars = {"mode": mode, "total": f"{total:,}", "elapsed_time": elapsed_str}
-            core_api['notify']("배치 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#51a351", tool_vars)
-
+            
+            if task_data.get('_is_single'):
+                task.log("✅ 단일 실행 작업이 정상적으로 완료되었습니다!")
+            else:
+                task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
+                tool_vars = {"mode": mode, "total": f"{total:,}", "elapsed_time": elapsed_str}
+                core_api['notify']("배치 스캐너 완료", DEFAULT_DISCORD_TEMPLATE, "#51a351", tool_vars)
+            
     finally:
         current_state = core_api['task'].load(include_target_items=False)
         if current_state:
             real_state = current_state.get('state', 'running')
             if real_state != 'completed':
-                task.update_state(real_state, progress=idx)
+                task.update_state(real_state, progress=progress)
