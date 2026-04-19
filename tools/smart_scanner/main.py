@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+"""
+====================================================================================
+ [PMH Bundle Tool] - 스마트 스캐너 (Smart Scanner)
+====================================================================================
+"""
 
 import os
 import urllib.request
@@ -521,7 +526,7 @@ def worker(task_data, core_api, start_index):
         action_btn = None
         if len(table_data) > 0: 
             action_btn = {
-                "label": f"<i class='fas fa-magic'></i> 검색된 {total_issues:,}건 복구 시작", 
+                "label": "<i class='fas fa-magic'></i> 전체 복구 시작",
                 "payload": {"action_type": "execute"} 
             }
             
@@ -570,98 +575,67 @@ def worker(task_data, core_api, start_index):
     work_start_time = time.time()
     actual_fix_counts = {'analyze': 0, 'match': 0, 'refresh': 0, 'yaml_season': 0, 'yaml_marker': 0}
 
-    total = task_data.get('total', 0)
-    
-    if task_data.get('_resume_start_index') is not None:
-        start_index = task_data['_resume_start_index']
-        task.update_state('running', progress=start_index, total=total)
-        task.log(f"🔄 중단되었던 {start_index}번째 항목부터 이어서 작업을 재개합니다.")
-    
-    if task_data.get('_use_cache_db'):
-        def load_all_items(start_idx):
-            cache_db_path = core_api['cache'].db_file
-            results = []
-            with sqlite3.connect(cache_db_path, timeout=10.0) as conn:
-                conn.row_factory = sqlite3.Row
-                c = conn.cursor()
-                
-                status_filter = "('pending', 'error')" if retry_errors else "('pending')"
-                c.execute("SELECT * FROM data WHERE pmh_status IN {} ORDER BY pmh_id LIMIT -1 OFFSET ?".format(status_filter), (start_idx,))
-                
-                for r in c.fetchall():
-                    row_dict = dict(r)
-                    row_dict['id'] = str(row_dict.get('rating_key', row_dict.get('id', '')))
-                    row_dict['rating_key'] = row_dict['id']
-                    
-                    if isinstance(row_dict.get('files'), str):
-                        try: row_dict['files'] = json.loads(row_dict['files'])
-                        except: row_dict['files'] = []
-                    elif not row_dict.get('files'):
-                        row_dict['files'] = []
-                        
-                    row_dict['m_type'] = int(row_dict.get('m_type', 1))
-                    row_dict['fix_type'] = row_dict.get('fix_type', 'analyze')
-                    
-                    results.append(row_dict)
-            return results
-        
-        items = load_all_items(start_index)
-        total = len(items) + start_index
-    else:
-        items = task_data.get('target_items', [])
-
-    if total == 0:
-        task.update_state('completed', progress=0, total=0)
-        task.log("⚠️ 실행할 대상 항목이 없습니다.")
-        return
-
-    if not task_data.get('_resume_start_index'):
-        task.log(f"🚀 총 {total:,}건 작업을 시작합니다.")
-
+    retry_errors = task_data.get('retry_errors', False)
     opts = core_api.get('options', {})
     try: sleep_time = float(opts.get('sleep_time', 2))
     except: sleep_time = 2.0
     
+    total = task_data.get('total', 0)
+    progress = task_data.get('_resume_start_index', start_index)
+    prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
+
+    # [1] 실행 대상 목록 로드
+    if task_data.get('_is_single'):
+        items = task_data.get('target_items', [])
+    else:
+        status_filter = "('pending', 'error')" if retry_errors else "('pending')"
+        with core_api['cache'].transaction_session() as conn:
+            c = conn.cursor()
+            c.execute(f"SELECT * FROM data WHERE pmh_status IN {status_filter} ORDER BY pmh_id LIMIT -1 OFFSET ?", (progress,))
+            rows = c.fetchall()
+            cols = [desc[0] for desc in c.description] if c.description else []
+            items = []
+            for r in rows:
+                rd = dict(zip(cols, r))
+                rd['id'] = str(rd.get('rating_key', rd.get('id', '')))
+                rd['rating_key'] = rd['id']
+                if isinstance(rd.get('files'), str):
+                    try: rd['files'] = json.loads(rd['files'])
+                    except: rd['files'] = []
+                elif not rd.get('files'): rd['files'] = []
+                rd['m_type'] = int(rd.get('m_type', 1))
+                rd['fix_type'] = rd.get('fix_type', 'analyze')
+                items.append(rd)
+
+    if total == 0:
+        task.update_state('completed', 0, 0)
+        task.log("⚠️ 실행할 대상 항목이 없습니다.")
+        return
+
+    task.update_state('running', progress, total)
+    if progress == 0: task.log(f"🚀 {prefix}총 {total:,}개의 아이템에 대해 작업을 시작합니다...")
+    else: task.log(f"🔄 {prefix}중단되었던 {progress}번째 항목부터 작업을 재개합니다.")
+
     mate_url = core_api['config'].get('mate_url', '')
     mate_apikey = core_api['config'].get('mate_apikey', '')
     path_mappings = core_api['config'].get('path_mappings', [])
 
+    # [2] Plex 서버 연결
     try:
         plex = core_api['get_plex']()
-        if start_index == 0: 
-            prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
-            task.log(f"{prefix}Plex 연결 완료.")
+        if progress == 0: task.log("🔌 Plex 연결 완료.")
     except Exception as e:
-        task.update_state('error'); task.log(f"Plex 연결 실패: {str(e)}"); return
+        task.update_state('error'); task.log(f"❌ Plex 서버 연결 실패: {str(e)}"); return
 
-    def wait_until_stable(max_wait_seconds=30):
-        stable_count = 0
-        waited_time = 0
-        while waited_time < max_wait_seconds:
-            if task.is_cancelled(): return False
-            try:
-                if len(plex.query('/activities').findall('Activity')) == 0:
-                    stable_count += 1
-                    if stable_count >= 2: return True
-                else: stable_count = 0
-            except: pass
-            
-            for _ in range(4):
-                if task.is_cancelled(): return False
-                time.sleep(0.5)
-            waited_time += 2
-            
-        task.log("⚠️ Plex 작업 큐 대기 시간 초과. 강제로 다음 항목을 진행합니다.")
-        return True
-
-    idx = start_index
-
+    # [3] 메인 루프
     try:
-        for idx, item in enumerate(items, start=start_index + 1):
-            
+        for item in items:
             if task.is_cancelled(): 
                 task.log("🛑 취소 명령 감지. 작업을 중단합니다.")
                 return
+
+            progress += 1
+            task.update_state('running', progress, total)
 
             rk = item['rating_key']
             fix_type = item['fix_type']
@@ -669,9 +643,8 @@ def worker(task_data, core_api, start_index):
             m_type = item['m_type']
             files = item['files']
 
-            task.log(f"[{idx}/{total}] 🎬 '{title}' 복구 진행 중...")
-
-            if not wait_until_stable(): return
+            task.log(f"[{progress}/{total}] 🎬 '{title}' 복구 진행 중...")
+            
             skip_delay = False 
             item_has_error = False
 
@@ -695,7 +668,7 @@ def worker(task_data, core_api, start_index):
                         task.log(f"      ⚠️ 대상 폴더에 {yaml_filename} 파일이 없어 적용을 스킵합니다.")
                         skip_delay = True 
                     elif not mate_url or not mate_apikey:
-                        task.log("      ⚠️ Plex Mate 연결 설정(URL/API Key)이 누락되어 YAML 적용이 불가합니다.")
+                        task.log("      ⚠️ Plex Mate 연결 설정이 누락되어 YAML 적용이 불가합니다.")
                         skip_delay = True 
                         item_has_error = True
                     else:
@@ -707,89 +680,57 @@ def worker(task_data, core_api, start_index):
                             item_has_error = True
 
                 else:
-                    safe_endpoint = f"/library/metadata/{str(rk).strip()}"
-                    plex_item = plex.fetchItem(safe_endpoint)
+                    if fix_type == 'analyze': task.log("   -> [미분석] 분석(Analyze) 호출 및 대기 중...")
+                    elif fix_type == 'match': task.log("   -> [미매칭] 스마트 하이브리드 매칭 엔진 가동 중...")
+                    elif fix_type == 'refresh': task.log("   -> [메타 유실] 새로고침(Refresh) 호출 및 대기 중...")
+
+                    try_ref = task_data.get('opt_try_refresh', True) if fix_type == 'match' else False
+                    do_unm = task_data.get('opt_unmatch_first', False) if fix_type == 'match' else False
                     
+                    success, msg, score = pmh_core.perform_smart_media_action(
+                        plex_url=plex._baseurl, 
+                        plex_token=plex._token, 
+                        rating_key=rk, 
+                        action_type=fix_type,
+                        item_title=title, 
+                        item_year=None, 
+                        target_agent=None,
+                        plex_inst=plex,
+                        try_refresh_first=try_ref,
+                        do_unmatch_first=do_unm,
+                        global_config=core_api['config'],
+                        cancel_checker=task.is_cancelled
+                    )
+
                     if task.is_cancelled(): return
-                    
-                    if fix_type == 'analyze':
-                        task.log("   -> [미분석] 분석(Analyze) 호출 및 완료 대기 중...")
-                        plex_item.analyze()
+
+                    if success:
+                        task.log(f"      ✅ {msg}")
                         
-                        analyze_success = False
-                        opt_audio = task_data.get('opt_analyze_audio', True)
-                        
-                        for _ in range(10):
-                            if task.is_cancelled(): return
-                            time.sleep(2.5)
-                            
-                            plex_item.reload()
-                            
+                        if fix_type == 'analyze':
+                            plex_item = plex.fetchItem(int(rk))
+                            opt_audio = task_data.get('opt_analyze_audio', True)
                             if plex_item.media:
                                 is_fully_analyzed = True
                                 for m in plex_item.media:
                                     if m_type in (1, 4):
-                                        has_width = bool(getattr(m, 'width', None))
-                                        has_audio = bool(getattr(m, 'audioCodec', None))
-                                        
-                                        if not has_width or (opt_audio and not has_audio):
-                                            is_fully_analyzed = False
-                                            break
+                                        if not m.width or (opt_audio and not getattr(m, 'audioCodec', None)):
+                                            is_fully_analyzed = False; break
                                     elif m_type == 10:
                                         if not getattr(m, 'audioCodec', None):
-                                            is_fully_analyzed = False
-                                            break
-                                            
-                                if is_fully_analyzed:
-                                    analyze_success = True
-                                    break
-                                    
-                        if analyze_success:
-                            task.log("      ✅ 분석 완료 및 미디어 정보 갱신 확인!")
-                        else:
-                            msg_detail = "(해상도 및 오디오 코덱)" if opt_audio else "(해상도)"
-                            task.log(f"      ❌ 분석 실패: 제한 시간 내에 유효한 미디어 정보{msg_detail}를 읽지 못했습니다. (클라우드 로딩 지연 또는 손상 의심)")
-                            item_has_error = True
+                                            is_fully_analyzed = False; break
+                                if not is_fully_analyzed:
+                                    task.log(f"      ❌ 서버가 분석을 거부했거나 미디어 정보를 읽지 못했습니다. (클라우드 지연 또는 파일 손상 의심)")
+                                    item_has_error = True
+                    else:
+                        task.log(f"      ⚠️ {msg}")
+                        item_has_error = True
 
-                    elif fix_type == 'match':
-                        task.log("   -> [미매칭] 스마트 하이브리드 매칭 엔진 가동 중...")
-                        
-                        try_refresh = task_data.get('opt_try_refresh', True)
-                        do_unmatch = task_data.get('opt_unmatch_first', False)
-                        
-                        success, msg, score = pmh_core.perform_smart_match(
-                            plex_url=plex.url, 
-                            plex_token=plex._token, 
-                            rating_key=rk, 
-                            item_title=plex_item.title, 
-                            item_year=plex_item.year, 
-                            target_agent=plex_item.section().agent,
-                            plex_inst=plex,
-                            try_refresh_first=try_refresh,
-                            do_unmatch_first=do_unmatch,
-                            global_config=core_api['config']
-                        )
-                        
-                        if task.is_cancelled(): return
-                        
-                        if success:
-                            task.log(f"      ✅ {msg}")
-                        else:
-                            task.log(f"      ⚠️ {msg}")
-                            item_has_error = True
-
-                    elif fix_type == 'refresh':
-                        task.log("   -> [메타 유실] 새로고침(Refresh) 호출 중...")
-                        plex_item.refresh()
-                        task.log("      ✅ 새로고침 요청 완료 (백그라운드에서 에이전트 데이터 갱신 진행)")
-                
                 actual_fix_counts[fix_type] += 1
                 
                 if not task_data.get('_is_single'):
-                    if item_has_error:
-                        core_api['cache'].mark_as_error('rating_key', str(rk))
-                    else:
-                        core_api['cache'].mark_keys_as_done('rating_key', [str(rk)])
+                    if item_has_error: core_api['cache'].mark_as_error('rating_key', str(rk))
+                    else: core_api['cache'].mark_keys_as_done('rating_key', [str(rk)])
 
             except Exception as e:
                 task.log(f"   -> ❌ 작업 중 치명적 오류 발생: {e}")
@@ -798,14 +739,15 @@ def worker(task_data, core_api, start_index):
 
             if task.is_cancelled(): return
             
-            task.update_state('running', progress=idx)
-            
-            if sleep_time > 0 and not skip_delay and idx < total:
+            if sleep_time > 0 and not skip_delay and progress < total:
                 loops = max(1, int(sleep_time * 2))
                 for _ in range(loops):
                     if task.is_cancelled(): return
                     time.sleep(0.5)
 
+        # -----------------------------------------------------------------
+        # [4] 모든 작업 종료 후 검증 및 통계 알림 (단일 실행이 아닐 때만)
+        # -----------------------------------------------------------------
         if not task_data.get('_is_single'):
             analyze_rks = [str(i['rating_key']) for i in items if i['fix_type'] == 'analyze']
             if analyze_rks:
@@ -847,12 +789,13 @@ def worker(task_data, core_api, start_index):
                 except Exception as e:
                     task.log(f"⚠️ 일괄 검증 과정 중 오류 발생: {type(e).__name__} - {str(e)}")
 
-        task.update_state('completed', progress=total)
+        task.update_state('completed', progress, total)
         
-        if not task_data.get('_is_single'):
+        if task_data.get('_is_single'):
+            task.log("✅ 단일 실행 작업이 정상적으로 완료되었습니다!")
+        else:
             elapsed_sec = int(time.time() - work_start_time)
             elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
-            prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
             task.log(f"✅ {prefix}총 {total:,}건의 복구 작업 완료! (소요시간: {elapsed_str})")
             
             tool_vars = {
@@ -868,4 +811,4 @@ def worker(task_data, core_api, start_index):
         if current_state:
             real_state = current_state.get('state', 'running')
             if real_state != 'completed':
-                task.update_state(real_state, progress=idx)
+                task.update_state(real_state, progress=progress)
