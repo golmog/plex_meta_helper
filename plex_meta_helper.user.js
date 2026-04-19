@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.78
+// @version      0.8.79
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2974,27 +2974,20 @@ GM_addStyle(`
                 toastr.info(`서버 대기열에 [${actionName}] 작업을 추가합니다...`, "대기열 추가", {timeOut: 2000});
 
                 try {
-                    await triggerPlexMediaAction(id, apiAction, plexSrv, srvConfig, extraData);
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${id}/${apiAction}`, 'POST', extraData, ClientSettings.masterApiKey);
                     
-                    gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px; color:#51a351;"></i>큐 추가됨`;
-                    
-                    setTimeout(() => {
-                        if (gBox.isConnected) {
-                            gBox.innerHTML = originHTML;
-                            gBox.style.color = originColor;
-                            delete gBox.dataset.refreshing;
-                        }
-                    }, 3000);
-
-                    setTimeout(() => {
-                        deleteMemoryCache(`L_${targetServerId}_${id}`);
-                        deleteMemoryCache(`D_${targetServerId}_${id}`);
-                        deleteMemoryCache(`F_${targetServerId}_${id}`);
-                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
+                    if (res.status === 'queued') {
+                        gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px; color:#51a351;"></i>큐 대기중`;
                         
-                        if (typeof processList === 'function') processList();
-                    }, 5000);
-
+                        window._pmh_media_queues = window._pmh_media_queues || {};
+                        window._pmh_media_queues[id] = { task_id: res.task_id, start_time: Date.now() };
+                        
+                        if (typeof window.pollMediaQueues === 'function') {
+                            window.pollMediaQueues(targetServerId);
+                        }
+                    } else {
+                        throw new Error(res.error || res.message || "큐 등록 실패");
+                    }
                 } catch (err) {
                     toastr.error(`${actionName} 요청 실패: ${err.message}`, "오류", {timeOut: 4000});
                     if (gBox.isConnected) {
@@ -3024,6 +3017,66 @@ GM_addStyle(`
             }
         }
     }
+
+    window.pollMediaQueues = async function(serverId) {
+        if (!window._pmh_media_queues || Object.keys(window._pmh_media_queues).length === 0) return;
+        
+        if (window._pmh_queue_poll_timer) clearTimeout(window._pmh_queue_poll_timer);
+
+        const srvConfig = getServerConfig(serverId);
+        if (!srvConfig) return;
+
+        const taskIds = Object.values(window._pmh_media_queues).map(q => q.task_id).join(',');
+        if (!taskIds) return;
+
+        try {
+            const res = await makeRequest(`${srvConfig.relayUrl}/media/queue_status?task_ids=${taskIds}`, 'GET', null, ClientSettings.masterApiKey);
+            
+            let hasCompleted = false;
+
+            for (const [id, qInfo] of Object.entries(window._pmh_media_queues)) {
+                const status = res[qInfo.task_id];
+                
+                if (!status || status.state === 'completed' || status.state === 'error' || (Date.now() - qInfo.start_time > 600000)) {
+                    
+                    if (status && status.state === 'completed') {
+                        hasCompleted = true;
+                        infoLog(`[Queue] Task for Item ${id} completed on server.`);
+                    } else if (status && status.state === 'error') {
+                        errorLog(`[Queue] Task for Item ${id} failed: ${status.msg}`);
+                        toastr.error(`항목 업데이트 실패: ${status.msg}`, "작업 오류");
+                    }
+                    
+                    deleteMemoryCache(`L_${serverId}_${id}`);
+                    deleteMemoryCache(`D_${serverId}_${id}`);
+                    deleteMemoryCache(`F_${serverId}_${id}`);
+                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
+                    
+                    delete window._pmh_media_queues[id];
+                } else if (status.state === 'processing') {
+                    const marker = document.querySelector(`.pmh-render-marker[data-iid="${id}"]`);
+                    if (marker) {
+                        const gBox = marker.parentElement.querySelector('.plex-guid-list-box');
+                        if (gBox && !gBox.innerHTML.includes('진행중')) {
+                            gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                            gBox.style.color = '#2f96b4';
+                        }
+                    }
+                }
+            }
+
+            if (hasCompleted && typeof processList === 'function') {
+                processList();
+            }
+
+            if (Object.keys(window._pmh_media_queues).length > 0) {
+                window._pmh_queue_poll_timer = setTimeout(() => window.pollMediaQueues(serverId), 3000);
+            }
+
+        } catch(e) {
+            window._pmh_queue_poll_timer = setTimeout(() => window.pollMediaQueues(serverId), 5000);
+        }
+    };
 
     async function processList() {
         if (!state.listGuid && !state.listTag && !state.listPlay && !state.listMultiPath) return;

@@ -963,7 +963,9 @@ window.PmhUICore = {
                             }, 1000);
                         }
                     } else {
-                        stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; stateEl.style.color = '#e5a00d';
+                        stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; 
+                        stateEl.style.color = '#e5a00d';
+                        barEl.style.background = '#e5a00d';
 
                         ctx.pollCount++;
                         if (ctx.autoRefresh && ctx.pollCount % 2 === 0) {
