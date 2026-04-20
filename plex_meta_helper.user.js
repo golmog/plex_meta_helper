@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.79
+// @version      0.8.80
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2889,24 +2889,19 @@ GM_addStyle(`
             gBox.className = 'plex-guid-list-box';
             gBox.style.cssText = "font-size: 11px; font-weight: normal; cursor: pointer; display: inline-block; vertical-align: top;";
 
-            if (info.g) {
+            const isQueued = window._pmh_media_queues && window._pmh_media_queues[id];
+
+            if (isQueued) {
+                gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                gBox.style.color = '#2f96b4';
+                gBox.dataset.refreshing = 'true';
+            } else if (info.g) {
                 short = info.g.length > currentLen ? info.g.substring(0, currentLen) + '...' : info.g;
                 gBox.textContent = short;
                 gBox.title = `${info.g} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
-
+                
                 const rawG = (info.raw_g || info.g || '').toLowerCase();
-
-                if (!rawG || rawG === '-' || rawG === 'none') {
-                    isUnmatched = true;
-                } else {
-                    const schemeMatch = rawG.match(/^([^:]+):\/\//);
-                    if (schemeMatch) {
-                        const scheme = schemeMatch[1];
-                        if (scheme.endsWith('local') || scheme.endsWith('none')) {
-                            isUnmatched = true;
-                        }
-                    }
-                }
+                const isUnmatched = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
 
                 if (isUnmatched) gBox.style.color = '#a68241';
             } else {
@@ -2918,8 +2913,11 @@ GM_addStyle(`
 
                 setTimeout(() => {
                     if (gBox.isConnected && gBox.dataset.refreshing !== 'true' && gBox.innerHTML.includes('로딩 중')) {
-                        infoLog(`[List] 'Loading...' timeout reached for ID: ${id}. Re-fetching from DB...`);
-                        gBox.click();
+                        const stillQueued = window._pmh_media_queues && window._pmh_media_queues[id];
+                        if (!stillQueued) {
+                            infoLog(`[List] 'Loading...' timeout reached for ID: ${id}. Re-fetching from DB...`);
+                            gBox.click();
+                        }
                     }
                 }, 8000);
             }
@@ -2982,8 +2980,8 @@ GM_addStyle(`
                         window._pmh_media_queues = window._pmh_media_queues || {};
                         window._pmh_media_queues[id] = { task_id: res.task_id, start_time: Date.now() };
                         
-                        if (typeof window.pollMediaQueues === 'function') {
-                            window.pollMediaQueues(targetServerId);
+                        if (typeof window.startQueuePolling === 'function') {
+                            window.startQueuePolling(targetServerId);
                         }
                     } else {
                         throw new Error(res.error || res.message || "큐 등록 실패");
@@ -3018,64 +3016,99 @@ GM_addStyle(`
         }
     }
 
-    window.pollMediaQueues = async function(serverId) {
-        if (!window._pmh_media_queues || Object.keys(window._pmh_media_queues).length === 0) return;
+    window._pmh_media_queues = window._pmh_media_queues || {};
+    window._pmh_polling_active = window._pmh_polling_active || false;
+    window._pmh_queue_poll_timer = window._pmh_queue_poll_timer || null;
+
+    window.startQueuePolling = function(serverId) {
+        if (window._pmh_polling_active) return;
+        if (Object.keys(window._pmh_media_queues).length === 0) return;
         
-        if (window._pmh_queue_poll_timer) clearTimeout(window._pmh_queue_poll_timer);
+        window._pmh_polling_active = true;
+        
+        const pollLoop = async () => {
+            const queueKeys = Object.keys(window._pmh_media_queues);
+            if (queueKeys.length === 0) {
+                window._pmh_polling_active = false;
+                return;
+            }
 
-        const srvConfig = getServerConfig(serverId);
-        if (!srvConfig) return;
+            const taskIds = queueKeys.map(k => window._pmh_media_queues[k].task_id).join(',');
+            const srvConfig = getServerConfig(serverId);
 
-        const taskIds = Object.values(window._pmh_media_queues).map(q => q.task_id).join(',');
-        if (!taskIds) return;
+            if (srvConfig && taskIds) {
+                try {
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/queue_status?task_ids=${taskIds}`, 'GET', null, ClientSettings.masterApiKey);
+                    let needsListRefresh = false;
 
-        try {
-            const res = await makeRequest(`${srvConfig.relayUrl}/media/queue_status?task_ids=${taskIds}`, 'GET', null, ClientSettings.masterApiKey);
-            
-            let hasCompleted = false;
+                    for (const id of queueKeys) {
+                        const qInfo = window._pmh_media_queues[id];
+                        const status = res[qInfo.task_id];
+                        
+                        const isTimeout = (Date.now() - qInfo.start_time > 300000);
 
-            for (const [id, qInfo] of Object.entries(window._pmh_media_queues)) {
-                const status = res[qInfo.task_id];
-                
-                if (!status || status.state === 'completed' || status.state === 'error' || (Date.now() - qInfo.start_time > 600000)) {
-                    
-                    if (status && status.state === 'completed') {
-                        hasCompleted = true;
-                        infoLog(`[Queue] Task for Item ${id} completed on server.`);
-                    } else if (status && status.state === 'error') {
-                        errorLog(`[Queue] Task for Item ${id} failed: ${status.msg}`);
-                        toastr.error(`항목 업데이트 실패: ${status.msg}`, "작업 오류");
-                    }
-                    
-                    deleteMemoryCache(`L_${serverId}_${id}`);
-                    deleteMemoryCache(`D_${serverId}_${id}`);
-                    deleteMemoryCache(`F_${serverId}_${id}`);
-                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
-                    
-                    delete window._pmh_media_queues[id];
-                } else if (status.state === 'processing') {
-                    const marker = document.querySelector(`.pmh-render-marker[data-iid="${id}"]`);
-                    if (marker) {
-                        const gBox = marker.parentElement.querySelector('.plex-guid-list-box');
-                        if (gBox && !gBox.innerHTML.includes('진행중')) {
-                            gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
-                            gBox.style.color = '#2f96b4';
+                        if (!status || status.state === 'unknown' || status.state === 'completed' || status.state === 'error' || isTimeout) {
+                            if (!status || status.state === 'unknown') {
+                                errorLog(`[Queue] 아이템 ${id}의 작업이 서버에서 사라졌거나 알 수 없는 상태입니다.`);
+                                needsListRefresh = true;
+                            } else if (status.state === 'completed') {
+                                infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료!`);
+                                needsListRefresh = true;
+                            } else if (status.state === 'error') {
+                                toastr.error(`작업 실패: ${status.msg}`, "매칭/갱신 오류");
+                                needsListRefresh = true;
+                            } else if (isTimeout) {
+                                toastr.warning(`시간 초과: 서버 응답이 없습니다.`, "대기 취소");
+                                needsListRefresh = true;
+                            }
+
+                            deleteMemoryCache(`L_${serverId}_${id}`);
+                            deleteMemoryCache(`D_${serverId}_${id}`);
+                            deleteMemoryCache(`F_${serverId}_${id}`);
+                            if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
+                            
+                            delete window._pmh_media_queues[id];
+                            
+                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                            markers.forEach(m => {
+                                m.setAttribute('data-stale', 'true');
+                                const gBox = m.parentElement.querySelector('.plex-guid-list-box');
+                                if (gBox) {
+                                    gBox.innerHTML = `<i class="fas fa-sync-alt" style="margin-right:4px;"></i>화면 갱신 중...`;
+                                    gBox.style.color = '#ccc';
+                                }
+                            });
+                            
+                        } else if (status.state === 'processing' || status.state === 'queued') {
+                            const marker = document.querySelector(`.pmh-render-marker[data-iid="${id}"]`);
+                            if (marker) {
+                                const gBox = marker.parentElement.querySelector('.plex-guid-list-box');
+                                if (gBox && !gBox.innerHTML.includes('처리중')) {
+                                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                                    gBox.style.color = '#2f96b4';
+                                }
+                            }
                         }
                     }
+
+                    if (needsListRefresh && typeof processList === 'function') {
+                        processList();
+                    }
+
+                } catch (e) {
+                    errorLog("[Queue Polling] 네트워크 통신 오류 (재시도 대기)...", e);
                 }
             }
-
-            if (hasCompleted && typeof processList === 'function') {
-                processList();
-            }
-
+            
             if (Object.keys(window._pmh_media_queues).length > 0) {
-                window._pmh_queue_poll_timer = setTimeout(() => window.pollMediaQueues(serverId), 3000);
+                if (window._pmh_queue_poll_timer) clearTimeout(window._pmh_queue_poll_timer);
+                window._pmh_queue_poll_timer = setTimeout(pollLoop, 3000);
+            } else {
+                window._pmh_polling_active = false;
             }
+        };
 
-        } catch(e) {
-            window._pmh_queue_poll_timer = setTimeout(() => window.pollMediaQueues(serverId), 5000);
-        }
+        pollLoop();
     };
 
     async function processList() {

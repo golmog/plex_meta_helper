@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.79"
+__version__ = "0.8.80"
 
 def get_version():
     return __version__
@@ -1304,16 +1304,16 @@ def dispatch_request(subpath, method, args, data, global_config):
         elif subpath == 'library/batch' and method == 'POST':
             return handle_library_batch(data, max_batch_size, db_path)
             
-        elif subpath.startswith('media/') and method == 'GET':
-            rating_key = subpath.split('/')[1]
-            return handle_media_detail(rating_key, db_path)
-
         elif subpath == 'media/queue_status' and method == 'GET':
             task_ids = args.get('task_ids', '').split(',')
             result = {}
             for tid in task_ids:
                 if tid: result[tid] = MEDIA_ACTION_STATUS.get(tid, {'state': 'unknown'})
             return result, 200
+
+        elif subpath.startswith('media/') and method == 'GET':
+            rating_key = subpath.split('/')[1]
+            return handle_media_detail(rating_key, db_path)
 
         elif subpath.startswith('media/') and method == 'POST':
             parts = subpath.split('/')
@@ -1945,9 +1945,9 @@ def media_action_worker_loop(global_config):
                     )
                     
                     if success:
-                        MEDIA_ACTION_STATUS[task_id] = {'state': 'completed', 'msg': msg}
+                        MEDIA_ACTION_STATUS[task_id].update({'state': 'completed', 'msg': msg})
                     else:
-                        MEDIA_ACTION_STATUS[task_id] = {'state': 'error', 'msg': msg}
+                        MEDIA_ACTION_STATUS[task_id].update({'state': 'error', 'msg': msg})
                         
             except Exception as e:
                 MEDIA_ACTION_STATUS[task_id] = {'state': 'error', 'msg': str(e)}
@@ -2089,6 +2089,7 @@ def perform_smart_media_action(
             is_jav_allowed = (jav_section_cfg == 'all') or (jav_section_cfg and current_section_id in [s.strip() for s in jav_section_cfg.split(',')])
 
             if is_jav_allowed:
+                from pmh_core import compile_jav_rules, extract_jav_pid, normalize_pid_for_comparison
                 compiled_rules = compile_jav_rules(global_config)
                 name_no_ext = os.path.splitext(raw_file_name)[0] if raw_file_name else ""
                 
@@ -2143,16 +2144,23 @@ def perform_smart_media_action(
                 try:
                     target_item.unmatch()
                     unmatch_verified = False
-                    for _ in range(5):
-                        time.sleep(3.0)
+                    for _ in range(8):
+                        if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
+                        time.sleep(2.0)
                         target_item.reload()
                         check_guid = (target_item.guid or '').lower()
                         if not check_guid or 'local://' in check_guid or 'none://' in check_guid or check_guid == '-':
                             unmatch_verified = True; break
+                            
                     if unmatch_verified:
-                        if task_logger: task_logger(f"✅ Unmatch 확인 완료! 서버 안정화를 위해 3초간 대기합니다...")
-                        time.sleep(3.0)
-                except Exception: pass
+                        if task_logger: task_logger(f"✅ Unmatch 확인 완료! 서버 안정화를 위해 5초간 대기합니다...")
+                        time.sleep(5.0)
+                        # 💡 필수: Unmatch 후 객체가 재생성되거나 변경되었을 수 있으므로 명시적으로 다시 불러옵니다.
+                        target_item = plex_inst.fetchItem(target_item.ratingKey)
+                    else:
+                        if task_logger: task_logger(f"⚠️ Unmatch 상태 확인 지연 (Plex 서버 부하 의심)")
+                except Exception as e: 
+                    if task_logger: task_logger(f"⚠️ Unmatch 실패 (무시): {e}")
 
         if try_refresh_first and is_plex_agent:
             if task_logger: task_logger(f"🔄 매칭 전 리프레시 우선 시도 (Agent: {target_agent})")
@@ -2161,6 +2169,7 @@ def perform_smart_media_action(
                 target_item.refresh()
                 match_success = False
                 for _ in range(8):
+                    if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
                     time.sleep(2.5)
                     target_item.reload()
                     temp_guid = (target_item.guid or '').lower()
@@ -2168,7 +2177,11 @@ def perform_smart_media_action(
                         match_success = True
                         if task_logger: task_logger(f"✅ Refresh를 통한 자동 매칭 완료! (새 GUID: {target_item.guid})")
                         return True, f"Refresh를 통한 자동 매칭 완료!", 100
-            except Exception: pass
+                        
+                if not match_success:
+                    if task_logger: task_logger(f"⚠️ Refresh 자동 매칭 실패. 수동 검색 매칭 단계로 넘어갑니다...")
+            except Exception as e: 
+                if task_logger: task_logger(f"⚠️ Refresh 시도 중 오류 발생 (무시하고 검색 진행): {e}")
 
         # JAV 전용 매칭 vs 일반 매칭 분기
         if is_jav:
@@ -2183,7 +2196,9 @@ def perform_smart_media_action(
                 with urlopen(req, timeout=45) as response:
                     candidates = json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
                     
-                if not candidates: return False, "검색 조건에 맞는 후보가 없습니다.", 0
+                if not candidates: 
+                    if task_logger: task_logger(f"❌ [SJVA] 검색 결과 없음. (검색어: {search_pid})")
+                    return False, "검색 조건에 맞는 후보가 없습니다.", 0
 
                 best_candidate, best_score = None, -1
                 for cand in candidates:
@@ -2192,7 +2207,9 @@ def perform_smart_media_action(
                     if c_score >= 95 and c_score > best_score:
                         best_candidate = cand; best_score = c_score
                             
-                if not best_candidate: return False, "조건에 맞는 최적 후보가 없습니다.", 0
+                if not best_candidate: 
+                    if task_logger: task_logger(f"❌ [SJVA] 신뢰할 수 있는 매칭 후보가 없습니다. (최소 점수 95 미달)")
+                    return False, "조건에 맞는 최적 후보가 없습니다.", 0
 
                 if task_logger: task_logger(f"✨ [SJVA] 최적 후보 선택됨: '{best_candidate.get('name')}'")
                 
@@ -2204,6 +2221,7 @@ def perform_smart_media_action(
                 
                 initial_guid = (target_item.guid or '').lower()
                 for _ in range(8):
+                    if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
                     time.sleep(2.5)
                     target_item.reload()
                     new_guid = (target_item.guid or '').lower()
@@ -2237,60 +2255,127 @@ def perform_smart_media_action(
                 folder_query = re.sub(r'[_\.-]', ' ', folder_query).strip()
                 folder_query = re.sub(r'\s+', ' ', folder_query)
 
-                if not item_year and folder_year: item_year = folder_year
-                if not file_query and not folder_query: return False, "추출된 검색어가 유효하지 않습니다.", 0
+                if folder_year:
+                    item_year = folder_year
+                
+                if not file_query and not folder_query: 
+                    return False, "추출된 검색어가 유효하지 않습니다.", 0
+
+                if task_logger: task_logger(f"💡 [일반 매칭] 원본 경로: '{raw_folder_name}' | [파일] '{raw_file_name}'")
+                if task_logger: task_logger(f"🔍 정제된 검색어: [1순위/파일] '{file_query}' | [2순위/폴더] '{folder_query}'")
 
                 matches = []
                 if file_query:
                     kwargs = {'agent': target_agent, 'language': 'ko', 'title': file_query}
                     if item_year: kwargs['year'] = str(item_year)
+                    if task_logger: task_logger(f"📡 파일명 기반 매칭 검색 시도... (검색어: '{file_query}', 연도: '{item_year}')")
                     matches = target_item.matches(**kwargs)
 
                 if not matches and folder_query and folder_query.lower() != file_query.lower():
                     kwargs = {'agent': target_agent, 'language': 'ko', 'title': folder_query}
                     if item_year: kwargs['year'] = str(item_year)
+                    if task_logger: task_logger(f"⚠️ 1차 검색 실패. 폴더명으로 2차 검색을 시도합니다... (검색어: '{folder_query}', 연도: '{item_year}')")
                     matches = target_item.matches(**kwargs)
 
-                if not matches: return False, "검색 조건에 맞는 후보가 없습니다.", 0
-                    
-                best_match = matches[0]
-                best_score = int(getattr(best_match, 'score', 0) or 0)
-                candidate_name = getattr(best_match, 'name', '')
-                candidate_orig = getattr(best_match, 'originalTitle', '')
-                
-                clean_cand_name = candidate_name.split('|')[0].strip() if '|' in candidate_name else candidate_name
-                clean_cand_orig = candidate_orig.split('|')[0].strip() if '|' in candidate_orig else candidate_orig
+                if not matches: 
+                    if task_logger: task_logger(f"❌ 일치하는 후보가 없습니다.")
+                    return False, "검색 조건에 맞는 후보가 없습니다.", 0
 
                 norm_pattern = r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]'
                 norm_file_q = re.sub(norm_pattern, '', file_query.lower())
                 norm_folder_q = re.sub(norm_pattern, '', folder_query.lower())
-                norm_cand_name = re.sub(norm_pattern, '', clean_cand_name.lower())
-                norm_cand_orig = re.sub(norm_pattern, '', clean_cand_orig.lower())
 
                 import difflib
-                sim_file_name = difflib.SequenceMatcher(None, norm_file_q, norm_cand_name).ratio() if norm_file_q and norm_cand_name else 0.0
-                sim_file_orig = difflib.SequenceMatcher(None, norm_file_q, norm_cand_orig).ratio() if norm_file_q and norm_cand_orig else 0.0
-                max_file_sim = max(sim_file_name, sim_file_orig)
+                best_match = None
+                best_score = 0
+                highest_sim_found = 0.0
+                matched_by = ""
 
-                sim_folder_name = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_name).ratio() if norm_folder_q and norm_cand_name else 0.0
-                sim_folder_orig = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_orig).ratio() if norm_folder_q and norm_cand_orig else 0.0
-                max_folder_sim = max(sim_folder_name, sim_folder_orig)
+                for idx, cand in enumerate(matches[:3]):
+                    cand_name = getattr(cand, 'name', '')
+                    cand_orig = getattr(cand, 'originalTitle', '')
+                    cand_score = int(getattr(cand, 'score', 0) or 0)
 
-                highest_sim = max(max_file_sim, max_folder_sim)
-                if highest_sim < 0.85: return False, f"텍스트 유사도 미달 (최대 {highest_sim*100:.1f}%)", best_score
+                    clean_cand_name = cand_name.split('|')[0].strip() if '|' in cand_name else cand_name
+                    clean_cand_orig = cand_orig.split('|')[0].strip() if '|' in cand_orig else cand_orig
+
+                    norm_cand_name = re.sub(norm_pattern, '', clean_cand_name.lower())
+                    norm_cand_orig = re.sub(norm_pattern, '', clean_cand_orig.lower())
+
+                    sim_file_name = difflib.SequenceMatcher(None, norm_file_q, norm_cand_name).ratio() if norm_file_q and norm_cand_name else 0.0
+                    sim_file_orig = difflib.SequenceMatcher(None, norm_file_q, norm_cand_orig).ratio() if norm_file_q and norm_cand_orig else 0.0
+                    max_file_sim = max(sim_file_name, sim_file_orig)
+
+                    sim_folder_name = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_name).ratio() if norm_folder_q and norm_cand_name else 0.0
+                    sim_folder_orig = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_orig).ratio() if norm_folder_q and norm_cand_orig else 0.0
+                    max_folder_sim = max(sim_folder_name, sim_folder_orig)
+
+                    current_highest_sim = max(max_file_sim, max_folder_sim)
+
+                    if task_logger:
+                        task_logger(f"📋 [후보 {idx+1} 검증] '{cand_name}' (유사도: {current_highest_sim*100:.1f}%, 점수: {cand_score})")
+
+                    if current_highest_sim >= 0.90:
+                        best_match = cand
+                        best_score = cand_score
+                        highest_sim_found = current_highest_sim
+                        matched_by = "폴더명" if current_highest_sim == max_folder_sim else "파일명"
+                        break
+
+                if not best_match:
+                    reject_reason = f"상위 후보 3개 중 텍스트 유사도 기준(90%)을 충족하는 항목이 없습니다."
+                    if task_logger: task_logger(f"❌ 매칭 실패: {reject_reason}")
+                    return False, reject_reason, 0
+
+                candidate_name = getattr(best_match, 'name', '')
+
+                if task_logger:
+                    task_logger(f"💡 [Plex 모드] {matched_by} 기반 텍스트 유사도({highest_sim_found*100:.1f}%) 검증 통과 -> 후보 '{candidate_name}' 선택됨.")
+                    task_logger(f"✨ 최적 후보 검증 완료. 직접 HTTP API로 매칭을 강제 적용합니다.")
 
                 initial_guid = (target_item.guid or '').lower()
-                target_item.fixMatch(auto=False, searchResult=best_match)
+
+                try:
+                    match_params = {
+                        'guid': getattr(best_match, 'guid', ''),
+                        'name': getattr(best_match, 'name', ''),
+                        'X-Plex-Token': plex_token
+                    }
+                    
+                    b_year = getattr(best_match, 'year', None)
+                    if b_year: 
+                        match_params['year'] = str(b_year)
+                    elif item_year:
+                        match_params['year'] = str(item_year)
+                        
+                    match_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/match?{urlencode(match_params)}"
+                    req = Request(match_url, method='PUT', headers={'Accept': 'application/json'})
+                    
+                    urlopen(req, timeout=30)
+                except Exception as put_e:
+                    if task_logger: task_logger(f"⚠️ HTTP PUT 매칭 전송 오류 (무시하고 결과 대기 시도): {put_e}")
+                
+                match_verified = False
+                if task_logger: task_logger(f"⏳ 매칭 적용 중... GUID 갱신을 확인합니다.")
                 
                 for _ in range(8):
+                    if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
                     time.sleep(2.5)
                     target_item.reload()
                     new_guid = (target_item.guid or '').lower()
                     if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
+                        match_verified = True
+                        if task_logger: task_logger(f"✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
                         return True, f"매칭 성공 ({candidate_name})", best_score
                         
+                if not match_verified:
+                    if task_logger: task_logger(f"⚠️ Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.")
                 return False, "Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.", best_score
+                
             except Exception as e:
+                import traceback
+                traceback.print_exc()
+                if task_logger: task_logger(f"❌ 매칭 작업 중 내부 오류: {e}")
                 return False, f"매칭 작업 중 내부 오류: {e}", 0
 
     return False, f"알 수 없는 액션입니다: {action_type}", 0
