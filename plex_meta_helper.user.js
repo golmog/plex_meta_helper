@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.80
+// @version      0.8.81
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -564,6 +564,8 @@ GM_addStyle(`
                                 const jsonRes = JSON.parse(res.responseText);
                                 if (jsonRes.status === "success") {
                                     resolve({ server: srv, success: true, version: jsonRes.version });
+                                } else if (jsonRes.status === "busy" || jsonRes.running_count !== undefined) {
+                                    resolve({ server: srv, success: false, isRunningError: true, count: parseInt(jsonRes.running_count) || 0, msg: jsonRes.message });
                                 } else {
                                     resolve({ server: srv, success: false, isCritical: true, msg: jsonRes.message || "Unknown Error" });
                                 }
@@ -707,7 +709,8 @@ GM_addStyle(`
             devMode: false,
             pathMappings: [],
             matchTryRefreshFirst: false,
-            matchDoUnmatchFirst: false
+            matchDoUnmatchFirst: false,
+            matchSkipSimCheck: false
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
     }
@@ -1592,6 +1595,50 @@ GM_addStyle(`
         let errorDetails = [];
         try { errorDetails = JSON.parse(GM_getValue('pmh_server_error_details', '[]')); } catch(e){}
         
+        if (hasServerError) {
+            if (!window._pmh_error_poll_timer) {
+                log("[UI] Server error detected. Starting background polling for recovery...");
+                window._pmh_error_poll_timer = setInterval(async () => {
+                    if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) return;
+                    
+                    const localPyVers = await pingLocalServer();
+                    let stillHasError = false;
+                    let newErrorDetails = [];
+
+                    for (const srv of ServerConfig.SERVERS) {
+                        const pRes = localPyVers[srv.machineIdentifier];
+                        if (!pRes || pRes.status === 'error') {
+                            stillHasError = true;
+                            newErrorDetails.push(`[${srv.name}] ${pRes ? pRes.msg : '정보 없음'}`);
+                        }
+                    }
+
+                    if (!stillHasError) {
+                        infoLog("[Polling] Server connection restored! Clearing error state.");
+                        clearInterval(window._pmh_error_poll_timer);
+                        window._pmh_error_poll_timer = null;
+                        
+                        GM_setValue('pmh_server_connection_error', false);
+                        GM_setValue('pmh_server_error_details', '[]');
+                        
+                        if (typeof toastr !== 'undefined') {
+                            toastr.success("서버 통신이 정상적으로 복구되었습니다.", "연결 복구");
+                        }
+                        
+                        const ctrl = document.getElementById('pmdv-controls');
+                        if (ctrl) { ctrl.remove(); injectControlUI(); }
+                    } else {
+                        GM_setValue('pmh_server_error_details', JSON.stringify(newErrorDetails));
+                    }
+                }, 15000);
+            }
+        } else {
+            if (window._pmh_error_poll_timer) {
+                clearInterval(window._pmh_error_poll_timer);
+                window._pmh_error_poll_timer = null;
+            }
+        }
+
         if (hasServerError) {
             let tooltipText = "일부 PMH 파이썬 서버에 연결할 수 없습니다.&#10;";
             if (errorDetails.length > 0) {
@@ -2961,7 +3008,8 @@ GM_addStyle(`
                     apiAction = 'match';
                     extraData = {
                         _try_refresh_first: ClientSettings.matchTryRefreshFirst,
-                        _do_unmatch_first: ClientSettings.matchDoUnmatchFirst
+                        _do_unmatch_first: ClientSettings.matchDoUnmatchFirst,
+                        _skip_sim_check: ClientSettings.matchSkipSimCheck
                     };
                 } else {
                     gBox.dataset.refreshing = 'false';
@@ -3070,15 +3118,17 @@ GM_addStyle(`
                             delete window._pmh_media_queues[id];
                             
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                            markers.forEach(m => {
-                                m.setAttribute('data-stale', 'true');
-                                const gBox = m.parentElement.querySelector('.plex-guid-list-box');
-                                if (gBox) {
-                                    gBox.innerHTML = `<i class="fas fa-sync-alt" style="margin-right:4px;"></i>화면 갱신 중...`;
-                                    gBox.style.color = '#ccc';
-                                }
-                            });
-                            
+                        markers.forEach(m => {
+                            m.setAttribute('data-stale', 'true');
+                            const gBox = m.parentElement.querySelector('.plex-guid-list-box');
+                            if (gBox) {
+                                gBox.innerHTML = `<i class="fas fa-sync-alt" style="margin-right:4px;"></i>화면 갱신 중...`;
+                                gBox.style.color = '#ccc';
+                            }
+                        });
+                        
+                        setTimeout(() => { if (typeof processList === 'function') processList(); }, 50);
+
                         } else if (status.state === 'processing' || status.state === 'queued') {
                             const marker = document.querySelector(`.pmh-render-marker[data-iid="${id}"]`);
                             if (marker) {
@@ -4487,13 +4537,25 @@ GM_addStyle(`
                 showBoxLoading();
                 infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
                 
-                const matchOptions = { _try_refresh_first: false, _do_unmatch_first: true };
+                const matchOptions = { 
+                    _try_refresh_first: false, 
+                    _do_unmatch_first: true, 
+                    _skip_sim_check: ClientSettings.matchSkipSimCheck 
+                };
+                
                 toastr.info("서버에서 메타 리매칭을 수행합니다.", "리매칭 시작", {timeOut: 8000});
 
                 let isRematchSuccess = false;
 
                 try {
-                    await triggerPlexMediaAction(data.itemId, 'match', plexSrv, srvConfig, matchOptions, btnRematch.cancelToken);
+                    await triggerPlexMediaAction(
+                        data.itemId, 
+                        'match', 
+                        plexSrv, 
+                        srvConfig, 
+                        matchOptions,
+                        btnRematch.cancelToken
+                    );
                     
                     if (globalAbortFlag || renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
 
@@ -5059,6 +5121,11 @@ GM_addStyle(`
                                 <input type="checkbox" id="pmh-set-match-unmatch" style="width:14px; height:14px;" ${ClientSettings.matchDoUnmatchFirst ? 'checked' : ''}>
                                 <span style="color:#ddd;">매칭 전 언매칭 우선 실행</span>
                             </label>
+
+                            <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="Plex 기본 에이전트 사용 시, 텍스트/연도 검증을 무시하고 첫 번째 결과를 무조건 수용합니다.">
+                                <input type="checkbox" id="pmh-set-match-skip-sim" style="width:14px; height:14px;" ${ClientSettings.matchSkipSimCheck ? 'checked' : ''}>
+                                <span style="color:#ddd;">매칭시 제목/연도 검증 스킵 <span style="color:#777; font-size:11px;">(Plex 기본 에이전트 전용)</span></span>
+                            </label>
                         </div>
                         
                         <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(47, 150, 180, 0.4); padding: 10px; border-radius: 4px;">
@@ -5178,7 +5245,8 @@ GM_addStyle(`
                 devMode: document.getElementById('pmh-set-dev-mode').checked,
                 pathMappings: newMaps,
                 matchTryRefreshFirst: document.getElementById('pmh-set-match-refresh').checked,
-                matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked
+                matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked,
+                matchSkipSimCheck: document.getElementById('pmh-set-match-skip-sim').checked
             };
 
             GM_setValue(CLIENT_SETTINGS_KEY, ClientSettings);

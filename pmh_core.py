@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.80"
+__version__ = "0.8.81"
 
 def get_version():
     return __version__
@@ -698,7 +698,9 @@ def handle_media_detail(rating_key, db_path):
                     SELECT m.id, m.width, m.height, 
                            (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 1 LIMIT 1) as v_bitrate, 
                            (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE media_item_id = m.id AND stream_type_id = 1) as raw_stream_data, 
-                           m.video_codec, m.audio_codec, m.duration, 
+                           m.video_codec, 
+                           IFNULL(NULLIF(m.audio_codec, ''), (SELECT codec FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1)) as audio_codec, 
+                           m.duration,
                            (SELECT channels FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as audio_ch, 
                            (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate, 
                            mp.id, mp.file 
@@ -1594,7 +1596,7 @@ def dispatch_request(subpath, method, args, data, global_config):
 
                     tool_lock = get_tool_lock(tool_id, server_id)
                     if not tool_lock.acquire(blocking=False):
-                        return {"status": "error", "message": "이전 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도해 주세요."}, 400
+                        return {"status": "error", "message": "이전 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도해 주세요."}, 200
 
                     try:
                         task_mgr.update_state('running')
@@ -1674,7 +1676,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                             
                         tool_lock = get_tool_lock(tool_id, server_id)
                         if not tool_lock.acquire(blocking=False):
-                            return {"status": "error", "message": "이전 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도해 주세요."}, 400
+                            return {"status": "error", "message": "이전 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도해 주세요."}, 200
 
                         try:
                             if not task_data.get('_is_cron'):
@@ -1805,7 +1807,7 @@ def preprocess_jav_filename(base):
     
     misc_pattern = r'(?:hd)?720p|(?:fhd)?1080p|2160p|2k|4k|6k|8k|fhd|uhd|'
     misc_pattern += r'h264|h265|hevc|x265|mpeg|wmv[0-9]?|rv(?:[0-9]{,2})?|'
-    misc_pattern += r'aac|dts|mp3|ogg|flac|wav|wma(?:pro|v\d)?|pcm(?:_s16le)?|ac3|eac3|vorbis|opus|'
+    misc_pattern += r'aac|dts|mp3|ogg|flac|wav|wma(?:pro|v\d)?|pcm(?:_[0-9a-z]+)?|ac3|eac3|vorbis|opus|'
     misc_pattern += r'\d+[.0-9]*fps|\d+kbps|'
     misc_pattern += r'\d{3,}x\d{3,}|\dk[0-9.]+fps'
     base = re.sub(r'\b[-_. ]?(%s)[-_. ]?\b' % misc_pattern, ' ', base).strip()
@@ -1927,6 +1929,7 @@ def media_action_worker_loop(global_config):
                 elif action in ['match', 'refresh', 'analyze']:
                     try_ref = data.get('_try_refresh_first', False) if data else False
                     do_unm = data.get('_do_unmatch_first', False) if data else False
+                    skip_sim = data.get('_skip_sim_check', False) if data else False
                     
                     success, msg, score = perform_smart_media_action(
                         plex_url=plex_url,
@@ -1939,6 +1942,7 @@ def media_action_worker_loop(global_config):
                         plex_inst=plex,
                         try_refresh_first=try_ref,
                         do_unmatch_first=do_unm,
+                        skip_sim_check=skip_sim,
                         global_config=global_config,
                         task_logger=lambda x: print(f"[PMH Queue] {x}"),
                         cancel_checker=lambda: False
@@ -1971,7 +1975,7 @@ def media_action_worker_loop(global_config):
 def perform_smart_media_action(
     plex_url, plex_token, rating_key, action_type='match', 
     item_title=None, item_year=None, target_agent=None, plex_inst=None, 
-    try_refresh_first=False, do_unmatch_first=False, global_config=None,
+    try_refresh_first=False, do_unmatch_first=False, skip_sim_check=False, global_config=None,
     task_logger=None, cancel_checker=None
 ):
     if global_config is None: global_config = {}
@@ -1988,13 +1992,13 @@ def perform_smart_media_action(
         return False, "Plex 항목을 조회할 수 없습니다.", 0
     
     target_item = item
-    if item.type in ['episode', 'season']:
+    if action_type in ['match', 'refresh'] and item.type in ['episode', 'season', 'track', 'album']:
         try:
-            if item.type == 'episode': target_item = plex_inst.fetchItem(item.grandparentRatingKey)
+            if item.type in ['episode', 'track']: target_item = plex_inst.fetchItem(item.grandparentRatingKey)
             else: target_item = plex_inst.fetchItem(item.parentRatingKey)
             if task_logger: task_logger(f"💡 하위 항목 감지됨. 최상위 쇼({target_item.title}) 기준으로 '{action_type}' 수행.")
         except Exception as e:
-            if task_logger: task_logger(f"⚠️ 최상위 쇼 객체를 찾지 못했습니다. 기존 객체로 진행합니다: {e}")
+            if task_logger: task_logger(f"⚠️ 최상위 객체를 찾지 못했습니다. 기존 객체로 진행합니다: {e}")
 
     # ==========================================================================
     # [모드 1 & 2] 단순 Refresh / Analyze 모드 (대기 로직 포함)
@@ -2233,105 +2237,207 @@ def perform_smart_media_action(
                 return False, f"매칭 처리 오류: {e}", 0
         else:
             try:
-                file_query = ""
-                name_no_ext = os.path.splitext(raw_file_name)[0] if raw_file_name else ""
-                if name_no_ext:
-                    name_no_ext = re.sub(r'[\(\[\{].*?[\)\]\}]', '', name_no_ext).strip()
-                    cut_m = re.search(r'\b([12]\d{3}|2160p|1080p|720p|480p|bluray|web-dl|remux)\b', name_no_ext, re.IGNORECASE)
-                    if cut_m: name_no_ext = name_no_ext[:cut_m.start()].strip()
-                    file_query = re.sub(r'[_\.-]', ' ', name_no_ext).strip()
-                    file_query = re.sub(r'\s+', ' ', file_query)
-
+                # ====================================================================
+                # 1. 폴더명 파싱 (표준 포맷: "제목 (연도) [기타]" 또는 "제목 {ID}")
+                # ====================================================================
                 folder_query = raw_folder_name
-                folder_year = None
-                year_match = re.search(r'[\(\[]([12]\d{3})[\)\]]', raw_folder_name)
+                item_year = None
+                
+                # 1910~2029년 사이의 연도가 괄호나 공백에 쌓여 있는지 확인
+                year_match = re.search(r'[\(\[\s](19[1-9]\d|20[0-2]\d)[\)\]\s]', raw_folder_name)
                 if year_match:
-                    folder_year = year_match.group(1)
+                    item_year = year_match.group(1)
                     folder_query = raw_folder_name[:year_match.start()].strip()
                 else:
-                    bracket_match = re.search(r'\[', raw_folder_name)
-                    if bracket_match: folder_query = raw_folder_name[:bracket_match.start()].strip()
+                    # 연도가 없다면, 첫 번째 대괄호 '[' 나 중괄호 '{' 앞부분까지만 자름
+                    bracket_match = re.search(r'[\[\{]', raw_folder_name)
+                    if bracket_match:
+                        folder_query = raw_folder_name[:bracket_match.start()].strip()
                         
+                # 특수문자 제거 및 공백 정리
                 folder_query = re.sub(r'[_\.-]', ' ', folder_query).strip()
                 folder_query = re.sub(r'\s+', ' ', folder_query)
 
-                if folder_year:
-                    item_year = folder_year
-                
+                # ====================================================================
+                # 2. 파일명 파싱 (표준 씬 릴리즈 포맷: "Title.2026.1080p..." 또는 "Title.S01E01...")
+                # ====================================================================
+                file_query = ""
+                if raw_file_name:
+                    name_no_ext = os.path.splitext(raw_file_name)[0]
+                    
+                    # 릴 그룹 태그가 맨 앞에 있다면(대괄호) 먼저 제거
+                    name_no_ext = re.sub(r'^\[.*?\]', '', name_no_ext).strip()
+                    
+                    # 연도, 시즌/에피소드, 또는 해상도/코덱 등 화질 태그가 시작되는 위치 찾기
+                    cut_pattern = r'\b(19[1-9]\d|20[0-2]\d|[Ss]\d{1,3}[Ee]\d{1,3}|[Ss]\d{1,2}|[Ee][Pp]?\d{1,3}|2160p|1080p|720p|480p|4k|8k|bluray|web-?dl|web-?rip|remux|x264|x265|hevc|avc|hdr|dts|truehd|atmos|dd5\.1|aac)\b'
+                    
+                    # 💡 "1917", "2012" 처럼 연도가 제목 자체인 경우를 방어하는 스마트 탐색 루프
+                    for match in re.finditer(cut_pattern, name_no_ext, re.IGNORECASE):
+                        matched_text = match.group(1)
+                        
+                        # 찾은 패턴이 연도(4자리 숫자)인데, 하필 파일명 맨 앞(인덱스 0)에 있다면? -> 제목이므로 무시하고 다음 패턴 찾기!
+                        if match.start() == 0 and re.match(r'^(19[1-9]\d|20[0-2]\d)$', matched_text):
+                            continue
+                            
+                        # 그 외의 정상적인 위치라면, 여기가 제목이 끝나는 컷오프(Cut-off) 지점
+                        file_query = name_no_ext[:match.start()].strip()
+                        break
+                    else:
+                        # 반복문이 한 번도 break 되지 않았다면, 자를 태그가 아예 없는 순수 제목 파일
+                        file_query = name_no_ext
+                        
+                    # 남은 괄호 및 구분자(점, 밑줄)를 공백으로 치환
+                    file_query = re.sub(r'[\(\[\{\)\]\}]', ' ', file_query)
+                    file_query = re.sub(r'[_\.-]', ' ', file_query).strip()
+                    file_query = re.sub(r'\s+', ' ', file_query)
+
                 if not file_query and not folder_query: 
                     return False, "추출된 검색어가 유효하지 않습니다.", 0
 
                 if task_logger: task_logger(f"💡 [일반 매칭] 원본 경로: '{raw_folder_name}' | [파일] '{raw_file_name}'")
-                if task_logger: task_logger(f"🔍 정제된 검색어: [1순위/파일] '{file_query}' | [2순위/폴더] '{folder_query}'")
+                if task_logger: task_logger(f"🔍 정제된 검색어: [1순위/폴더] '{folder_query}' | [2순위/파일] '{file_query}'")
 
                 matches = []
-                if file_query:
-                    kwargs = {'agent': target_agent, 'language': 'ko', 'title': file_query}
-                    if item_year: kwargs['year'] = str(item_year)
-                    if task_logger: task_logger(f"📡 파일명 기반 매칭 검색 시도... (검색어: '{file_query}', 연도: '{item_year}')")
-                    matches = target_item.matches(**kwargs)
-
-                if not matches and folder_query and folder_query.lower() != file_query.lower():
+                
+                if folder_query:
                     kwargs = {'agent': target_agent, 'language': 'ko', 'title': folder_query}
                     if item_year: kwargs['year'] = str(item_year)
-                    if task_logger: task_logger(f"⚠️ 1차 검색 실패. 폴더명으로 2차 검색을 시도합니다... (검색어: '{folder_query}', 연도: '{item_year}')")
+                    if task_logger: task_logger(f"📡 폴더명 기반 매칭 검색 시도... (검색어: '{folder_query}', 연도: '{item_year}')")
+                    matches = target_item.matches(**kwargs)
+
+                if not matches and file_query and file_query.lower() != folder_query.lower():
+                    kwargs = {'agent': target_agent, 'language': 'ko', 'title': file_query}
+                    if item_year: kwargs['year'] = str(item_year)
+                    if task_logger: task_logger(f"⚠️ 1차 검색 실패. 파일명으로 2차 검색을 시도합니다... (검색어: '{file_query}', 연도: '{item_year}')")
                     matches = target_item.matches(**kwargs)
 
                 if not matches: 
                     if task_logger: task_logger(f"❌ 일치하는 후보가 없습니다.")
                     return False, "검색 조건에 맞는 후보가 없습니다.", 0
 
-                norm_pattern = r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]'
-                norm_file_q = re.sub(norm_pattern, '', file_query.lower())
-                norm_folder_q = re.sub(norm_pattern, '', folder_query.lower())
-
-                import difflib
                 best_match = None
                 best_score = 0
                 highest_sim_found = 0.0
                 matched_by = ""
 
-                for idx, cand in enumerate(matches[:3]):
-                    cand_name = getattr(cand, 'name', '')
-                    cand_orig = getattr(cand, 'originalTitle', '')
-                    cand_score = int(getattr(cand, 'score', 0) or 0)
+                top_candidates = matches[:3]
+                
+                is_sjva_agent = target_agent.startswith('com.plexapp.agents.sjva') if target_agent else False
+                is_plex_agent = target_agent in ['tv.plex.agents.movie', 'tv.plex.agents.series'] if target_agent else False
 
-                    clean_cand_name = cand_name.split('|')[0].strip() if '|' in cand_name else cand_name
-                    clean_cand_orig = cand_orig.split('|')[0].strip() if '|' in cand_orig else cand_orig
+                if is_sjva_agent:
+                    # ==============================================================
+                    # [모드 A: SJVA 에이전트 (점수 기반 엄격 매칭)]
+                    # ==============================================================
+                    if task_logger: task_logger(f"💡 [SJVA 에이전트 모드] 점수 기반 검증(커트라인 95점)을 진행합니다.")
+                    
+                    top_candidates.sort(key=lambda x: int(getattr(x, 'score', 0) or 0), reverse=True)
+                    
+                    for idx, cand in enumerate(top_candidates):
+                        cand_name = getattr(cand, 'name', '')
+                        cand_year = str(getattr(cand, 'year', ''))
+                        cand_score = int(getattr(cand, 'score', 0) or 0)
+                        
+                        if item_year and cand_year and item_year != cand_year:
+                            if task_logger:
+                                task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score})")
+                                task_logger(f"    ❌ 연도 불일치 (목표: {item_year}, 후보: {cand_year})")
+                            continue
+                            
+                        if cand_score >= 95:
+                            best_match = cand
+                            best_score = cand_score
+                            matched_by = f"SJVA 에이전트 매칭 점수({cand_score}점)"
+                            if task_logger:
+                                task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}, 연도: {cand_year}) -> ✨ 조건 충족!")
+                            break
+                        else:
+                            if task_logger:
+                                task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score})")
+                                task_logger(f"    ❌ 기준점(95점) 미달")
 
-                    norm_cand_name = re.sub(norm_pattern, '', clean_cand_name.lower())
-                    norm_cand_orig = re.sub(norm_pattern, '', clean_cand_orig.lower())
+                    if not best_match:
+                        reject_reason = f"SJVA 점수 기준(95점) 및 연도 조건을 충족하는 후보가 없습니다."
+                        if task_logger: task_logger(f"❌ 최종 매칭 실패: {reject_reason}")
+                        return False, reject_reason, 0
 
-                    sim_file_name = difflib.SequenceMatcher(None, norm_file_q, norm_cand_name).ratio() if norm_file_q and norm_cand_name else 0.0
-                    sim_file_orig = difflib.SequenceMatcher(None, norm_file_q, norm_cand_orig).ratio() if norm_file_q and norm_cand_orig else 0.0
-                    max_file_sim = max(sim_file_name, sim_file_orig)
+                else:
+                    # ==============================================================
+                    # [모드 B: Plex 기본 에이전트 등 (텍스트 유사도 매칭 또는 스킵)]
+                    # ==============================================================
+                    if skip_sim_check:
+                        if task_logger: task_logger(f"💡 [제목/연도 검증 스킵 모드] 사용자 설정에 따라 텍스트 및 연도 검증을 생략하고 1순위 결과를 무조건 수용합니다.")
+                        
+                        cand = top_candidates[0]
+                        cand_name = getattr(cand, 'name', '')
+                        cand_year = str(getattr(cand, 'year', ''))
 
-                    sim_folder_name = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_name).ratio() if norm_folder_q and norm_cand_name else 0.0
-                    sim_folder_orig = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_orig).ratio() if norm_folder_q and norm_cand_orig else 0.0
-                    max_folder_sim = max(sim_folder_name, sim_folder_orig)
+                        if task_logger: task_logger(f"📋 [1순위 후보 강제 수용] '{cand_name}' (연도: {cand_year})")
 
-                    current_highest_sim = max(max_file_sim, max_folder_sim)
-
-                    if task_logger:
-                        task_logger(f"📋 [후보 {idx+1} 검증] '{cand_name}' (유사도: {current_highest_sim*100:.1f}%, 점수: {cand_score})")
-
-                    if current_highest_sim >= 0.90:
                         best_match = cand
-                        best_score = cand_score
-                        highest_sim_found = current_highest_sim
-                        matched_by = "폴더명" if current_highest_sim == max_folder_sim else "파일명"
-                        break
+                        highest_sim_found = 1.0
+                        matched_by = "제목/연도 검증 스킵 (강제 수용)"
+                            
+                    else:
+                        if task_logger: task_logger(f"💡 [텍스트 유사도 모드] 텍스트 유사도 검증(커트라인 90%)을 진행합니다.")
+                        
+                        norm_pattern = r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]'
+                        norm_folder_q = re.sub(norm_pattern, '', folder_query.lower())
+                        norm_file_q = re.sub(norm_pattern, '', file_query.lower())
 
-                if not best_match:
-                    reject_reason = f"상위 후보 3개 중 텍스트 유사도 기준(90%)을 충족하는 항목이 없습니다."
-                    if task_logger: task_logger(f"❌ 매칭 실패: {reject_reason}")
-                    return False, reject_reason, 0
+                        for idx, cand in enumerate(top_candidates):
+                            cand_name = getattr(cand, 'name', '')
+                            cand_orig = getattr(cand, 'originalTitle', '')
+                            cand_year = str(getattr(cand, 'year', ''))
+                            cand_score = int(getattr(cand, 'score', 0) or 0)
+
+                            if task_logger:
+                                task_logger(f"📋 [후보 {idx+1} 검증]")
+                                task_logger(f"    - 반환된 제목(Name) : {cand_name} ({cand_year})")
+                                task_logger(f"    - 반환된 원제(Orig) : {cand_orig}")
+
+                            if item_year and cand_year and item_year != cand_year:
+                                if task_logger: task_logger(f"    ❌ 연도 불일치 (목표 연도: {item_year})")
+                                continue
+
+                            clean_cand_name = cand_name.split('|')[0].strip() if '|' in cand_name else cand_name
+                            clean_cand_orig = cand_orig.split('|')[0].strip() if '|' in cand_orig else cand_orig
+
+                            norm_cand_name = re.sub(norm_pattern, '', clean_cand_name.lower())
+                            norm_cand_orig = re.sub(norm_pattern, '', clean_cand_orig.lower())
+
+                            sim_folder_name = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_name).ratio() if norm_folder_q and norm_cand_name else 0.0
+                            sim_folder_orig = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_orig).ratio() if norm_folder_q and norm_cand_orig else 0.0
+                            max_folder_sim = max(sim_folder_name, sim_folder_orig)
+
+                            sim_file_name = difflib.SequenceMatcher(None, norm_file_q, norm_cand_name).ratio() if norm_file_q and norm_cand_name else 0.0
+                            sim_file_orig = difflib.SequenceMatcher(None, norm_file_q, norm_cand_orig).ratio() if norm_file_q and norm_cand_orig else 0.0
+                            max_file_sim = max(sim_file_name, sim_file_orig)
+
+                            if task_logger:
+                                task_logger(f"    ├─ 폴더 일치율: {max_folder_sim*100:.1f}%")
+                                task_logger(f"    └─ 파일 일치율: {max_file_sim*100:.1f}%")
+
+                            if max_folder_sim >= 0.90:
+                                best_match, best_score, highest_sim_found, matched_by = cand, cand_score, max_folder_sim, "폴더명"
+                                break
+                            elif max_file_sim >= 0.90:
+                                best_match, best_score, highest_sim_found, matched_by = cand, cand_score, max_file_sim, "파일명"
+                                break
+
+                    if not best_match:
+                        reject_reason = f"상위 후보 3개 중 연도 조건 및 텍스트 유사도(90%)를 충족하는 항목이 없습니다."
+                        if task_logger: task_logger(f"❌ 최종 매칭 실패: {reject_reason}")
+                        return False, reject_reason, 0
 
                 candidate_name = getattr(best_match, 'name', '')
 
                 if task_logger:
-                    task_logger(f"💡 [Plex 모드] {matched_by} 기반 텍스트 유사도({highest_sim_found*100:.1f}%) 검증 통과 -> 후보 '{candidate_name}' 선택됨.")
-                    task_logger(f"✨ 최적 후보 검증 완료. 직접 HTTP API로 매칭을 강제 적용합니다.")
+                    if matched_by.startswith("에이전트"):
+                        task_logger(f"💡 [SJVA 모드] {matched_by} 기준 검증 통과 -> 후보 '{candidate_name}' 선택됨.")
+                    else:
+                        task_logger(f"💡 [Plex 기본 모드] '{matched_by}' 기반 검증 통과 (유사도: {highest_sim_found*100:.1f}%) -> 후보 '{candidate_name}' 선택됨.")
+                    task_logger(f"✨ 직접 HTTP API로 매칭을 강제 적용합니다.")
 
                 initial_guid = (target_item.guid or '').lower()
 
@@ -2361,12 +2467,20 @@ def perform_smart_media_action(
                 for _ in range(8):
                     if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
                     time.sleep(2.5)
-                    target_item.reload()
-                    new_guid = (target_item.guid or '').lower()
-                    if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
-                        match_verified = True
-                        if task_logger: task_logger(f"✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
-                        return True, f"매칭 성공 ({candidate_name})", best_score
+                    try:
+                        target_item.reload()
+                        new_guid = (target_item.guid or '').lower()
+                        if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
+                            match_verified = True
+                            if task_logger: task_logger(f"✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
+                            return True, f"매칭 성공 ({candidate_name})", best_score
+                            
+                    except Exception as reload_err:
+                        if "404" in str(reload_err) or "not_found" in str(reload_err).lower():
+                            if task_logger: task_logger(f"✅ 매칭 승인! (Plex가 기존 항목을 삭제하고 새로운 ID로 병합/재생성했습니다.)")
+                            return True, f"매칭 성공 (ID 변경/병합됨: {candidate_name})", best_score
+                        else:
+                            raise reload_err
                         
                 if not match_verified:
                     if task_logger: task_logger(f"⚠️ Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.")

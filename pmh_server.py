@@ -543,8 +543,8 @@ def api_admin_update():
         
         if not is_ready:
             print(f"[PMH UPDATE] 거부됨: {msg}")
-            return jsonify({"status": "error", "running_count": running_count, "message": msg}), 400
-            
+            return jsonify({"status": "busy", "running_count": running_count, "message": msg}), 200
+
     except Exception as e:
         print(f"[PMH UPDATE ERROR] 상태 확인 실패: {e}")
         return jsonify({"status": "error", "message": f"코어 상태 확인 실패: {e}"}), 500
@@ -570,7 +570,7 @@ def api_admin_reload_core():
         
         if not is_ready:
             print(f"[PMH RELOAD] 거부됨: {msg}")
-            return jsonify({"status": "error", "running_count": running_count, "message": msg}), 400
+            return jsonify({"status": "error", "running_count": running_count, "message": msg}), 200
             
         print("[PMH RELOAD] 1. pmh_config.yaml 설정을 다시 불러옵니다...")
         try:
