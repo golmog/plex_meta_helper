@@ -104,8 +104,9 @@ def get_ui(core_api):
             {"id": "opt_analyze_audio", "type": "checkbox", "label": "비디오 분석 시 오디오 코덱 검사 포함", "default": True, "show_if": {"opt_analyze": True}}
         ],
         "execute_inputs": [
-            {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트)</span>", "default": True, "show_if": {"mode": "rematch"}},
-            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}},
+            {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": True, "show_if": {"opt_match": True}},
+            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"opt_match": True}},
+            {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭시 제목/연도 검증 스킵<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": False, "show_if": {"opt_match": True}},
             {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
         ],
         "settings_inputs": [
@@ -273,7 +274,8 @@ def get_target_issues(req_data, core_api, task=None):
             query = ""
             if fix_type == 'analyze':
                 opt_audio = req_data.get('opt_analyze_audio', True)
-                audio_check_sql = "OR m.audio_codec IS NULL OR m.audio_codec = ''" if opt_audio else ""
+                fallback_check = "AND (SELECT codec FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) IS NULL"
+                audio_check_sql = f"OR ((m.audio_codec IS NULL OR m.audio_codec = '') {fallback_check})" if opt_audio else ""
                 
                 query = base_from + f"""
                     mi.metadata_type IN (1, 4, 10) AND EXISTS (
@@ -281,7 +283,7 @@ def get_target_issues(req_data, core_api, task=None):
                         WHERE m.metadata_item_id = mi.id AND (
                             (mi.metadata_type IN (1, 4) AND (m.width IS NULL OR m.width = 0 {audio_check_sql}))
                             OR
-                            (mi.metadata_type = 10 AND (m.audio_codec IS NULL OR m.audio_codec = ''))
+                            (mi.metadata_type = 10 AND ((m.audio_codec IS NULL OR m.audio_codec = '') {fallback_check}))
                         )
                     ) AND EXISTS (
                         SELECT 1 FROM media_items m 
@@ -427,6 +429,8 @@ def run(data, core_api):
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
         elif data.get('_is_single'):
+            single_id = str(data.get('rating_key') or data.get('id', ''))
+            
             raw_files = data.get('files', [])
             if isinstance(raw_files, str):
                 try: files_list = json.loads(raw_files)
@@ -434,7 +438,8 @@ def run(data, core_api):
             else: files_list = raw_files
 
             items = [{
-                'rating_key': str(data.get('rating_key')),
+                'id': single_id,
+                'rating_key': single_id,
                 'title': data.get('title', '단일 항목'),
                 'section': data.get('section', ''),
                 'fix_type': data.get('fix_type', 'analyze'),
@@ -637,11 +642,16 @@ def worker(task_data, core_api, start_index):
             progress += 1
             task.update_state('running', progress, total)
 
-            rk = item['rating_key']
-            fix_type = item['fix_type']
-            title = item['title']
-            m_type = item['m_type']
-            files = item['files']
+            raw_rk = item.get('rating_key') or item.get('id')
+            if not raw_rk:
+                task.log(f"[{progress}/{total}] ⚠️ 항목의 ID가 없어 스킵합니다.")
+                continue
+                
+            rk = str(raw_rk)
+            title = item.get('title', rk)
+            fix_type = item.get('fix_type', 'analyze')
+            m_type = item.get('m_type', 1)
+            files = item.get('files', [])
 
             task.log(f"[{progress}/{total}] 🎬 '{title}' 복구 진행 중...")
             
@@ -686,6 +696,7 @@ def worker(task_data, core_api, start_index):
 
                     try_ref = task_data.get('opt_try_refresh', True) if fix_type == 'match' else False
                     do_unm = task_data.get('opt_unmatch_first', False) if fix_type == 'match' else False
+                    skip_sim = task_data.get('opt_skip_sim_check', False) if fix_type == 'match' else False
                     
                     success, msg, score = pmh_core.perform_smart_media_action(
                         plex_url=plex._baseurl, 
@@ -698,7 +709,9 @@ def worker(task_data, core_api, start_index):
                         plex_inst=plex,
                         try_refresh_first=try_ref,
                         do_unmatch_first=do_unm,
+                        skip_sim_check=skip_sim,
                         global_config=core_api['config'],
+                        task_logger=task.log,
                         cancel_checker=task.is_cancelled
                     )
 
