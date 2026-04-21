@@ -97,6 +97,7 @@ def get_ui(core_api):
             {"id": "opt_vfs", "type": "checkbox", "label": "스캔 전 vfs/refresh 수행 (Plex Mate 연동)", "default": True, "show_if": {"mode": "path_scan"}},
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 Refresh(자동 매칭) 우선 시도", "default": True, "show_if": {"mode": "rematch"}},
             {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}},
+            {"id": "opt_skip_sim_check", "type": "checkbox", "label": "제목/연도 검증 스킵 (Plex 기본 에이전트 무조건 매칭)", "default": False, "show_if": {"mode": "rematch"}},
             {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
 
         ],
@@ -145,7 +146,6 @@ def get_target_items(req_data, core_api, task=None):
 
     opt_smart_refresh = req_data.get('opt_smart_refresh', False)
     opt_smart_match = req_data.get('opt_smart_match', False)
-
     items = []
     total_scanned = 0
 
@@ -388,11 +388,20 @@ def run(data, core_api):
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
         elif data.get('_is_single'):
-            items = [{'id': str(data.get('id')), 'title': data.get('title', '단일 실행 항목'), 'section_id': data.get('section_id')}]
+            single_id = str(data.get('rating_key') or data.get('id', ''))
+            single_title = data.get('title', '단일 실행 항목')
+            single_sec_id = data.get('section_id', '')
+
+            items = [{'id': single_id, 'rating_key': single_id, 'title': single_title, 'section_id': single_sec_id}]
+            
             task_data = {"mode": current_mode, "opt_vfs": vfs_opt, "target_items": items, "total": len(items)}
             task_data['_is_single'] = True
             task_data['_silent_task'] = True
             task_data['_auto_refresh_ui'] = True
+            
+            for k, v in data.items():
+                if k not in task_data: task_data[k] = v
+                
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
         else:
@@ -553,7 +562,12 @@ def worker(task_data, core_api, start_index):
             progress += 1
             task.update_state('running', progress, total)
 
-            mid = str(item.get('rating_key', item.get('id', '')))
+            raw_mid = item.get('rating_key') or item.get('id')
+            if not raw_mid:
+                task.log(f"[{progress}/{total}] ⚠️ 항목의 ID(rating_key)가 없어 처리를 스킵합니다. (데이터: {item})")
+                continue
+                
+            mid = str(raw_mid)
             title = item.get('title', mid)
             
             task.log(f"[{progress}/{total}] 🎬 '{title}' 처리 중...")
@@ -578,6 +592,7 @@ def worker(task_data, core_api, start_index):
                 elif mode in ['refresh', 'rematch']:
                     try_ref = task_data.get('opt_try_refresh', True) if mode == 'rematch' else False
                     do_unm = task_data.get('opt_unmatch_first', False) if mode == 'rematch' else False
+                    skip_sim = task_data.get('opt_skip_sim_check', False) if mode == 'rematch' else False
                     
                     if mode == 'refresh': task.log("   -> 🔄 새로고침(Refresh) 호출 및 대기 중...")
                     else: task.log("   -> 🔗 스마트 하이브리드 매칭 엔진 가동 중...")
@@ -593,7 +608,9 @@ def worker(task_data, core_api, start_index):
                         plex_inst=plex,
                         try_refresh_first=try_ref,
                         do_unmatch_first=do_unm,
+                        skip_sim_check=skip_sim,
                         global_config=core_api['config'],
+                        task_logger=task.log,
                         cancel_checker=task.is_cancelled
                     )
                     
