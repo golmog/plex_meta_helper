@@ -81,6 +81,13 @@ def get_ui(core_api=None):
         ],
         "execute_inputs": [
             {
+                "id": "opt_unmatch_first", 
+                "type": "checkbox", 
+                "label": "매칭 전 언매치 우선 실행", 
+                "default": True, 
+                "hide_if": {"scan_mode": "file_error"}
+            },
+            {
                 "id": "retry_errors",
                 "type": "checkbox",
                 "label": "이전에 실패(Error)한 항목도 다시 시도",
@@ -200,8 +207,11 @@ def run(data, core_api):
             return {"status": "success", "type": "async_task", "task_data": task_data}, 200
 
         elif data.get('_is_single'):
+            single_id = str(data.get('rating_key') or data.get('id', ''))
+            
             items = [{
-                'id': str(data.get('id')),
+                'id': single_id,
+                'rating_key': single_id,
                 'title': data.get('title', '단일 항목'),
                 'op_action': data.get('op_action', 'match'),
                 'section_name': data.get('section_name', ''),
@@ -800,7 +810,12 @@ def worker(task_data, core_api, start_index):
             progress += 1
             task.update_state('running', progress=progress, total=total)
 
-            item_id = str(item['id'])
+            raw_id = item.get('id') or item.get('rating_key')
+            if not raw_id:
+                task.log(f"[{progress}/{total}] ⚠️ 항목의 ID가 없어 스킵합니다.")
+                continue
+
+            item_id = str(raw_id)
             title = item.get('title', item_id)
             op_action = item.get('op_action', 'match')
             
@@ -825,6 +840,8 @@ def worker(task_data, core_api, start_index):
                         op_action = 'match'
 
                 if op_action == 'match':
+                    do_unm = task_data.get('opt_unmatch_first', True)
+
                     success, msg, score = pmh_core.perform_smart_media_action(
                         plex_url=plex._baseurl, 
                         plex_token=plex._token, 
@@ -835,8 +852,10 @@ def worker(task_data, core_api, start_index):
                         target_agent=plex_item.section().agent,
                         plex_inst=plex,
                         try_refresh_first=False,
-                        do_unmatch_first=True,
+                        do_unmatch_first=do_unm,
+                        skip_sim_check=False,
                         global_config=core_api['config'],
+                        task_logger=task.log,
                         cancel_checker=task.is_cancelled
                     )
                     
