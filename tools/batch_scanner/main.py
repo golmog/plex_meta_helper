@@ -224,29 +224,34 @@ def get_target_items(req_data, core_api, task=None):
         if count_res: total_scanned = count_res[0]['cnt']
     except Exception: pass
 
-    where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 3, 4, 8, 9, 10)"
+    safe_season_condition = """
+        AND NOT (
+            (mi.metadata_type = 3 AND mi."index" BETWEEN 100 AND 999)
+            OR
+            (mi.metadata_type = 4 AND mi.parent_id IN (SELECT id FROM metadata_items WHERE metadata_type = 3 AND "index" BETWEEN 100 AND 999))
+        )
+    """
 
     if mode == 'refresh' and opt_smart_refresh:
         where_conditions = f"""
             mi.library_section_id IN ({lib_ids_str}) 
             AND mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != ''
             AND (
-                -- 1. 영화, 쇼, 아티스트
+                -- 1. 영화, 쇼, 아티스트 (제한 없음)
                 (mi.metadata_type IN (1, 2, 9) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url = 'upload://' OR mi.user_thumb_url = 'metadata://' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                 OR
-                -- 2. 앨범
-                (mi.metadata_type = 8 AND mi.parent_id IN (SELECT id FROM metadata_items WHERE "index" < 100) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url = 'upload://' OR mi.user_thumb_url = 'metadata://' OR mi.user_thumb_url LIKE '%discord%attachments%'))
+                -- 2. 앨범 (음악은 3자리 시즌 개념이 없으므로 제한 삭제)
+                (mi.metadata_type = 8 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url = 'upload://' OR mi.user_thumb_url = 'metadata://' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                 OR
                 -- 3. 에피소드
-                (mi.metadata_type = 4 
-                 AND mi."index" < 100 
-                 AND (SELECT COUNT(*) FROM metadata_items WHERE parent_id = mi.parent_id AND metadata_type = 4 AND "index" < 100) > 1
-                 AND mi.parent_id IN (SELECT id FROM metadata_items WHERE "index" < 100) 
+                (mi.metadata_type = 4
+                 AND mi.parent_id IN (SELECT id FROM metadata_items WHERE metadata_type = 3 AND NOT ("index" BETWEEN 100 AND 999))
+                 AND (SELECT COUNT(*) FROM metadata_items WHERE parent_id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) AND metadata_type = 3 AND NOT ("index" BETWEEN 100 AND 999)) > 1
                  AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url = 'upload://' OR mi.user_thumb_url = 'metadata://' OR mi.user_thumb_url LIKE '%discord%attachments%'))
             )
         """
     else:
-        where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 3, 4, 8, 9, 10) AND NOT (mi.metadata_type IN (3, 4) AND mi.\"index\" >= 100)"
+        where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 3, 4, 8, 9, 10) {safe_season_condition}"
 
     base_select = f"""
         SELECT
