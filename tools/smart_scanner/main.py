@@ -309,12 +309,11 @@ def get_target_issues(req_data, core_api, task=None):
                     (
                         (mi.metadata_type IN (1, 2, 9) AND {bad_thumb})
                         OR
-                        (mi.metadata_type = 8 AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND {bad_thumb})
+                        (mi.metadata_type = 8 AND {bad_thumb})
                         OR
-                        (mi.metadata_type = 4 
-                         AND mi."index" < 100 
-                         AND (SELECT COUNT(*) FROM metadata_items WHERE parent_id = mi.parent_id AND metadata_type = 4 AND "index" < 100) > 1
-                         AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 
+                        (mi.metadata_type = 4
+                         AND mi.parent_id IN (SELECT id FROM metadata_items WHERE metadata_type = 3 AND NOT ("index" BETWEEN 100 AND 999))
+                         AND (SELECT COUNT(*) FROM metadata_items WHERE parent_id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) AND metadata_type = 3 AND NOT ("index" BETWEEN 100 AND 999)) > 1
                          AND {bad_thumb})
                     )
                 """
@@ -322,8 +321,8 @@ def get_target_issues(req_data, core_api, task=None):
             elif fix_type == 'yaml_season':
                 query = base_from + """
                     mi.metadata_type = 4 
-                    AND mi.parent_id IN (SELECT id FROM metadata_items WHERE "index" >= 100)
-                    AND (mi.guid LIKE 'local://%' OR mi.guid = '' OR mi.guid IS NULL) 
+                    AND mi.parent_id IN (SELECT id FROM metadata_items WHERE "index" BETWEEN 100 AND 999)
+                    AND (mi.guid LIKE 'local://%' OR mi.guid = '' OR mi.guid IS NULL)
                     AND mi.parent_id IN (
                         SELECT parent.id FROM metadata_items parent 
                         JOIN metadata_items grandparent ON grandparent.id = parent.parent_id 
