@@ -296,13 +296,12 @@ def get_target_issues(req_data, core_api, task=None):
             
             elif fix_type == 'refresh':
                 bad_thumb = """
-                    (
+                    (mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != '')
+                    AND (
                         mi.user_thumb_url = '' OR 
                         mi.user_thumb_url IS NULL OR 
                         mi.user_thumb_url = 'upload://' OR
                         mi.user_thumb_url = 'metadata://' OR
-                        mi.user_thumb_url NOT LIKE '%://%' OR
-                        mi.user_thumb_url LIKE 'media://%.bundle/Contents/Thumbnails/%' OR 
                         mi.user_thumb_url LIKE '%discord%attachments%'
                     )
                 """
@@ -310,9 +309,13 @@ def get_target_issues(req_data, core_api, task=None):
                     (
                         (mi.metadata_type IN (1, 2, 9) AND {bad_thumb})
                         OR
-                        (mi.metadata_type = 3 AND mi."index" < 100 AND {bad_thumb})
+                        (mi.metadata_type = 8 AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND {bad_thumb})
                         OR
-                        (mi.metadata_type IN (4, 8) AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 AND {bad_thumb})
+                        (mi.metadata_type = 4 
+                         AND mi."index" < 100 
+                         AND (SELECT COUNT(*) FROM metadata_items WHERE parent_id = mi.parent_id AND metadata_type = 4 AND "index" < 100) > 1
+                         AND (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) < 100 
+                         AND {bad_thumb})
                     )
                 """
                 
@@ -364,7 +367,7 @@ def get_target_issues(req_data, core_api, task=None):
                             add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk)
                         elif m_type in (4, 10): 
                             actual_parent = grandparent_id or parent_id
-                            display_title = format_title(r, is_parent=True) if fix_type in ['match', 'refresh'] else format_title(r, is_episode=True)
+                            display_title = format_title(r, is_episode=True)
                             add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
                             
             if task: task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
