@@ -191,6 +191,8 @@ window.PmhUICore = {
 
         const currentSrv = config.servers[config.activeServerIdx];
         const resolvedSrvId = currentSrv ? (currentSrv.machineIdentifier || currentSrv.machine_id || 'default') : 'default';
+        const resolvedSrvName = currentSrv ? (currentSrv.name || resolvedSrvId.substring(0,8)) : 'Unknown';
+
         const storageKeyPage = `pmh_page_${config.toolId}_${resolvedSrvId}`;
         const savedPageStr = localStorage.getItem(storageKeyPage);
         const initialPage = savedPageStr ? parseInt(savedPageStr, 10) : 1;
@@ -200,6 +202,7 @@ window.PmhUICore = {
             ui: config.uiSchema,
             opts: config.uiSchema.saved_options || {},
             srvId: resolvedSrvId,
+            srvName: resolvedSrvName,
             pollTimer: null,
             currentPage: isNaN(initialPage) ? 1 : initialPage,
             itemsPerPage: config.uiSchema.saved_options?.items_per_page || 10,
@@ -329,7 +332,7 @@ window.PmhUICore = {
         ctx.c.innerHTML = html;
 
         const getFormData = () => {
-            let req = { _server_id: ctx.srvId };
+            let req = { _server_id: ctx.srvId, _server_name: ctx.srvName };
             ctx.c.querySelectorAll('.pmh-dynamic-input, .pmh-dynamic-radio:checked').forEach(el => {
                 let key = el.name ? el.name.replace('pmh_rad_', '') : el.id.replace('pmh_inp_', '');
                 req[key] = (el.type === 'checkbox') ? el.checked : el.value;
@@ -419,6 +422,7 @@ window.PmhUICore = {
                     const req = getFormData();
                     req.action_type = 'save_options';
                     req._form_collapsed = ctx.opts._form_collapsed;
+                    req._server_name = ctx.srvName;
                     config.apiAdapter.run(req).catch(()=>{});
                 }
                 return;

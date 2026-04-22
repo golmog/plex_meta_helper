@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.81"
+__version__ = "0.8.82"
 
 def get_version():
     return __version__
@@ -2023,6 +2023,8 @@ def perform_smart_media_action(
                     return False, "작업이 사용자에 의해 취소되었습니다.", 0
                     
                 try:
+                    target_item.reload()
+                    
                     activities = plex_inst.query('/activities').findall('Activity')
                     current_item_active = any(target_item.title in act.get('title', '') or target_item.title in act.get('subtitle', '') for act in activities)
                     
@@ -2032,7 +2034,14 @@ def perform_smart_media_action(
                     else:
                         if is_activity_found or waited_time >= 3: break
                         time.sleep(1.0); waited_time += 1
-                except Exception: break
+
+                except Exception as reload_err:
+                    if "404" in str(reload_err) or "not_found" in str(reload_err).lower():
+                        action_name = "새로고침(Refresh)" if action_type == 'refresh' else "분석(Analyze)"
+                        if task_logger: task_logger(f"✅ {action_name} 중 ID 변경/병합 감지 (정상 처리됨)")
+                        return True, f"{action_name} 완료 (ID 병합/재생성됨)", 100
+                    else:
+                        break
                     
             time.sleep(1.5)
             action_name = "새로고침(Refresh)" if action_type == 'refresh' else "분석(Analyze)"
@@ -2040,6 +2049,11 @@ def perform_smart_media_action(
             return True, msg, 100
             
         except Exception as e:
+            if "404" in str(e) or "not_found" in str(e).lower():
+                action_name = "새로고침(Refresh)" if action_type == 'refresh' else "분석(Analyze)"
+                if task_logger: task_logger(f"✅ {action_name} 중 ID 변경/병합 감지 (정상 처리됨)")
+                return True, f"{action_name} 완료 (ID 병합/재생성됨)", 100
+                
             return False, f"{action_type} 처리 중 오류: {e}", 0
 
     # ==========================================================================
