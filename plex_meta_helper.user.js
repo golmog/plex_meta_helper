@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.82
+// @version      0.8.83
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2936,11 +2936,16 @@ GM_addStyle(`
             gBox.className = 'plex-guid-list-box';
             gBox.style.cssText = "font-size: 11px; font-weight: normal; cursor: pointer; display: inline-block; vertical-align: top;";
 
-            const isQueued = window._pmh_media_queues && window._pmh_media_queues[id];
+            const queueInfo = window._pmh_media_queues && window._pmh_media_queues[id];
 
-            if (isQueued) {
-                gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
-                gBox.style.color = '#2f96b4';
+            if (queueInfo) {
+                if (queueInfo.state === 'queued') {
+                    gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
+                    gBox.style.color = '#e5a00d';
+                } else {
+                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                    gBox.style.color = '#2f96b4';
+                }
                 gBox.dataset.refreshing = 'true';
             } else if (info.g) {
                 short = info.g.length > currentLen ? info.g.substring(0, currentLen) + '...' : info.g;
@@ -3023,11 +3028,20 @@ GM_addStyle(`
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/${id}/${apiAction}`, 'POST', extraData, ClientSettings.masterApiKey);
                     
                     if (res.status === 'queued') {
-                        gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px; color:#51a351;"></i>큐 대기중`;
+                        gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px; color:#51a351;"></i>큐 추가됨`;
                         
+                        let itemDisplayName = "알 수 없는 항목";
+                        if (info.p) {
+                            const pParts = info.p.split(/[\\/]/);
+                            itemDisplayName = pParts[pParts.length - 1];
+                        } else {
+                            const labelEl = cont.querySelector('[aria-label]');
+                            if (labelEl) itemDisplayName = labelEl.getAttribute('aria-label');
+                        }
+
                         window._pmh_media_queues = window._pmh_media_queues || {};
-                        window._pmh_media_queues[id] = { task_id: res.task_id, start_time: Date.now() };
-                        
+                        window._pmh_media_queues[id] = { task_id: res.task_id, start_time: Date.now(), state: 'queued', title: itemDisplayName };
+
                         if (typeof window.startQueuePolling === 'function') {
                             window.startQueuePolling(targetServerId);
                         }
@@ -3103,10 +3117,12 @@ GM_addStyle(`
                                 infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료!`);
                                 needsListRefresh = true;
                             } else if (status.state === 'error') {
-                                toastr.error(`작업 실패: ${status.msg}`, "매칭/갱신 오류");
+                                const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
+                                toastr.error(`<b>[${failName}]</b><br>작업 실패: ${status.msg}`, "매칭/갱신 오류", {timeOut: 6000});
                                 needsListRefresh = true;
                             } else if (isTimeout) {
-                                toastr.warning(`시간 초과: 서버 응답이 없습니다.`, "대기 취소");
+                                const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
+                                toastr.warning(`<b>[${failName}]</b><br>시간 초과: 서버 응답이 없습니다.`, "대기 취소", {timeOut: 6000});
                                 needsListRefresh = true;
                             }
 
@@ -3130,12 +3146,21 @@ GM_addStyle(`
                         setTimeout(() => { if (typeof processList === 'function') processList(); }, 50);
 
                         } else if (status.state === 'processing' || status.state === 'queued') {
+                            if (window._pmh_media_queues[id]) {
+                                window._pmh_media_queues[id].state = status.state;
+                            }
+                            
                             const marker = document.querySelector(`.pmh-render-marker[data-iid="${id}"]`);
                             if (marker) {
                                 const gBox = marker.parentElement.querySelector('.plex-guid-list-box');
-                                if (gBox && !gBox.innerHTML.includes('처리중')) {
-                                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
-                                    gBox.style.color = '#2f96b4';
+                                if (gBox) {
+                                    if (status.state === 'queued' && !gBox.innerHTML.includes('대기중')) {
+                                        gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
+                                        gBox.style.color = '#e5a00d';
+                                    } else if (status.state === 'processing' && !gBox.innerHTML.includes('처리중')) {
+                                        gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                                        gBox.style.color = '#2f96b4';
+                                    }
                                 }
                             }
                         }
