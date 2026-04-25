@@ -684,11 +684,16 @@ def worker(task_data, core_api, start_index):
                         skip_delay = True 
                         item_has_error = True
                     else:
-                        task.log("      ✅ YAML 파일 확인 완료. Plex Mate로 동기화 API를 호출합니다...")
-                        if call_plexmate_refresh(mate_url, mate_apikey, rk): 
-                            task.log("         ➔ 🟢 Plex Mate 연동 성공! (YAML 정보가 Plex에 반영됩니다)")
+                        task.log("      ✅ YAML 파일 확인 완료. VFS 갱신 및 YAML 적용을 요청합니다...")
+                        success, msg, _ = pmh_core.perform_smart_media_action(
+                            plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
+                            action_type='yaml_refresh', plex_inst=plex, global_config=core_api['config'],
+                            task_logger=task.log, cancel_checker=task.is_cancelled
+                        )
+                        if success: 
+                            task.log("         ➔ 🟢 Plex Mate 연동 및 VFS 갱신 성공!")
                         else: 
-                            task.log("         ➔ 🔴 Plex Mate 연동 실패 (서버 응답 오류)")
+                            task.log(f"         ➔ 🔴 연동 실패: {msg}")
                             item_has_error = True
 
                 else:
