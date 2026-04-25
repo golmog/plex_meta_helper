@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.83
+// @version      0.8.84
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -4349,6 +4349,18 @@ GM_addStyle(`
             setTimeout(() => { if (typeof processList === 'function' && renderSessionAtClick === currentRenderSession) processList(); }, 50);
         };
 
+        const waitQueueTask = async (taskId, srvConfig) => {
+            while (!abortDetailRefresh) {
+                await new Promise(r => setTimeout(r, 2000));
+                const statusRes = await makeRequest(`${srvConfig.relayUrl}/media/queue_status?task_ids=${taskId}`, 'GET', null, ClientSettings.masterApiKey);
+                const statusInfo = statusRes[taskId];
+                
+                if (!statusInfo || statusInfo.state === 'completed') return true;
+                if (statusInfo.state === 'error') throw new Error(statusInfo.msg || "서버 작업 실패");
+            }
+            throw new Error("Cancelled");
+        };
+
         const btnRefreshData = document.getElementById('pmh-btn-refresh-data');
         if (btnRefreshData) {
             btnRefreshData.addEventListener('click', (e) => {
@@ -4570,24 +4582,13 @@ GM_addStyle(`
                 let isRematchSuccess = false;
 
                 try {
-                    await triggerPlexMediaAction(
-                        data.itemId, 
-                        'match', 
-                        plexSrv, 
-                        srvConfig, 
-                        matchOptions,
-                        btnRematch.cancelToken
-                    );
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey, btnRematch.cancelToken);
+                    
+                    if (res.status === 'queued') {
+                        await waitQueueTask(res.task_id, srvConfig);
+                    }
                     
                     if (globalAbortFlag || renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
-
-                    infoLog(`[Detail] Rematch successful. Waiting for Plex DB stabilization.`);
-                    toastr.info("서버 매칭 완료. UI 새로고침 중...", "리매칭 처리 중", {timeOut: 4000});
-                    
-                    for(let i=0; i<4; i++) {
-                        if (globalAbortFlag || renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
-                        await new Promise(r => setTimeout(r, 500));
-                    }
 
                     isRematchSuccess = true;
                     toastr.success("메타 리매칭 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 4000});
@@ -4661,57 +4662,30 @@ GM_addStyle(`
                 showBoxLoading();
                 toastr.info("미디어 분석을 요청 중입니다...<br>버튼을 다시 누르면 대기를 취소합니다.", "미디어 분석", {timeOut: 5000});
 
-                const initialMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
-                const initialUpdated = initialMeta && initialMeta.updatedAt ? initialMeta.updatedAt : 0;
-
-                const reqSuccess = await triggerPlexMediaAction(data.itemId, 'analyze', plexSrv, srvConfig);
-                if (!reqSuccess) {
-                    toastr.error("Plex 서버로 분석 요청을 보내지 못했습니다.", "통신 오류");
+                try {
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/analyze`, 'POST', {}, ClientSettings.masterApiKey);
+                    if (res.status === 'queued') {
+                        await waitQueueTask(res.task_id, srvConfig);
+                    }
+                    
+                    toastr.success("미디어 분석 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 3000});
+                    
+                    deleteMemoryCache(`D_${serverId}_${data.itemId}`);
+                    deleteMemoryCache(`L_${serverId}_${data.itemId}`);
+                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
+                    
+                    currentDisplayedItemId = null;
+                    processDetail(true);
+                    smartRefreshChildren();
+                    
+                } catch (err) {
+                    if (err.message !== "Cancelled") {
+                        toastr.error(`분석 실패: ${err.message}`, "오류", {timeOut: 5000});
+                    }
                     hideBoxLoading();
                     btnAnalyze.innerHTML = originalHtml;
                     delete btnAnalyze.dataset.refreshing;
-                    return;
                 }
-
-                let pollResult = 'timeout';
-                for (let attempt = 0; attempt < 60; attempt++) {
-                    if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return; 
-                    await new Promise(r => setTimeout(r, 2500));
-                    if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return;
-
-                    const tempMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
-                    if (tempMeta && tempMeta.updatedAt !== initialUpdated) {
-                        let stillMissing = true;
-                        if (tempMeta.Media && tempMeta.Media.length > 0) {
-                            stillMissing = tempMeta.Media.some(m => !m.width || m.width === 0);
-                        }
-                        
-                        if (stillMissing) {
-                            pollResult = 'failed_corrupt';
-                        } else {
-                            pollResult = 'success';
-                        }
-                        break;
-                    }
-                }
-
-                if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return;
-
-                if (pollResult === 'success') {
-                    toastr.success("미디어 분석 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 3000});
-                } else if (pollResult === 'failed_corrupt') {
-                    toastr.error("서버가 분석을 시도했으나 미디어 정보를 읽지 못했습니다.<br>파일 손상이나 클라우드 마운트 연결 상태를 확인하세요.", "분석 실패", {timeOut: 8000});
-                } else {
-                    toastr.warning("분석 시간이 초과되었습니다.<br>백그라운드 처리로 전환합니다.", "시간 초과", {timeOut: 4000});
-                }
-                
-                deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                deleteMemoryCache(`L_${serverId}_${data.itemId}`);
-                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
-                
-                currentDisplayedItemId = null;
-                processDetail(true);
-                smartRefreshChildren();
             });
         }
 
@@ -4836,34 +4810,32 @@ GM_addStyle(`
         if (mateBtn) {
             mateBtn.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
-                infoLog(`[PlexMate] Manual Refresh (YAML/TMDB/Marker Sync) requested for PMH Item: ${data.itemId}`);
+                infoLog(`[PlexMate] VFS Refresh + Manual Refresh requested via Core for Item: ${data.itemId}`);
 
                 const originalHtml = mateBtn.innerHTML;
                 mateBtn.style.pointerEvents = 'none';
-                mateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 요청 중...`;
-                toastr.info('Plex Mate에 YAML 반영을 요청합니다...');
+                mateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> YAML/TMDB 반영 중...`;
+                toastr.info(`VFS 캐시 갱신 및 YAML/TMDB 반영을 요청합니다...`, "YAML/TMDB 적용", {timeOut: 4000});
 
                 try {
-                    const payload = { metadata_item_id: data.itemId };
-                    const res = await callPlexMateViaRelay(srvConfig, '/scan/manual_refresh', payload);
-                    
-                    if (res.ret === 'success') {
-                        toastr.success('YAML 반영 완료!<br>(제목/포스터는 화면 이동시 UI에 반영됨)', '성공', {timeOut: 5000});
-                        infoLog(`[PlexMate] Manual Refresh (YAML/Marker Sync) successful for Item: ${data.itemId}`);
-
-                        deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                        deleteMemoryCache(`L_${serverId}_${data.itemId}`);
-                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
-                        
-                        currentDisplayedItemId = null;
-                        processDetail(true);
-                        smartRefreshChildren();
-                    } else {
-                        throw new Error(res.msg || "반영 오류");
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/yaml_refresh`, 'POST', {}, ClientSettings.masterApiKey);
+                    if (res.status === 'queued') {
+                        await waitQueueTask(res.task_id, srvConfig);
                     }
+                    
+                    toastr.success('YAML/TMDB 반영 완료!', '성공', {timeOut: 5000});
+                    infoLog(`[PlexMate] YAML/Marker Sync successful for Item: ${data.itemId}`);
+
+                    deleteMemoryCache(`D_${serverId}_${data.itemId}`);
+                    deleteMemoryCache(`L_${serverId}_${data.itemId}`);
+                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
+                    
+                    currentDisplayedItemId = null;
+                    processDetail(true);
+                    smartRefreshChildren();
                 } catch (err) { 
-                    errorLog(`[PlexMate] Manual refresh error:`, err);
-                    toastr.error(`YAML 반영 실패: ${err.message || err}`, '오류'); 
+                    errorLog(`[PlexMate] VFS/Manual refresh error:`, err);
+                    toastr.error(`오류 발생: ${err.message || err}`, '실패'); 
                 } finally { 
                     mateBtn.style.pointerEvents = 'auto'; 
                     mateBtn.innerHTML = originalHtml; 

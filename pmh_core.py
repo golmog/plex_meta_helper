@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.83"
+__version__ = "0.8.84"
 
 def get_version():
     return __version__
@@ -1926,7 +1926,7 @@ def media_action_worker_loop(global_config):
                     target_item.unmatch()
                     MEDIA_ACTION_STATUS[task_id] = {'state': 'completed', 'msg': 'Unmatch 완료'}
                 
-                elif action in ['match', 'refresh', 'analyze']:
+                elif action in ['match', 'refresh', 'analyze', 'yaml_refresh']:
                     try_ref = data.get('_try_refresh_first', False) if data else False
                     do_unm = data.get('_do_unmatch_first', False) if data else False
                     skip_sim = data.get('_skip_sim_check', False) if data else False
@@ -1979,6 +1979,7 @@ def perform_smart_media_action(
     task_logger=None, cancel_checker=None
 ):
     if global_config is None: global_config = {}
+    safe_item_title = str(item_title or '')
     
     if not plex_inst:
         from plexapi.server import PlexServer
@@ -1992,13 +1993,71 @@ def perform_smart_media_action(
         return False, "Plex 항목을 조회할 수 없습니다.", 0
     
     target_item = item
-    if action_type in ['match', 'refresh'] and item.type in ['episode', 'season', 'track', 'album']:
+    if action_type in ['match', 'refresh', 'yaml_refresh'] and item.type in ['episode', 'season', 'track', 'album']:
         try:
             if item.type in ['episode', 'track']: target_item = plex_inst.fetchItem(item.grandparentRatingKey)
             else: target_item = plex_inst.fetchItem(item.parentRatingKey)
             if task_logger: task_logger(f"💡 하위 항목 감지됨. 최상위 쇼({target_item.title}) 기준으로 '{action_type}' 수행.")
         except Exception as e:
             if task_logger: task_logger(f"⚠️ 최상위 객체를 찾지 못했습니다. 기존 객체로 진행합니다: {e}")
+
+    # ==========================================================================
+    # [모드 0] YAML/TMDB 반영 (Plex Mate 연동: VFS 갱신 -> Manual Refresh)
+    # ==========================================================================
+    if action_type == 'yaml_refresh':
+        mate_url = global_config.get('mate_url', '')
+        mate_apikey = global_config.get('mate_apikey', '')
+        
+        if not mate_url or not mate_apikey:
+            return False, "Plex Mate 연결 정보(URL, API Key)가 설정되지 않았습니다.", 0
+
+        # 1. 최상위 폴더 경로 추출 및 VFS Refresh
+        raw_file_path = None
+        if hasattr(target_item, 'media') and target_item.media and target_item.media[0].parts:
+            raw_file_path = target_item.media[0].parts[0].file
+        elif hasattr(target_item, 'locations') and target_item.locations:
+            raw_file_path = target_item.locations[0]
+
+        if raw_file_path:
+            import unicodedata
+            target_dir = os.path.dirname(raw_file_path) if target_item.type != 'show' else raw_file_path
+            
+            # 하위 항목일 경우 최상위 쇼 폴더로 거슬러 올라감
+            if item.type in ['episode', 'season']:
+                while True:
+                    base_name = os.path.basename(target_dir)
+                    if not base_name: break
+                    n_lower = unicodedata.normalize('NFC', base_name).lower().strip()
+                    is_season = bool(re.match(r'^(season|시즌|series|s)\s*\d+\b', n_lower)) or bool(re.match(r'^(specials?|스페셜|extras?|특집|ova|ost)(\s*\d+)?$', n_lower)) or n_lower.isdigit()
+                    if is_season:
+                        parent_path = os.path.dirname(target_dir)
+                        if parent_path == target_dir: break
+                        target_dir = parent_path
+                    else:
+                        break
+                        
+            if task_logger: task_logger(f"📂 VFS 캐시 갱신 요청 중... ({target_dir})")
+            try:
+                vfs_url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/vfs_refresh"
+                vfs_data = urlencode({'apikey': mate_apikey, 'target': target_dir, 'recursive': 'true', 'async': 'false'}).encode('utf-8')
+                urlopen(Request(vfs_url, data=vfs_data, method="POST"), timeout=30)
+            except Exception as e:
+                if task_logger: task_logger(f"⚠️ VFS 갱신 실패 (무시하고 속행): {e}")
+
+        # 2. YAML/TMDB 수동 반영
+        if task_logger: task_logger(f"⚡ Plex Mate YAML/TMDB 반영 요청 중...")
+        try:
+            refresh_url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/manual_refresh"
+            refresh_data = urlencode({'apikey': mate_apikey, 'metadata_item_id': target_item.ratingKey}).encode('utf-8')
+            req = Request(refresh_url, data=refresh_data, method="POST")
+            with urlopen(req, timeout=60) as resp:
+                res_json = json.loads(resp.read())
+                if res_json.get('ret') == 'success':
+                    return True, "YAML/TMDB 반영 완료", 100
+                else:
+                    return False, f"Plex Mate 반영 오류: {res_json.get('msg', 'Unknown')}", 0
+        except Exception as e:
+            return False, f"Plex Mate 서버 통신 실패: {e}", 0
 
     # ==========================================================================
     # [모드 1 & 2] 단순 Refresh / Analyze 모드 (대기 로직 포함)
@@ -2117,7 +2176,7 @@ def perform_smart_media_action(
                 if pids:
                     is_jav = True
                     extracted_label, extracted_num = pids[0]
-                    temp_db_pid_match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', item_title)
+                    temp_db_pid_match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', safe_item_title)
                     if temp_db_pid_match:
                         db_pid_norm = normalize_pid_for_comparison(temp_db_pid_match.group(1))
                         for l, n in pids:
