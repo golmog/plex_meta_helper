@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.84
+// @version      0.8.85
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3849,7 +3849,9 @@ GM_addStyle(`
 
                 if (meta && data.versions) {
                     if (meta.guid) data.guid = meta.guid;
-                    if (meta.duration) data.duration = meta.duration;
+                    if (meta.duration && data.type !== 'directory') {
+                        data.duration = meta.duration;
+                    }
 
                     if (meta.Marker) {
                         data.markers = {};
@@ -3986,7 +3988,7 @@ GM_addStyle(`
                 }
 
                 let html = `
-                <div style="display: flex; align-items: center; gap: 10px; padding: 3px 0;">
+                <div style="display: flex; align-items: center; gap: 10px; padding: 0;">
                     <div style="flex-shrink: 0; margin-left: ${level * 22}px; display: flex; align-items: center;">
                         ${treeIconHtml}${folderIconHtml}
                     </div>
@@ -4908,7 +4910,23 @@ GM_addStyle(`
                         const currentHash = getDetailStateHash();
                         const guidBox = document.getElementById('plex-guid-box');
 
-                        if (currentDisplayedItemId === itemId && currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash) {
+                        if (!guidBox && !isFetchingDetail && currentDisplayedItemId === itemId) {
+                            infoLog(`[Detail-Observer] ⚠️ 미디어 패널 증발 감지! (Plex Native UI 리렌더링). 패널을 복구합니다.`);
+                            
+                            currentDisplayedItemId = null;
+
+                            const target = document.querySelector('div[data-testid="metadata-top-level-items"]')
+                                        || document.querySelector('div[data-testid="metadata-starRatings"]')
+                                        || document.querySelector('div[data-testid="metadata-ratings"]')
+                                        || document.querySelector('button[data-testid="preplay-play"]')
+                                        || document.querySelector('span[data-testid="metadata-line2"]');
+                                        
+                            if (target) {
+                                if(observer.detailTimer) clearTimeout(observer.detailTimer);
+                                observer.detailTimer = setTimeout(() => { processDetail(); }, 100);
+                            }
+                        }
+                        else if (currentDisplayedItemId === itemId && currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash) {
                             infoLog(`[Detail-Observer] 🔄 Plex Native Action detected! Hash changed. Forcing update.`);
                             currentDetailStateHash = currentHash; 
                             
@@ -4919,7 +4937,10 @@ GM_addStyle(`
                                 if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
                             }
                             
-                            if (guidBox) guidBox.style.opacity = '0.4';
+                            if (guidBox) {
+                                guidBox.style.opacity = '0.4';
+                                guidBox.innerHTML = '<div style="padding:20px; text-align:center; color:#e5a00d;"><i class="fas fa-spinner fa-spin"></i> 갱신 중...</div>';
+                            }
                             
                             if(observer.detailTimer) clearTimeout(observer.detailTimer);
                             observer.detailTimer = setTimeout(() => { processDetail(true); }, 300);

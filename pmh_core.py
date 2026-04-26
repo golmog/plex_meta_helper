@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.84"
+__version__ = "0.8.85"
 
 def get_version():
     return __version__
@@ -589,6 +589,7 @@ def handle_media_detail(rating_key, db_path):
     if not rating_key.isdigit(): 
         return {"error": "Invalid rating_key"}, 400
 
+    total_duration = 0
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
@@ -605,9 +606,52 @@ def handle_media_detail(rating_key, db_path):
                     if m_type == 2:
                         query = """SELECT mp.file FROM metadata_items ep JOIN metadata_items sea ON ep.parent_id = sea.id JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE sea.parent_id = ? AND ep.metadata_type = 4 ORDER BY m.width DESC, m.bitrate DESC"""
                         cursor.execute(query, (rating_key,))
+                        
+                        dur_query = """
+                            SELECT SUM(dur) FROM (
+                                SELECT MAX(m.duration) as dur
+                                FROM metadata_items ep
+                                JOIN metadata_items sea ON ep.parent_id = sea.id
+                                JOIN media_items m ON m.metadata_item_id = ep.id
+                                WHERE sea.parent_id = ? AND ep.metadata_type = 4
+                                  AND sea."index" = (
+                                      SELECT MIN("index")
+                                      FROM metadata_items
+                                      WHERE parent_id = sea.parent_id AND metadata_type = 3
+                                        AND ("index" % 100) = (sea."index" % 100)
+                                  )
+                                GROUP BY ep.id
+                            )
+                        """
+                        try:
+                            dur_c = conn.cursor()
+                            dur_c.execute(dur_query, (rating_key,))
+                            dur_res = dur_c.fetchone()
+                            if dur_res and dur_res[0]: total_duration = dur_res[0]
+                            dur_c.close()
+                        except: pass
+
                     elif m_type == 3:
                         query = """SELECT mp.file FROM metadata_items ep JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE ep.parent_id = ? AND ep.metadata_type = 4 ORDER BY m.width DESC, m.bitrate DESC"""
                         cursor.execute(query, (rating_key,))
+                        
+                        dur_query = """
+                            SELECT SUM(dur) FROM (
+                                SELECT MAX(m.duration) as dur
+                                FROM metadata_items ep
+                                JOIN media_items m ON m.metadata_item_id = ep.id
+                                WHERE ep.parent_id = ? AND ep.metadata_type = 4
+                                GROUP BY ep.id
+                            )
+                        """
+                        try:
+                            dur_c = conn.cursor()
+                            dur_c.execute(dur_query, (rating_key,))
+                            dur_res = dur_c.fetchone()
+                            if dur_res and dur_res[0]: total_duration = dur_res[0]
+                            dur_c.close()
+                        except: pass
+
                     elif m_type == 8:
                         query = """SELECT mp.file FROM metadata_items track JOIN metadata_items album ON track.parent_id = album.id JOIN media_items m ON m.metadata_item_id = track.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE album.parent_id = ? AND track.metadata_type = 10 GROUP BY album.id"""
                         cursor.execute(query, (rating_key,))
@@ -619,10 +663,8 @@ def handle_media_detail(rating_key, db_path):
                             if m_type == 8:
                                 album_dir = os.path.dirname(raw_file)
                                 artist_dir = os.path.dirname(album_dir)
-                                
                                 if re.match(r'^cd\s*\d+', os.path.basename(album_dir).lower()):
                                     artist_dir = os.path.dirname(artist_dir)
-                                
                                 target_dir = artist_dir
                             else:
                                 target_dir = os.path.dirname(raw_file)
@@ -642,7 +684,15 @@ def handle_media_detail(rating_key, db_path):
 
                     folder_paths.sort(key=natural_sort_key)
                     versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
-                    return { "type": "directory", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions }, 200
+                    
+                    return { 
+                        "type": "directory", 
+                        "itemId": rating_key, 
+                        "guid": guid, 
+                        "duration": total_duration,
+                        "librarySectionID": lib_section_id, 
+                        "versions": versions 
+                    }, 200
 
                 if m_type == 9:
                     tracks = []
@@ -748,8 +798,9 @@ def handle_media_detail(rating_key, db_path):
                 cursor.close()
                 
         return { 
-            "type": "audio" if m_type == 10 else "video", 
-            "itemId": rating_key, "guid": guid, "duration": duration, 
+            "type": "directory" if m_type in (2, 3) else "album" if m_type == 8 else "audio" if m_type == 10 else "video", 
+            "itemId": rating_key, "guid": guid, 
+            "duration": total_duration if m_type in (2, 3) else duration, 
             "librarySectionID": lib_section_id, "versions": versions, "markers": markers 
         }, 200
     except Exception as e:
