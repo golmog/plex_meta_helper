@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.85"
+__version__ = "0.8.86"
 
 def get_version():
     return __version__
@@ -2341,12 +2341,17 @@ def perform_smart_media_action(
 
                 if task_logger: task_logger(f"✨ [SJVA] 최적 후보 선택됨: '{best_candidate.get('name')}'")
                 
-                match_params = {'guid': best_candidate.get('guid'), 'name': best_candidate.get('name'), 'X-Plex-Token': plex_token}
+                match_params = {'guid': best_candidate.get('guid'), 'name': best_candidate.get('name')}
                 if best_candidate.get('year'): match_params['year'] = str(best_candidate.get('year'))
                     
                 match_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/match?{urlencode(match_params)}"
-                urlopen(Request(match_url, method='PUT', headers={'Accept': 'application/json'}), timeout=30)
-                
+                headers = {
+                    'Accept': 'application/json',
+                    'X-Plex-Token': plex_token,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0'
+                }
+                urlopen(Request(match_url, method='PUT', headers=headers), timeout=30)
+
                 initial_guid = (target_item.guid or '').lower()
                 for _ in range(8):
                     if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
@@ -2568,10 +2573,9 @@ def perform_smart_media_action(
                 try:
                     match_params = {
                         'guid': getattr(best_match, 'guid', ''),
-                        'name': getattr(best_match, 'name', ''),
-                        'X-Plex-Token': plex_token
+                        'name': getattr(best_match, 'name', '')
                     }
-                    
+
                     b_year = getattr(best_match, 'year', None)
                     if b_year: 
                         match_params['year'] = str(b_year)
@@ -2579,9 +2583,14 @@ def perform_smart_media_action(
                         match_params['year'] = str(item_year)
                         
                     match_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/match?{urlencode(match_params)}"
-                    req = Request(match_url, method='PUT', headers={'Accept': 'application/json'})
-                    
+                    headers = {
+                        'Accept': 'application/json',
+                        'X-Plex-Token': plex_token,
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0'
+                    }
+                    req = Request(match_url, method='PUT', headers=headers)
                     urlopen(req, timeout=30)
+
                 except Exception as put_e:
                     if task_logger: task_logger(f"⚠️ HTTP PUT 매칭 전송 오류 (무시하고 결과 대기 시도): {put_e}")
                 
