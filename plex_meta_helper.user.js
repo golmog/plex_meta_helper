@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.86
+// @version      0.8.87
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1366,13 +1366,12 @@ GM_addStyle(`
         visibleMarkers.forEach(m => {
             const iid = m.getAttribute('data-iid');
             if (iid) {
-                deleteMemoryCache(`L_${serverId}_${iid}`);
-                deleteMemoryCache(`F_${serverId}_${iid}`);
+                m.setAttribute('data-stale', 'true');
                 if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(iid);
                 count++;
             }
         });
-        log(`[Cache] Invalidated ${count} visible items from memory cache for server ${serverId}.`);
+        log(`[Cache] Marked ${count} visible items as stale for background refresh.`);
     }
 
     function encodePathSafe(pathStr) {
@@ -2979,7 +2978,39 @@ GM_addStyle(`
                 e.preventDefault(); 
                 e.stopPropagation();
                 
-                if (gBox.dataset.refreshing === 'true') return;
+                if (gBox.dataset.refreshing === 'true') {
+                    const queueInfo = window._pmh_media_queues && window._pmh_media_queues[id];
+                    if (queueInfo && queueInfo.state === 'queued') {
+                        gBox.innerHTML = `<i class="fas fa-ban" style="margin-right:4px;"></i>취소됨`;
+                        gBox.style.color = '#bd362f';
+                        
+                        let targetServerId = null;
+                        try {
+                            targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
+                            const srv = getServerConfig(targetServerId);
+                            if (srv) {
+                                await makeRequest(`${srv.relayUrl}/media/queue_cancel`, 'POST', { task_id: queueInfo.task_id }, ClientSettings.masterApiKey);
+                            }
+                            
+                            delete window._pmh_media_queues[id];
+                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                            
+                            toastr.warning('작업 대기가 취소되었습니다.', '취소됨', {timeOut: 2000});
+                        } catch(err) {
+                            console.error("[PMH] Cancel request failed", err);
+                            delete window._pmh_media_queues[id];
+                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                        } finally {
+                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                            markers.forEach(m => m.remove());
+
+                            setTimeout(() => { 
+                                if (typeof processList === 'function') processList(); 
+                            }, 1000);
+                        }
+                    }
+                    return;
+                }
 
                 const isShiftClick = e.shiftKey;
                 if (isShiftClick && window.getSelection) {
@@ -3040,7 +3071,8 @@ GM_addStyle(`
                         }
 
                         window._pmh_media_queues = window._pmh_media_queues || {};
-                        window._pmh_media_queues[id] = { task_id: res.task_id, start_time: Date.now(), state: 'queued', title: itemDisplayName };
+                        window._pmh_media_queues[id] = { task_id: res.task_id, start_time: Date.now(), state: 'queued', title: itemDisplayName, server_id: targetServerId };
+                        if (typeof window.saveQueueState === 'function') window.saveQueueState();
 
                         if (typeof window.startQueuePolling === 'function') {
                             window.startQueuePolling(targetServerId);
@@ -3078,9 +3110,24 @@ GM_addStyle(`
         }
     }
 
-    window._pmh_media_queues = window._pmh_media_queues || {};
+    try {
+        window._pmh_media_queues = JSON.parse(localStorage.getItem('pmh_media_queues')) || {};
+    } catch(e) {
+        window._pmh_media_queues = {};
+    }
     window._pmh_polling_active = window._pmh_polling_active || false;
     window._pmh_queue_poll_timer = window._pmh_queue_poll_timer || null;
+
+    window.saveQueueState = function() {
+        localStorage.setItem('pmh_media_queues', JSON.stringify(window._pmh_media_queues));
+    };
+
+    setTimeout(() => {
+        const serversToPoll = new Set(Object.values(window._pmh_media_queues).map(q => q.server_id).filter(Boolean));
+        serversToPoll.forEach(sid => {
+            if (typeof window.startQueuePolling === 'function') window.startQueuePolling(sid);
+        });
+    }, 2500);
 
     window.startQueuePolling = function(serverId) {
         if (window._pmh_polling_active) return;
@@ -3107,14 +3154,11 @@ GM_addStyle(`
                         const qInfo = window._pmh_media_queues[id];
                         const status = res[qInfo.task_id];
                         
-                        const isTimeout = (Date.now() - qInfo.start_time > 300000);
+                        const isTimeout = (Date.now() - qInfo.start_time > 1800000);
 
-                        if (!status || status.state === 'unknown' || status.state === 'completed' || status.state === 'error' || isTimeout) {
+                        if (!status || status.state === 'unknown' || status.state === 'error' || isTimeout) {
                             if (!status || status.state === 'unknown') {
-                                errorLog(`[Queue] 아이템 ${id}의 작업이 서버에서 사라졌거나 알 수 없는 상태입니다.`);
-                                needsListRefresh = true;
-                            } else if (status.state === 'completed') {
-                                infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료!`);
+                                infoLog(`[Queue] 아이템 ${id}의 작업 상태를 알 수 없습니다. (서버 재시작 또는 시간 경과)`);
                                 needsListRefresh = true;
                             } else if (status.state === 'error') {
                                 const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
@@ -3126,28 +3170,78 @@ GM_addStyle(`
                                 needsListRefresh = true;
                             }
 
-                            deleteMemoryCache(`L_${serverId}_${id}`);
                             deleteMemoryCache(`D_${serverId}_${id}`);
-                            deleteMemoryCache(`F_${serverId}_${id}`);
                             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
                             
                             delete window._pmh_media_queues[id];
+                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
                             
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                        markers.forEach(m => {
-                            m.setAttribute('data-stale', 'true');
-                            const gBox = m.parentElement.querySelector('.plex-guid-list-box');
-                            if (gBox) {
-                                gBox.innerHTML = `<i class="fas fa-sync-alt" style="margin-right:4px;"></i>화면 갱신 중...`;
-                                gBox.style.color = '#ccc';
-                            }
-                        });
-                        
-                        setTimeout(() => { if (typeof processList === 'function') processList(); }, 50);
+                            markers.forEach(m => {
+                                m.remove(); 
+                            });
+                        } 
+                        else if (status.state === 'completed') {
+                            infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 즉시 강제 갱신을 시도합니다.`);
+                            
+                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                            markers.forEach(m => {
+                                const gBox = m.parentElement.querySelector('.plex-guid-list-box');
+                                if (gBox) {
+                                    gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>반영 중...`;
+                                    gBox.style.color = '#51a351';
+                                }
+                            });
 
-                        } else if (status.state === 'processing' || status.state === 'queued') {
+                            delete window._pmh_media_queues[id];
+                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                            
+                            (async () => {
+                                await new Promise(r => setTimeout(r, 1500));
+                                try {
+                                    const plexSrv = extractPlexServerInfo(serverId);
+                                    if (!plexSrv) return;
+                                    
+                                    let meta = await fetchPlexMetaFallback(id, plexSrv);
+                                    if (!meta) return;
+
+                                    const updatedInfo = convertPlexMetaToLocalData(meta, id);
+                                    const oldCache = getMemoryCache(`L_${serverId}_${id}`) || {};
+                                    const mergedInfo = { ...oldCache, ...updatedInfo };
+                                    
+                                    setMemoryCache(`L_${serverId}_${id}`, mergedInfo);
+                                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.add(id);
+
+                                    let displayData = { ...mergedInfo, tags: applyUserTags(mergedInfo.p, mergedInfo.tags) };
+
+                                    const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
+                                    for (const live of liveWrappers) {
+                                        let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
+                                        if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                                        if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
+                                            
+                                            let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+                                            if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+                                            
+                                            if (livePoster) {
+                                                livePoster.querySelector('.pmh-render-marker')?.remove();
+                                                livePoster.querySelector('.pmh-top-right-wrapper')?.remove();
+                                                live.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
+                                                
+                                                renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
+                                            }
+                                        }
+                                    }
+                                } catch (e) {
+                                    errorLog(`[Queue Callback] Direct render failed for ${id}:`, e);
+                                    needsListRefresh = true; 
+                                }
+                            })();
+                        }
+                        else if (status.state === 'processing' || status.state === 'queued') {
                             if (window._pmh_media_queues[id]) {
                                 window._pmh_media_queues[id].state = status.state;
+                                if (typeof window.saveQueueState === 'function') window.saveQueueState();
                             }
                             
                             const marker = document.querySelector(`.pmh-render-marker[data-iid="${id}"]`);
@@ -4335,8 +4429,6 @@ GM_addStyle(`
                     if (keyParam) {
                         const iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
                         if (iid && serverId) {
-                            deleteMemoryCache(`L_${serverId}_${iid}`);
-                            deleteMemoryCache(`F_${serverId}_${iid}`);
                             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(iid);
                             
                             const marker = cont.querySelector('.pmh-render-marker');
@@ -4376,7 +4468,6 @@ GM_addStyle(`
                 showBoxLoading();
                 
                 deleteMemoryCache(srvConfig ? `D_${serverId}_${data.itemId}` : `F_${serverId}_${data.itemId}`);
-                deleteMemoryCache(`L_${serverId}_${data.itemId}`);
                 if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
                 
                 currentDisplayedItemId = null;
@@ -4464,7 +4555,6 @@ GM_addStyle(`
                     }
                     
                     deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                    deleteMemoryCache(`L_${serverId}_${data.itemId}`);
                     if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
                     
                     currentDisplayedItemId = null;
@@ -4514,7 +4604,6 @@ GM_addStyle(`
                                     
                                     if (currentSessionAtRequest === currentRenderSession && document.getElementById('plex-guid-box')) {
                                         deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                                        deleteMemoryCache(`L_${serverId}_${data.itemId}`);
                                         if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
                                         
                                         currentDisplayedItemId = null;
@@ -4673,7 +4762,6 @@ GM_addStyle(`
                     toastr.success("미디어 분석 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 3000});
                     
                     deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                    deleteMemoryCache(`L_${serverId}_${data.itemId}`);
                     if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
                     
                     currentDisplayedItemId = null;
@@ -4829,7 +4917,6 @@ GM_addStyle(`
                     infoLog(`[PlexMate] YAML/Marker Sync successful for Item: ${data.itemId}`);
 
                     deleteMemoryCache(`D_${serverId}_${data.itemId}`);
-                    deleteMemoryCache(`L_${serverId}_${data.itemId}`);
                     if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
                     
                     currentDisplayedItemId = null;
@@ -4932,8 +5019,6 @@ GM_addStyle(`
                             
                             if (serverId && itemId) {
                                 deleteMemoryCache(`D_${serverId}_${itemId}`);
-                                deleteMemoryCache(`F_${serverId}_${itemId}`);
-                                deleteMemoryCache(`L_${serverId}_${itemId}`);
                                 if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
                             }
                             
@@ -4993,7 +5078,6 @@ GM_addStyle(`
                                     
                                     const targetServerId = link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
                                     if (targetServerId) {
-                                        deleteMemoryCache(`L_${targetServerId}_${iid}`);
                                         if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(iid);
                                     }
                                     

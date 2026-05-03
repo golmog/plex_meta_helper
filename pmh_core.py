@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.86"
+__version__ = "0.8.87"
 
 def get_version():
     return __version__
@@ -58,6 +58,21 @@ def generate_secure_header(api_key):
     hash_hex = hashlib.sha256(payload).hexdigest()
     
     return f"{timestamp}.{hash_hex}"
+
+def execute_plex_action_safe(action_func, max_retries=3, wait_sec=3.0):
+    last_err = None
+    for i in range(max_retries):
+        try:
+            return action_func()
+        except Exception as e:
+            last_err = e
+            err_str = str(e)
+            if any(x in err_str for x in ["500", "502", "503", "504", "Timeout", "database is locked"]):
+                print(f"[PMH Retry] Plex 서버 부하/오류 감지: {err_str}. {wait_sec}초 후 재시도 ({i+1}/{max_retries})...")
+                time.sleep(wait_sec)
+            else:
+                raise e
+    raise last_err
 
 # ==============================================================================
 # [코어 중앙 자연 정렬 엔진]
@@ -1364,6 +1379,17 @@ def dispatch_request(subpath, method, args, data, global_config):
                 if tid: result[tid] = MEDIA_ACTION_STATUS.get(tid, {'state': 'unknown'})
             return result, 200
 
+        elif subpath == 'media/queue_cancel' and method == 'POST':
+            task_id = data.get('task_id')
+            if task_id in MEDIA_ACTION_STATUS:
+                if MEDIA_ACTION_STATUS[task_id]['state'] == 'queued':
+                    MEDIA_ACTION_STATUS[task_id]['state'] = 'cancelled'
+                    MEDIA_ACTION_STATUS[task_id]['msg'] = '사용자 취소'
+                    return {"status": "success", "msg": "Cancelled"}, 200
+                else:
+                    return {"status": "error", "msg": "이미 실행 중이거나 완료된 작업입니다."}, 400
+            return {"status": "error", "msg": "작업을 찾을 수 없습니다."}, 404
+
         elif subpath.startswith('media/') and method == 'GET':
             rating_key = subpath.split('/')[1]
             return handle_media_detail(rating_key, db_path)
@@ -1951,6 +1977,11 @@ def media_action_worker_loop(global_config):
                 MEDIA_ACTION_QUEUE.task_done()
                 continue
 
+            if MEDIA_ACTION_STATUS.get(task_id, {}).get('state') == 'cancelled':
+                print(f"[PMH Queue] 🚫 취소된 큐 작업 스킵됨 (Item: {task['item_id']})")
+                MEDIA_ACTION_QUEUE.task_done()
+                continue
+
             item_id = task['item_id']
             action = task['action']
             plex_url = task['plex_url']
@@ -1963,20 +1994,21 @@ def media_action_worker_loop(global_config):
                 from plexapi.server import PlexServer
                 plex = PlexServer(plex_url, plex_token, timeout=120)
                 ekey = int(item_id) if str(item_id).isdigit() else f"/library/metadata/{item_id}"
-                item = plex.fetchItem(ekey)
+                
+                item = execute_plex_action_safe(lambda: plex.fetchItem(ekey))
                 
                 target_item = item
                 if item.type in ['episode', 'season']:
                     try:
-                        target_item = plex.fetchItem(item.grandparentRatingKey if item.type == 'episode' else item.parentRatingKey)
+                        target_item = execute_plex_action_safe(lambda: plex.fetchItem(item.grandparentRatingKey if item.type == 'episode' else item.parentRatingKey))
                     except Exception: pass
                         
                 target_id = target_item.ratingKey
 
                 if action == 'unmatch':
-                    target_item.unmatch()
+                    execute_plex_action_safe(lambda: target_item.unmatch())
                     MEDIA_ACTION_STATUS[task_id] = {'state': 'completed', 'msg': 'Unmatch 완료'}
-                
+
                 elif action in ['match', 'refresh', 'analyze', 'yaml_refresh']:
                     try_ref = data.get('_try_refresh_first', False) if data else False
                     do_unm = data.get('_do_unmatch_first', False) if data else False
@@ -2038,7 +2070,7 @@ def perform_smart_media_action(
         
     ekey = int(rating_key) if str(rating_key).isdigit() else f"/library/metadata/{rating_key}"
     try:
-        item = plex_inst.fetchItem(ekey)
+        item = execute_plex_action_safe(lambda: plex_inst.fetchItem(ekey))
     except Exception as e:
         if task_logger: task_logger(f"❌ Plex 항목 조회 실패: {e}")
         return False, "Plex 항목을 조회할 수 없습니다.", 0
@@ -2046,8 +2078,8 @@ def perform_smart_media_action(
     target_item = item
     if action_type in ['match', 'refresh', 'yaml_refresh'] and item.type in ['episode', 'season', 'track', 'album']:
         try:
-            if item.type in ['episode', 'track']: target_item = plex_inst.fetchItem(item.grandparentRatingKey)
-            else: target_item = plex_inst.fetchItem(item.parentRatingKey)
+            if item.type in ['episode', 'track']: target_item = execute_plex_action_safe(lambda: plex_inst.fetchItem(item.grandparentRatingKey))
+            else: target_item = execute_plex_action_safe(lambda: plex_inst.fetchItem(item.parentRatingKey))
             if task_logger: task_logger(f"💡 하위 항목 감지됨. 최상위 쇼({target_item.title}) 기준으로 '{action_type}' 수행.")
         except Exception as e:
             if task_logger: task_logger(f"⚠️ 최상위 객체를 찾지 못했습니다. 기존 객체로 진행합니다: {e}")
@@ -2116,11 +2148,13 @@ def perform_smart_media_action(
     if action_type in ['refresh', 'analyze']:
         try:
             if action_type == 'refresh':
-                target_item.refresh()
-                if str(target_item.ratingKey) != str(item.ratingKey): item.refresh()
+                execute_plex_action_safe(lambda: target_item.refresh())
+                if str(target_item.ratingKey) != str(item.ratingKey): 
+                    execute_plex_action_safe(lambda: item.refresh())
             else:
-                target_item.analyze()
-                if str(target_item.ratingKey) != str(item.ratingKey): item.analyze()
+                execute_plex_action_safe(lambda: target_item.analyze())
+                if str(target_item.ratingKey) != str(item.ratingKey): 
+                    execute_plex_action_safe(lambda: item.analyze())
 
             time.sleep(1.0)
             
@@ -2270,12 +2304,12 @@ def perform_smart_media_action(
             else:
                 if task_logger: task_logger(f"🗑️ 매칭 전 기존 메타데이터 Unmatch 진행 중...")
                 try:
-                    target_item.unmatch()
+                    execute_plex_action_safe(lambda: target_item.unmatch())
                     unmatch_verified = False
                     for _ in range(8):
                         if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
                         time.sleep(2.0)
-                        target_item.reload()
+                        execute_plex_action_safe(lambda: target_item.reload())
                         check_guid = (target_item.guid or '').lower()
                         if not check_guid or 'local://' in check_guid or 'none://' in check_guid or check_guid == '-':
                             unmatch_verified = True; break
@@ -2283,8 +2317,7 @@ def perform_smart_media_action(
                     if unmatch_verified:
                         if task_logger: task_logger(f"✅ Unmatch 확인 완료! 서버 안정화를 위해 5초간 대기합니다...")
                         time.sleep(5.0)
-                        # 💡 필수: Unmatch 후 객체가 재생성되거나 변경되었을 수 있으므로 명시적으로 다시 불러옵니다.
-                        target_item = plex_inst.fetchItem(target_item.ratingKey)
+                        target_item = execute_plex_action_safe(lambda: plex_inst.fetchItem(target_item.ratingKey))
                     else:
                         if task_logger: task_logger(f"⚠️ Unmatch 상태 확인 지연 (Plex 서버 부하 의심)")
                 except Exception as e: 
@@ -2350,16 +2383,25 @@ def perform_smart_media_action(
                     'X-Plex-Token': plex_token,
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0'
                 }
-                urlopen(Request(match_url, method='PUT', headers=headers), timeout=30)
+                execute_plex_action_safe(lambda: urlopen(Request(match_url, method='PUT', headers=headers), timeout=30))
 
                 initial_guid = (target_item.guid or '').lower()
                 for _ in range(8):
                     if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
                     time.sleep(2.5)
-                    target_item.reload()
-                    new_guid = (target_item.guid or '').lower()
-                    if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
-                        return True, f"매칭 성공 ({best_candidate.get('name')})", best_score
+                    
+                    try:
+                        execute_plex_action_safe(lambda: target_item.reload())
+                        new_guid = (target_item.guid or '').lower()
+                        if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
+                            return True, f"매칭 성공 ({best_candidate.get('name')})", best_score
+                    except Exception as reload_err:
+                        if "404" in str(reload_err) or "not_found" in str(reload_err).lower():
+                            if task_logger: task_logger(f"✅ 매칭 승인! (Plex가 기존 항목을 삭제하고 병합했습니다.)")
+                            return True, f"매칭 성공 (ID 병합됨: {best_candidate.get('name')})", best_score
+                        else:
+                            raise reload_err
+                    # =================================================================
                         
                 return False, "Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.", best_score
             except Exception as e:
@@ -2575,7 +2617,7 @@ def perform_smart_media_action(
                         'guid': getattr(best_match, 'guid', ''),
                         'name': getattr(best_match, 'name', '')
                     }
-
+                    
                     b_year = getattr(best_match, 'year', None)
                     if b_year: 
                         match_params['year'] = str(b_year)
@@ -2589,8 +2631,8 @@ def perform_smart_media_action(
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0'
                     }
                     req = Request(match_url, method='PUT', headers=headers)
-                    urlopen(req, timeout=30)
-
+                    
+                    execute_plex_action_safe(lambda: urlopen(req, timeout=30))
                 except Exception as put_e:
                     if task_logger: task_logger(f"⚠️ HTTP PUT 매칭 전송 오류 (무시하고 결과 대기 시도): {put_e}")
                 
@@ -2601,7 +2643,7 @@ def perform_smart_media_action(
                     if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
                     time.sleep(2.5)
                     try:
-                        target_item.reload()
+                        execute_plex_action_safe(lambda: target_item.reload())
                         new_guid = (target_item.guid or '').lower()
                         if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
                             match_verified = True
