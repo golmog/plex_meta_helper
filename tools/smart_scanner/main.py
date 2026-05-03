@@ -190,7 +190,7 @@ def get_target_issues(req_data, core_api, task=None):
     except Exception: pass
 
     def add_target(rk, m_type, title, sec_name, fix_type, file_path=None, parent_rk=None):
-        target_rk = parent_rk if parent_rk and fix_type in ['match', 'refresh'] else rk
+        target_rk = parent_rk if parent_rk and fix_type in ['match', 'refresh', 'yaml_season', 'yaml_marker'] else rk
         
         if target_rk not in targets:
             targets[target_rk] = {"title": title, "section": sec_name, "type": m_type, "fix": fix_type, "files": set()}
@@ -199,7 +199,7 @@ def get_target_issues(req_data, core_api, task=None):
         if parent_rk: assigned_grandparents.add(parent_rk)
 
     base_from = f"""
-        SELECT 
+        SELECT
             mi.id, mi.metadata_type, mi.title, 
             (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) as file,
             mi.year, mi.parent_id, mi.guid, mi.library_section_id,
@@ -366,7 +366,13 @@ def get_target_issues(req_data, core_api, task=None):
                             add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk)
                         elif m_type in (4, 10): 
                             actual_parent = grandparent_id or parent_id
-                            display_title = format_title(r, is_episode=True)
+                            if fix_type in ['match', 'refresh', 'yaml_season', 'yaml_marker'] and actual_parent:
+                                s_title = r[9] or ("Unknown Show" if m_type == 4 else "Unknown Album")
+                                s_year = r[10]
+                                display_title = f"{s_title} ({s_year})" if s_year else s_title
+                            else:
+                                display_title = format_title(r, is_episode=True)
+                                
                             add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
                             
             if task: task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
@@ -666,35 +672,72 @@ def worker(task_data, core_api, start_index):
                     yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
                     
                     log_tag = "시즌 메타" if fix_type == 'yaml_season' else "마커(인트로)"
-                    task.log(f"   -> [YAML {log_tag}] 대상 폴더 내 {yaml_filename} 존재 여부 확인 중...")
+                    task.log(f"   -> [YAML {log_tag}] 대상 폴더 내 {yaml_filename} 존재 및 내용 검증 중...")
                     
                     yaml_exists = False
+                    target_yaml_path = None
                     if files:
                         for f in files:
                             local_path = translate_path(f, path_mappings)
                             target_dir = get_show_root_dir(local_path)
-                            if os.path.exists(os.path.join(target_dir, yaml_filename)) or os.path.exists(os.path.join(target_dir, yml_filename)):
-                                yaml_exists = True; break
+                            if os.path.exists(os.path.join(target_dir, yaml_filename)):
+                                yaml_exists = True
+                                target_yaml_path = os.path.join(target_dir, yaml_filename)
+                                break
+                            elif os.path.exists(os.path.join(target_dir, yml_filename)):
+                                yaml_exists = True
+                                target_yaml_path = os.path.join(target_dir, yml_filename)
+                                break
                     
-                    if not yaml_exists:
+                    if not yaml_exists or not target_yaml_path:
                         task.log(f"      ⚠️ 대상 폴더에 {yaml_filename} 파일이 없어 적용을 스킵합니다.")
                         skip_delay = True 
-                    elif not mate_url or not mate_apikey:
-                        task.log("      ⚠️ Plex Mate 연결 설정이 누락되어 YAML 적용이 불가합니다.")
-                        skip_delay = True 
-                        item_has_error = True
                     else:
-                        task.log("      ✅ YAML 파일 확인 완료. VFS 갱신 및 YAML 적용을 요청합니다...")
-                        success, msg, _ = pmh_core.perform_smart_media_action(
-                            plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
-                            action_type='yaml_refresh', plex_inst=plex, global_config=core_api['config'],
-                            task_logger=task.log, cancel_checker=task.is_cancelled
-                        )
-                        if success: 
-                            task.log("         ➔ 🟢 Plex Mate 연동 및 VFS 갱신 성공!")
-                        else: 
-                            task.log(f"         ➔ 🔴 연동 실패: {msg}")
+                        has_marker_info = True
+                        if fix_type == 'yaml_marker':
+                            has_marker_info = False
+                            try:
+                                with open(target_yaml_path, 'r', encoding='utf-8') as yf:
+                                    yaml_content = yf.read()
+                                    if re.search(r'^\s*(markers|intro|credits)\s*:', yaml_content, re.MULTILINE):
+                                        has_marker_info = True
+                            except Exception as e:
+                                task.log(f"      ⚠️ YAML 파일을 읽는 중 오류가 발생했습니다: {e}")
+                        
+                        if not has_marker_info:
+                            task.log(f"      ⚠️ {yaml_filename} 파일에 마커(markers) 정보가 존재하지 않아 스킵합니다.")
+                            skip_delay = True
+                        elif not mate_url or not mate_apikey:
+                            task.log("      ⚠️ Plex Mate 연결 설정이 누락되어 YAML 적용이 불가합니다.")
+                            skip_delay = True 
                             item_has_error = True
+                        else:
+                            if fix_type == 'yaml_season':
+                                is_sjva = False
+                                try:
+                                    p_item = plex.fetchItem(int(rk))
+                                    is_sjva = p_item.section().agent.startswith('com.plexapp.agents.sjva')
+                                except: pass
+                                
+                                if not is_sjva:
+                                    task.log(f"      [사전 작업] Plex 기본 에이전트 환경 감지. YAML 적용 전 최신 메타 갱신(Refresh)을 우선 실행합니다.")
+                                    pmh_core.perform_smart_media_action(
+                                        plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
+                                        action_type='refresh', plex_inst=plex, global_config=core_api['config'],
+                                        task_logger=task.log, cancel_checker=task.is_cancelled
+                                    )
+
+                            task.log(f"      ✅ YAML 파일 검증 통과. 전체 쇼(Show) 단위로 VFS 갱신 및 적용을 요청합니다...")
+                            success, msg, _ = pmh_core.perform_smart_media_action(
+                                plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
+                                action_type='yaml_refresh', plex_inst=plex, global_config=core_api['config'],
+                                task_logger=task.log, cancel_checker=task.is_cancelled
+                            )
+                            if success: 
+                                task.log("         ➔ 🟢 Plex Mate 연동 및 VFS 갱신 성공!")
+                            else: 
+                                task.log(f"         ➔ 🔴 연동 실패: {msg}")
+                                item_has_error = True
 
                 else:
                     if fix_type == 'analyze': task.log("   -> [미분석] 분석(Analyze) 호출 및 대기 중...")
@@ -727,6 +770,31 @@ def worker(task_data, core_api, start_index):
                     if success:
                         task.log(f"      ✅ {msg}")
                         
+                        if fix_type in ['match', 'refresh'] and m_type in (2, 3, 4):
+                            is_sjva = False
+                            show_rk = None
+                            try:
+                                p_item = plex.fetchItem(int(rk))
+                                is_sjva = p_item.section().agent.startswith('com.plexapp.agents.sjva')
+                                if p_item.type == 'show': show_rk = p_item.ratingKey
+                                elif p_item.type == 'season': show_rk = p_item.parentRatingKey
+                                elif p_item.type == 'episode': show_rk = p_item.grandparentRatingKey
+                            except: pass
+
+                            if not is_sjva and show_rk:
+                                check_q = f"SELECT 1 FROM metadata_items WHERE parent_id = {show_rk} AND metadata_type = 3 AND \"index\" BETWEEN 100 AND 999 LIMIT 1"
+                                try:
+                                    has_3digit = core_api['query'](check_q)
+                                except: has_3digit = False
+                                
+                                if has_3digit:
+                                    task.log("      [후속 작업] 쇼 내부에 3자리 특수 시즌이 감지되었으므로, YAML 적용을 추가로 실행합니다.")
+                                    pmh_core.perform_smart_media_action(
+                                        plex_url=plex._baseurl, plex_token=plex._token, rating_key=show_rk, 
+                                        action_type='yaml_refresh', plex_inst=plex, global_config=core_api['config'],
+                                        task_logger=task.log, cancel_checker=task.is_cancelled
+                                    )
+
                         if fix_type == 'analyze':
                             plex_item = plex.fetchItem(int(rk))
                             opt_audio = task_data.get('opt_analyze_audio', True)
