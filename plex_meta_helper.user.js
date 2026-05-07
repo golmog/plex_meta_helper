@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.87
+// @version      0.8.88
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3030,7 +3030,28 @@ GM_addStyle(`
                 let apiAction = '';
                 let extraData = {};
 
-                if (srvConfig && !isUnmatched && info.g && isShiftClick) {
+                let is3DigitSeason = false;
+                const titleNodes = cont.querySelectorAll('[class*="MetadataPosterCardTitle"], [data-testid="metadataTitleLink"], [class*="title-"]');
+                titleNodes.forEach(node => {
+                    const text = node.textContent.trim();
+                    if (/(?:시즌|Season|S)\s*?([1-9]\d{2})\b/i.test(text)) is3DigitSeason = true;
+                });
+                
+                if (!is3DigitSeason && info.p) {
+                    const pathParts = info.p.split(/[\\/]/);
+                    for (let i = pathParts.length - 1; i >= Math.max(0, pathParts.length - 3); i--) {
+                        if (/(?:시즌|Season|S)\s*?([1-9]\d{2})\b/i.test(pathParts[i])) {
+                            is3DigitSeason = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (is3DigitSeason && srvConfig) {
+                    actionName = 'YAML 적용';
+                    apiAction = 'yaml_refresh';
+                }
+                else if (srvConfig && !isUnmatched && info.g && isShiftClick) {
                     actionName = '리매칭';
                     apiAction = 'match';
                     extraData = { _try_refresh_first: false, _do_unmatch_first: true };
