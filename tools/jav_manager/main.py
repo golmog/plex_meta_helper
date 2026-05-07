@@ -720,7 +720,7 @@ def worker(task_data, core_api, start_index):
         if mode == "file_error": btn_label = "수동 확인 필요"
         
         if mode == "file_error":
-            columns[-1] = {"key": "raw_path", "label": "파일 선택", "width": "10%", "align": "center", "header_align": "center", "type": "folder_link"}
+            columns[-1] = {"key": "raw_path", "label": "폴더", "align": "center", "header_align": "center", "type": "folder_link"}
             action_btn = None 
         else:
             action_btn = {"label": f"<i class='fas fa-magic'></i> {btn_label}", "payload": {"action_type": "execute"}}
