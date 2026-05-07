@@ -668,76 +668,79 @@ def worker(task_data, core_api, start_index):
 
             try:
                 if fix_type in ['yaml_season', 'yaml_marker']:
-                    yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
-                    yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
-                    
                     log_tag = "시즌 메타" if fix_type == 'yaml_season' else "마커(인트로)"
-                    task.log(f"   -> [YAML {log_tag}] 대상 폴더 내 {yaml_filename} 존재 및 내용 검증 중...")
+                    task.log(f"   -> [YAML {log_tag}] 적용 전 사전 조건 확인 중...")
                     
-                    yaml_exists = False
-                    target_yaml_path = None
-                    if files:
-                        for f in files:
-                            local_path = translate_path(f, path_mappings)
-                            target_dir = get_show_root_dir(local_path)
-                            if os.path.exists(os.path.join(target_dir, yaml_filename)):
-                                yaml_exists = True
-                                target_yaml_path = os.path.join(target_dir, yaml_filename)
-                                break
-                            elif os.path.exists(os.path.join(target_dir, yml_filename)):
-                                yaml_exists = True
-                                target_yaml_path = os.path.join(target_dir, yml_filename)
-                                break
+                    skip_yaml = False
                     
-                    if not yaml_exists or not target_yaml_path:
-                        task.log(f"      ⚠️ 대상 폴더에 {yaml_filename} 파일이 없어 적용을 스킵합니다.")
-                        skip_delay = True 
+                    if not mate_url or not mate_apikey:
+                        task.log("      ⚠️ Plex Mate 연결 설정이 누락되어 YAML 적용이 불가합니다.")
+                        skip_yaml = True 
+                        item_has_error = True
                     else:
-                        has_marker_info = True
                         if fix_type == 'yaml_marker':
-                            has_marker_info = False
-                            try:
-                                with open(target_yaml_path, 'r', encoding='utf-8') as yf:
-                                    yaml_content = yf.read()
-                                    if re.search(r'^\s*(markers|intro|credits)\s*:', yaml_content, re.MULTILINE):
-                                        has_marker_info = True
-                            except Exception as e:
-                                task.log(f"      ⚠️ YAML 파일을 읽는 중 오류가 발생했습니다: {e}")
-                        
-                        if not has_marker_info:
-                            task.log(f"      ⚠️ {yaml_filename} 파일에 마커(markers) 정보가 존재하지 않아 스킵합니다.")
-                            skip_delay = True
-                        elif not mate_url or not mate_apikey:
-                            task.log("      ⚠️ Plex Mate 연결 설정이 누락되어 YAML 적용이 불가합니다.")
-                            skip_delay = True 
-                            item_has_error = True
-                        else:
-                            if fix_type == 'yaml_season':
-                                is_sjva = False
+                            yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
+                            yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
+                            target_yaml_path = None
+                            
+                            if files:
+                                for f in files:
+                                    local_path = translate_path(f, path_mappings)
+                                    target_dir = get_show_root_dir(local_path)
+                                    if os.path.exists(os.path.join(target_dir, yaml_filename)):
+                                        target_yaml_path = os.path.join(target_dir, yaml_filename)
+                                        break
+                                    elif os.path.exists(os.path.join(target_dir, yml_filename)):
+                                        target_yaml_path = os.path.join(target_dir, yml_filename)
+                                        break
+                                        
+                            if not target_yaml_path:
+                                task.log(f"      ⚠️ 대상 폴더에 {yaml_filename} 파일이 없어 마커 적용을 스킵합니다.")
+                                skip_yaml = True
+                            else:
+                                has_marker_info = False
                                 try:
-                                    p_item = plex.fetchItem(int(rk))
-                                    is_sjva = p_item.section().agent.startswith('com.plexapp.agents.sjva')
-                                except: pass
+                                    with open(target_yaml_path, 'r', encoding='utf-8') as yf:
+                                        yaml_content = yf.read()
+                                        if re.search(r'^\s*(markers|intro|credits)\s*:', yaml_content, re.MULTILINE):
+                                            has_marker_info = True
+                                except Exception as e:
+                                    task.log(f"      ⚠️ YAML 파일을 읽는 중 오류가 발생했습니다: {e}")
                                 
-                                if not is_sjva:
-                                    task.log(f"      [사전 작업] Plex 기본 에이전트 환경 감지. YAML 적용 전 최신 메타 갱신(Refresh)을 우선 실행합니다.")
-                                    pmh_core.perform_smart_media_action(
-                                        plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
-                                        action_type='refresh', plex_inst=plex, global_config=core_api['config'],
-                                        task_logger=task.log, cancel_checker=task.is_cancelled
-                                    )
+                                if not has_marker_info:
+                                    task.log(f"      ⚠️ {yaml_filename} 파일에 마커(markers) 정보가 존재하지 않아 스킵합니다.")
+                                    skip_yaml = True
 
-                            task.log(f"      ✅ YAML 파일 검증 통과. 전체 쇼(Show) 단위로 VFS 갱신 및 적용을 요청합니다...")
-                            success, msg, _ = pmh_core.perform_smart_media_action(
-                                plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
-                                action_type='yaml_refresh', plex_inst=plex, global_config=core_api['config'],
-                                task_logger=task.log, cancel_checker=task.is_cancelled
-                            )
-                            if success: 
-                                task.log("         ➔ 🟢 Plex Mate 연동 및 VFS 갱신 성공!")
-                            else: 
-                                task.log(f"         ➔ 🔴 연동 실패: {msg}")
-                                item_has_error = True
+                    if skip_yaml:
+                        skip_delay = True
+                    else:
+                        task.log(f"      ✅ 검증 통과. 전체 쇼(Show) 단위로 VFS 갱신 및 YAML 적용을 요청합니다...")
+                        
+                        if fix_type == 'yaml_season':
+                            is_sjva = False
+                            try:
+                                p_item = plex.fetchItem(int(rk))
+                                is_sjva = p_item.section().agent.startswith('com.plexapp.agents.sjva')
+                            except: pass
+                            
+                            if not is_sjva:
+                                task.log(f"      [사전 작업] Plex 기본 에이전트 환경 감지. YAML 적용 전 최신 메타 갱신(Refresh)을 우선 실행합니다.")
+                                pmh_core.perform_smart_media_action(
+                                    plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
+                                    action_type='refresh', plex_inst=plex, global_config=core_api['config'],
+                                    task_logger=task.log, cancel_checker=task.is_cancelled
+                                )
+
+                        success, msg, _ = pmh_core.perform_smart_media_action(
+                            plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
+                            action_type='yaml_refresh', plex_inst=plex, global_config=core_api['config'],
+                            task_logger=task.log, cancel_checker=task.is_cancelled
+                        )
+                        if success: 
+                            task.log("         ➔ 🟢 Plex Mate 연동 및 VFS 갱신 성공!")
+                        else: 
+                            task.log(f"         ➔ 🔴 연동 실패: {msg}")
+                            item_has_error = True
 
                 else:
                     if fix_type == 'analyze': task.log("   -> [미분석] 분석(Analyze) 호출 및 대기 중...")
