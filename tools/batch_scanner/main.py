@@ -98,6 +98,7 @@ def get_ui(core_api):
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 Refresh(자동 매칭) 우선 시도", "default": True, "show_if": {"mode": "rematch"}},
             {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}},
             {"id": "opt_skip_sim_check", "type": "checkbox", "label": "제목/연도 검증 스킵 (Plex 기본 에이전트 무조건 매칭)", "default": False, "show_if": {"mode": "rematch"}},
+            {"id": "opt_custom_agent_score", "type": "number", "label": "기타 커스텀 에이전트 매칭 합격 점수", "default": 80, "width": "60px", "layout": "plain", "show_if": {"mode": "rematch"}},
             {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
 
         ],
@@ -608,7 +609,8 @@ def worker(task_data, core_api, start_index):
                     try_ref = task_data.get('opt_try_refresh', True) if mode == 'rematch' else False
                     do_unm = task_data.get('opt_unmatch_first', False) if mode == 'rematch' else False
                     skip_sim = task_data.get('opt_skip_sim_check', False) if mode == 'rematch' else False
-                    
+                    custom_score = task_data.get('opt_custom_agent_score', 80) if mode == 'rematch' else 80
+
                     if mode == 'refresh': task.log("   -> 🔄 새로고침(Refresh) 호출 및 대기 중...")
                     else: task.log("   -> 🔗 스마트 하이브리드 매칭 엔진 가동 중...")
                     
@@ -624,6 +626,7 @@ def worker(task_data, core_api, start_index):
                         try_refresh_first=try_ref,
                         do_unmatch_first=do_unm,
                         skip_sim_check=skip_sim,
+                        custom_agent_score=custom_score,
                         global_config=core_api['config'],
                         task_logger=task.log,
                         cancel_checker=task.is_cancelled
@@ -637,9 +640,10 @@ def worker(task_data, core_api, start_index):
                         task.log(f"      ❌ 작업 실패: {msg}")
                         item_has_error = True
 
-                if not task_data.get('_is_single'):
-                    if item_has_error: core_api['cache'].mark_as_error('id' if mode == 'path_scan' else 'rating_key', str(mid))
-                    else: core_api['cache'].mark_keys_as_done('id' if mode == 'path_scan' else 'rating_key', [str(mid)])
+                if item_has_error: 
+                    core_api['cache'].mark_as_error('id' if mode == 'path_scan' else 'rating_key', str(mid))
+                else: 
+                    core_api['cache'].mark_keys_as_done('id' if mode == 'path_scan' else 'rating_key', [str(mid)])
 
             except Exception as e:
                 task.log(f"   -> ❌ 작업 중 치명적 오류 발생: {e}")
