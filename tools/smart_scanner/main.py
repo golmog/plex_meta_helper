@@ -107,6 +107,7 @@ def get_ui(core_api):
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": True, "show_if": {"opt_match": True}},
             {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"opt_match": True}},
             {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭시 제목/연도 검증 스킵<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": False, "show_if": {"opt_match": True}},
+            {"id": "opt_custom_agent_score", "type": "number", "label": "기타 커스텀 에이전트 매칭 합격 점수", "default": 80, "width": "60px", "layout": "plain", "show_if": {"opt_match": True}},
             {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
         ],
         "settings_inputs": [
@@ -750,6 +751,7 @@ def worker(task_data, core_api, start_index):
                     try_ref = task_data.get('opt_try_refresh', True) if fix_type == 'match' else False
                     do_unm = task_data.get('opt_unmatch_first', False) if fix_type == 'match' else False
                     skip_sim = task_data.get('opt_skip_sim_check', False) if fix_type == 'match' else False
+                    custom_score = task_data.get('opt_custom_agent_score', 80) if fix_type == 'match' else 80
                     
                     success, msg, score = pmh_core.perform_smart_media_action(
                         plex_url=plex._baseurl, 
@@ -763,6 +765,7 @@ def worker(task_data, core_api, start_index):
                         try_refresh_first=try_ref,
                         do_unmatch_first=do_unm,
                         skip_sim_check=skip_sim,
+                        custom_agent_score=custom_score,
                         global_config=core_api['config'],
                         task_logger=task.log,
                         cancel_checker=task.is_cancelled
@@ -819,9 +822,10 @@ def worker(task_data, core_api, start_index):
 
                 actual_fix_counts[fix_type] += 1
                 
-                if not task_data.get('_is_single'):
-                    if item_has_error: core_api['cache'].mark_as_error('rating_key', str(rk))
-                    else: core_api['cache'].mark_keys_as_done('rating_key', [str(rk)])
+                if item_has_error: 
+                    core_api['cache'].mark_as_error('rating_key', str(rk))
+                else: 
+                    core_api['cache'].mark_keys_as_done('rating_key', [str(rk)])
 
             except Exception as e:
                 task.log(f"   -> ❌ 작업 중 치명적 오류 발생: {e}")
