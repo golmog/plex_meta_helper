@@ -46,6 +46,8 @@ BASE:
   JAV_SECTION: "1, 2, 3"
 
   UNCENSORED_MATCHABLE_LABELS: ["1pon", "10mu", "carib", "fc2", "heyzo", "paco"]
+
+  # JAV 매칭 시 적용할 정규식 패턴: 기본 정규식 패턴은 PMH에 내장되어 있으므로, 직접 수정이 필요한 경우가 아니라면 삭제 가능.
   JAV_PARSING_RULES:
     # 일반(범용) 규칙
     generic_rules:
