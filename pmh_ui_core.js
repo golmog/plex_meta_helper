@@ -911,9 +911,12 @@ window.PmhUICore = {
                 try {
                     const r = await config.apiAdapter.run(req);
                     if (r.type === 'async_task') {
-                        config.toast.success("백그라운드 시작!");
+                        config.toast.success("작업이 백그라운드에서 시작되었습니다.");
                         startPolling();
-                        switchTab('pmh_tab_monitor');
+                        
+                        if (!req._is_single) {
+                            switchTab('pmh_tab_monitor');
+                        }
                     }
                     else loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir);
                 } catch(e) {

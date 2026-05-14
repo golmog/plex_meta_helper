@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.88
+// @version      0.8.89
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -710,7 +710,8 @@ GM_addStyle(`
             pathMappings: [],
             matchTryRefreshFirst: false,
             matchDoUnmatchFirst: false,
-            matchSkipSimCheck: false
+            matchSkipSimCheck: false,
+            customAgentScore: 80
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
     }
@@ -3066,7 +3067,8 @@ GM_addStyle(`
                     extraData = {
                         _try_refresh_first: ClientSettings.matchTryRefreshFirst,
                         _do_unmatch_first: ClientSettings.matchDoUnmatchFirst,
-                        _skip_sim_check: ClientSettings.matchSkipSimCheck
+                        _skip_sim_check: ClientSettings.matchSkipSimCheck,
+                        _custom_agent_score: ClientSettings.customAgentScore
                     };
                 } else {
                     gBox.dataset.refreshing = 'false';
@@ -4686,7 +4688,8 @@ GM_addStyle(`
                 const matchOptions = { 
                     _try_refresh_first: false, 
                     _do_unmatch_first: true, 
-                    _skip_sim_check: ClientSettings.matchSkipSimCheck 
+                    _skip_sim_check: ClientSettings.matchSkipSimCheck,
+                    _custom_agent_score: ClientSettings.customAgentScore
                 };
                 
                 toastr.info("서버에서 메타 리매칭을 수행합니다.", "리매칭 시작", {timeOut: 8000});
@@ -4963,7 +4966,7 @@ GM_addStyle(`
         if (window.location.href !== currentUrl || force) {
             currentUrl = window.location.href;
 
-            isObserverLocked = false;
+            isObserverLocked = true; 
             globalAbortFlag = true;
 
             currentRenderSession++;
@@ -4978,10 +4981,12 @@ GM_addStyle(`
             injectControlUI();
 
             setTimeout(() => {
+                isObserverLocked = false; 
                 globalAbortFlag = false;
+                
                 if (window.location.hash.includes('/details?key=')) processDetail(false);
                 processList();
-            }, 500);
+            }, 800); 
         }
     }
 
@@ -5213,6 +5218,11 @@ GM_addStyle(`
                         <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(229, 160, 13, 0.4); padding: 10px; border-radius: 4px;">
                             <label class="pmh-form-label" style="margin-bottom:8px;"><i class="fas fa-link"></i> 스마트 매칭 / 리매칭 동작 설정</label>
                             
+                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; padding-bottom:8px; border-bottom:1px dashed #444;">
+                                <span style="color:#ddd; font-size:12px;" title="기타 커스텀 에이전트의 매칭 합격 기준 점수입니다.">커스텀 에이전트(ThePornDB 등) 매칭 합격 점수</span>
+                                <input type="number" id="pmh-set-custom-score" value="${ClientSettings.customAgentScore}" min="10" max="100" style="width:50px; text-align:center; background:#111; color:#fff; border:1px solid #444; border-radius:3px; padding:2px;">
+                            </div>
+
                             <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="매칭 시도 전 새로고침(Refresh)으로 자동 매칭을 우선 유도합니다. (Plex 기본 에이전트 전용)">
                                 <input type="checkbox" id="pmh-set-match-refresh" style="width:14px; height:14px;" ${ClientSettings.matchTryRefreshFirst ? 'checked' : ''}>
                                 <span style="color:#ddd;">매칭 시 리프레시 우선 시도 <span style="color:#777; font-size:11px;">(Plex 기본 에이전트 전용)</span></span>
@@ -5347,7 +5357,8 @@ GM_addStyle(`
                 pathMappings: newMaps,
                 matchTryRefreshFirst: document.getElementById('pmh-set-match-refresh').checked,
                 matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked,
-                matchSkipSimCheck: document.getElementById('pmh-set-match-skip-sim').checked
+                matchSkipSimCheck: document.getElementById('pmh-set-match-skip-sim').checked,
+                customAgentScore: parseInt(document.getElementById('pmh-set-custom-score').value, 10) || 80
             };
 
             GM_setValue(CLIENT_SETTINGS_KEY, ClientSettings);
