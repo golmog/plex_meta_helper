@@ -13,6 +13,7 @@ import urllib.parse
 import json
 import sqlite3
 import pmh_core
+import re
 
 # =====================================================================
 # 디스코드 알림 기본 템플릿
@@ -90,7 +91,14 @@ def get_ui(core_api):
             {"id": "opt_smart_refresh", "type": "checkbox", "label": "포스터/메타데이터 유실이 의심되는 항목만 조회", "default": False, "show_if": {"mode": "refresh"}},
             {"id": "opt_smart_match", "type": "checkbox", "label": "GUID가 없는 미매칭 항목만 조회", "default": False, "show_if": {"mode": "rematch"}},
 
-            {"id": "target_agent", "type": "text", "label": "에이전트 제외 필터", "placeholder": "예: tv.plex.agents.movie (입력 시 해당 에이전트 항목 제외)", "show_if": {"mode": "rematch"}},
+            {"id": "filter_fields", "type": "multi_select", "label": "정규식 필터 적용 대상 필드", "options": [
+                {"value": "guid", "text": "에이전트 (GUID)"},
+                {"value": "title", "text": "제목 (Title)"},
+                {"value": "path", "text": "파일/폴더 경로 (Path)"}
+            ], "default": ["guid"], "show_if": {"mode": ["refresh", "rematch"]}},
+            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식 지원)", "placeholder": "예: (marvel|dc) 또는 ^tv\.plex", "show_if": {"mode": ["refresh", "rematch"]}},
+            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식 지원)", "placeholder": "예: theporndb 또는 \.mp4$", "show_if": {"mode": ["refresh", "rematch"]}},
+
             {"id": "scan_depth", "type": "number", "label": "경로 스캔 Depth (기본: 3)", "default": 3, "layout": "plain", "width": "60px", "show_if": {"mode": "path_scan"}}
         ],
         "execute_inputs": [
@@ -142,8 +150,21 @@ def get_ui(core_api):
 def get_target_items(req_data, core_api, task=None):
     target_sections = req_data.get('target_sections', [])
     mode = req_data.get('mode', 'refresh')
-    target_agent = req_data.get('target_agent', '').strip()
     scan_depth = int(req_data.get('scan_depth', 1))
+
+    filter_fields = req_data.get('filter_fields', ['guid'])
+    filter_include = req_data.get('filter_include', '').strip()
+    filter_exclude = req_data.get('filter_exclude', '').strip()
+    
+    re_include, re_exclude = None, None
+    if filter_include:
+        try: re_include = re.compile(filter_include, re.IGNORECASE)
+        except Exception as e:
+            if task: task.log(f"⚠️ 포함 키워드 정규식 오류 (무시됨): {e}")
+    if filter_exclude:
+        try: re_exclude = re.compile(filter_exclude, re.IGNORECASE)
+        except Exception as e:
+            if task: task.log(f"⚠️ 제외 키워드 정규식 오류 (무시됨): {e}")
 
     opt_smart_refresh = req_data.get('opt_smart_refresh', False)
     opt_smart_match = req_data.get('opt_smart_match', False)
@@ -323,11 +344,31 @@ def get_target_items(req_data, core_api, task=None):
                 if guid_val:
                     clean_guid = guid_val.replace("com.plexapp.agents.", "").replace("tv.plex.agents.", "")
                     if "?" in clean_guid: clean_guid = clean_guid.split("?")[0]
-                    if mode == 'rematch' and target_agent and clean_guid.startswith(target_agent):
-                        continue
 
+                # 고급 정규식 필터링 적용
                 actual_parent = grandparent_id or parent_id
                 target_rk = actual_parent if actual_parent and mode in ['refresh', 'rematch'] else rk
+
+                display_title = format_title(r, is_parent=(mode in ['refresh', 'rematch'] and m_type in (4, 8, 10)))
+                if m_type not in (1, 2, 3, 4, 8, 9, 10):
+                    display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
+
+                if mode in ['refresh', 'rematch'] and (re_include or re_exclude):
+                    # 선택된 필드의 텍스트 수집
+                    texts_to_check = []
+                    if 'guid' in filter_fields and guid_val: texts_to_check.append(guid_val) # 원본 GUID로 검사
+                    if 'title' in filter_fields and display_title: texts_to_check.append(display_title)
+                    if 'path' in filter_fields and f_path: texts_to_check.append(f_path)
+
+                    # 포함 조건: 하나라도 매칭되어야 통과
+                    if re_include:
+                        if not any(re_include.search(txt) for txt in texts_to_check):
+                            continue # 매칭되는게 하나도 없으면 스킵
+
+                    # 제외 조건: 하나라도 매칭되면 탈락
+                    if re_exclude:
+                        if any(re_exclude.search(txt) for txt in texts_to_check):
+                            continue # 매칭되는게 있으면 스킵
 
                 if target_rk not in targets:
                     display_title = format_title(r, is_parent=(mode in ['refresh', 'rematch'] and m_type in (4, 8, 10)))
@@ -612,7 +653,7 @@ def worker(task_data, core_api, start_index):
                     custom_score = task_data.get('opt_custom_agent_score', 80) if mode == 'rematch' else 80
 
                     if mode == 'refresh': task.log("   -> 🔄 새로고침(Refresh) 호출 및 대기 중...")
-                    else: task.log("   -> 🔗 스마트 하이브리드 매칭 엔진 가동 중...")
+                    else: task.log("   -> 🔗 리매칭 엔진 가동 중...")
                     
                     success, msg, score = pmh_core.perform_smart_media_action(
                         plex_url=plex._baseurl, 
