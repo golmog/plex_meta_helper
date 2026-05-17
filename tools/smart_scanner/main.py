@@ -745,7 +745,7 @@ def worker(task_data, core_api, start_index):
 
                 else:
                     if fix_type == 'analyze': task.log("   -> [미분석] 분석(Analyze) 호출 및 대기 중...")
-                    elif fix_type == 'match': task.log("   -> [미매칭] 스마트 하이브리드 매칭 엔진 가동 중...")
+                    elif fix_type == 'match': task.log("   -> [미매칭] 리매칭 엔진 가동 중...")
                     elif fix_type == 'refresh': task.log("   -> [메타 유실] 새로고침(Refresh) 호출 및 대기 중...")
 
                     try_ref = task_data.get('opt_try_refresh', True) if fix_type == 'match' else False
