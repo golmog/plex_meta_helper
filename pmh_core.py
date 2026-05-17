@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.89"
+__version__ = "0.8.90"
 
 def get_version():
     return __version__
@@ -1995,9 +1995,18 @@ def media_action_worker_loop(global_config):
                 from plexapi.server import PlexServer
                 plex = PlexServer(plex_url, plex_token, timeout=120)
                 ekey = int(item_id) if str(item_id).isdigit() else f"/library/metadata/{item_id}"
-                
                 item = execute_plex_action_safe(lambda: plex.fetchItem(ekey))
                 
+                is_3digit_season = False
+                try:
+                    if item.type == 'season':
+                        idx = int(getattr(item, 'index', 0) or 0)
+                        if 100 <= idx <= 999: is_3digit_season = True
+                    elif item.type == 'episode':
+                        idx = int(getattr(item, 'parentIndex', 0) or 0)
+                        if 100 <= idx <= 999: is_3digit_season = True
+                except: pass
+
                 target_item = item
                 if item.type in ['episode', 'season']:
                     try:
@@ -2009,7 +2018,7 @@ def media_action_worker_loop(global_config):
                 if action == 'unmatch':
                     execute_plex_action_safe(lambda: target_item.unmatch())
                     MEDIA_ACTION_STATUS[task_id] = {'state': 'completed', 'msg': 'Unmatch 완료'}
-
+            
                 elif action in ['match', 'refresh', 'analyze', 'yaml_refresh']:
                     try_ref = data.get('_try_refresh_first', False) if data else False
                     do_unm = data.get('_do_unmatch_first', False) if data else False
@@ -2017,24 +2026,39 @@ def media_action_worker_loop(global_config):
                     custom_score = data.get('_custom_agent_score', 80) if data else 80
                     
                     success, msg, score = perform_smart_media_action(
-                        plex_url=plex_url,
-                        plex_token=plex_token,
-                        rating_key=target_id,
-                        action_type=action,
-                        item_title=item.title,
-                        item_year=item.year,
+                        plex_url=plex_url, plex_token=plex_token, rating_key=target_id,
+                        action_type=action, item_title=item.title, item_year=item.year,
                         target_agent=item.section().agent if hasattr(item, 'section') else None,
-                        plex_inst=plex,
-                        try_refresh_first=try_ref,
-                        do_unmatch_first=do_unm,
-                        skip_sim_check=skip_sim,
-                        custom_agent_score=custom_score,
-                        global_config=global_config,
-                        task_logger=lambda x: print(f"[PMH Queue] {x}"),
+                        plex_inst=plex, try_refresh_first=try_ref, do_unmatch_first=do_unm,
+                        skip_sim_check=skip_sim, custom_agent_score=custom_score,
+                        global_config=global_config, 
+                        task_logger=lambda x: print(f"[PMH Queue] {x}", flush=True),
                         cancel_checker=lambda: False
                     )
                     
                     if success:
+                        if item.type in ['season', 'episode'] and action in ['match', 'refresh']:
+                            print(f"[PMH Queue] ⏳ 하위 항목({item.type})으로 메타데이터가 전파될 때까지 대기합니다...", flush=True)
+                            for _ in range(8):
+                                time.sleep(2.0)
+                                try:
+                                    execute_plex_action_safe(lambda: item.reload())
+                                    ig = (item.guid or '').lower()
+                                    if ig and 'local://' not in ig and 'none://' not in ig and ig != '-':
+                                        break
+                                except Exception: 
+                                    break
+
+                        if is_3digit_season and action in ['match', 'refresh']:
+                            print(f"[PMH Queue] 💡 내부 데이터에서 3자리 특수 시즌이 감지되었습니다. '{action}' 완료 후 YAML 적용을 연계합니다.", flush=True)
+                            
+                            perform_smart_media_action(
+                                plex_url=plex_url, plex_token=plex_token, rating_key=target_id,
+                                action_type='yaml_refresh', plex_inst=plex, global_config=global_config,
+                                task_logger=lambda x: print(f"[PMH Queue] {x}", flush=True), cancel_checker=lambda: False
+                            )
+                            msg += " (YAML 자동 연계됨)"
+
                         MEDIA_ACTION_STATUS[task_id].update({'state': 'completed', 'msg': msg})
                     else:
                         MEDIA_ACTION_STATUS[task_id].update({'state': 'error', 'msg': msg})
@@ -2097,7 +2121,6 @@ def perform_smart_media_action(
         if not mate_url or not mate_apikey:
             return False, "Plex Mate 연결 정보(URL, API Key)가 설정되지 않았습니다.", 0
 
-        # 1. 최상위 폴더 경로 추출 및 VFS Refresh
         raw_file_path = None
         if hasattr(target_item, 'media') and target_item.media and target_item.media[0].parts:
             raw_file_path = target_item.media[0].parts[0].file
@@ -2108,7 +2131,6 @@ def perform_smart_media_action(
             import unicodedata
             target_dir = os.path.dirname(raw_file_path) if target_item.type != 'show' else raw_file_path
             
-            # 하위 항목일 경우 최상위 쇼 폴더로 거슬러 올라감
             if item.type in ['episode', 'season']:
                 while True:
                     base_name = os.path.basename(target_dir)
@@ -2130,7 +2152,6 @@ def perform_smart_media_action(
             except Exception as e:
                 if task_logger: task_logger(f"⚠️ VFS 갱신 실패 (무시하고 속행): {e}")
 
-        # 2. YAML/TMDB 수동 반영
         if task_logger: task_logger(f"⚡ Plex Mate YAML/TMDB 반영 요청 중...")
         try:
             refresh_url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/manual_refresh"
@@ -2169,7 +2190,6 @@ def perform_smart_media_action(
                     
                 try:
                     execute_plex_action_safe(lambda: target_item.reload())
-                    
                     activities = plex_inst.query('/activities').findall('Activity')
                     current_item_active = any(target_item.title in act.get('title', '') or target_item.title in act.get('subtitle', '') for act in activities)
                     
@@ -2205,14 +2225,41 @@ def perform_smart_media_action(
     # [모드 3] Match 모드
     # ==========================================================================
     if action_type == 'match':
+        # --- 1. 기초 변수 안전하게 초기화 ---
         raw_file_path = None
+        raw_file_name = ""
+        raw_folder_name = ""
+        folder_query = ""
+        file_query = ""
+        extracted_label = None
+        extracted_num = None
+        compiled_rules = None
+        is_jav = False
+        is_jav_allowed = False
+        search_pid = ""
+        matches = []
+        best_match = None
+        best_score = 0
+        highest_sim_found = 0.0
+        matched_by = ""
+
+        # 데이터 접근 안전 래퍼 함수 (Dict, Object 모두 호환)
+        def _get_val(obj, key, default=""):
+            if isinstance(obj, dict): return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        # 공통 HTTP 헤더
+        api_headers = {
+            'Accept': 'application/json',
+            'X-Plex-Token': plex_token,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0'
+        }
+
+        # --- 2. 경로 및 파일명 추출 ---
         if hasattr(target_item, 'media') and target_item.media and target_item.media[0].parts:
             raw_file_path = target_item.media[0].parts[0].file
         elif hasattr(target_item, 'locations') and target_item.locations:
             raw_file_path = target_item.locations[0]
-
-        raw_file_name = ""
-        raw_folder_name = ""
 
         if raw_file_path:
             raw_file_name = os.path.basename(raw_file_path)
@@ -2225,7 +2272,8 @@ def perform_smart_media_action(
                     if os.path.normpath(parent_dir) == os.path.normpath(loc): is_root_dir = True; break
             except Exception: pass
 
-            if is_root_dir: raw_folder_name = os.path.splitext(raw_file_name)[0]
+            if is_root_dir: 
+                raw_folder_name = os.path.splitext(raw_file_name)[0]
             else:
                 if target_item.type in ['show', 'season', 'episode']:
                     if re.match(r'^(season|시즌|series|s)\s*\d+\b', parent_dir_name, re.IGNORECASE) or parent_dir_name.isdigit():
@@ -2236,200 +2284,142 @@ def perform_smart_media_action(
         if not raw_file_path:
             return False, "물리적 경로를 확인할 수 없습니다.", 0
 
+        # --- 3. 에이전트 판별 ---
         if not target_agent:
-            try:
-                target_agent = target_item.section().agent
-            except Exception:
-                target_agent = ""
+            try: target_agent = target_item.section().agent
+            except Exception: target_agent = ""
 
         is_sjva_agent = target_agent.startswith('com.plexapp.agents.sjva') if target_agent else False
         is_plex_agent = target_agent in ['tv.plex.agents.movie', 'tv.plex.agents.series'] if target_agent else False
         is_custom_agent = not is_sjva_agent and not is_plex_agent and bool(target_agent)
 
-        extracted_label = None
-        extracted_num = None
-        compiled_rules = None
-        is_jav = False
-        is_jav_allowed = False
-        search_pid = ""
-
+        # --- 4. SJVA JAV 사전 검사 ---
         if is_sjva_agent:
             jav_section_cfg = str(global_config.get("JAV_SECTION", "")).strip().lower()
             current_section_id = str(getattr(target_item, 'librarySectionID', 'Unknown'))
             is_jav_allowed = (jav_section_cfg == 'all') or (jav_section_cfg and current_section_id in [s.strip() for s in jav_section_cfg.split(',')])
 
             if is_jav_allowed:
-                from pmh_core import compile_jav_rules, extract_jav_pid, normalize_pid_for_comparison
-                compiled_rules = compile_jav_rules(global_config)
-                name_no_ext = os.path.splitext(raw_file_name)[0] if raw_file_name else ""
-                
-                pids = extract_jav_pid(name_no_ext, global_config, compiled_rules)
-                if not pids: pids = extract_jav_pid(raw_folder_name, global_config, compiled_rules)
-                    
-                if pids:
-                    is_jav = True
-                    extracted_label, extracted_num = pids[0]
-                    temp_db_pid_match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', safe_item_title)
-                    if temp_db_pid_match:
-                        db_pid_norm = normalize_pid_for_comparison(temp_db_pid_match.group(1))
-                        for l, n in pids:
-                            cand_norm = normalize_pid_for_comparison(f"{l}-{n}")
-                            if cand_norm == db_pid_norm:
-                                extracted_label, extracted_num = l, n
-                                break
-                    search_pid = f"{extracted_label}-{extracted_num}"
-
-        if do_unmatch_first:
-            try:
-                delete_section_cfg = str(global_config.get("DELETE_JSON_SECTION", "")).strip().lower()
-                current_section_id = str(getattr(target_item, 'librarySectionID', 'Unknown'))
-                is_delete_allowed = (delete_section_cfg == 'all') or (delete_section_cfg and current_section_id in [s.strip() for s in delete_section_cfg.split(',')])
-
-                if not is_delete_allowed:
-                    if task_logger: task_logger(f"💡 현재 섹션(ID: {current_section_id})은 JSON 삭제 미허용")
-                else:
-                    files_to_delete = []
-                    video_dir = os.path.dirname(raw_file_path)
-
-                    if is_jav:
-                        files_to_delete.append(os.path.join(video_dir, f"{extracted_label}-{extracted_num}.json"))
-                        files_to_delete.append(os.path.join(video_dir, f"{extracted_label}{extracted_num}.json"))
-                    elif target_item.type == 'movie':
-                        files_to_delete.append(os.path.join(video_dir, "info.json"))
-                    elif target_item.type == 'show':
-                        show_dir = target_item.locations[0] if hasattr(target_item, 'locations') and target_item.locations else os.path.dirname(os.path.dirname(raw_file_path))
-                        if show_dir: files_to_delete.append(os.path.join(show_dir, "info.json"))
-
-                    for fpath in set(files_to_delete):
-                        if os.path.exists(fpath):
-                            try: os.remove(fpath)
-                            except Exception: pass
-            except Exception: pass
-
-            temp_guid = (target_item.guid or '').lower()
-            if not temp_guid or 'local://' in temp_guid or 'none://' in temp_guid or temp_guid == '-':
-                pass
-            else:
-                if task_logger: task_logger(f"🗑️ 매칭 전 기존 메타데이터 Unmatch 진행 중...")
                 try:
-                    execute_plex_action_safe(lambda: target_item.unmatch())
-                    unmatch_verified = False
+                    compiled_rules = compile_jav_rules(global_config)
+                    name_no_ext = os.path.splitext(raw_file_name)[0] if raw_file_name else ""
+                    
+                    pids = extract_jav_pid(name_no_ext, global_config, compiled_rules)
+                    if not pids: pids = extract_jav_pid(raw_folder_name, global_config, compiled_rules)
+                        
+                    if pids:
+                        is_jav = True
+                        extracted_label, extracted_num = pids[0]
+                        temp_db_pid_match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', safe_item_title)
+                        if temp_db_pid_match:
+                            db_pid_norm = normalize_pid_for_comparison(temp_db_pid_match.group(1))
+                            for l, n in pids:
+                                cand_norm = normalize_pid_for_comparison(f"{l}-{n}")
+                                if cand_norm == db_pid_norm:
+                                    extracted_label, extracted_num = l, n
+                                    break
+                        search_pid = f"{extracted_label}-{extracted_num}"
+                except Exception as e:
+                    if task_logger: task_logger(f"⚠️ JAV 패턴 파싱 오류 (무시됨): {e}")
+
+        try:
+            # --- 5. 언매치(Unmatch) 진행 ---
+            if do_unmatch_first:
+                try:
+                    delete_section_cfg = str(global_config.get("DELETE_JSON_SECTION", "")).strip().lower()
+                    current_section_id = str(getattr(target_item, 'librarySectionID', 'Unknown'))
+                    is_delete_allowed = (delete_section_cfg == 'all') or (delete_section_cfg and current_section_id in [s.strip() for s in delete_section_cfg.split(',')])
+
+                    if not is_delete_allowed:
+                        if task_logger: task_logger(f"💡 현재 섹션(ID: {current_section_id})은 JSON 삭제 미허용")
+                    else:
+                        files_to_delete = []
+                        video_dir = os.path.dirname(raw_file_path)
+
+                        if is_jav:
+                            files_to_delete.append(os.path.join(video_dir, f"{extracted_label}-{extracted_num}.json"))
+                            files_to_delete.append(os.path.join(video_dir, f"{extracted_label}{extracted_num}.json"))
+                        elif target_item.type == 'movie':
+                            files_to_delete.append(os.path.join(video_dir, "info.json"))
+                        elif target_item.type == 'show':
+                            show_dir = target_item.locations[0] if hasattr(target_item, 'locations') and target_item.locations else os.path.dirname(os.path.dirname(raw_file_path))
+                            if show_dir: files_to_delete.append(os.path.join(show_dir, "info.json"))
+
+                        for fpath in set(files_to_delete):
+                            if os.path.exists(fpath):
+                                try: os.remove(fpath)
+                                except Exception: pass
+                except Exception: pass
+
+                temp_guid = (target_item.guid or '').lower()
+                if not temp_guid or 'local://' in temp_guid or 'none://' in temp_guid or temp_guid == '-':
+                    pass
+                else:
+                    if task_logger: task_logger(f"🗑️ 매칭 전 기존 메타데이터 Unmatch 진행 중...")
+                    try:
+                        execute_plex_action_safe(lambda: target_item.unmatch())
+                        unmatch_verified = False
+                        for _ in range(8):
+                            if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
+                            time.sleep(2.0)
+                            execute_plex_action_safe(lambda: target_item.reload())
+                            check_guid = (target_item.guid or '').lower()
+                            if not check_guid or 'local://' in check_guid or 'none://' in check_guid or check_guid == '-':
+                                unmatch_verified = True; break
+                                
+                        if unmatch_verified:
+                            if task_logger: task_logger(f"✅ Unmatch 확인 완료! 서버 안정화를 위해 5초간 대기합니다...")
+                            time.sleep(5.0)
+                            target_item = execute_plex_action_safe(lambda: plex_inst.fetchItem(target_item.ratingKey))
+                        else:
+                            if task_logger: task_logger(f"⚠️ Unmatch 상태 확인 지연 (Plex 서버 부하 의심)")
+                    except Exception as e: 
+                        if task_logger: task_logger(f"⚠️ Unmatch 실패 (무시): {e}")
+
+            # --- 6. 우선 리프레시(Refresh) 시도 ---
+            if try_refresh_first and is_plex_agent:
+                if task_logger: task_logger(f"🔄 매칭 전 리프레시 우선 시도 (Agent: {target_agent})")
+                initial_guid = (target_item.guid or '').lower()
+                try:
+                    execute_plex_action_safe(lambda: target_item.refresh())
+                    match_success = False
                     for _ in range(8):
                         if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
-                        time.sleep(2.0)
+                        time.sleep(2.5)
                         execute_plex_action_safe(lambda: target_item.reload())
-                        check_guid = (target_item.guid or '').lower()
-                        if not check_guid or 'local://' in check_guid or 'none://' in check_guid or check_guid == '-':
-                            unmatch_verified = True; break
+                        temp_guid = (target_item.guid or '').lower()
+                        if temp_guid and temp_guid != initial_guid and 'local://' not in temp_guid and 'none://' not in temp_guid and temp_guid != '-':
+                            match_success = True
+                            if task_logger: task_logger(f"✅ Refresh를 통한 자동 매칭 완료! (새 GUID: {target_item.guid})")
+                            return True, f"Refresh를 통한 자동 매칭 완료!", 100
                             
-                    if unmatch_verified:
-                        if task_logger: task_logger(f"✅ Unmatch 확인 완료! 서버 안정화를 위해 5초간 대기합니다...")
-                        time.sleep(5.0)
-                        target_item = execute_plex_action_safe(lambda: plex_inst.fetchItem(target_item.ratingKey))
-                    else:
-                        if task_logger: task_logger(f"⚠️ Unmatch 상태 확인 지연 (Plex 서버 부하 의심)")
+                    if not match_success:
+                        if task_logger: task_logger(f"⚠️ Refresh 자동 매칭 실패. 수동 검색 매칭 단계로 넘어갑니다...")
                 except Exception as e: 
-                    if task_logger: task_logger(f"⚠️ Unmatch 실패 (무시): {e}")
+                    if task_logger: task_logger(f"⚠️ Refresh 시도 중 오류 발생 (무시하고 검색 진행): {e}")
 
-        if try_refresh_first and is_plex_agent:
-            if task_logger: task_logger(f"🔄 매칭 전 리프레시 우선 시도 (Agent: {target_agent})")
-            initial_guid = (target_item.guid or '').lower()
-            try:
-                execute_plex_action_safe(lambda: target_item.refresh())
-                match_success = False
-                for _ in range(8):
-                    if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
-                    time.sleep(2.5)
-                    execute_plex_action_safe(lambda: target_item.reload())
-                    temp_guid = (target_item.guid or '').lower()
-                    if temp_guid and temp_guid != initial_guid and 'local://' not in temp_guid and 'none://' not in temp_guid and temp_guid != '-':
-                        match_success = True
-                        if task_logger: task_logger(f"✅ Refresh를 통한 자동 매칭 완료! (새 GUID: {target_item.guid})")
-                        return True, f"Refresh를 통한 자동 매칭 완료!", 100
-                        
-                if not match_success:
-                    if task_logger: task_logger(f"⚠️ Refresh 자동 매칭 실패. 수동 검색 매칭 단계로 넘어갑니다...")
-            except Exception as e: 
-                if task_logger: task_logger(f"⚠️ Refresh 시도 중 오류 발생 (무시하고 검색 진행): {e}")
+            # --- 7. 매칭 검색 (Search) ---
+            if is_jav:
+                def search_api_jav(req_url):
+                    with urlopen(Request(req_url, headers=api_headers), timeout=45) as response:
+                        return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
 
-        # JAV 전용 매칭 vs 일반 매칭 분기
-        if is_jav:
-            try:
                 search_params = { 'title': search_pid, 'manual': '0', 'agent': target_agent, 'language': 'ko' }
                 if item_year: search_params['year'] = str(item_year)
                     
                 search_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
                 if task_logger: task_logger(f"📡 [SJVA] Plex 직접 API 검색 시도...")
                 
-                headers = {
-                    'Accept': 'application/json',
-                    'X-Plex-Token': plex_token,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0'
-                }
-                req = Request(search_url, headers=headers)
-                
-                def search_api():
-                    with urlopen(req, timeout=45) as response:
-                        return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
-                
-                candidates = execute_plex_action_safe(search_api)
-                    
-                if not candidates: 
-                    if task_logger: task_logger(f"❌ [SJVA] 검색 결과 없음. (검색어: {search_pid})")
-                    return False, "검색 조건에 맞는 후보가 없습니다.", 0
+                matches = execute_plex_action_safe(lambda: search_api_jav(search_url))
 
-                best_candidate, best_score = None, -1
-                for cand in candidates:
-                    c_score = int(cand.get('score', 0))
-                    if 'collection://' in cand.get('guid', ''): continue
-                    if c_score >= 95 and c_score > best_score:
-                        best_candidate = cand; best_score = c_score
-                            
-                if not best_candidate: 
-                    if task_logger: task_logger(f"❌ [SJVA] 신뢰할 수 있는 매칭 후보가 없습니다. (최소 점수 95 미달)")
-                    return False, "조건에 맞는 최적 후보가 없습니다.", 0
-
-                if task_logger: task_logger(f"✨ [SJVA] 최적 후보 선택됨: '{best_candidate.get('name')}'")
-                
-                match_params = {'guid': best_candidate.get('guid'), 'name': best_candidate.get('name')}
-                if best_candidate.get('year'): match_params['year'] = str(best_candidate.get('year'))
-                    
-                match_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/match?{urlencode(match_params)}"
-                put_req = Request(match_url, method='PUT', headers=headers)
-                execute_plex_action_safe(lambda: urlopen(put_req, timeout=30))
-                
-                initial_guid = (target_item.guid or '').lower()
-                for _ in range(8):
-                    if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
-                    time.sleep(2.5)
-                    try:
-                        execute_plex_action_safe(lambda: target_item.reload())
-                        new_guid = (target_item.guid or '').lower()
-                        if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
-                            return True, f"매칭 성공 ({best_candidate.get('name')})", best_score
-                    except Exception as reload_err:
-                        if "404" in str(reload_err) or "not_found" in str(reload_err).lower():
-                            if task_logger: task_logger(f"✅ 매칭 승인! (Plex가 기존 항목을 삭제하고 병합했습니다.)")
-                            return True, f"매칭 성공 (ID 병합됨: {best_candidate.get('name')})", best_score
-                        else:
-                            raise reload_err
-                        
-                return False, "Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.", best_score
-            except Exception as e:
-                return False, f"매칭 처리 오류: {e}", 0
-        else:
-            try:
+            else:
                 if is_custom_agent:
-                    folder_query = ""
                     file_query = os.path.splitext(raw_file_name)[0] if raw_file_name else ""
-                    
                     file_query = re.sub(r'(?i)\b(xxx|1080p|720p|2160p|4k|mp4|mkv|ktr|fhd|hd|sd)\b.*$', '', file_query)
                     file_query = re.sub(r'[._]', ' ', file_query).strip()
-                    
                     item_year = None
-                    if task_logger: task_logger(f"💡 [커스텀 에이전트 모드] 파일명을 정제하여 에이전트에 넘깁니다: '{file_query}'")
+                    if task_logger: task_logger(f"💡 [커스텀 에이전트 모드] 파일명 기반 검색어: '{file_query}'")
                 else:
-                    # 1. 폴더명 파싱
                     folder_query = raw_folder_name
                     item_year = None
                     year_match = re.search(r'[\(\[\s](19[1-9]\d|20[0-2]\d)[\)\]\s]', raw_folder_name)
@@ -2444,7 +2434,6 @@ def perform_smart_media_action(
                     folder_query = re.sub(r'[_\.-]', ' ', folder_query).strip()
                     folder_query = re.sub(r'\s+', ' ', folder_query)
 
-                    # 2. 파일명 파싱
                     file_query = ""
                     if raw_file_name:
                         name_no_ext = os.path.splitext(raw_file_name)[0]
@@ -2467,27 +2456,36 @@ def perform_smart_media_action(
                 if not file_query and not folder_query: 
                     return False, "추출된 검색어가 유효하지 않습니다.", 0
 
-                if not is_custom_agent and task_logger: 
-                    task_logger(f"💡 [일반 매칭] 원본 경로: '{raw_folder_name}' | [파일] '{raw_file_name}'")
-                    task_logger(f"🔍 정제된 검색어: [1순위/폴더] '{folder_query}' | [2순위/파일] '{file_query}'")
-
-                matches = []
                 lang_code = 'en' if is_custom_agent else 'ko'
                 
                 if is_custom_agent:
+                    def search_api(req_url):
+                        with urlopen(Request(req_url, headers=api_headers), timeout=45) as response:
+                            return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
+
                     search_params = { 'title': file_query, 'manual': '1', 'agent': target_agent, 'language': lang_code }
                     search_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
-                    headers = {
-                        'Accept': 'application/json',
-                        'X-Plex-Token': plex_token,
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0'
-                    }
-                    def search_api():
-                        with urlopen(Request(search_url, headers=headers), timeout=45) as response:
-                            return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
                     
                     if task_logger: task_logger(f"📡 직접 API 검색 시도... (검색어: '{file_query}', 연도 필터 없음)")
-                    matches = execute_plex_action_safe(search_api)
+                    matches = execute_plex_action_safe(lambda: search_api(search_url))
+
+                    safe_custom_score = int(custom_agent_score) if custom_agent_score else 80
+                    has_valid_match = any(int(_get_val(c, 'score', 0)) >= safe_custom_score for c in matches)
+
+                    if not has_valid_match:
+                        date_pattern = r'\b(?:20\d{2}|\d{2})\s(?:0?[1-9]|1[0-2])\s(?:0?[1-9]|[12]\d|3[01])\b'
+                        fallback_query = re.sub(date_pattern, '', file_query)
+                        fallback_query = re.sub(r'\s+', ' ', fallback_query).strip()
+                        
+                        if fallback_query and fallback_query != file_query:
+                            if task_logger: task_logger(f"⚠️ 1차 검색 실패. 날짜 패턴 제거/재시도: '{fallback_query}'")
+                            search_params['title'] = fallback_query
+                            search_url2 = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
+                            fallback_matches = execute_plex_action_safe(lambda: search_api(search_url2))
+                            
+                            if fallback_matches:
+                                matches = fallback_matches
+
                 else:
                     if task_logger: 
                         task_logger(f"💡 [일반 매칭] 원본 경로: '{raw_folder_name}' | [파일] '{raw_file_name}'")
@@ -2502,189 +2500,166 @@ def perform_smart_media_action(
                     if not matches and file_query and file_query.lower() != folder_query.lower():
                         kwargs = {'agent': target_agent, 'language': lang_code, 'title': file_query}
                         if item_year: kwargs['year'] = str(item_year)
-                        if task_logger: task_logger(f"⚠️ 1차 검색 실패. 파일명으로 2차 검색을 시도합니다... (검색어: '{file_query}', 연도: '{item_year}')")
+                        if task_logger: task_logger(f"⚠️ 1차 검색 실패. 파일명 기반 재시도... (검색어: '{file_query}', 연도: '{item_year}')")
                         matches = execute_plex_action_safe(lambda: target_item.matches(**kwargs))
 
-                if not matches: 
-                    if task_logger: task_logger(f"❌ 일치하는 후보가 없습니다.")
-                    return False, "검색 조건에 맞는 후보가 없습니다.", 0
+            # --- 8. 검색 결과 필터링 및 Scoring ---
+            if not matches: 
+                if task_logger: task_logger(f"❌ 일치하는 후보가 없습니다.")
+                return False, "검색 조건에 맞는 후보가 없습니다.", 0
 
-                best_match = None
-                best_score = 0
-                highest_sim_found = 0.0
-                matched_by = ""
-
-                top_candidates = matches[:3]
-
-                if is_sjva_agent:
-                    if task_logger: task_logger(f"💡 [SJVA 에이전트 모드] 점수 기반 검증(커트라인 95점)을 진행합니다.")
-                    top_candidates.sort(key=lambda x: int(getattr(x, 'score', 0) or 0), reverse=True)
-                    
-                    for idx, cand in enumerate(top_candidates):
-                        cand_name = getattr(cand, 'name', '')
-                        cand_year = str(getattr(cand, 'year', ''))
-                        cand_score = int(getattr(cand, 'score', 0) or 0)
-                        
-                        if item_year and cand_year and item_year != cand_year:
-                            if task_logger:
-                                task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score})")
-                                task_logger(f"    ❌ 연도 불일치 (목표: {item_year}, 후보: {cand_year})")
-                            continue
-                            
-                        if cand_score >= 95:
-                            best_match = cand
-                            best_score = cand_score
-                            matched_by = f"SJVA 에이전트 매칭 점수({cand_score}점)"
-                            if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}, 연도: {cand_year}) -> ✨ 조건 충족!")
-                            break
-                        else:
-                            if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 기준점 미달")
-
-                    if not best_match:
-                        reject_reason = f"SJVA 점수 기준(95점) 및 연도 조건을 충족하는 후보가 없습니다."
-                        if task_logger: task_logger(f"❌ 최종 매칭 실패: {reject_reason}")
-                        return False, reject_reason, 0
-
-                elif is_custom_agent:
-                    safe_custom_score = int(custom_agent_score) if custom_agent_score else 80
-                    
-                    if task_logger: task_logger(f"💡 [커스텀 에이전트 모드] 에이전트 반환 점수(커트라인 {safe_custom_score}점)만으로 매칭을 결정합니다.")
-                    
-                    top_candidates.sort(key=lambda x: int(x.get('score', 0)), reverse=True)
-                    
-                    for idx, cand in enumerate(top_candidates):
-                        cand_name = cand.get('name', '')
-                        cand_score = int(cand.get('score', 0))
-                        
-                        if cand_score >= safe_custom_score:
-                            best_match = cand
-                            best_score = cand_score
-                            matched_by = f"커스텀 에이전트 점수({cand_score}점)"
-                            if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) -> ✨ 합격!")
-                            break
-                        else:
-                            if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 기준점 미달")
-
-                    if not best_match:
-                        reject_reason = f"커스텀 에이전트 점수 기준({safe_custom_score}점)을 충족하는 후보가 없습니다."
-                        if task_logger: task_logger(f"❌ 최종 매칭 실패: {reject_reason}")
-                        return False, reject_reason, 0
-
-                else:
-                    if skip_sim_check:
-                        if task_logger: task_logger(f"💡 [제목/연도 검증 스킵 모드] 사용자 설정에 따라 텍스트/연도 검증을 생략하고 1순위 결과를 무조건 수용합니다.")
-                        cand = top_candidates[0]
-                        cand_name = getattr(cand, 'name', '')
-                        cand_year = str(getattr(cand, 'year', ''))
-                        if task_logger: task_logger(f"📋 [1순위 후보 강제 수용] '{cand_name}' (연도: {cand_year})")
+            if is_jav:
+                if task_logger: task_logger(f"💡 [JAV 모드] 전체 검색 결과 중 최적의 후보(커트라인 95점)를 선별합니다.")
+                matches.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)
+                for cand in matches:
+                    if 'collection://' in _get_val(cand, 'guid', ''): continue
+                    c_score = int(_get_val(cand, 'score', 0))
+                    if c_score >= 95 and c_score > best_score:
                         best_match = cand
-                        highest_sim_found = 1.0
-                        matched_by = "제목/연도 검증 스킵 (강제 수용)"
-                    else:
-                        if task_logger: task_logger(f"💡 [텍스트 유사도 모드] 텍스트 유사도 검증(커트라인 90%)을 진행합니다.")
-                        import difflib
-                        norm_pattern = r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]'
-                        norm_folder_q = re.sub(norm_pattern, '', folder_query.lower())
-                        norm_file_q = re.sub(norm_pattern, '', file_query.lower())
-
-                        for idx, cand in enumerate(top_candidates):
-                            cand_name = getattr(cand, 'name', '')
-                            cand_orig = getattr(cand, 'originalTitle', '')
-                            cand_year = str(getattr(cand, 'year', ''))
-                            cand_score = int(getattr(cand, 'score', 0) or 0)
-
-                            if item_year and cand_year and item_year != cand_year:
-                                continue
-
-                            clean_cand_name = cand_name.split('|')[0].strip() if '|' in cand_name else cand_name
-                            clean_cand_orig = cand_orig.split('|')[0].strip() if '|' in cand_orig else cand_orig
-
-                            norm_cand_name = re.sub(norm_pattern, '', clean_cand_name.lower())
-                            norm_cand_orig = re.sub(norm_pattern, '', clean_cand_orig.lower())
-
-                            sim_folder_name = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_name).ratio() if norm_folder_q and norm_cand_name else 0.0
-                            sim_folder_orig = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_orig).ratio() if norm_folder_q and norm_cand_orig else 0.0
-                            max_folder_sim = max(sim_folder_name, sim_folder_orig)
-
-                            sim_file_name = difflib.SequenceMatcher(None, norm_file_q, norm_cand_name).ratio() if norm_file_q and norm_cand_name else 0.0
-                            sim_file_orig = difflib.SequenceMatcher(None, norm_file_q, norm_cand_orig).ratio() if norm_file_q and norm_cand_orig else 0.0
-                            max_file_sim = max(sim_file_name, sim_file_orig)
-
-                            if max_folder_sim >= 0.90:
-                                best_match, best_score, highest_sim_found, matched_by = cand, cand_score, max_folder_sim, "폴더명"
-                                break
-                            elif max_file_sim >= 0.90:
-                                best_match, best_score, highest_sim_found, matched_by = cand, cand_score, max_file_sim, "파일명"
-                                break
-
-                    if not best_match:
-                        reject_reason = f"상위 후보 3개 중 연도 조건 및 텍스트 유사도(90%)를 충족하는 항목이 없습니다."
-                        if task_logger: task_logger(f"❌ 최종 매칭 실패: {reject_reason}")
-                        return False, reject_reason, 0
-
-                candidate_name = best_match.get('name', '') if isinstance(best_match, dict) else getattr(best_match, 'name', '')
-
-                if task_logger:
-                    if matched_by.startswith("에이전트") or matched_by.startswith("커스텀"):
-                        task_logger(f"💡 [에이전트 모드] {matched_by} 기준 검증 통과 -> 후보 '{candidate_name}' 선택됨.")
-                    else:
-                        task_logger(f"💡 [Plex 기본 모드] '{matched_by}' 기반 검증 통과 (유사도: {highest_sim_found*100:.1f}%) -> 후보 '{candidate_name}' 선택됨.")
-                    task_logger(f"✨ 직접 HTTP API로 매칭을 강제 적용합니다.")
-
-                initial_guid = (target_item.guid or '').lower()
-
-                try:
-                    match_params = {
-                        'guid': best_match.get('guid', '') if isinstance(best_match, dict) else getattr(best_match, 'guid', ''),
-                        'name': candidate_name
-                    }
+                        best_score = c_score
+                        matched_by = f"JAV 모드 점수({c_score}점)"
+                        break # 내림차순 정렬이므로 조건 만족 시 최고점임
+                        
+            elif is_sjva_agent:
+                if task_logger: task_logger(f"💡 [SJVA 에이전트 모드] 점수 기반 검증(커트라인 95점)을 진행합니다.")
+                matches.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)
+                for idx, cand in enumerate(matches):
+                    cand_name = _get_val(cand, 'name', '')
+                    cand_year = str(_get_val(cand, 'year', ''))
+                    cand_score = int(_get_val(cand, 'score', 0))
                     
-                    b_year = best_match.get('year') if isinstance(best_match, dict) else getattr(best_match, 'year', None)
+                    if item_year and cand_year and item_year != cand_year:
+                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 연도 불일치 (목표: {item_year}, 후보: {cand_year})")
+                        continue
                         
-                    if b_year: 
-                        match_params['year'] = str(b_year)
-                    elif item_year and not is_custom_agent:
-                        match_params['year'] = str(item_year)
+                    if cand_score >= 95:
+                        best_match, best_score, matched_by = cand, cand_score, f"SJVA 에이전트 점수({cand_score}점)"
+                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}, 연도: {cand_year}) -> ✨ 조건 충족!")
+                        break
+                    else:
+                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 기준점 미달")
 
-                    match_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/match?{urlencode(match_params)}"
-                    headers = {
-                        'Accept': 'application/json',
-                        'X-Plex-Token': plex_token,
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0'
-                    }
-                    req = Request(match_url, method='PUT', headers=headers)
-                    execute_plex_action_safe(lambda: urlopen(req, timeout=30))
-                except Exception as put_e:
-                    if task_logger: task_logger(f"⚠️ HTTP PUT 매칭 전송 오류 (무시하고 결과 대기 시도): {put_e}")
+            elif is_custom_agent:
+                safe_custom_score = int(custom_agent_score) if custom_agent_score else 80
+                if task_logger: task_logger(f"💡 [커스텀 에이전트 모드] 제목/연도 검증 없이, 에이전트가 반환한 점수(커트라인 {safe_custom_score}점)만으로 매칭을 결정합니다.")
+                matches.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)
+                for idx, cand in enumerate(matches):
+                    cand_name = _get_val(cand, 'name', '')
+                    cand_score = int(_get_val(cand, 'score', 0))
+                    
+                    if cand_score >= safe_custom_score:
+                        best_match, best_score, matched_by = cand, cand_score, f"커스텀 에이전트 점수({cand_score}점)"
+                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) -> ✨ 합격!")
+                        break
+                    else:
+                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 기준점 미달")
+
+            else: # Plex 기본 에이전트
+                top_candidates = matches[:3] # 텍스트 연산 부하 방지를 위해 3개만 자름
                 
-                match_verified = False
-                if task_logger: task_logger(f"⏳ 매칭 적용 중... GUID 갱신을 확인합니다.")
-                
-                for _ in range(8):
-                    if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
-                    time.sleep(2.5)
-                    try:
-                        execute_plex_action_safe(lambda: target_item.reload())
-                        new_guid = (target_item.guid or '').lower()
-                        if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
-                            match_verified = True
-                            if task_logger: task_logger(f"✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
-                            return True, f"매칭 성공 ({candidate_name})", best_score
-                    except Exception as reload_err:
-                        if "404" in str(reload_err) or "not_found" in str(reload_err).lower():
-                            if task_logger: task_logger(f"✅ 매칭 승인! (Plex가 기존 항목을 삭제하고 병합했습니다.)")
-                            return True, f"매칭 성공 (ID 병합됨: {candidate_name})", best_score
-                        else:
-                            raise reload_err
-                        
-                if not match_verified:
-                    if task_logger: task_logger(f"⚠️ Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.")
-                return False, "Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.", best_score
-                
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                if task_logger: task_logger(f"❌ 매칭 작업 중 내부 오류: {e}")
-                return False, f"매칭 작업 중 내부 오류: {e}", 0
+                if skip_sim_check:
+                    if task_logger: task_logger(f"💡 [제목/연도 검증 스킵 모드] 사용자 설정에 따라 텍스트/연도 검증을 생략하고 1순위 결과를 무조건 수용합니다.")
+                    cand = top_candidates[0]
+                    cand_name = _get_val(cand, 'name', '')
+                    cand_year = str(_get_val(cand, 'year', ''))
+                    if task_logger: task_logger(f"📋 [1순위 후보 강제 수용] '{cand_name}' (연도: {cand_year})")
+                    best_match, highest_sim_found, matched_by = cand, 1.0, "제목/연도 검증 스킵 (강제 수용)"
+                else:
+                    if task_logger: task_logger(f"💡 [텍스트 유사도 모드] 텍스트 유사도 검증(커트라인 90%)을 진행합니다.")
+                    import difflib
+                    norm_pattern = r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]'
+                    norm_folder_q = re.sub(norm_pattern, '', folder_query.lower())
+                    norm_file_q = re.sub(norm_pattern, '', file_query.lower())
+
+                    for idx, cand in enumerate(top_candidates):
+                        cand_name = _get_val(cand, 'name', '')
+                        cand_orig = _get_val(cand, 'originalTitle', '')
+                        cand_year = str(_get_val(cand, 'year', ''))
+                        cand_score = int(_get_val(cand, 'score', 0))
+
+                        if item_year and cand_year and item_year != cand_year:
+                            continue
+
+                        clean_cand_name = cand_name.split('|')[0].strip() if '|' in cand_name else cand_name
+                        clean_cand_orig = cand_orig.split('|')[0].strip() if '|' in cand_orig else cand_orig
+
+                        norm_cand_name = re.sub(norm_pattern, '', clean_cand_name.lower())
+                        norm_cand_orig = re.sub(norm_pattern, '', clean_cand_orig.lower())
+
+                        sim_folder_name = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_name).ratio() if norm_folder_q and norm_cand_name else 0.0
+                        sim_folder_orig = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_orig).ratio() if norm_folder_q and norm_cand_orig else 0.0
+                        max_folder_sim = max(sim_folder_name, sim_folder_orig)
+
+                        sim_file_name = difflib.SequenceMatcher(None, norm_file_q, norm_cand_name).ratio() if norm_file_q and norm_cand_name else 0.0
+                        sim_file_orig = difflib.SequenceMatcher(None, norm_file_q, norm_cand_orig).ratio() if norm_file_q and norm_cand_orig else 0.0
+                        max_file_sim = max(sim_file_name, sim_file_orig)
+
+                        if max_folder_sim >= 0.90:
+                            best_match, best_score, highest_sim_found, matched_by = cand, cand_score, max_folder_sim, "폴더명"
+                            break
+                        elif max_file_sim >= 0.90:
+                            best_match, best_score, highest_sim_found, matched_by = cand, cand_score, max_file_sim, "파일명"
+                            break
+
+            # --- 9. 매칭 적용 (PUT) ---
+            if not best_match:
+                reject_reason = f"검색 결과 중 설정된 기준(점수/연도/유사도)을 충족하는 후보가 없습니다."
+                if task_logger: task_logger(f"❌ 최종 매칭 실패: {reject_reason}")
+                return False, reject_reason, 0
+
+            candidate_name = _get_val(best_match, 'name', '')
+            candidate_guid = _get_val(best_match, 'guid', '')
+            b_year = _get_val(best_match, 'year', None)
+
+            if task_logger:
+                if matched_by.startswith("에이전트") or matched_by.startswith("커스텀") or matched_by.startswith("SJVA") or matched_by.startswith("JAV"):
+                    task_logger(f"💡 [{matched_by.split()[0]} 모드] {matched_by} 기준 검증 통과 -> 후보 '{candidate_name}' 선택됨.")
+                else:
+                    task_logger(f"💡 [Plex 기본 모드] '{matched_by}' 기반 검증 통과 (유사도: {highest_sim_found*100:.1f}%) -> 후보 '{candidate_name}' 선택됨.")
+                task_logger(f"✨ 직접 HTTP API로 매칭을 강제 적용합니다.")
+
+            initial_guid = (target_item.guid or '').lower()
+
+            try:
+                match_params = {'guid': candidate_guid, 'name': candidate_name}
+                if b_year: match_params['year'] = str(b_year)
+                elif item_year and not is_custom_agent: match_params['year'] = str(item_year)
+                    
+                match_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/match?{urlencode(match_params)}"
+                req = Request(match_url, method='PUT', headers=api_headers)
+                execute_plex_action_safe(lambda: urlopen(req, timeout=30))
+            except Exception as put_e:
+                if task_logger: task_logger(f"⚠️ HTTP PUT 매칭 전송 오류 (무시하고 결과 대기 시도): {put_e}")
+            
+            # --- 10. 적용 결과 확인 (Reload & Validate) ---
+            match_verified = False
+            if task_logger: task_logger(f"⏳ 매칭 적용 중... GUID 갱신을 확인합니다.")
+            
+            for _ in range(8):
+                if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
+                time.sleep(2.5)
+                try:
+                    execute_plex_action_safe(lambda: target_item.reload())
+                    new_guid = (target_item.guid or '').lower()
+                    if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
+                        match_verified = True
+                        if task_logger: task_logger(f"✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
+                        return True, f"매칭 성공 ({candidate_name})", best_score
+                except Exception as reload_err:
+                    if "404" in str(reload_err) or "not_found" in str(reload_err).lower():
+                        if task_logger: task_logger(f"✅ 매칭 승인! (Plex가 기존 항목을 삭제하고 병합했습니다.)")
+                        return True, f"매칭 성공 (ID 병합됨: {candidate_name})", best_score
+                    else:
+                        raise reload_err
+                    
+            if not match_verified:
+                if task_logger: task_logger(f"⚠️ Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.")
+            return False, "Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.", best_score
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            if task_logger: task_logger(f"❌ 매칭 작업 중 내부 오류: {e}")
+            return False, f"매칭 작업 중 내부 오류: {e}", 0
 
     return False, f"알 수 없는 액션입니다: {action_type}", 0

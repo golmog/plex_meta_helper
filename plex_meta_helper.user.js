@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.89
+// @version      0.8.90
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1492,7 +1492,7 @@ GM_addStyle(`
         const targetSrv = ServerConfig.SERVERS[srvIdx];
         if (!targetSrv) return toastr.error("서버 설정이 유효하지 않습니다.");
 
-        window.showPmhToolPanel(toolId, "로딩 중...", `<div id="pmh_common_tool_container" style="padding:10px; text-align:center;"><i class="fas fa-spinner fa-spin fa-2x" style="color:#e5a00d;"></i><br><br>UI 스키마 로드 중...</div>`);
+        window.showPmhToolPanel(toolId, "로딩 중...", `<div id="pmh_common_tool_container" style="text-align:center;"><i class="fas fa-spinner fa-spin fa-2x" style="color:#e5a00d;"></i><br><br>UI 스키마 로드 중...</div>`);
 
         try {
             const res = await PmhToolAPI.getUi(toolId, targetSrv);
@@ -3031,28 +3031,7 @@ GM_addStyle(`
                 let apiAction = '';
                 let extraData = {};
 
-                let is3DigitSeason = false;
-                const titleNodes = cont.querySelectorAll('[class*="MetadataPosterCardTitle"], [data-testid="metadataTitleLink"], [class*="title-"]');
-                titleNodes.forEach(node => {
-                    const text = node.textContent.trim();
-                    if (/(?:시즌|Season|S)\s*?([1-9]\d{2})\b/i.test(text)) is3DigitSeason = true;
-                });
-                
-                if (!is3DigitSeason && info.p) {
-                    const pathParts = info.p.split(/[\\/]/);
-                    for (let i = pathParts.length - 1; i >= Math.max(0, pathParts.length - 3); i--) {
-                        if (/(?:시즌|Season|S)\s*?([1-9]\d{2})\b/i.test(pathParts[i])) {
-                            is3DigitSeason = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (is3DigitSeason && srvConfig) {
-                    actionName = 'YAML 적용';
-                    apiAction = 'yaml_refresh';
-                }
-                else if (srvConfig && !isUnmatched && info.g && isShiftClick) {
+                if (srvConfig && !isUnmatched && info.g && isShiftClick) {
                     actionName = '리매칭';
                     apiAction = 'match';
                     extraData = { _try_refresh_first: false, _do_unmatch_first: true };
@@ -3226,7 +3205,18 @@ GM_addStyle(`
                                     if (!plexSrv) return;
                                     
                                     let meta = await fetchPlexMetaFallback(id, plexSrv);
-                                    if (!meta) return;
+                                    if (!meta) {
+                                        const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                        markers.forEach(m => {
+                                            const gBox = m.parentElement.querySelector('.plex-guid-list-box');
+                                            if (gBox) {
+                                                gBox.innerHTML = `<i class="fas fa-ghost" style="margin-right:4px;"></i>병합됨`;
+                                                gBox.style.color = '#777';
+                                                gBox.title = '다른 항목으로 병합되었습니다.';
+                                            }
+                                        });
+                                        return;
+                                    }
 
                                     const updatedInfo = convertPlexMetaToLocalData(meta, id);
                                     const oldCache = getMemoryCache(`L_${serverId}_${id}`) || {};
@@ -3913,6 +3903,7 @@ GM_addStyle(`
         const cacheKey = srvConfig ? `D_${serverId}_${itemId}` : `F_${serverId}_${itemId}`;
 
         isFetchingDetail = true;
+        let hasDisplayedCache = false;
 
         if (!isManualRefresh) {
             const cData = getMemoryCache(cacheKey);
@@ -3921,8 +3912,7 @@ GM_addStyle(`
                 if (box) box.remove();
                 renderDetailHtml(cData, serverId, srvConfig, container);
                 currentDisplayedItemId = itemId;
-                isFetchingDetail = false;
-                return;
+                hasDisplayedCache = true;
             } else {
                 renderLoadingBox(container);
             }
@@ -3933,10 +3923,14 @@ GM_addStyle(`
                 let meta = await fetchPlexMetaFallback(itemId, plexSrv);
                 if (meta && session === currentRenderSession) {
                     let friendData = convertPlexMetaToLocalData(meta, itemId);
-                    setMemoryCache(cacheKey, friendData);
-                    document.getElementById('plex-guid-box')?.remove();
-                    renderDetailHtml(friendData, serverId, null, container);
-                    currentDisplayedItemId = itemId;
+                    
+                    const oldCache = getMemoryCache(cacheKey);
+                    if (!hasDisplayedCache || JSON.stringify(oldCache) !== JSON.stringify(friendData)) {
+                        setMemoryCache(cacheKey, friendData);
+                        document.getElementById('plex-guid-box')?.remove();
+                        renderDetailHtml(friendData, serverId, null, container);
+                        currentDisplayedItemId = itemId;
+                    }
                 }
                 return;
             }

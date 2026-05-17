@@ -42,8 +42,9 @@
         .navbar { background: var(--panel); border-bottom: 1px solid var(--border); padding: 15px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
         .nav-title { color: var(--primary); font-weight: 800; font-size: 18px; display: flex; align-items: center; gap: 8px; }
         
-        .screen { display: none; padding: 15px; padding-bottom: 70px; animation: fadeIn 0.2s ease; }
+        .screen { display: none; padding-bottom: 70px; animation: fadeIn 0.2s ease; }
         .screen.active { display: block; }
+        #screen-portal, #screen-setup { padding: 15px; padding-bottom: 70px; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         
         .form-group { margin-bottom: 20px; }
@@ -87,6 +88,7 @@
                 grid-template-columns: 50% 50%;
                 grid-template-rows: auto 1fr;
                 gap: 0;
+                height: calc(100vh - 70px); 
             }
 
             #tool-form-container > div > div:nth-child(1) {
@@ -118,6 +120,8 @@
                 border-right: 1px solid #333;
                 padding-right: 15px;
                 margin-top: 15px;
+                min-height: 0;
+                overflow-y: auto; 
             }
 
             #pmh_tab_monitor {
@@ -126,6 +130,7 @@
                 grid-row: 2 / 3;
                 padding-left: 15px;
                 margin-top: 15px;
+                min-height: 0; 
             }
         }
 
@@ -196,14 +201,9 @@
     </div>
 
     <div id="screen-tool" class="screen">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-            <button class="btn" onclick="showScreen('screen-portal')" style="background:#333; color:#fff; width:auto; padding:6px 12px; font-size:12px; border-radius:6px;">
-                <i class="fas fa-arrow-left"></i> 홈으로
-            </button>
-            <div id="tool-view-title" style="font-weight:bold; color:var(--primary); font-size:15px;">로딩 중...</div>
-        </div>
+        <div id="tool-view-title" style="display:none;"></div>
 
-        <div id="tool-form-container" style="margin-bottom:10px; width:100%;"></div>
+        <div id="tool-form-container" style="width:100%;"></div>
     </div>
 
     <div class="tab-bar">
@@ -553,24 +553,28 @@
                     }
                 }, 100);
 
-                if (!window.dualPaneObserver) {
-                    window.dualPaneObserver = new MutationObserver(() => {
-                        if (window.innerWidth > 768) {
-                            const form = document.getElementById('pmh_tab_form');
-                            const settings = document.getElementById('pmh_tab_settings');
-                            const monitorTabBtn = document.querySelector('[data-tab="pmh_tab_monitor"]');
-                            const formTabBtn = document.querySelector('[data-tab="pmh_tab_form"]');
-                            
-                            if (form && settings && form.style.display === 'none' && settings.style.display === 'none') {
-                                form.style.display = 'flex';
-                                if (monitorTabBtn) monitorTabBtn.classList.remove('active');
-                                if (formTabBtn) formTabBtn.classList.add('active');
-                            }
+                const enforceDualPane = () => {
+                    if (window.innerWidth > 768) {
+                        const form = document.getElementById('pmh_tab_form');
+                        const settings = document.getElementById('pmh_tab_settings');
+                        const monitorTabBtn = document.querySelector('[data-tab="pmh_tab_monitor"]');
+                        const formTabBtn = document.querySelector('[data-tab="pmh_tab_form"]');
+                        
+                        if (form && settings && form.style.display === 'none' && settings.style.display === 'none') {
+                            form.style.display = 'flex';
+                            if (monitorTabBtn) monitorTabBtn.classList.remove('active');
+                            if (formTabBtn) formTabBtn.classList.add('active');
                         }
-                    });
+                    }
+                };
+
+                if (!window.dualPaneObserver) {
+                    window.dualPaneObserver = new MutationObserver(enforceDualPane);
                 }
                 window.dualPaneObserver.disconnect();
                 window.dualPaneObserver.observe(container, { attributes: true, subtree: true, attributeFilter: ['style'] });
+                
+                setTimeout(enforceDualPane, 150);
 
             } catch(e) { 
                 showToast("툴을 불러오지 못했습니다. " + e.message, true); 

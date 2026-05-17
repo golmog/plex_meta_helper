@@ -178,12 +178,17 @@ window.PmhUICore = {
             const panel = document.getElementById('pmh-tool-panel');
             if (!logBox || !tabMonitor || tabMonitor.style.display === 'none') return;
 
-            if (isMobileEnv) {
-                const calcH = window.innerHeight - 380;
-                logBox.style.height = Math.max(150, calcH) + 'px';
+            const isPwaEnv = !!document.getElementById('screen-portal');
+
+            if (isPwaEnv) {
+                if (window.innerWidth > 768) {
+                    logBox.style.height = '100%';
+                } else {
+                    logBox.style.height = 'calc(100vh - 380px)';
+                }
             } else {
                 if (panel) {
-                    const calcH = panel.offsetHeight - 300;
+                    const calcH = panel.offsetHeight - 325;
                     logBox.style.height = Math.max(150, calcH) + 'px';
                 }
             }
@@ -267,9 +272,32 @@ window.PmhUICore = {
         const uniqFormBodyId = `pmh_form_body_${config.toolId}`;
         const uniqToggleBtnId = `pmh_btn_toggle_form_${config.toolId}`;
 
+        const isPwaEnv = !!document.getElementById('screen-portal');
+        
+        // PWA 환경일 경우에만 삽입할 '홈으로' 헤더 HTML
+        const pwaHeaderHtml = isPwaEnv ? `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; width:100% !important;">
+                <button onclick="document.getElementById('pmh-panel-close')?.click(); showScreen('screen-portal');" style="background:#333; color:#fff; border:none; width:auto; padding:6px 12px; font-size:12px; border-radius:6px; cursor:pointer; font-weight:bold;">
+                    <i class="fas fa-arrow-left"></i> 홈으로
+                </button>
+                <div style="font-weight:bold; color:#e5a00d; font-size:15px;"><i class="${config.uiSchema.icon || 'fas fa-wrench'}" style="margin-right:6px;"></i>${config.uiSchema.title || config.toolId}</div>
+            </div>
+        ` : '';
+
         let html = `
-            <div style="display:flex; flex-direction:column; height:100%; width:100%; text-align:left; flex-grow:1; min-height:0;">
-                <div style="display:flex; border-bottom:1px solid #444; margin-bottom:15px; flex-shrink:0; justify-content:space-between; align-items:flex-end;">
+            <div style="display:flex; flex-direction:column; width:100%; text-align:left; flex-grow:1; min-height:0;">
+                
+                <!-- [수정] 통째로 묶은 단일 Sticky 영역 (top은 무조건 0px) -->
+                <div style="position:sticky; top:0px; padding:15px 15px 0 15px; background:rgba(20,23,26,0.95); backdrop-filter:blur(8px); z-index:100; border-bottom:1px solid #444; box-shadow:0 4px 10px rgba(0,0,0,0.5);">
+                    
+                    ${pwaHeaderHtml}
+                    
+                    ${config.servers.length > 1 ? `
+                    <div class="pmh-form-group" style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                        <label class="pmh-form-label" style="margin:0; flex-shrink:0; font-size:13px;"><i class="fas fa-server"></i> 대상 서버</label>
+                        <select id="pmh_srv_select" class="pmh-input-select" style="margin:0; padding:6px 10px; width:auto; flex-grow:1; max-width:75%; font-weight:bold; color:#e5a00d;" title="작업 대상 서버를 변경합니다.">${srvOptionsHtml}</select>
+                    </div>` : ''}
+
                     <div style="display:flex; gap:2px; overflow-x:auto; width:100%;">
                         <div class="pmh-tab-btn active" data-tab="pmh_tab_form" style="cursor:pointer; padding:8px 12px; color:#e5a00d; border-bottom:2px solid #e5a00d; font-weight:bold;" title="조회 조건 및 결과 목록 확인"><i class="fas fa-search"></i> 조회/실행</div>
                         <div class="pmh-tab-btn" data-tab="pmh_tab_settings" style="cursor:pointer; padding:8px 12px; color:#777;" title="스케줄링 및 툴 상세 옵션 설정"><i class="fas fa-cog"></i> 환경설정</div>
@@ -277,9 +305,7 @@ window.PmhUICore = {
                     </div>
                 </div>
                 
-                <div id="pmh_tab_form" class="pmh-tab-content" style="display:flex; flex-direction:column; flex-grow:1; min-height:0;">
-                    ${config.servers.length > 1 ? `<div class="pmh-form-group"><label class="pmh-form-label"><i class="fas fa-server"></i> 대상 서버</label><select id="pmh_srv_select" class="pmh-input-select" title="작업 대상 서버를 변경합니다.">${srvOptionsHtml}</select></div>` : ''}
-
+                <div id="pmh_tab_form" class="pmh-tab-content" style="display:flex; flex-direction:column; flex-grow:1; min-height:0; padding:15px; box-sizing:border-box;">
                     <div style="border-bottom:1px solid #333; padding-bottom:25px; margin-bottom:15px; position:relative; flex-shrink:0;">
                         <div id="${uniqFormBodyId}" style="display:${formDisplay};">
                             ${ctx.ui.inputs ? `<div style="background:rgba(0,0,0,0.2); padding:15px; border-radius:8px; border:1px solid #333; margin-bottom:15px;"><div style="color:#51a351; font-size:13px; font-weight:bold; margin-bottom:10px;"><i class="fas fa-search"></i> 조회 조건</div>${this.renderInputsHtml(ctx.ui.inputs, ctx.opts)}</div>` : ''}
@@ -298,11 +324,11 @@ window.PmhUICore = {
                     </div>
                     ${ctx.ui.execute_inputs ? `<div id="pmh_exec_frame" style="background:rgba(60,20,20,0.1); padding:15px; border-radius:8px; border:1px solid #4a2121; margin-bottom:15px; flex-shrink:0;"><div style="color:#e06c6c; font-size:13px; font-weight:bold; margin-bottom:10px;"><i class="fas fa-cogs"></i> 작업 실행 옵션</div>${this.renderInputsHtml(ctx.ui.execute_inputs, ctx.opts)}</div>` : ''}
 
-                    <div id="pmh_data_table_res" style="flex-grow:1; display:none; flex-direction:column; position:relative; min-height:0; overflow-y:auto; padding-right:4px;"></div>
+                    <div id="pmh_data_table_res" style="flex-grow:1; display:none; flex-direction:column; position:relative; min-height:0; overflow-y:visible; padding-right:4px;"></div>
                 </div>
 
-                <div id="pmh_tab_monitor" class="pmh-tab-content" style="display:none; flex-direction:column; width:100%; flex-grow:1; min-height:0;">
-                    <div style="display:flex; flex-direction:column; background:#15181a; border:1px solid #333; border-radius:6px; padding:15px; width:100%; box-sizing:border-box; flex-grow:1; min-height:0;">
+                <div id="pmh_tab_monitor" class="pmh-tab-content" style="display:none; flex-direction:column; width:100%; flex-grow:1; min-height:0; padding:15px; box-sizing:border-box;">
+                    <div style="display:flex; flex-direction:column; background:#111; border:1px solid #333; border-radius:6px; padding:15px; width:100%; box-sizing:border-box; flex-grow:1; min-height:0;">
                         <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-bottom:10px; font-weight:bold; flex-shrink:0;">
                             <span id="pmh_mon_state" style="color:#e5a00d;"><i class="fas fa-info-circle"></i> 대기 중</span>
                             <span id="pmh_mon_prog">0 / 0 (0%)</span>
@@ -319,7 +345,7 @@ window.PmhUICore = {
                     </div>
                 </div>
 
-                <div id="pmh_tab_settings" class="pmh-tab-content" style="display:none; flex-direction:column; flex-grow:1; overflow-y:auto;">
+                <div id="pmh_tab_settings" class="pmh-tab-content" style="display:none; flex-direction:column; flex-grow:1; min-height:0; padding:15px; box-sizing:border-box;">
                     ${ctx.ui.settings_inputs ? `<div style="background:rgba(0,0,0,0.2); padding:15px; border-radius:8px; border:1px solid #333; margin-bottom:15px;">${this.renderInputsHtml(ctx.ui.settings_inputs, ctx.opts)}</div>` : '<div style="text-align:center; color:#777; padding:30px;">추가 설정이 없습니다.</div>'}
                     <div style="display:flex; justify-content:center; gap:10px; margin-top:15px; border-top:1px dashed #444; padding-top:15px; flex-shrink:0;">
                         <button id="pmh_btn_reset_all" class="pmh-dynamic-run-btn" style="background-color:#bd362f !important; color:#fff !important;" title="저장된 옵션과 캐시 데이터를 모두 초기화합니다."><i class="fas fa-bomb"></i> 환경/캐시 초기화</button>

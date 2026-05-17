@@ -586,7 +586,9 @@ def get_client_config():
         "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", "")
     }]
     
-    for node in MASTER_CFG.get("NODES", []):
+    nodes = MASTER_CFG.get("NODES") or []
+    
+    for node in nodes:
         node_id = node.get("id", "")
         plex_machine_id = ""
         
@@ -697,7 +699,9 @@ def relay_to_node(node_id, subpath):
         else:
             return api_gateway(subpath)
 
-    node_info = next((n for n in MASTER_CFG.get("NODES", []) if n.get("id") == node_id), None)
+    nodes = MASTER_CFG.get("NODES") or []
+    node_info = next((n for n in nodes if n.get("id") == node_id), None)
+
     if not node_info:
         return jsonify({"error": f"등록되지 않은 노드입니다 (ID: {node_id})"}), 404
 
