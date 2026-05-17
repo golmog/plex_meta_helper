@@ -77,7 +77,14 @@ def get_ui(core_api=None):
                     {"value": "user_poster", "label": "유저 포스터 일괄 적용 (이미지 서버 사용시)"},
                     {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"}
                 ]
-            }
+            },
+            {"id": "filter_fields", "type": "multi_select", "label": "정규식 필터 적용 대상 필드", "options": [
+                {"value": "guid", "text": "에이전트 (GUID)"},
+                {"value": "title", "text": "제목 (Title)"},
+                {"value": "path", "text": "파일/폴더 경로 (Path)"}
+            ], "default": ["title", "path"]},
+            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식 지원)", "placeholder": "예: (fc2|carib) 또는 ^\[sod\]"},
+            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식 지원)", "placeholder": "예: vr 또는 \.mp4$"}
         ],
         "execute_inputs": [
             {
@@ -336,7 +343,52 @@ def worker(task_data, core_api, start_index):
                 task.log("선택한 라이브러리에 해당하는 항목(영화)이 없습니다.")
                 task.update_state('completed', 100, 100)
                 return
+
+            filter_fields = task_data.get('filter_fields', ['title', 'path'])
+            filter_include = task_data.get('filter_include', '').strip()
+            filter_exclude = task_data.get('filter_exclude', '').strip()
+            
+            re_include, re_exclude = None, None
+            if filter_include:
+                try: re_include = re.compile(filter_include, re.IGNORECASE)
+                except Exception as e: task.log(f"⚠️ 포함 키워드 정규식 오류 (무시됨): {e}")
+            if filter_exclude:
+                try: re_exclude = re.compile(filter_exclude, re.IGNORECASE)
+                except Exception as e: task.log(f"⚠️ 제외 키워드 정규식 오류 (무시됨): {e}")
                 
+            if re_include or re_exclude:
+                filtered_items = []
+                for item in all_items:
+                    texts_to_check = []
+                    if 'guid' in filter_fields and item.get('guid'): 
+                        texts_to_check.append(item['guid'])
+                    if 'title' in filter_fields and item.get('title'): 
+                        texts_to_check.append(item['title'])
+                    if 'path' in filter_fields and item.get('all_files'):
+                        for p in item['all_files'].split('|||'):
+                            if p: texts_to_check.append(p)
+
+                    passed = True
+                    
+                    if re_include:
+                        if not any(re_include.search(txt) for txt in texts_to_check):
+                            passed = False
+                            
+                    if passed and re_exclude:
+                        if any(re_exclude.search(txt) for txt in texts_to_check):
+                            passed = False
+                            
+                    if passed:
+                        filtered_items.append(item)
+                        
+                task.log(f"  -> 고급 필터 적용: {len(all_items):,}개 중 {len(filtered_items):,}개 통과")
+                all_items = filtered_items
+
+            if not all_items:
+                task.log("필터 적용 후 검사할 대상이 없습니다.")
+                task.update_state('completed', 100, 100)
+                return
+
         except Exception as e:
             task.log(f"❌ DB 쿼리 중 오류 발생: {e}")
             task.update_state('error')
