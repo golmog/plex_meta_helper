@@ -295,7 +295,7 @@ def check_api_key():
     allowed_paths = ['/', '/favicon.ico']
     if request.path in allowed_paths or request.path.startswith('/api/client/'): return
     
-    allowed_restart_paths = ['/api/admin/update', '/api/ping', '/favicon.ico', '/']
+    allowed_restart_paths = ['/api/admin/update', '/favicon.ico', '/']
     if request.path not in allowed_restart_paths and is_server_restart_required():
         return jsonify({"error": "SERVER_RESTART_REQUIRED", "message": "서버 수동 재시작 필요"}), 426
         

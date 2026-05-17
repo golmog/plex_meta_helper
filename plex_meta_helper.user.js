@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.90
+// @version      0.8.91
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -100,6 +100,8 @@ GM_addStyle(`
     .pmh-fade-update { animation: pmhSoftFade 0.2s ease-out forwards; }
     .pmh-corrupt-badge { color: #e5a00d !important; font-weight: 900 !important; font-size: 11.5px !important; padding: 0px 5px !important; right: 2px; transform: scaleX(1.3); transform-origin: center; display: inline-block; letter-spacing: -1px; }
     .pmh-match-badge { display: block; width: max-content; background-color: rgba(0, 0, 0, 0.8); color: #e5a00d; border: 1px solid rgba(229, 160, 13, 0.4); font-size: 11px; font-weight: normal; padding: 2px 5px; border-radius: 4px; margin: 0; line-height: 1.2; letter-spacing: -0.2px; box-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+
+    @keyframes pmhBlink { 0%, 100% { opacity: 1; text-shadow: 0 0 8px rgba(255,193,7,0.8); } 50% { opacity: 0.4; text-shadow: none; } }
 
     /* 4. 상단 네비게이션 컨트롤 UI & 드롭다운 */
     #pmdv-controls { margin-right: 10px; order: -1; display: flex; align-items: center; gap: 5px; }
@@ -341,6 +343,8 @@ GM_addStyle(`
                             } catch(e) {
                                 results[srv.machineIdentifier] = { status: 'error', msg: 'JSON 파싱 오류', name: srv.name };
                             }
+                        } else if (res.status === 426) {
+                            results[srv.machineIdentifier] = { status: 'restart_required', msg: '재시작 필요 (업데이트 대기)', name: srv.name };
                         } else if (res.status === 401) {
                             results[srv.machineIdentifier] = { status: 'error', msg: '인증 거부 (API 키 불일치)', name: srv.name };
                         } else if (res.status === 429) {
@@ -535,60 +539,95 @@ GM_addStyle(`
         return result;
     }
 
-    async function triggerServerUpdate(showStatusMsg, targetServers, force = false) {
+    async function triggerServerUpdate(showStatusMsg, targetServers) {
         if (!targetServers || targetServers.length === 0) return true;
 
         const spinner = `<i class="fas fa-spinner fa-spin" style="margin-right: 5px;"></i>`;
-
-        log(`[Server Update] Triggering parallel updates for ${targetServers.length} server(s)... (Force: ${force})`);
+        log(`[Server Update] Dry-run check for ${targetServers.length} server(s)...`);
         
-        if (force) {
-            showStatusMsg(`${spinner}작업 강제 중단 및 코어 업데이트 중...`, '#ccc', 0);
-        } else {
-            showStatusMsg(`${spinner}서버 상태 확인 및 업데이트 요청 중...`, '#ccc', 0);
-        }
+        showStatusMsg(`${spinner}업데이트 전 서버 실행 상태 확인 중...`, '#ccc', 0);
 
-        const updatePromises = targetServers.map(async srv => {
-            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+        const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+        let totalRunningCount = 0;
+        let checkFailed = false;
+
+        const checkPromises = targetServers.map(srv => {
             return new Promise((resolve) => {
-                log(`[Server Update] Sending update POST request to: ${srv.name}`);
                 GM_xmlhttpRequest({
-                    method: "POST", 
-                    url: `${srv.relayUrl}/admin/update`,
-                    headers: { "Content-Type": "application/json", "X-PMH-Signature": secureToken },
-                    data: JSON.stringify({ force: force }),
-                    timeout: 30000,
+                    method: "GET", url: `${srv.relayUrl}/tools`,
+                    headers: { "X-PMH-Signature": secureToken },
+                    timeout: 10000,
                     onload: (res) => {
                         if (res.status === 200) {
                             try {
-                                const jsonRes = JSON.parse(res.responseText);
-                                if (jsonRes.status === "success") {
-                                    resolve({ server: srv, success: true, version: jsonRes.version });
-                                } else if (jsonRes.status === "busy" || jsonRes.running_count !== undefined) {
-                                    resolve({ server: srv, success: false, isRunningError: true, count: parseInt(jsonRes.running_count) || 0, msg: jsonRes.message });
-                                } else {
-                                    resolve({ server: srv, success: false, isCritical: true, msg: jsonRes.message || "Unknown Error" });
-                                }
-                            } catch(e) {
-                                resolve({ server: srv, success: false, isCritical: true, msg: "JSON Parse Error" });
-                            }
-                        } else if (res.status === 400) {
-                            try {
-                                const errRes = JSON.parse(res.responseText);
-                                if (errRes.running_count !== undefined) {
-                                    resolve({ server: srv, success: false, isRunningError: true, count: parseInt(errRes.running_count) || 0, msg: errRes.message });
-                                } else {
-                                    resolve({ server: srv, success: false, isCritical: true, msg: errRes.message || "Bad Request" });
-                                }
-                            } catch(e) {
-                                resolve({ server: srv, success: false, isCritical: true, msg: `HTTP 400 (Invalid JSON)` });
-                            }
+                                const data = JSON.parse(res.responseText);
+                                if (data.dashboard && data.dashboard.running) {
+                                    resolve(data.dashboard.running.length);
+                                } else { resolve(0); }
+                            } catch(e) { resolve(0); }
+                        } else if (res.status === 426) {
+                            resolve(0);
                         } else {
-                            resolve({ server: srv, success: false, isCritical: true, msg: `HTTP ${res.status}` });
+                            resolve(-1);
                         }
                     },
-                    onerror: () => resolve({ server: srv, success: false, isCritical: true, msg: "Network Error (네트워크 오류)" }),
-                    ontimeout: () => resolve({ server: srv, success: false, isCritical: true, msg: "Timeout (서버 응답 지연)" })
+                    onerror: () => resolve(-1),
+                    ontimeout: () => resolve(-1)
+                });
+            });
+        });
+
+        const checkResults = await Promise.all(checkPromises);
+        for (const count of checkResults) {
+            if (count === -1) checkFailed = true;
+            else totalRunningCount += count;
+        }
+
+        if (checkFailed) {
+            showStatusMsg(`<i class="fas fa-times-circle" style="margin-right: 4px;"></i>업데이트 중단 (통신 실패)`, '#bd362f', 4000);
+            toastr.error("업데이트 전 서버 상태를 확인하는 중 통신 오류가 발생했습니다.<br>잠시 후 다시 시도해주세요.");
+            return false;
+        }
+
+        let forceUpdate = false;
+        const targetVer = targetServers[0].targetVer || GM_getValue('pmh_latest_version', '');
+        const verStr = targetVer ? `(v${targetVer}) ` : '';
+
+        showStatusMsg(`<i class="fas fa-pause-circle" style="margin-right: 4px;"></i>사용자 확인 대기 중...`, '#f89406', 0);
+        
+        if (totalRunningCount > 0) {
+            const confirmed = confirm(`[경고] 현재 ${targetServers.length}대의 서버에서 총 ${totalRunningCount}개의 작업이 실행 중입니다.\n\n실행 중인 작업을 모두 강제로 중단하고 업데이트${verStr}를 진행하시겠습니까?`);
+            if (!confirmed) {
+                showStatusMsg(`<i class="fas fa-times-circle" style="margin-right: 4px;"></i>업데이트 취소됨`, '#bd362f', 4000);
+                return false;
+            }
+            forceUpdate = true;
+        } else {
+            const confirmed = confirm(`실행 중인 작업이 없습니다. 안전하게 업데이트${verStr}를 진행하시겠습니까?\n\n(완료 후 서버(컨테이너)의 수동 재시작이 필요할 수 있습니다.)`);
+            if (!confirmed) {
+                showStatusMsg(`<i class="fas fa-times-circle" style="margin-right: 4px;"></i>업데이트 취소됨`, '#bd362f', 4000);
+                return false;
+            }
+        }
+
+        showStatusMsg(`${spinner}서버 업데이트 요청 전송 중...`, '#ccc', 0);
+
+        const updatePromises = targetServers.map(async srv => {
+            return new Promise((resolve) => {
+                GM_xmlhttpRequest({
+                    method: "POST", url: `${srv.relayUrl}/admin/update`,
+                    headers: { "Content-Type": "application/json", "X-PMH-Signature": secureToken },
+                    data: JSON.stringify({ force: forceUpdate }),
+                    timeout: 30000,
+                    onload: (res) => {
+                        if (res.status === 200) {
+                            resolve({ server: srv, success: true });
+                        } else {
+                            resolve({ server: srv, success: false, msg: `HTTP ${res.status}` });
+                        }
+                    },
+                    onerror: () => resolve({ server: srv, success: false, msg: "Network Error" }),
+                    ontimeout: () => resolve({ server: srv, success: false, msg: "Timeout" })
                 });
             });
         });
@@ -596,46 +635,16 @@ GM_addStyle(`
         const updateResults = await Promise.all(updatePromises);
 
         let successCount = 0;
-        let totalRunningCount = 0;
-        let needsForcePrompt = false;
         let criticalErrorMsg = '';
 
         for (const res of updateResults) {
-            if (res.isCritical) {
-                criticalErrorMsg = `[${res.server.name}] 통신 실패: ${res.msg}`;
-                break;
-            } else if (res.isRunningError) {
-                needsForcePrompt = true;
-                totalRunningCount += res.count;
-            } else if (res.success) {
-                infoLog(`[Server Update] Success for ${res.server.name}. New Version: ${res.version}`);
-                successCount++;
-            }
+            if (res.success) successCount++;
+            else criticalErrorMsg = `[${res.server.name}] ${res.msg}`;
         }
 
-        if (criticalErrorMsg) {
-            errorLog(`[Server Update] Aborted due to critical error: ${criticalErrorMsg}`);
-            showStatusMsg(`<i class="fas fa-exclamation-triangle" style="margin-right: 4px;"></i>업데이트 중단 (통신 실패)`, '#bd362f', 5000);
-            toastr.error(`${criticalErrorMsg}<br><br>안전을 위해 업데이트가 중단되었습니다. 서버 상태나 부하를 확인해주세요.`, "업데이트 불가", {timeOut: 8000});
-            return false;
-        }
-
-        if (needsForcePrompt && !force) {
-            showStatusMsg(`<i class="fas fa-pause-circle" style="margin-right: 4px;"></i>작업 중이라 일시 정지됨`, '#f89406', 4000);
-            
-            const userConfirmed = confirm(`현재 서버에서 실행 중인 작업이 총 ${totalRunningCount}개 있습니다.\n진행 중인 작업을 모두 강제로 중단하고 업데이트 하시겠습니까?`);
-            if (userConfirmed) {
-                infoLog(`[Server Update] User confirmed force update. Restarting update process with force=true`);
-                return await triggerServerUpdate(showStatusMsg, targetServers, true);
-            } else {
-                infoLog(`[Server Update] User cancelled the update due to running tasks.`);
-                showStatusMsg(`<i class="fas fa-times-circle" style="margin-right: 4px;"></i>업데이트 취소됨`, '#bd362f', 4000);
-                return false;
-            }
-        }
-
-        if (successCount === 0 && !needsForcePrompt) {
-            showStatusMsg(`<i class="fas fa-times-circle" style="margin-right: 4px;"></i>업데이트 실패`, '#bd362f', 4000);
+        if (successCount === 0) {
+            showStatusMsg(`<i class="fas fa-exclamation-triangle" style="margin-right: 4px;"></i>업데이트 실패`, '#bd362f', 5000);
+            toastr.error(`${criticalErrorMsg}<br><br>업데이트 중 오류가 발생했습니다.`, "오류", {timeOut: 8000});
             return false;
         }
 
@@ -644,9 +653,6 @@ GM_addStyle(`
 
         if (bundledTools.length > 0) {
             showStatusMsg(`${spinner}번들 툴 버전 확인 및 동기화 중...`, '#2f96b4', 0);
-            log(`[Bundle Update] Checking ${bundledTools.length} bundled tools for sync in parallel...`);
-            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
-
             const bundlePromises = targetServers.map(async (srv) => {
                 try {
                     const toolsRes = await new Promise(r => {
@@ -670,7 +676,6 @@ GM_addStyle(`
                             const isInstalled = installedTools.some(t => t.id === expectedId);
                             
                             if (isInstalled && bundle.url) {
-                                log(`[Bundle Update] Syncing exact matched tool: ${expectedId} on ${srv.name}`);
                                 installPromises.push(new Promise(r => {
                                     GM_xmlhttpRequest({
                                         method: "POST", url: `${srv.relayUrl}/tools/install`,
@@ -682,20 +687,14 @@ GM_addStyle(`
                                 }));
                             }
                         }
-                        
                         if (installPromises.length > 0) await Promise.all(installPromises);
                     }
-                } catch(e) {
-                    errorLog(`[Bundle Update] Failed to sync tools for ${srv.name}`, e);
-                }
+                } catch(e) {}
             });
-
             await Promise.all(bundlePromises);
         }
 
-        infoLog(`[Server Update] In-memory update & Bundle sync completed for all ${successCount} server(s)!`);
         GM_setValue('pmh_last_update_check', Date.now());
-        
         showStatusMsg(`<i class="fas fa-check-circle" style="margin-right: 4px;"></i>서버 및 번들 업데이트 완료!`, '#51a351', 3000);
         return true;
     }
@@ -1607,7 +1606,7 @@ GM_addStyle(`
 
                     for (const srv of ServerConfig.SERVERS) {
                         const pRes = localPyVers[srv.machineIdentifier];
-                        if (!pRes || pRes.status === 'error') {
+                        if (!pRes || pRes.status === 'error' || pRes.status === 'restart_required') {
                             stillHasError = true;
                             newErrorDetails.push(`[${srv.name}] ${pRes ? pRes.msg : '정보 없음'}`);
                         }
@@ -1639,7 +1638,16 @@ GM_addStyle(`
             }
         }
 
-        if (hasServerError) {
+        let hasServerError = GM_getValue('pmh_server_connection_error', false);
+        let errorDetails = [];
+        try { errorDetails = JSON.parse(GM_getValue('pmh_server_error_details', '[]')); } catch(e){}
+
+        let isRestartRequired = errorDetails.some(msg => msg.includes('재시작'));
+
+        if (isRestartRequired) {
+            defaultMsg = `<span style="color:#ffc107; font-weight:bold; cursor:help; animation: pmhBlink 1.5s infinite;" title="서버가 업데이트되었습니다. 서버(PMH 컨테이너)를 수동으로 껐다 켜주세요!"><i class="fas fa-power-off"></i> 서버 재시작 필요!</span>`;
+            defaultColor = '#ffc107';
+        } else if (hasServerError) {
             let tooltipText = "일부 PMH 파이썬 서버에 연결할 수 없습니다.&#10;";
             if (errorDetails.length > 0) {
                 tooltipText += errorDetails.join("&#10;"); 
