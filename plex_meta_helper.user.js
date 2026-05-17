@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.91
+// @version      0.8.90
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1638,19 +1638,20 @@ GM_addStyle(`
             }
         }
 
-        let hasServerError = GM_getValue('pmh_server_connection_error', false);
-        let errorDetails = [];
-        try { errorDetails = JSON.parse(GM_getValue('pmh_server_error_details', '[]')); } catch(e){}
+        const currentHasError = GM_getValue('pmh_server_connection_error', false);
+        
+        let currentErrorDetails = [];
+        try { currentErrorDetails = JSON.parse(GM_getValue('pmh_server_error_details', '[]')); } catch(e){}
 
-        let isRestartRequired = errorDetails.some(msg => msg.includes('재시작'));
+        let isRestartRequired = currentErrorDetails.some(msg => msg.includes('재시작'));
 
         if (isRestartRequired) {
-            defaultMsg = `<span style="color:#ffc107; font-weight:bold; cursor:help; animation: pmhBlink 1.5s infinite;" title="서버가 업데이트되었습니다. 서버(PMH 컨테이너)를 수동으로 껐다 켜주세요!"><i class="fas fa-power-off"></i> 서버 재시작 필요!</span>`;
+            defaultMsg = `<span style="color:#ffc107; font-weight:bold; cursor:help; animation: pmhBlink 1.5s infinite;" title="서버 코어가 업데이트되었습니다. 툴을 다시 사용하려면 서버(PMH 컨테이너)를 수동으로 껐다 켜주세요!"><i class="fas fa-power-off"></i> 서버 재시작 필요!</span>`;
             defaultColor = '#ffc107';
-        } else if (hasServerError) {
+        } else if (currentHasError) {
             let tooltipText = "일부 PMH 파이썬 서버에 연결할 수 없습니다.&#10;";
-            if (errorDetails.length > 0) {
-                tooltipText += errorDetails.join("&#10;"); 
+            if (currentErrorDetails.length > 0) {
+                tooltipText += currentErrorDetails.join("&#10;"); 
             } else {
                 tooltipText += "서버가 꺼져 있거나 API 키 설정이 잘못되었습니다.";
             }
