@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.91
+// @version      0.8.92
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3088,6 +3088,21 @@ GM_addStyle(`
                         if (typeof window.startQueuePolling === 'function') {
                             window.startQueuePolling(targetServerId);
                         }
+
+                        setTimeout(() => {
+                            if (gBox.isConnected && window._pmh_media_queues && window._pmh_media_queues[id]) {
+                                const currentState = window._pmh_media_queues[id].state;
+                                
+                                if (currentState === 'queued') {
+                                    gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
+                                    gBox.style.color = '#e5a00d';
+                                } else if (currentState === 'processing') {
+                                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                                    gBox.style.color = '#2f96b4';
+                                }
+                            }
+                        }, 1500);
+
                     } else {
                         throw new Error(res.error || res.message || "큐 등록 실패");
                     }
@@ -3266,9 +3281,9 @@ GM_addStyle(`
                                 if (typeof window.saveQueueState === 'function') window.saveQueueState();
                             }
                             
-                            const marker = document.querySelector(`.pmh-render-marker[data-iid="${id}"]`);
-                            if (marker) {
-                                const gBox = marker.parentElement.querySelector('.plex-guid-list-box');
+                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                            markers.forEach(m => {
+                                const gBox = m.parentElement.querySelector('.plex-guid-list-box');
                                 if (gBox) {
                                     if (status.state === 'queued' && !gBox.innerHTML.includes('대기중')) {
                                         gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
@@ -3278,7 +3293,7 @@ GM_addStyle(`
                                         gBox.style.color = '#2f96b4';
                                     }
                                 }
-                            }
+                            });
                         }
                     }
 
