@@ -106,8 +106,14 @@ def get_ui(core_api):
         "execute_inputs": [
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": True, "show_if": {"opt_match": True}},
             {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"opt_match": True}},
-            {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭시 제목/연도 검증 스킵<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": False, "show_if": {"opt_match": True}},
-            {"id": "opt_custom_agent_score", "type": "number", "label": "기타 커스텀 에이전트 매칭 합격 점수", "default": 80, "width": "60px", "layout": "plain", "show_if": {"opt_match": True}},
+            {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭 시 제목/연도 검증 스킵", "default": False, "show_if": {"opt_match": True}},
+            {"id": "opt_use_custom_score", "type": "checkbox", "label": "에이전트 매칭 통과 점수 직접 지정", "default": False, "show_if": {"opt_match": True}},
+            {"id": "opt_custom_agent_score", "type": "number", "label": "매칭 통과 최소 점수", "default": 90, "width": "60px", "layout": "plain", "show_if": {"opt_use_custom_score": True}},
+            {"id": "opt_search_priority", "type": "select", "label": "매칭 검색어 우선순위", "options": [
+                {"value": "auto", "text": "자동 (AV 등 커스텀은 파일, 일반은 폴더)"},
+                {"value": "folder", "text": "폴더명 우선 (일반 영화/쇼 권장)"},
+                {"value": "file", "text": "파일명 우선 (AV 등 단일 파일 권장)"}
+            ], "default": "auto", "show_if": {"opt_match": True}},
             {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
         ],
         "settings_inputs": [
@@ -751,8 +757,10 @@ def worker(task_data, core_api, start_index):
                     try_ref = task_data.get('opt_try_refresh', True) if fix_type == 'match' else False
                     do_unm = task_data.get('opt_unmatch_first', False) if fix_type == 'match' else False
                     skip_sim = task_data.get('opt_skip_sim_check', False) if fix_type == 'match' else False
+                    use_custom = task_data.get('opt_use_custom_score', False) if fix_type == 'match' else False
                     custom_score = task_data.get('opt_custom_agent_score', 80) if fix_type == 'match' else 80
-                    
+                    search_pri = task_data.get('opt_search_priority', 'auto') if fix_type == 'match' else 'auto'
+
                     success, msg, score = pmh_core.perform_smart_media_action(
                         plex_url=plex._baseurl, 
                         plex_token=plex._token, 
@@ -765,7 +773,9 @@ def worker(task_data, core_api, start_index):
                         try_refresh_first=try_ref,
                         do_unmatch_first=do_unm,
                         skip_sim_check=skip_sim,
+                        use_custom_score=use_custom,
                         custom_agent_score=custom_score,
+                        search_priority=search_pri,
                         global_config=core_api['config'],
                         task_logger=task.log,
                         cancel_checker=task.is_cancelled
