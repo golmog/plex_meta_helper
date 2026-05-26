@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.92
+// @version      0.8.93
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -710,6 +710,7 @@ GM_addStyle(`
             matchTryRefreshFirst: false,
             matchDoUnmatchFirst: false,
             matchSkipSimCheck: false,
+            useCustomScore: false,
             customAgentScore: 80
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
@@ -2660,23 +2661,19 @@ GM_addStyle(`
                             errorLog("[Update] Auto-clearing cache failed", err);
                         }
 
-                        const isJsUpdateNeeded = isNewerVersion(CURRENT_VERSION, targetVer);
+                        defaultMsg = `<span style="color:#51a351; font-weight:bold;"><i class="fas fa-info-circle"></i> 업데이트 완료 후 페이지 새로고침(F5) 필요.</span>`;
+                        defaultColor = '#51a351';
+                        showStatusMsg(defaultMsg, defaultColor, 0);
 
-                        if (isJsUpdateNeeded) {
-                            showStatusMsg(`스크립트를 업데이트합니다...`, '#51a351', 3000);
-                            setTimeout(() => { 
-                                let scriptUrl = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js";
-                                if (typeof GM_info !== 'undefined' && GM_info.script) {
-                                    scriptUrl = GM_info.script.downloadURL || GM_info.script.updateURL || scriptUrl;
-                                }
-                                window.open(`${scriptUrl}?t=${Date.now()}`, "_blank"); 
-                                setTimeout(() => location.reload(), 1500);
-                            }, 1500);
-                        } else {
-                            setTimeout(() => location.reload(), 2000);
-                        }
+                        setTimeout(() => { 
+                            let scriptUrl = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js";
+                            if (typeof GM_info !== 'undefined' && GM_info.script) {
+                                scriptUrl = GM_info.script.downloadURL || GM_info.script.updateURL || scriptUrl;
+                            }
+                            
+                            window.open(`${scriptUrl}?t=${Date.now()}`, "_blank"); 
+                        }, 1000);
                         
-                        defaultMsg = ''; defaultColor = '#aaa';
                     } else {
                         delete updateLinkBtn.dataset.updating; 
                         updateLinkBtn.innerHTML = originalHtml;
@@ -3056,6 +3053,7 @@ GM_addStyle(`
                         _try_refresh_first: ClientSettings.matchTryRefreshFirst,
                         _do_unmatch_first: ClientSettings.matchDoUnmatchFirst,
                         _skip_sim_check: ClientSettings.matchSkipSimCheck,
+                        _use_custom_score: ClientSettings.useCustomScore,
                         _custom_agent_score: ClientSettings.customAgentScore
                     };
                 } else {
@@ -3184,7 +3182,7 @@ GM_addStyle(`
 
                         if (!status || status.state === 'unknown' || status.state === 'error' || isTimeout) {
                             if (!status || status.state === 'unknown') {
-                                infoLog(`[Queue] 아이템 ${id}의 작업 상태를 알 수 없습니다. (서버 재시작 또는 시간 경과)`);
+                                infoLog(`[Queue] 아이템 ${id}의 작업 상태를 알 수 없습니다.`);
                                 needsListRefresh = true;
                             } else if (status.state === 'error') {
                                 const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
@@ -3197,6 +3195,7 @@ GM_addStyle(`
                             }
 
                             deleteMemoryCache(`D_${serverId}_${id}`);
+                            deleteMemoryCache(`F_${serverId}_${id}`);
                             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
                             
                             delete window._pmh_media_queues[id];
@@ -3204,7 +3203,15 @@ GM_addStyle(`
                             
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => {
-                                m.remove(); 
+                                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+                                if (gBox) {
+                                    gBox.innerHTML = `<i class="fas fa-exclamation-triangle" style="margin-right:4px;"></i>실패/취소`;
+                                    gBox.style.color = '#bd362f';
+                                    setTimeout(() => m.remove(), 2000);
+                                } else {
+                                    m.remove();
+                                }
                             });
                         } 
                         else if (status.state === 'completed') {
@@ -3212,7 +3219,8 @@ GM_addStyle(`
                             
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => {
-                                const gBox = m.parentElement.querySelector('.plex-guid-list-box');
+                                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
                                 if (gBox) {
                                     gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>반영 중...`;
                                     gBox.style.color = '#51a351';
@@ -3230,13 +3238,14 @@ GM_addStyle(`
                                     
                                     let meta = await fetchPlexMetaFallback(id, plexSrv);
                                     if (!meta) {
-                                        const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                        markers.forEach(m => {
-                                            const gBox = m.parentElement.querySelector('.plex-guid-list-box');
+                                        const failMarkers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                        failMarkers.forEach(m => {
+                                            const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                            const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
                                             if (gBox) {
                                                 gBox.innerHTML = `<i class="fas fa-ghost" style="margin-right:4px;"></i>병합됨`;
                                                 gBox.style.color = '#777';
-                                                gBox.title = '다른 항목으로 병합되었습니다.';
+                                                gBox.title = '다른 항목으로 병합되어 사라졌습니다.';
                                             }
                                         });
                                         return;
@@ -3283,7 +3292,8 @@ GM_addStyle(`
                             
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => {
-                                const gBox = m.parentElement.querySelector('.plex-guid-list-box');
+                                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
                                 if (gBox) {
                                     if (status.state === 'queued' && !gBox.innerHTML.includes('대기중')) {
                                         gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
@@ -5236,10 +5246,14 @@ GM_addStyle(`
                         <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(229, 160, 13, 0.4); padding: 10px; border-radius: 4px;">
                             <label class="pmh-form-label" style="margin-bottom:8px;"><i class="fas fa-link"></i> 스마트 매칭 / 리매칭 동작 설정</label>
                             
-                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; padding-bottom:8px; border-bottom:1px dashed #444;">
-                                <span style="color:#ddd; font-size:12px;" title="기타 커스텀 에이전트의 매칭 합격 기준 점수입니다.">커스텀 에이전트(ThePornDB 등) 매칭 합격 점수</span>
+                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                                <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px;" title="SJVA/커스텀 에이전트의 매칭 합격 커트라인을 수동으로 변경합니다.">
+                                    <input type="checkbox" id="pmh-set-use-custom-score" style="width:14px; height:14px;" ${ClientSettings.useCustomScore ? 'checked' : ''}>
+                                    <span style="color:#ddd; font-weight:bold; color:#e5a00d;">에이전트 매칭 통과 점수 직접 지정</span>
+                                </label>
                                 <input type="number" id="pmh-set-custom-score" value="${ClientSettings.customAgentScore}" min="10" max="100" style="width:50px; text-align:center; background:#111; color:#fff; border:1px solid #444; border-radius:3px; padding:2px;">
                             </div>
+                            <div style="border-bottom:1px dashed #444; margin-bottom:12px;"></div>
 
                             <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="매칭 시도 전 새로고침(Refresh)으로 자동 매칭을 우선 유도합니다. (Plex 기본 에이전트 전용)">
                                 <input type="checkbox" id="pmh-set-match-refresh" style="width:14px; height:14px;" ${ClientSettings.matchTryRefreshFirst ? 'checked' : ''}>
@@ -5376,6 +5390,7 @@ GM_addStyle(`
                 matchTryRefreshFirst: document.getElementById('pmh-set-match-refresh').checked,
                 matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked,
                 matchSkipSimCheck: document.getElementById('pmh-set-match-skip-sim').checked,
+                useCustomScore: document.getElementById('pmh-set-use-custom-score').checked,
                 customAgentScore: parseInt(document.getElementById('pmh-set-custom-score').value, 10) || 80
             };
 

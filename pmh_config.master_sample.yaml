@@ -42,10 +42,19 @@ BASE:
   # 개별 섹션을 지정시 쉼표로 구분한 섹션 번호를 입력합니다. (ex: "1, 2, 3, 10")
   DELETE_JSON_SECTION: "1, 2, 3"
 
+  # 아래 AV 관련 설정은 사용하지 않을 경우 전부 삭제하셔도 됩니다.
   # JAV 매칭 로직을 적용할 라이브러리 섹션 ID 목록 (콤마로 구분, 비워두면 JAV 로직 비활성화)
   JAV_SECTION: "1, 2, 3"
 
+  # JAV Uncensored 매칭 지원 레이블 패턴 (콤마로 구분, 예: "1pon, 10mu, carib, fc2, heyzo, paco")
   UNCENSORED_MATCHABLE_LABELS: ["1pon", "10mu", "carib", "fc2", "heyzo", "paco"]
+
+  # Western AV 전용 로직을 적용할 라이브러리 섹션 ID 목록 (콤마로 구분)
+  WESTERN_AV_SECTION: "6, 7"
+
+  # 에이전트 매칭 시 기본 합격 점수 커트라인
+  JAV_MIN_SCORE: 95
+  WESTERN_MIN_SCORE: 80
 
   # JAV 매칭 시 적용할 정규식 패턴: 기본 정규식 패턴은 PMH에 내장되어 있으므로, 직접 수정이 필요한 경우가 아니라면 삭제 가능.
   JAV_PARSING_RULES:

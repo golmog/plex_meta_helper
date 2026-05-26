@@ -116,6 +116,9 @@ global_conf = {
     "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
     "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
     "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
+    "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
+    "JAV_MIN_SCORE": int(BASE_CFG.get("JAV_MIN_SCORE", 95)),
+    "WESTERN_MIN_SCORE": int(BASE_CFG.get("WESTERN_MIN_SCORE", 80)),
     "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
     "is_master": IS_MASTER
 }
@@ -544,6 +547,7 @@ def api_admin_reload_core():
                 "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
                 "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
                 "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
+                "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
                 "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
                 "is_master": IS_MASTER
             })

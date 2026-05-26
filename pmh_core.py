@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.92"
+__version__ = "0.8.93"
 
 def get_version():
     return __version__
@@ -1965,6 +1965,63 @@ def normalize_pid_for_comparison(pid_str):
     except Exception: return None
 
 # ==============================================================================
+# [통합형 Plex Mate 연동 게이트웨이]
+# ==============================================================================
+def execute_plexmate_action(action_type, target, global_config, **kwargs):
+    mate_url = global_config.get('mate_url', '')
+    mate_apikey = global_config.get('mate_apikey', '')
+    if not mate_url or not mate_apikey:
+        raise ValueError("Plex Mate 설정(BASE.FF_URL / BASE.FF_APIKEY)이 누락되었습니다.")
+        
+    payload = {'apikey': mate_apikey}
+    
+    def _to_pm_bool(val, default_str):
+        if val is None: return default_str
+        if isinstance(val, bool): return 'true' if val else 'false'
+        return str(val).lower()
+
+    if action_type == 'vfs_refresh':
+        url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/vfs_refresh"
+        
+        recursive_opt = _to_pm_bool(kwargs.get('recursive'), 'true')
+        async_opt = _to_pm_bool(kwargs.get('async_mode'), 'false')
+        
+        payload.update({
+            'target': target,
+            'recursive': recursive_opt,
+            'async': async_opt
+        })
+        timeout = 30
+        
+    elif action_type == 'scan':
+        url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/do_scan"
+        payload.update({
+            'target': target,
+            'target_section_id': kwargs.get('section_id')
+        })
+        if kwargs.get('scanner'):
+            payload['scanner'] = kwargs.get('scanner')
+        timeout = 60
+        
+    elif action_type == 'manual_refresh':
+        url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/manual_refresh"
+        payload.update({
+            'metadata_item_id': target
+        })
+        timeout = 60
+        
+    else:
+        raise ValueError(f"지원하지 않는 Plex Mate 액션입니다: {action_type}")
+        
+    data = urlencode(payload).encode('utf-8')
+    req = Request(url, data=data, method="POST")
+    req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+    
+    with urlopen(req, timeout=timeout) as response:
+        res = json.loads(response.read().decode('utf-8'))
+        return res.get('ret') == 'success'
+
+# ==============================================================================
 # [공용 미디어 관리 엔진] - 스마트 매칭 / 리프레시 / 분석 통합
 # ==============================================================================
 def media_action_worker_loop(global_config):
@@ -2023,6 +2080,7 @@ def media_action_worker_loop(global_config):
                     try_ref = data.get('_try_refresh_first', False) if data else False
                     do_unm = data.get('_do_unmatch_first', False) if data else False
                     skip_sim = data.get('_skip_sim_check', False) if data else False
+                    use_custom = data.get('_use_custom_score', False) if data else False
                     custom_score = data.get('_custom_agent_score', 80) if data else 80
                     
                     success, msg, score = perform_smart_media_action(
@@ -2030,7 +2088,8 @@ def media_action_worker_loop(global_config):
                         action_type=action, item_title=item.title, item_year=item.year,
                         target_agent=item.section().agent if hasattr(item, 'section') else None,
                         plex_inst=plex, try_refresh_first=try_ref, do_unmatch_first=do_unm,
-                        skip_sim_check=skip_sim, custom_agent_score=custom_score,
+                        skip_sim_check=skip_sim,
+                        use_custom_score=use_custom, custom_agent_score=custom_score,
                         global_config=global_config, 
                         task_logger=lambda x: print(f"[PMH Queue] {x}", flush=True),
                         cancel_checker=lambda: False
@@ -2086,7 +2145,8 @@ def perform_smart_media_action(
     plex_url, plex_token, rating_key, action_type='match', 
     item_title=None, item_year=None, target_agent=None, plex_inst=None, 
     try_refresh_first=False, do_unmatch_first=False, skip_sim_check=False,
-    custom_agent_score=80, global_config=None, task_logger=None, cancel_checker=None
+    use_custom_score=False, custom_agent_score=80, search_priority='auto',
+    global_config=None, task_logger=None, cancel_checker=None
 ):
     if global_config is None: global_config = {}
     safe_item_title = str(item_title or '')
@@ -2146,23 +2206,19 @@ def perform_smart_media_action(
                         
             if task_logger: task_logger(f"📂 VFS 캐시 갱신 요청 중... ({target_dir})")
             try:
-                vfs_url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/vfs_refresh"
-                vfs_data = urlencode({'apikey': mate_apikey, 'target': target_dir, 'recursive': 'true', 'async': 'false'}).encode('utf-8')
-                urlopen(Request(vfs_url, data=vfs_data, method="POST"), timeout=30)
+                if execute_plexmate_action('vfs_refresh', target_dir, global_config):
+                    if task_logger: task_logger("      ✅ VFS 갱신 성공")
+                else: raise ValueError("VFS 갱신 응답 실패")
             except Exception as e:
-                if task_logger: task_logger(f"⚠️ VFS 갱신 실패 (무시하고 속행): {e}")
+                if task_logger: task_logger(f"      ⚠️ VFS 갱신 실패 (무시하고 속행): {e}")
 
         if task_logger: task_logger(f"⚡ Plex Mate YAML/TMDB 반영 요청 중...")
         try:
-            refresh_url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/manual_refresh"
-            refresh_data = urlencode({'apikey': mate_apikey, 'metadata_item_id': target_item.ratingKey}).encode('utf-8')
-            req = Request(refresh_url, data=refresh_data, method="POST")
-            with urlopen(req, timeout=60) as resp:
-                res_json = json.loads(resp.read())
-                if res_json.get('ret') == 'success':
-                    return True, "YAML/TMDB 반영 완료", 100
-                else:
-                    return False, f"Plex Mate 반영 오류: {res_json.get('msg', 'Unknown')}", 0
+            success = execute_plexmate_action('manual_refresh', target_item.ratingKey, global_config)
+            if success:
+                return True, "YAML/TMDB 반영 완료", 100
+            else:
+                return False, "Plex Mate 반영 오류", 0
         except Exception as e:
             return False, f"Plex Mate 서버 통신 실패: {e}", 0
 
@@ -2293,6 +2349,10 @@ def perform_smart_media_action(
         is_plex_agent = target_agent in ['tv.plex.agents.movie', 'tv.plex.agents.series'] if target_agent else False
         is_custom_agent = not is_sjva_agent and not is_plex_agent and bool(target_agent)
 
+        current_section_id = str(getattr(target_item, 'librarySectionID', 'Unknown'))
+        western_cfg = str(global_config.get("WESTERN_AV_SECTION", "")).strip().lower()
+        is_western_av = (western_cfg == 'all') or (western_cfg and current_section_id in [s.strip() for s in western_cfg.split(',')])
+
         # --- 4. SJVA JAV 사전 검사 ---
         if is_sjva_agent:
             jav_section_cfg = str(global_config.get("JAV_SECTION", "")).strip().lower()
@@ -2339,6 +2399,10 @@ def perform_smart_media_action(
                         if is_jav:
                             files_to_delete.append(os.path.join(video_dir, f"{extracted_label}-{extracted_num}.json"))
                             files_to_delete.append(os.path.join(video_dir, f"{extracted_label}{extracted_num}.json"))
+                        elif is_western_av or is_custom_agent:
+                            if raw_file_name:
+                                name_no_ext = os.path.splitext(raw_file_name)[0]
+                                files_to_delete.append(os.path.join(video_dir, f"{name_no_ext}.json"))
                         elif target_item.type == 'movie':
                             files_to_delete.append(os.path.join(video_dir, "info.json"))
                         elif target_item.type == 'show':
@@ -2399,27 +2463,27 @@ def perform_smart_media_action(
                     if task_logger: task_logger(f"⚠️ Refresh 시도 중 오류 발생 (무시하고 검색 진행): {e}")
 
             # --- 7. 매칭 검색 (Search) ---
-            if is_jav:
-                def search_api_jav(req_url):
-                    with urlopen(Request(req_url, headers=api_headers), timeout=45) as response:
-                        return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
+            def _fetch_plex_api(req_url):
+                with urlopen(Request(req_url, headers=api_headers), timeout=45) as response:
+                    return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
 
+            if is_jav:
                 search_params = { 'title': search_pid, 'manual': '0', 'agent': target_agent, 'language': 'ko' }
                 if item_year: search_params['year'] = str(item_year)
                     
                 search_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
                 if task_logger: task_logger(f"📡 [SJVA] Plex 직접 API 검색 시도...")
-                
-                matches = execute_plex_action_safe(lambda: search_api_jav(search_url))
+                matches = execute_plex_action_safe(lambda: _fetch_plex_api(search_url))
 
             else:
-                if is_custom_agent:
+                if is_western_av:
+                    # 서양 AV: 정제 없이 원본 사용
+                    folder_query = raw_folder_name
                     file_query = os.path.splitext(raw_file_name)[0] if raw_file_name else ""
-                    file_query = re.sub(r'(?i)\b(xxx|1080p|720p|2160p|4k|mp4|mkv|ktr|fhd|hd|sd)\b.*$', '', file_query)
-                    file_query = re.sub(r'[._]', ' ', file_query).strip()
                     item_year = None
-                    if task_logger: task_logger(f"💡 [커스텀 에이전트 모드] 파일명 기반 검색어: '{file_query}'")
+                    if task_logger: task_logger(f"💡 [Western AV 모드] 파일명 정제 없이 에이전트에 위임합니다. (우선순위: {search_priority})")
                 else:
+                    # 일반 영화/쇼: 파일명 정제 및 연도 추출
                     folder_query = raw_folder_name
                     item_year = None
                     year_match = re.search(r'[\(\[\s](19[1-9]\d|20[0-2]\d)[\)\]\s]', raw_folder_name)
@@ -2456,109 +2520,104 @@ def perform_smart_media_action(
                 if not file_query and not folder_query: 
                     return False, "추출된 검색어가 유효하지 않습니다.", 0
 
-                lang_code = 'en' if is_custom_agent else 'ko'
-                
-                if is_custom_agent:
-                    def search_api(req_url):
-                        with urlopen(Request(req_url, headers=api_headers), timeout=45) as response:
-                            return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
+                is_av_mode = is_western_av or is_jav_allowed or is_sjva_agent or is_custom_agent
 
-                    search_params = { 'title': file_query, 'manual': '1', 'agent': target_agent, 'language': lang_code }
-                    search_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
-                    
-                    if task_logger: task_logger(f"📡 직접 API 검색 시도... (검색어: '{file_query}', 연도 필터 없음)")
-                    matches = execute_plex_action_safe(lambda: search_api(search_url))
+                if search_priority == 'auto':
+                    if is_av_mode:
+                        search_priority = 'file'
+                        if task_logger: task_logger(f"💡 [자동 판단] 성인/커스텀 라이브러리 감지: '파일명 우선' 검색 적용")
+                    else:
+                        search_priority = 'folder'
 
-                    safe_custom_score = int(custom_agent_score) if custom_agent_score else 80
-                    has_valid_match = any(int(_get_val(c, 'score', 0)) >= safe_custom_score for c in matches)
-
-                    if not has_valid_match:
-                        date_pattern = r'\b(?:20\d{2}|\d{2})\s(?:0?[1-9]|1[0-2])\s(?:0?[1-9]|[12]\d|3[01])\b'
-                        fallback_query = re.sub(date_pattern, '', file_query)
-                        fallback_query = re.sub(r'\s+', ' ', fallback_query).strip()
-                        
-                        if fallback_query and fallback_query != file_query:
-                            if task_logger: task_logger(f"⚠️ 1차 검색 실패. 날짜 패턴 제거/재시도: '{fallback_query}'")
-                            search_params['title'] = fallback_query
-                            search_url2 = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
-                            fallback_matches = execute_plex_action_safe(lambda: search_api(search_url2))
-                            
-                            if fallback_matches:
-                                matches = fallback_matches
-
+                # 우선순위에 따른 검색어 큐 구성
+                queries_to_try = []
+                if search_priority == 'file':
+                    if file_query: queries_to_try.append(("파일명", file_query))
+                    if not is_av_mode and folder_query and folder_query != file_query: 
+                        queries_to_try.append(("폴더명", folder_query))
                 else:
-                    if task_logger: 
-                        task_logger(f"💡 [일반 매칭] 원본 경로: '{raw_folder_name}' | [파일] '{raw_file_name}'")
-                        task_logger(f"🔍 정제된 검색어: [1순위/폴더] '{folder_query}' | [2순위/파일] '{file_query}'")
+                    if folder_query: queries_to_try.append(("폴더명", folder_query))
+                    if not is_av_mode and file_query and file_query != folder_query: 
+                        queries_to_try.append(("파일명", file_query))
 
-                    if folder_query:
-                        kwargs = {'agent': target_agent, 'language': lang_code, 'title': folder_query}
+                matches = []
+                lang_code = 'en' if is_custom_agent else 'ko'
+
+                for q_type, q_text in queries_to_try:
+                    if is_western_av:
+                        search_params = { 'title': q_text, 'manual': '1', 'agent': target_agent, 'language': lang_code }
+                        search_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
+                        if task_logger: task_logger(f"📡 [Western AV] 직접 API 검색 시도... ({q_type}: '{q_text}')")
+                        matches = execute_plex_action_safe(lambda: _fetch_plex_api(search_url))
+                    else:
+                        kwargs = {'agent': target_agent, 'language': lang_code, 'title': q_text}
                         if item_year: kwargs['year'] = str(item_year)
-                        if task_logger: task_logger(f"📡 폴더명 기반 매칭 검색 시도... (검색어: '{folder_query}', 연도: '{item_year}')")
+                        if task_logger: task_logger(f"📡 [일반 매칭] 검색 시도... ({q_type}: '{q_text}', 연도: '{item_year}')")
                         matches = execute_plex_action_safe(lambda: target_item.matches(**kwargs))
 
-                    if not matches and file_query and file_query.lower() != folder_query.lower():
-                        kwargs = {'agent': target_agent, 'language': lang_code, 'title': file_query}
-                        if item_year: kwargs['year'] = str(item_year)
-                        if task_logger: task_logger(f"⚠️ 1차 검색 실패. 파일명 기반 재시도... (검색어: '{file_query}', 연도: '{item_year}')")
-                        matches = execute_plex_action_safe(lambda: target_item.matches(**kwargs))
+                    if matches:
+                        break # 매칭 결과가 있으면 다음 순위 검색어는 스킵
 
             # --- 8. 검색 결과 필터링 및 Scoring ---
             if not matches: 
                 if task_logger: task_logger(f"❌ 일치하는 후보가 없습니다.")
                 return False, "검색 조건에 맞는 후보가 없습니다.", 0
 
+            jav_min_score = int(global_config.get('JAV_MIN_SCORE', 95))
+            western_min_score = int(global_config.get('WESTERN_MIN_SCORE', 80))
+
+            if use_custom_score:
+                threshold_score = int(custom_agent_score) if custom_agent_score else 80
+                score_msg = f"사용자 커스텀({threshold_score}점)"
+            else:
+                if is_jav or is_sjva_agent:
+                    threshold_score = jav_min_score
+                elif is_western_av or is_custom_agent:
+                    threshold_score = western_min_score
+                else:
+                    threshold_score = 0
+                score_msg = f"서버 설정값({threshold_score}점)"
+
             if is_jav:
-                if task_logger: task_logger(f"💡 [JAV 모드] 전체 검색 결과 중 최적의 후보(커트라인 95점)를 선별합니다.")
+                if task_logger: task_logger(f"💡 [JAV 모드] 전체 검색 결과 중 최적의 후보({score_msg})를 선별합니다.")
                 matches.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)
                 for cand in matches:
                     if 'collection://' in _get_val(cand, 'guid', ''): continue
                     c_score = int(_get_val(cand, 'score', 0))
-                    if c_score >= 95 and c_score > best_score:
+                    if c_score >= threshold_score and c_score > best_score:
                         best_match = cand
                         best_score = c_score
                         matched_by = f"JAV 모드 점수({c_score}점)"
-                        break # 내림차순 정렬이므로 조건 만족 시 최고점임
-                        
-            elif is_sjva_agent:
-                if task_logger: task_logger(f"💡 [SJVA 에이전트 모드] 점수 기반 검증(커트라인 95점)을 진행합니다.")
+                        break
+
+            elif is_sjva_agent or is_western_av:
+                agent_type = "Western AV" if is_western_av else "SJVA"
+                if task_logger: task_logger(f"💡 [{agent_type} 모드] 점수 기반 검증({score_msg})을 진행합니다.")
                 matches.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)
+                
                 for idx, cand in enumerate(matches):
                     cand_name = _get_val(cand, 'name', '')
                     cand_year = str(_get_val(cand, 'year', ''))
                     cand_score = int(_get_val(cand, 'score', 0))
                     
                     if item_year and cand_year and item_year != cand_year:
-                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 연도 불일치 (목표: {item_year}, 후보: {cand_year})")
-                        continue
+                        if skip_sim_check:
+                            if task_logger: task_logger(f"    ⚠️ 연도 불일치 (목표: {item_year}, 후보: {cand_year}) -> [검증 스킵]으로 무시합니다.")
+                        else:
+                            if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 연도 불일치 (목표: {item_year}, 후보: {cand_year})")
+                            continue
                         
-                    if cand_score >= 95:
-                        best_match, best_score, matched_by = cand, cand_score, f"SJVA 에이전트 점수({cand_score}점)"
+                    if cand_score >= threshold_score:
+                        best_match, best_score, matched_by = cand, cand_score, f"{agent_type} 점수({cand_score}점)"
                         if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}, 연도: {cand_year}) -> ✨ 조건 충족!")
                         break
                     else:
                         if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 기준점 미달")
 
-            elif is_custom_agent:
-                safe_custom_score = int(custom_agent_score) if custom_agent_score else 80
-                if task_logger: task_logger(f"💡 [커스텀 에이전트 모드] 제목/연도 검증 없이, 에이전트가 반환한 점수(커트라인 {safe_custom_score}점)만으로 매칭을 결정합니다.")
-                matches.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)
-                for idx, cand in enumerate(matches):
-                    cand_name = _get_val(cand, 'name', '')
-                    cand_score = int(_get_val(cand, 'score', 0))
-                    
-                    if cand_score >= safe_custom_score:
-                        best_match, best_score, matched_by = cand, cand_score, f"커스텀 에이전트 점수({cand_score}점)"
-                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) -> ✨ 합격!")
-                        break
-                    else:
-                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 기준점 미달")
-
             else: # Plex 기본 에이전트
-                top_candidates = matches[:3] # 텍스트 연산 부하 방지를 위해 3개만 자름
-                
+                top_candidates = matches[:3]
                 if skip_sim_check:
-                    if task_logger: task_logger(f"💡 [제목/연도 검증 스킵 모드] 사용자 설정에 따라 텍스트/연도 검증을 생략하고 1순위 결과를 무조건 수용합니다.")
+                    if task_logger: task_logger(f"💡 [제목/연도 검증 스킵 모드] 에이전트가 반환한 1순위 결과를 무조건 수용합니다.")
                     cand = top_candidates[0]
                     cand_name = _get_val(cand, 'name', '')
                     cand_year = str(_get_val(cand, 'year', ''))
@@ -2621,7 +2680,13 @@ def perform_smart_media_action(
             initial_guid = (target_item.guid or '').lower()
 
             try:
-                match_params = {'guid': candidate_guid, 'name': candidate_name}
+                match_params = {
+                    'guid': candidate_guid, 
+                    'name': candidate_name,
+                    'agent': target_agent,
+                    'language': lang_code
+                }
+                
                 if b_year: match_params['year'] = str(b_year)
                 elif item_year and not is_custom_agent: match_params['year'] = str(item_year)
                     
