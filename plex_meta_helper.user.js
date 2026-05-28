@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.93
+// @version      0.8.94
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3158,7 +3158,8 @@ GM_addStyle(`
         if (Object.keys(window._pmh_media_queues).length === 0) return;
         
         window._pmh_polling_active = true;
-        
+        let consecutiveErrors = 0;
+
         const pollLoop = async () => {
             const queueKeys = Object.keys(window._pmh_media_queues);
             if (queueKeys.length === 0) {
@@ -3166,32 +3167,28 @@ GM_addStyle(`
                 return;
             }
 
-            const taskIds = queueKeys.map(k => window._pmh_media_queues[k].task_id).join(',');
             const srvConfig = getServerConfig(serverId);
+            const taskIds = queueKeys.map(k => window._pmh_media_queues[k].task_id).join(',');
 
             if (srvConfig && taskIds) {
                 try {
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/queue_status?task_ids=${taskIds}`, 'GET', null, ClientSettings.masterApiKey);
-                    let needsListRefresh = false;
+                    consecutiveErrors = 0;
 
                     for (const id of queueKeys) {
                         const qInfo = window._pmh_media_queues[id];
+                        if (!qInfo) continue;
+
                         const status = res[qInfo.task_id];
                         
-                        const isTimeout = (Date.now() - qInfo.start_time > 1800000);
-
-                        if (!status || status.state === 'unknown' || status.state === 'error' || isTimeout) {
-                            if (!status || status.state === 'unknown') {
-                                infoLog(`[Queue] 아이템 ${id}의 작업 상태를 알 수 없습니다.`);
-                                needsListRefresh = true;
-                            } else if (status.state === 'error') {
-                                const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
-                                toastr.error(`<b>[${failName}]</b><br>작업 실패: ${status.msg}`, "매칭/갱신 오류", {timeOut: 6000});
-                                needsListRefresh = true;
-                            } else if (isTimeout) {
-                                const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
-                                toastr.warning(`<b>[${failName}]</b><br>시간 초과: 서버 응답이 없습니다.`, "대기 취소", {timeOut: 6000});
-                                needsListRefresh = true;
+                        if (!status || status.state === 'unknown' || status.state === 'error') {
+                            const isUnknown = !status || status.state === 'unknown';
+                            
+                            if (status && status.state === 'error') {
+                                const failName = qInfo.title || "알 수 없는 항목";
+                                toastr.error(`<b>[${failName}]</b><br>작업 실패: ${status.msg}`, "오류", {timeOut: 6000});
+                            } else if (isUnknown) {
+                                infoLog(`[Queue] 아이템 ${id}의 작업이 서버 메모리에서 만료되었습니다. (서버 재시작 또는 만료)`);
                             }
 
                             deleteMemoryCache(`D_${serverId}_${id}`);
@@ -3206,14 +3203,15 @@ GM_addStyle(`
                                 const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
                                 const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
                                 if (gBox) {
-                                    gBox.innerHTML = `<i class="fas fa-exclamation-triangle" style="margin-right:4px;"></i>실패/취소`;
-                                    gBox.style.color = '#bd362f';
+                                    gBox.innerHTML = isUnknown ? `<i class="fas fa-sync-alt"></i> 대기 해제` : `<i class="fas fa-exclamation-triangle"></i> 실패`;
+                                    gBox.style.color = isUnknown ? '#777' : '#bd362f';
                                     setTimeout(() => m.remove(), 2000);
                                 } else {
                                     m.remove();
                                 }
                             });
                         } 
+                        
                         else if (status.state === 'completed') {
                             infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 즉시 강제 갱신을 시도합니다.`);
                             
@@ -3284,35 +3282,39 @@ GM_addStyle(`
                                 }
                             })();
                         }
+                        
                         else if (status.state === 'processing' || status.state === 'queued') {
-                            if (window._pmh_media_queues[id]) {
-                                window._pmh_media_queues[id].state = status.state;
-                                if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                            }
+                            const previousState = qInfo.state;
+                            const newState = status.state;
                             
-                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                            markers.forEach(m => {
-                                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                if (gBox) {
-                                    if (status.state === 'queued' && !gBox.innerHTML.includes('대기중')) {
-                                        gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
-                                        gBox.style.color = '#e5a00d';
-                                    } else if (status.state === 'processing' && !gBox.innerHTML.includes('처리중')) {
-                                        gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
-                                        gBox.style.color = '#2f96b4';
+                            if (previousState !== newState) {
+                                window._pmh_media_queues[id].state = newState;
+                                if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                                
+                                const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                markers.forEach(m => {
+                                    const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                    const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+                                    if (gBox) {
+                                        if (newState === 'queued') {
+                                            gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
+                                            gBox.style.color = '#e5a00d';
+                                        } else if (newState === 'processing') {
+                                            gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                                            gBox.style.color = '#2f96b4';
+                                        }
                                     }
-                                }
-                            });
+                                });
+                            }
                         }
                     }
-
-                    if (needsListRefresh && typeof processList === 'function') {
-                        processList();
-                    }
-
                 } catch (e) {
-                    errorLog("[Queue Polling] 네트워크 통신 오류 (재시도 대기)...", e);
+                    consecutiveErrors++;
+                    errorLog("[Queue Polling] 네트워크 통신 오류 (연속 에러 카운트: " + consecutiveErrors + ")", e);
+                    
+                    if (consecutiveErrors === 20) {
+                        toastr.warning("서버 연결이 원활하지 않아 대기열 추적이 일시 지연되고 있습니다. 연결이 복구되면 자동으로 추적을 재개합니다.", "연결 불안정");
+                    }
                 }
             }
             

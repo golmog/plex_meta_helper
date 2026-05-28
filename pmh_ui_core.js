@@ -1036,6 +1036,7 @@ window.PmhUICore = {
                         resForm.style.display = 'none';
                         resForm.innerHTML = '';
                     }
+                    config.apiAdapter.run({action_type: 'clear_data', _server_id: ctx.srvId}).catch(()=>{});
                 }
 
                 try {

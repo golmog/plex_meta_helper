@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.93"
+__version__ = "0.8.94"
 
 def get_version():
     return __version__
@@ -2467,8 +2467,22 @@ def perform_smart_media_action(
                 with urlopen(Request(req_url, headers=api_headers), timeout=45) as response:
                     return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
 
+            # 언어(language) 결정 및 동적 라이브러리 설정 오버라이드
+            # 1단계: 기본값 결정 (SJVA 계열 에이전트는 무조건 ko, 순수 외산 커스텀은 en)
+            lang_code = 'ko' if (is_sjva_agent or is_plex_agent) else 'en'
+
+            # 2단계: Plex 기본 에이전트 환경이라면, 라이브러리 섹션 설정에 등록된 실제 언어값(ko, en 등)을 동적으로 오버라이드
+            if is_plex_agent:
+                try:
+                    sect_lang = target_item.section().language
+                    if sect_lang:
+                        lang_code = str(sect_lang).lower()
+                        if task_logger: task_logger(f"💡 [라이브러리 언어 연동] 섹션 기본 설정값인 '{lang_code}' 언어로 매칭을 시도합니다.")
+                except Exception:
+                    pass
+
             if is_jav:
-                search_params = { 'title': search_pid, 'manual': '0', 'agent': target_agent, 'language': 'ko' }
+                search_params = { 'title': search_pid, 'manual': '0', 'agent': target_agent, 'language': lang_code }
                 if item_year: search_params['year'] = str(item_year)
                     
                 search_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
@@ -2529,7 +2543,7 @@ def perform_smart_media_action(
                     else:
                         search_priority = 'folder'
 
-                # 우선순위에 따른 검색어 큐 구성
+                # 우선순위에 따른 검색어 큐 구성 (AV 모드에서는 2차 폴백 검색 생략)
                 queries_to_try = []
                 if search_priority == 'file':
                     if file_query: queries_to_try.append(("파일명", file_query))
@@ -2541,7 +2555,6 @@ def perform_smart_media_action(
                         queries_to_try.append(("파일명", file_query))
 
                 matches = []
-                lang_code = 'en' if is_custom_agent else 'ko'
 
                 for q_type, q_text in queries_to_try:
                     if is_western_av:
@@ -2570,10 +2583,10 @@ def perform_smart_media_action(
                 threshold_score = int(custom_agent_score) if custom_agent_score else 80
                 score_msg = f"사용자 커스텀({threshold_score}점)"
             else:
-                if is_jav or is_sjva_agent:
-                    threshold_score = jav_min_score
-                elif is_western_av or is_custom_agent:
+                if is_western_av or is_custom_agent:
                     threshold_score = western_min_score
+                elif is_jav or is_sjva_agent:
+                    threshold_score = jav_min_score
                 else:
                     threshold_score = 0
                 score_msg = f"서버 설정값({threshold_score}점)"
@@ -2614,6 +2627,20 @@ def perform_smart_media_action(
                     else:
                         if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 기준점 미달")
 
+            elif is_custom_agent:
+                safe_custom_score = int(custom_agent_score) if custom_agent_score else 80
+                if task_logger: task_logger(f"💡 [커스텀 에이전트 모드] 제목/연도 검증 없이, 에이전트가 반환한 점수(커트라인 {safe_custom_score}점)만으로 매칭을 결정합니다.")
+                top_candidates.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)
+                for idx, cand in enumerate(top_candidates):
+                    cand_name = _get_val(cand, 'name', '')
+                    cand_score = int(_get_val(cand, 'score', 0))
+                    if cand_score >= safe_custom_score:
+                        best_match, best_score, matched_by = cand, cand_score, f"커스텀 에이전트 점수({cand_score}점)"
+                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) -> ✨ 합격!")
+                        break
+                    else:
+                        if task_logger: task_logger(f"📋 [점수 후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 기준점 미달")
+
             else: # Plex 기본 에이전트
                 top_candidates = matches[:3]
                 if skip_sim_check:
@@ -2649,7 +2676,7 @@ def perform_smart_media_action(
                         sim_folder_orig = difflib.SequenceMatcher(None, norm_folder_q, norm_cand_orig).ratio() if norm_folder_q and norm_cand_orig else 0.0
                         max_folder_sim = max(sim_folder_name, sim_folder_orig)
 
-                        sim_file_name = difflib.SequenceMatcher(None, norm_file_q, norm_cand_name).ratio() if norm_file_q and norm_cand_name else 0.0
+                        sim_file_name = difflib.SequenceMatcher(None, norm_file_q, norm_cand_name).ratio() if norm_file_q and norm_cand_orig else 0.0
                         sim_file_orig = difflib.SequenceMatcher(None, norm_file_q, norm_cand_orig).ratio() if norm_file_q and norm_cand_orig else 0.0
                         max_file_sim = max(sim_file_name, sim_file_orig)
 
