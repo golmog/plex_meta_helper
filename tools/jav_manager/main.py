@@ -78,6 +78,7 @@ def get_ui(core_api=None):
                     {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"}
                 ]
             },
+            # 고급 정규식 필터링 (모든 모드 공통 적용)
             {"id": "filter_fields", "type": "multi_select", "label": "정규식 필터 적용 대상 필드", "options": [
                 {"value": "guid", "text": "에이전트 (GUID)"},
                 {"value": "title", "text": "제목 (Title)"},
@@ -133,11 +134,7 @@ def get_ui(core_api=None):
                 "default": "",
                 "placeholder": "예) https://ff.your-server.com/images"
             },
-            {
-                "id": "s_h_db", 
-                "type": "header", 
-                "label": f"<div style='display:flex; flex-direction:column; gap:4px;'><span style='font-size:14px;'><i class='fas fa-database'></i> 포스터 적용 이력 영구 DB 관리</span><span style='font-size:11px; color:#888; font-weight:normal;'><i class='fas fa-folder-open'></i> DB 경로: {history_db_path}</span></div>"
-            },
+            {"id": "s_h_db", "type": "header", "label": f"<div style='display:flex; flex-direction:column; gap:4px;'><span style='font-size:14px;'><i class='fas fa-database'></i> 포스터 적용 이력 영구 DB 관리</span><span style='font-size:11px; color:#888; font-weight:normal;'><i class='fas fa-folder-open'></i> DB 경로: {history_db_path}</span></div>"},
             {
                 "id": "btn_clear_history_db",
                 "type": "sub_action",
@@ -923,13 +920,12 @@ def worker(task_data, core_api, start_index):
                         task.log(f"  -> ❌ 매칭 실패/반려: {msg}")
                         item_has_error = True
 
-                if not task_data.get('_is_single'):
-                    if item_has_error: core_api['cache'].mark_as_error('id', item_id)
-                    else: core_api['cache'].mark_keys_as_done('id', [item_id])
+                if item_has_error: core_api['cache'].mark_as_error('id', item_id)
+                else: core_api['cache'].mark_keys_as_done('id', [item_id])
 
             except Exception as e:
                 task.log(f"  -> ❌ Plex 제어 에러: {e}")
-                if not task_data.get('_is_single'): core_api['cache'].mark_as_error('id', item_id)
+                core_api['cache'].mark_as_error('id', item_id)
                 
             if sleep_time > 0 and progress < total:
                 loops = max(1, int(sleep_time * 2))
@@ -941,13 +937,16 @@ def worker(task_data, core_api, start_index):
             task.update_state('completed', progress, total)
             elapsed_sec = int(time.time() - work_start_time)
             elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
-            task.log(f"✅ 모든 작업 요청이 완료되었습니다! (소요시간: {elapsed_str})")
             
-            mode_label = "품번 불일치/오매칭 복구" if mode == "mismatch" else "중복 아이템 재매칭" if mode == "dupes" else "배우 한글화 갱신" if mode == "actor" else "유저 포스터 일괄 갱신"
-            if mode == "file_error": mode_label = "파일명 오류 항목(수동 확인/작업 필요)"
-            
-            tool_vars = {"total": f"{total:,}", "elapsed_time": elapsed_str, "scan_mode_label": mode_label}
-            core_api['notify']("JAV 매니저 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
+            if task_data.get('_is_single'):
+                task.log(f"✅ 단일 실행 작업 완료! (소요시간: {elapsed_str})")
+            else:
+                task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
+                mode_label = "품번 불일치/오매칭 복구" if mode == "mismatch" else "중복 아이템 재매칭" if mode == "dupes" else "배우 한글화 갱신" if mode == "actor" else "유저 포스터 일괄 갱신"
+                if mode == "file_error": mode_label = "파일명 오류 항목(수동 확인/작업 필요)"
+                
+                tool_vars = {"total": f"{total:,}", "elapsed_time": elapsed_str, "scan_mode_label": mode_label}
+                core_api['notify']("JAV 매니저 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
             
     finally:
         current_state = core_api['task'].load(include_target_items=False)
