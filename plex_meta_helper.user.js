@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.94
+// @version      0.8.95
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -47,7 +47,7 @@ GM_addStyle(`
         position: relative; pointer-events: auto; overflow: hidden; margin: 0 0 6px;
         padding: 15px 15px 15px 50px; width: 300px; border-radius: 3px;
         background-position: 15px center; background-repeat: no-repeat; background-size: 24px 24px !important;
-        background-image: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMwMDAwMDAiIC8+PHRleHQgeD0iMzIiIHk9IjM1IiBmaWxsPSIjZTVhMDBkIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZm9udC1zaXplPSIyNCIgZm9udC13ZWlnaHQ9ImJvbGQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGFsaWdubWVudC1iYXNlbGluZT0ibWlkZGxlIj5QTUg8L3RleHQ+PC9zdmc+') !important; 
+        background-image: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMwMDAwMDAiIC8+PHRleHQgeD0iMzIiIHk9IjM1IiBmaWxsPSIjZTVhMDBkIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZm9udC1zaXplPSIyNCIgZm9udC13ZWlnaHQ9ImJvbGQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGFsaWdubWVudC1iYXNlbGluZT0ibWlkZGxlIj5QTUg8L3RleHQ+PC9zdmc+') !important;
         box-shadow: #000 0 0 12px; color: #fff; opacity: .9;
     }
     #toast-container > :focus, #toast-container > :hover { opacity: 1; box-shadow: #000 0 0 12px; cursor: pointer; }
@@ -118,13 +118,13 @@ GM_addStyle(`
     .pmh-tool-item:hover { background-color: rgba(255, 255, 255, 0.08) !important; }
     .pmh-tool-item.pmh-running-tool:hover { background-color: rgba(229, 160, 13, 0.15) !important; }
     #pmh-tool-dropdown .pmh-tool-run-btn:hover { color: #e5a00d; font-weight: bold; cursor: pointer; }
-    
+
     .pmh-tool-delete-btn { color: rgba(255, 255, 255, 0.4) !important; transition: color 0.2s, transform 0.2s; }
     .pmh-tool-delete-btn:hover { color: #ff6b6b !important; transform: scale(1.1); }
     .pmh-action-icon:hover { transform: scale(1.1); color: #fff !important; }
     .pmh-tool-install-bundle-btn { color: #51a351 !important; transition: color 0.2s, transform 0.2s; opacity: 0.7; }
     .pmh-tool-install-bundle-btn:hover { opacity: 1.0; transform: scale(1.1); text-shadow: 0 0 5px rgba(81,163,81,0.5); }
-    
+
     /* 5. 클라이언트 전역 설정(모달) CSS 자립형 요소 (마스터 연결 전 렌더링 대비 필수 폼 요소만 유지) */
     .pmh-form-group { margin-bottom: 15px; text-align: left; }
     .pmh-form-label { display: block; color: #e5a00d; font-size: 12px; margin-bottom: 6px; font-weight: bold; text-align: left; }
@@ -187,7 +187,7 @@ GM_addStyle(`
             pos3 = e.clientX; pos4 = e.clientY;
             elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
             elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
-            elmnt.style.right = "auto"; 
+            elmnt.style.right = "auto";
         }
         function closeDragElement() {
             document.onmouseup = null; document.onmousemove = null;
@@ -215,7 +215,7 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 panel.style.display = 'none';
                 window._pmh_is_minimized = false;
-                GM_setValue('pmh_last_open_tool', ''); 
+                GM_setValue('pmh_last_open_tool', '');
             });
             document.getElementById('pmh-panel-minimize').addEventListener('click', (e) => {
                 e.preventDefault(); e.stopPropagation();
@@ -247,7 +247,7 @@ GM_addStyle(`
         const ax = [], bx = [];
         a.replace(/(\d+)|(\D+)/g, function(_, $1, $2) { ax.push([$1 || Infinity, $2 || ""]); });
         b.replace(/(\d+)|(\D+)/g, function(_, $1, $2) { bx.push([$1 || Infinity, $2 || ""]); });
-        
+
         while (ax.length && bx.length) {
             const an = ax.shift();
             const bn = bx.shift();
@@ -262,16 +262,16 @@ GM_addStyle(`
     // ==========================================
     async function generateSecureHeader(apiKey) {
         if (!apiKey) return "";
-        
+
         const timestamp = Math.floor(Date.now() / 10000) * 10;
         const payload = `${apiKey}:${timestamp}`;
-        
+
         const encoder = new TextEncoder();
         const data = encoder.encode(payload);
         const hashBuffer = await crypto.subtle.digest('SHA-256', data);
         const hashArray = Array.from(new Uint8Array(hashBuffer));
         const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        
+
         return `${timestamp}.${hashHex}`;
     }
 
@@ -287,14 +287,14 @@ GM_addStyle(`
         if (!iid || iid === 'undefined') return true;
 
         const targetUrl = url || window.location.hash || window.location.href;
-        
+
         let decodedStr = '';
         try {
             decodedStr = decodeURIComponent(targetUrl) + '|' + iid;
         } catch (e) {
             decodedStr = targetUrl + '|' + iid;
         }
-        
+
         if (decodedStr.includes('tv.plex') || decodedStr.includes('plex://') || decodedStr.includes('/provider/')) return true;
         if (!decodedStr.includes('/library/metadata/')) return true;
 
@@ -326,7 +326,7 @@ GM_addStyle(`
 
         const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
         const results = {};
-        
+
         const promises = ServerConfig.SERVERS.map(srv => {
             if (!srv.relayUrl) return Promise.resolve();
             return new Promise((resolve) => {
@@ -389,10 +389,10 @@ GM_addStyle(`
                 if (Date.now() - lastCheck < 24 * 60 * 60 * 1000) {
                     log("[Update] Background update check skipped (checked recently).");
                     const localPyVers = await pingLocalServer();
-                    
+
                     let hasServerError = false;
                     let errorDetails = [];
-                    
+
                     if (ServerConfig.SERVERS) {
                         for (const srv of ServerConfig.SERVERS) {
                             const pRes = localPyVers[srv.machineIdentifier];
@@ -402,10 +402,10 @@ GM_addStyle(`
                             }
                         }
                     }
-                    
+
                     const wasError = GM_getValue('pmh_server_connection_error', false);
                     GM_setValue('pmh_server_error_details', JSON.stringify(errorDetails));
-                    
+
                     if (wasError !== hasServerError) {
                         GM_setValue('pmh_server_connection_error', hasServerError);
                         resolve({ skipped: true, uiNeedsUpdate: true });
@@ -421,7 +421,7 @@ GM_addStyle(`
             const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
 
             GM_xmlhttpRequest({
-                method: "GET", 
+                method: "GET",
                 url: `${ClientSettings.masterUrl}/api/master/check_update?force=${force}`,
                 headers: { "X-PMH-Signature": secureToken },
                 timeout: 8000,
@@ -437,7 +437,7 @@ GM_addStyle(`
                                     reqRestart = true;
                                     latestVer = latestVer.replace('-server', '');
                                 }
-                                
+
                                 GM_setValue('pmh_latest_version', latestVer);
                                 GM_setValue('pmh_server_restart_required', reqRestart);
                                 GM_setValue('pmh_last_update_check', Date.now());
@@ -481,7 +481,7 @@ GM_addStyle(`
                         GM_setValue('pmh_latest_version', latestVer);
                         GM_setValue('pmh_server_restart_required', reqRestart);
                         GM_setValue('pmh_last_update_check', Date.now());
-                        
+
                         resolve({ skipped: false, targetVer: latestVer, localPyVers: localServerVersions, msg: "마스터 통신 실패 (GitHub 확인 성공)", error: false, reqRestart });
                     } else {
                         resolve({ skipped: false, targetVer: null, msg: "GitHub 버전 파싱 오류", error: true });
@@ -502,7 +502,7 @@ GM_addStyle(`
         }
 
         const result = await fetchLatestVersion(force);
-        
+
         if (result.skipped) {
             if (result.uiNeedsUpdate) {
                 const ctrl = document.getElementById('pmdv-controls');
@@ -514,7 +514,7 @@ GM_addStyle(`
         if (!result.error) {
             const latestKnownVer = result.targetVer;
             let needsUpdate = isNewerVersion(CURRENT_VERSION, latestKnownVer);
-            
+
             let hasServerError = false;
             let errorDetails = [];
 
@@ -544,7 +544,7 @@ GM_addStyle(`
 
         const spinner = `<i class="fas fa-spinner fa-spin" style="margin-right: 5px;"></i>`;
         log(`[Server Update] Dry-run check for ${targetServers.length} server(s)...`);
-        
+
         showStatusMsg(`${spinner}업데이트 전 서버 실행 상태 확인 중...`, '#ccc', 0);
 
         const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
@@ -594,7 +594,7 @@ GM_addStyle(`
         const verStr = targetVer ? `(v${targetVer}) ` : '';
 
         showStatusMsg(`<i class="fas fa-pause-circle" style="margin-right: 4px;"></i>사용자 확인 대기 중...`, '#f89406', 0);
-        
+
         if (totalRunningCount > 0) {
             const confirmed = confirm(`[경고] 현재 ${targetServers.length}대의 서버에서 총 ${totalRunningCount}개의 작업이 실행 중입니다.\n\n실행 중인 작업을 모두 강제로 중단하고 업데이트${verStr}를 진행하시겠습니까?`);
             if (!confirmed) {
@@ -674,13 +674,13 @@ GM_addStyle(`
                             const expectedId = namespace && !bundle.id.startsWith(namespace + '_') ? `${namespace}_${bundle.id}` : bundle.id;
 
                             const isInstalled = installedTools.some(t => t.id === expectedId);
-                            
+
                             if (isInstalled && bundle.url) {
                                 installPromises.push(new Promise(r => {
                                     GM_xmlhttpRequest({
                                         method: "POST", url: `${srv.relayUrl}/tools/install`,
                                         headers: { "Content-Type": "application/json", "X-PMH-Signature": secureToken },
-                                        data: JSON.stringify({ url: bundle.url, target_id: expectedId }), 
+                                        data: JSON.stringify({ url: bundle.url, target_id: expectedId }),
                                         timeout: 20000,
                                         onload: r, onerror: r, ontimeout: r
                                     });
@@ -769,7 +769,7 @@ GM_addStyle(`
     let saveCacheTimer = null;
     function saveCacheToStorage() {
         if (saveCacheTimer) clearTimeout(saveCacheTimer);
-        
+
         saveCacheTimer = setTimeout(() => {
             try {
                 if (dirtyKeys.size === 0 && deletedKeys.size === 0) return;
@@ -784,7 +784,7 @@ GM_addStyle(`
                 deletedKeys.forEach(k => GM_deleteValue(DATA_PREFIX + k));
 
                 log(`[MemCache] Storage Synced (Saved: ${dirtyKeys.size}, Deleted: ${deletedKeys.size})`);
-                
+
                 dirtyKeys.clear();
                 deletedKeys.clear();
             } catch(e) {
@@ -795,7 +795,7 @@ GM_addStyle(`
 
     function setMemoryCache(key, data) {
         if (memoryCache.has(key)) memoryCache.delete(key);
-        
+
         memoryCache.set(key, data);
         dirtyKeys.add(key);
         deletedKeys.delete(key);
@@ -807,7 +807,7 @@ GM_addStyle(`
             deletedKeys.add(oldestKey);
             log(`[MemCache] GC Evicted: ${oldestKey}`);
         }
-        
+
         saveCacheToStorage();
     }
 
@@ -829,7 +829,7 @@ GM_addStyle(`
         memoryCache.clear();
         dirtyKeys.clear();
         deletedKeys.clear();
-        
+
         const storedIdx = GM_getValue(INDEX_KEY, null);
         if (storedIdx) {
             try {
@@ -838,7 +838,7 @@ GM_addStyle(`
             } catch(e){}
         }
         GM_deleteValue(INDEX_KEY);
-        
+
         infoLog("[MemCache] All memory and persistent cache cleared by user.");
     }
 
@@ -877,15 +877,15 @@ GM_addStyle(`
     let isFallbackWorkerRunning = false;
 
     let isObserverLocked = false;
-    let globalAbortFlag = false; 
+    let globalAbortFlag = false;
 
     function getDetailStateHash() {
         let parts = [];
-        
+
         const titleNode = document.querySelector('[data-testid="metadata-title"], h1[class*="Title"]');
-        
+
         if (!titleNode || !titleNode.textContent.trim()) return null;
-        
+
         parts.push(titleNode.textContent.trim());
 
         const line1 = document.querySelector('[data-testid="metadata-line1"]');
@@ -977,9 +977,9 @@ GM_addStyle(`
 
     async function makeRequest(url, method = "GET", data = null, apiKey = null, cancelToken = null) {
         log(`[API Req] [${method}] ${url}`);
-        
+
         const secureToken = await generateSecureHeader(apiKey);
-        
+
         return new Promise((resolve, reject) => {
             const headers = {
                 "Accept": "application/json",
@@ -1001,17 +1001,17 @@ GM_addStyle(`
                     if (r.status === 401) {
                         return reject(new Error("Unauthorized: API Key가 일치하지 않거나 만료되었습니다."));
                     }
-                    
+
                     if (r.status >= 200 && r.status < 300) {
-                        try { 
+                        try {
                             const parsed = JSON.parse(r.responseText);
                             if (parsed.error || parsed.status === "error") {
                                 reject(new Error(parsed.error || parsed.message || "서버 처리 실패"));
                             } else {
-                                resolve(parsed); 
+                                resolve(parsed);
                             }
-                        } catch(e) { 
-                            reject(new Error("JSON Parse Error: 서버 응답을 해석할 수 없습니다.")); 
+                        } catch(e) {
+                            reject(new Error("JSON Parse Error: 서버 응답을 해석할 수 없습니다."));
                         }
                     } else {
                         try {
@@ -1023,17 +1023,17 @@ GM_addStyle(`
                         }
                     }
                 },
-                onerror: () => { 
-                    activeRequests.delete(req); 
-                    reject(new Error("Network Error: 서버에 연결할 수 없습니다.")); 
+                onerror: () => {
+                    activeRequests.delete(req);
+                    reject(new Error("Network Error: 서버에 연결할 수 없습니다."));
                 },
-                ontimeout: () => { 
-                    activeRequests.delete(req); 
-                    reject(new Error("Timeout: 서버 응답 시간 초과")); 
+                ontimeout: () => {
+                    activeRequests.delete(req);
+                    reject(new Error("Timeout: 서버 응답 시간 초과"));
                 },
-                onabort: () => { 
-                    activeRequests.delete(req); 
-                    reject(new Error("Aborted: 사용자에 의해 요청이 취소되었습니다.")); 
+                onabort: () => {
+                    activeRequests.delete(req);
+                    reject(new Error("Aborted: 사용자에 의해 요청이 취소되었습니다."));
                 }
             });
             activeRequests.add(req);
@@ -1072,7 +1072,7 @@ GM_addStyle(`
         if (!plexSrv) return null;
         return new Promise((resolve) => {
             const sessionAtStart = currentRenderSession;
-            
+
             const req = GM_xmlhttpRequest({
                 method: 'PUT',
                 url: `${plexSrv.url}/library/metadata/${itemId}/analyze?X-Plex-Token=${plexSrv.token}`,
@@ -1091,13 +1091,13 @@ GM_addStyle(`
                         resolve(newMeta);
                     }, 1500);
                 },
-                onerror: () => { 
+                onerror: () => {
                     errorLog(`[API] ❌ Network Error during Analyze. (ID: ${itemId})`);
-                    activeRequests.delete(req); resolve(null); 
+                    activeRequests.delete(req); resolve(null);
                 },
-                ontimeout: () => { 
+                ontimeout: () => {
                     errorLog(`[API] ⚠️ Timeout during Analyze. (ID: ${itemId})`);
-                    activeRequests.delete(req); resolve(null); 
+                    activeRequests.delete(req); resolve(null);
                 },
                 onabort: () => { activeRequests.delete(req); resolve(null); }
             });
@@ -1110,17 +1110,17 @@ GM_addStyle(`
             errorLog(`[API] ❌ Cannot trigger '${action}' for Item ${itemId}: Missing Server Config.`);
             throw new Error("서버 설정이 없습니다.");
         }
-        
+
         infoLog(`[API] 🚀 Requesting PMH Backend to perform '${action}' on Item: ${itemId} ...`);
-        
+
         try {
             const res = await makeRequest(`${srvConfig.relayUrl}/media/${itemId}/${action}`, 'POST', { ...extraData }, ClientSettings.masterApiKey, cancelToken);
-            
+
             if (res.status === 'queued' || res.status === 'success') {
                 return true;
             }
             throw new Error(res.error || res.message || "예상치 못한 응답");
-            
+
         } catch (err) {
             const errorMsg = err.message || err || "알 수 없는 오류";
             if (errorMsg.includes("Aborted")) {
@@ -1128,7 +1128,7 @@ GM_addStyle(`
                 throw new Error("Cancelled");
             }
             errorLog(`[API] ❌ PMH Backend Action '${action}' failed for Item ${itemId}: ${errorMsg}`);
-            throw new Error(errorMsg); 
+            throw new Error(errorMsg);
         }
     }
 
@@ -1319,7 +1319,7 @@ GM_addStyle(`
         let displayPath = fullPath;
         let removedPrefix = "";
 
-        ServerConfig.DISPLAY_PATH_PREFIXES_TO_REMOVE.forEach(p => { 
+        ServerConfig.DISPLAY_PATH_PREFIXES_TO_REMOVE.forEach(p => {
             if (displayPath.startsWith(p)) {
                 displayPath = displayPath.substring(p.length);
                 removedPrefix = p;
@@ -1352,9 +1352,9 @@ GM_addStyle(`
             const color = isLast ? '#e5a00d' : '#9E9E9E';
             const fontWeight = isLast ? 'normal' : 'normal';
             const clickType = isLast ? itemType : 'directory';
-            
+
             html += `<a href="#" class="plex-path-scan-link" data-path="${currentAccumulatedPath}" data-section-id="${sectionId}" data-type="${clickType}" title="[ ${currentAccumulatedPath} ] 경로 스캔" style="color:${color}; font-weight:${fontWeight}; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='${color}'; this.style.textDecoration='none';">${seg}</a>`;
-            
+
             if (!isLast) html += `<span style="color:#999; margin:0 1px;">${sep}</span>`;
         });
 
@@ -1387,7 +1387,7 @@ GM_addStyle(`
     async function callPlexMateViaRelay(srvConfig, endpoint, paramsObj) {
         if (!srvConfig || !srvConfig.relayUrl) return Promise.reject("Invalid Server Config");
         const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
-        
+
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'POST',
@@ -1398,7 +1398,7 @@ GM_addStyle(`
                 },
                 data: JSON.stringify(paramsObj),
                 timeout: 60000,
-                onload: r => { 
+                onload: r => {
                     try {
                         const parsed = JSON.parse(r.responseText);
                         resolve(parsed);
@@ -1417,12 +1417,12 @@ GM_addStyle(`
     const PmhToolAPI = {
         call: async function(targetSrv, endpoint, method = "POST", data = null) {
             const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
-            
+
             return new Promise((resolve, reject) => {
                 const req = {
                     method: method,
                     url: `${targetSrv.relayUrl}${endpoint}`,
-                    headers: { 
+                    headers: {
                         "X-PMH-Signature": secureToken,
                         "Connection": "close"
                     },
@@ -1443,14 +1443,14 @@ GM_addStyle(`
                     onerror: () => reject(new Error("네트워크 연결 실패 (서버 다운 또는 방화벽)")),
                     ontimeout: () => reject(new Error("서버 응답 시간 초과"))
                 };
-                
+
                 if (data && Object.keys(data).length > 0) {
                     req.headers["Content-Type"] = "application/json";
                     req.data = JSON.stringify(data);
                 } else if (method === "POST" || method === "PUT") {
                     req.data = "";
                 }
-                
+
                 GM_xmlhttpRequest(req);
             });
         },
@@ -1480,15 +1480,15 @@ GM_addStyle(`
 
         const globalCacheStr = GM_getValue(`pmh_tool_cache_global_${toolId}`, "{}");
         let globalCache = {}; try { globalCache = JSON.parse(globalCacheStr); } catch(e) {}
-        
+
         let availableServerIndices = (window._pmh_tool_server_map?.[toolId] || []).map(Number);
         if (availableServerIndices.length === 0) availableServerIndices = ServerConfig.SERVERS.map((_, i) => i);
 
         let srvIdx = (forceSrvIdx !== null && forceSrvIdx !== undefined) ? Number(forceSrvIdx) : (globalCache['target_server_idx'] || 0);
         if (!availableServerIndices.includes(srvIdx)) srvIdx = availableServerIndices.length > 0 ? availableServerIndices[0] : 0;
-        
+
         globalCache['target_server_idx'] = srvIdx; GM_setValue(`pmh_tool_cache_global_${toolId}`, JSON.stringify(globalCache));
-        
+
         const targetSrv = ServerConfig.SERVERS[srvIdx];
         if (!targetSrv) return toastr.error("서버 설정이 유효하지 않습니다.");
 
@@ -1497,7 +1497,7 @@ GM_addStyle(`
         try {
             const res = await PmhToolAPI.getUi(toolId, targetSrv);
             const uiSchema = JSON.parse(res.responseText);
-            
+
             document.getElementById('pmh-panel-title-text').innerText = uiSchema.title || toolId;
 
             PmhUICore.createToolInstance({
@@ -1507,8 +1507,8 @@ GM_addStyle(`
                 servers: ServerConfig.SERVERS,
                 availableServerIndices: availableServerIndices,
                 activeServerIdx: srvIdx,
-                pathMappings: ClientSettings.pathMappings, 
-                
+                pathMappings: ClientSettings.pathMappings,
+
                 apiAdapter: {
                     run: async (data) => {
                         const r = await PmhToolAPI.run(toolId, targetSrv, data);
@@ -1523,7 +1523,7 @@ GM_addStyle(`
                         return JSON.parse(r.responseText);
                     }
                 },
-                
+
                 toast: {
                     success: (msg) => toastr.success(msg),
                     error: (msg) => toastr.error(msg),
@@ -1535,10 +1535,10 @@ GM_addStyle(`
                 const iconClass = uiSchema.icon || 'fas fa-wrench';
                 const titleText = uiSchema.title || toolId;
                 const toolIconHtml = `<i class="${iconClass}" style="margin-right: 6px;"></i>`;
-                
+
                 const navTitleEl = document.getElementById('tool-view-title');
                 if (navTitleEl) navTitleEl.innerHTML = `${toolIconHtml}${titleText}`;
-                
+
                 const panelTitleContainer = document.querySelector('.pmh-panel-title');
                 if (panelTitleContainer) {
                     panelTitleContainer.innerHTML = `${toolIconHtml}<span id="pmh-panel-title-text">${titleText}</span>`;
@@ -1591,16 +1591,16 @@ GM_addStyle(`
         const latestKnownVer = GM_getValue('pmh_latest_version', CURRENT_VERSION);
         const reqRestart = GM_getValue('pmh_server_restart_required', false);
         const hasServerError = GM_getValue('pmh_server_connection_error', false);
-        
+
         let errorDetails = [];
         try { errorDetails = JSON.parse(GM_getValue('pmh_server_error_details', '[]')); } catch(e){}
-        
+
         if (hasServerError) {
             if (!window._pmh_error_poll_timer) {
                 log("[UI] Server error detected. Starting background polling for recovery...");
                 window._pmh_error_poll_timer = setInterval(async () => {
                     if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) return;
-                    
+
                     const localPyVers = await pingLocalServer();
                     let stillHasError = false;
                     let newErrorDetails = [];
@@ -1617,14 +1617,14 @@ GM_addStyle(`
                         infoLog("[Polling] Server connection restored! Clearing error state.");
                         clearInterval(window._pmh_error_poll_timer);
                         window._pmh_error_poll_timer = null;
-                        
+
                         GM_setValue('pmh_server_connection_error', false);
                         GM_setValue('pmh_server_error_details', '[]');
-                        
+
                         if (typeof toastr !== 'undefined') {
                             toastr.success("서버 통신이 정상적으로 복구되었습니다.", "연결 복구");
                         }
-                        
+
                         const ctrl = document.getElementById('pmdv-controls');
                         if (ctrl) { ctrl.remove(); injectControlUI(); }
                     } else {
@@ -1640,7 +1640,7 @@ GM_addStyle(`
         }
 
         const currentHasError = GM_getValue('pmh_server_connection_error', false);
-        
+
         let currentErrorDetails = [];
         try { currentErrorDetails = JSON.parse(GM_getValue('pmh_server_error_details', '[]')); } catch(e){}
 
@@ -1652,7 +1652,7 @@ GM_addStyle(`
         } else if (currentHasError) {
             let tooltipText = "일부 PMH 파이썬 서버에 연결할 수 없습니다.&#10;";
             if (currentErrorDetails.length > 0) {
-                tooltipText += currentErrorDetails.join("&#10;"); 
+                tooltipText += currentErrorDetails.join("&#10;");
             } else {
                 tooltipText += "서버가 꺼져 있거나 API 키 설정이 잘못되었습니다.";
             }
@@ -1729,7 +1729,7 @@ GM_addStyle(`
 
         const forceReRenderAll = () => {
             clearMemoryCache();
-            if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear(); 
+            if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear();
             document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e=>e.remove());
             processList();
         };
@@ -1759,7 +1759,7 @@ GM_addStyle(`
                 forceReRenderAll(); showStatusMsg(`GUID 길이 ${nl} 적용 완료`, '#51a351');
             }
         });
-        
+
         const clearCacheBtn = document.createElement('button');
         clearCacheBtn.textContent = '캐시 초기화'; clearCacheBtn.style.marginLeft = '10px';
         clearCacheBtn.addEventListener('click', async () => {
@@ -1780,23 +1780,23 @@ GM_addStyle(`
                 GM_deleteValue('pmh_ui_core_js_cache');
                 GM_deleteValue('pmh_ui_cache_version');
 
-                clearMemoryCache(); 
+                clearMemoryCache();
                 forceReRenderAll();
-                
-                if (document.getElementById('plex-guid-box')) { 
-                    currentDisplayedItemId = null; 
-                    processDetail(true); 
+
+                if (document.getElementById('plex-guid-box')) {
+                    currentDisplayedItemId = null;
+                    processDetail(true);
                 }
 
-                showStatusMsg("캐시 초기화 및 코어 리로딩 중...", "#e5a00d"); 
+                showStatusMsg("캐시 초기화 및 코어 리로딩 중...", "#e5a00d");
 
                 try {
                     const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
-                    
+
                     const reloadPromises = ServerConfig.SERVERS.map(srv => {
                         return new Promise((resolve) => {
                             GM_xmlhttpRequest({
-                                method: "POST", 
+                                method: "POST",
                                 url: `${srv.relayUrl}/admin/reload_core`,
                                 headers: { "X-PMH-Signature": secureToken },
                                 timeout: 10000,
@@ -1809,7 +1809,7 @@ GM_addStyle(`
                                         resolve(false);
                                     }
                                 },
-                                onerror: () => resolve(false), 
+                                onerror: () => resolve(false),
                                 ontimeout: () => resolve(false)
                             });
                         });
@@ -1822,10 +1822,10 @@ GM_addStyle(`
                 }
 
                 bootstrapPMH().then(() => {
-                    showStatusMsg("캐시 초기화 및 코어 리로딩 완료", "#51a351"); 
+                    showStatusMsg("캐시 초기화 및 코어 리로딩 완료", "#51a351");
                     toastr.success("로컬 캐시 초기화 및 서버 코어 리로딩이 완료되었습니다.");
                 }).catch(() => {
-                    showStatusMsg("코어 리로딩 실패", "#bd362f"); 
+                    showStatusMsg("코어 리로딩 실패", "#bd362f");
                 });
             }
         });
@@ -1895,7 +1895,7 @@ GM_addStyle(`
                         if (newTop < 0) newTop = 0; if (newLeft < 0) newLeft = 0;
                         if (newTop + elmnt.offsetHeight > window.innerHeight) newTop = window.innerHeight - elmnt.offsetHeight;
                         if (newLeft + elmnt.offsetWidth > window.innerWidth) newLeft = window.innerWidth - elmnt.offsetWidth;
-                        elmnt.style.top = newTop + "px"; elmnt.style.left = newLeft + "px"; elmnt.style.right = "auto"; 
+                        elmnt.style.top = newTop + "px"; elmnt.style.left = newLeft + "px"; elmnt.style.right = "auto";
                     };
                 };
             };
@@ -1909,7 +1909,7 @@ GM_addStyle(`
                         originalH = parseFloat(getComputedStyle(panel, null).getPropertyValue('height').replace('px', ''));
                         originalX = panel.offsetLeft; originalY = panel.offsetTop;
                         originalMouseX = e.clientX; originalMouseY = e.clientY;
-                        
+
                         const resize = (e) => {
                             const mouseX = Math.max(0, Math.min(e.clientX, window.innerWidth));
                             const mouseY = Math.max(0, Math.min(e.clientY, window.innerHeight));
@@ -1953,20 +1953,20 @@ GM_addStyle(`
                         </div>
                     `;
                     document.body.appendChild(panel);
-                    
-                    document.getElementById('pmh-panel-close').onclick = (e) => { 
-                        e.preventDefault(); e.stopPropagation(); 
-                        panel.style.display = 'none'; 
+
+                    document.getElementById('pmh-panel-close').onclick = (e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        panel.style.display = 'none';
                         window._pmh_is_minimized = false;
-                        GM_setValue('pmh_last_open_tool', ''); 
+                        GM_setValue('pmh_last_open_tool', '');
                     };
 
                     document.getElementById('pmh-panel-minimize').onclick = (e) => {
                         e.preventDefault(); e.stopPropagation();
                         window._pmh_is_minimized = !window._pmh_is_minimized;
-                        
+
                         GM_setValue('pmh_last_minimize_state', window._pmh_is_minimized);
-                        
+
                         if (window._pmh_is_minimized) {
                             panel.classList.add('pmh-panel-minimized');
                             document.getElementById('pmh-panel-minimize').innerHTML = '<i class="fas fa-window-restore"></i>';
@@ -2069,8 +2069,8 @@ GM_addStyle(`
             });
 
             const results = await Promise.all(fetchPromises);
-            
-            let mergedToolsMap = {}; 
+
+            let mergedToolsMap = {};
             let mergedDashboard = { running: [], cron: [] };
             let successCount = 0;
             let errorMessages = [];
@@ -2082,14 +2082,14 @@ GM_addStyle(`
                     errorMessages.push(`[${result.server.name}] 통신 실패`);
                 } else if (result.data) {
                     successCount++;
-                    
+
                     const tools = result.data.tools || [];
                     tools.forEach(t => {
                         if (!mergedToolsMap[t.id]) mergedToolsMap[t.id] = t;
                         if (!window._pmh_tool_server_map[t.id]) window._pmh_tool_server_map[t.id] = [];
                         window._pmh_tool_server_map[t.id].push(idx);
                     });
-                    
+
                     const dash = result.data.dashboard;
                     if (dash) {
                         if (dash.running) mergedDashboard.running.push(...dash.running);
@@ -2112,10 +2112,10 @@ GM_addStyle(`
 
         const renderToolsDropdown = (installedTools, dashboard, baseHtml) => {
             let html = baseHtml;
-            
+
             const runCnt = dashboard.running.length;
             const cronCnt = dashboard.cron.length;
-            
+
             html += `
                 <div style="display:flex; padding:10px 15px; background:#111; gap:10px; border-bottom:1px solid #333;">
                     <div style="flex:1; background:rgba(229,160,13,0.1); border:1px solid rgba(229,160,13,0.3); padding:8px; border-radius:4px; text-align:center;">
@@ -2132,7 +2132,7 @@ GM_addStyle(`
             const bundledToolsStr = GM_getValue('pmh_bundled_tools', '[]');
             let bundledTools = [];
             try { bundledTools = JSON.parse(bundledToolsStr); } catch(e) {}
-            
+
             const processedBundles = bundledTools.map(b => {
                 const nsMatch = b.url.match(/raw\.githubusercontent\.com\/([^\/]+)\//);
                 const ns = nsMatch ? nsMatch[1].replace(/[^a-zA-Z0-9]/g, '').toLowerCase() : '';
@@ -2144,7 +2144,7 @@ GM_addStyle(`
                 html += `<div style="padding:20px 15px; text-align:center; color:#777; font-size:12px;">설치된 툴이 없습니다.</div>`;
             } else {
                 installedTools.sort((a, b) => (a.name || a.id || "").toLowerCase().localeCompare((b.name || b.id || "").toLowerCase()));
-                
+
                 const serverNameMap = {};
                 if (ServerConfig.SERVERS) {
                     ServerConfig.SERVERS.forEach(s => {
@@ -2155,13 +2155,13 @@ GM_addStyle(`
                 installedTools.forEach(tool => {
                     const myRunning = dashboard.running.filter(r => r.tool_id === tool.id);
                     const myCron = dashboard.cron.filter(c => c.tool_id === tool.id);
-                    
+
                     const isRunning = myRunning.length > 0;
-                    
+
                     const bgStyle = isRunning ? 'background-color: rgba(229,160,13,0.05); border-left: 3px solid #e5a00d;' : 'background-color: transparent; border-left: 3px solid transparent;';
                     const nameColor = isRunning ? '#e5a00d' : '#ccc';
                     const statusIcon = isRunning ? `<i class="fas fa-spinner fa-spin" style="color:#e5a00d; margin-left:6px; font-size:12px;" title="현재 작업 진행 중"></i>` : '';
-                    
+
                     const runningClass = isRunning ? 'pmh-running-tool' : '';
 
                     let serverBadgesHtml = '';
@@ -2174,14 +2174,14 @@ GM_addStyle(`
                         let progressText = r.total > 0 ? ` (${Math.floor((r.progress/r.total)*100)}%)` : '';
                         serverBadgesHtml += `<span style="display:inline-block; margin-top:4px; margin-right:4px; padding:1px 5px; background:rgba(229,160,13,0.15); border:1px solid rgba(229,160,13,0.4); border-radius:3px; font-size:10px; color:#e5a00d; font-weight:bold;" title="진행률: ${r.progress}/${r.total}"><i class="fas fa-running"></i> ${sName}${progressText}</span>`;
                     });
-                    
+
                     html += `
                         <div class="pmh-tool-item ${runningClass}" style="display:flex; justify-content:space-between; padding:10px 15px; ${bgStyle}" data-id="${tool.id}" data-url="${tool.update_url || ''}" data-ver="${tool.version || '0.0'}">
                             <div class="pmh-tool-run-btn" data-id="${tool.id}" style="display:flex; align-items:flex-start; gap:8px; flex-grow:1; min-width:0; cursor:pointer;">
                                 <i class="${tool.icon || 'fas fa-wrench'}" style="color:${nameColor}; margin-top:2px; flex-shrink:0;"></i>
                                 <div style="display:flex; flex-direction:column; min-width:0; width:100%;">
                                     <span style="color:${nameColor}; font-weight:${isRunning ? 'bold' : 'normal'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
-                                        ${tool.name || tool.id} 
+                                        ${tool.name || tool.id}
                                         <span style="color:#777; font-size:10px; font-weight:normal;">v${tool.version || '1.0'}</span>
                                         ${statusIcon}
                                     </span>
@@ -2215,12 +2215,12 @@ GM_addStyle(`
 
             if (uninstalledBundles.length > 0) {
                 if (installedTools.length > 0) html += `<div style="padding: 4px 15px; background: rgba(0,0,0,0.3); font-size: 10px; color: #555; text-align: center; border-bottom: 1px solid #333;">미설치 번들 툴</div>`;
-                
+
                 uninstalledBundles.forEach(bundle => {
                     const meta = bundle.meta || {};
                     const dName = meta.name || bundle.id;
                     const dVer = meta.version ? `v${meta.version}` : 'v1.0';
-                    
+
                     html += `
                         <div class="pmh-tool-item" style="display:flex; justify-content:space-between; padding:10px 15px; border-bottom:1px solid #333; opacity: 0.6;">
                             <div style="display:flex; align-items:center; gap:8px; flex-grow:1; cursor:not-allowed; min-width:0;">
@@ -2240,15 +2240,15 @@ GM_addStyle(`
         };
 
         dropdown.onclick = async (e) => {
-            if (e.target.closest('#pmh-tool-refresh-btn')) { 
-                e.preventDefault(); e.stopPropagation(); 
+            if (e.target.closest('#pmh-tool-refresh-btn')) {
+                e.preventDefault(); e.stopPropagation();
                 const refBtn = document.getElementById('pmh-tool-refresh-btn');
                 if(refBtn) refBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-                pmhToolListCache = null; 
-                fetchTools(); 
-                return; 
+                pmhToolListCache = null;
+                fetchTools();
+                return;
             }
-            
+
             const bundleInstallBtn = e.target.closest('.pmh-tool-install-bundle-btn');
             if (bundleInstallBtn) {
                 e.preventDefault(); e.stopPropagation();
@@ -2256,7 +2256,7 @@ GM_addStyle(`
 
                 const targetId = bundleInstallBtn.dataset.id;
                 const updateUrl = bundleInstallBtn.dataset.url;
-                
+
                 bundleInstallBtn.dataset.updating = "true";
                 bundleInstallBtn.style.opacity = '1';
                 bundleInstallBtn.style.color = '#e5a00d';
@@ -2266,7 +2266,7 @@ GM_addStyle(`
                 await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
                     try {
                         const r = await PmhToolAPI.call(srv, `/tools/install`, "POST", { url: updateUrl, target_id: targetId });
-                        if(r.status === 200) successCount++; 
+                        if(r.status === 200) successCount++;
                         res();
                     } catch(err) { res(); }
                 })));
@@ -2274,7 +2274,7 @@ GM_addStyle(`
                 if (successCount > 0) {
                     toastr.success(`[${targetId}] 설치 완료!`);
                     pmhToolListCache = null;
-                    
+
                     await checkUpdate(true);
                     fetchTools();
                 } else {
@@ -2285,15 +2285,15 @@ GM_addStyle(`
                 }
                 return;
             }
-            
+
             const updateCheckBtn = e.target.closest('#pmh-tool-check-update-btn');
             if (updateCheckBtn) {
                 e.preventDefault(); e.stopPropagation();
                 if (updateCheckBtn.innerHTML.includes('fa-spin')) return;
-                
+
                 updateCheckBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 updateCheckBtn.style.color = '#2f96b4';
-                
+
                 const toolItems = dropdown.querySelectorAll('.pmh-tool-item');
                 let checkCount = 0; let updateAvailableCount = 0; let hasUrlToCheck = false;
                 const startTime = Date.now();
@@ -2317,7 +2317,7 @@ GM_addStyle(`
 
                     if (updateUrl && updateUrl !== 'undefined') {
                         hasUrlToCheck = true; checkCount++;
-                        
+
                         GM_xmlhttpRequest({
                             method: "GET", url: `${updateUrl}?t=${Date.now()}`,
                             timeout: 5000,
@@ -2349,11 +2349,11 @@ GM_addStyle(`
             if (doUpdateBtn) {
                 e.preventDefault(); e.stopPropagation();
                 if (doUpdateBtn.dataset.updating) return;
-                
+
                 const targetId = doUpdateBtn.dataset.id;
                 const updateUrl = doUpdateBtn.dataset.url;
                 const newVer = doUpdateBtn.dataset.targetVer || "최신";
-                
+
                 doUpdateBtn.dataset.updating = "true";
                 doUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`;
 
@@ -2361,11 +2361,11 @@ GM_addStyle(`
                 await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
                     try {
                         const r = await PmhToolAPI.call(srv, `/tools/install`, "POST", { url: updateUrl, target_id: targetId });
-                        if(r.status === 200) successCount++; 
+                        if(r.status === 200) successCount++;
                         res();
                     } catch(err) { res(); }
                 })));
-                
+
                 if (successCount > 0) {
                     toastr.success(`[${targetId}] 업데이트 완료!`);
                     delete doUpdateBtn.dataset.updating;
@@ -2407,7 +2407,7 @@ GM_addStyle(`
                     const previewDiv = document.getElementById('pmh-install-preview');
                     const msgDiv = document.getElementById('pmh-install-msg');
                     const urlInput = document.getElementById('pmh-install-url');
-                    
+
                     let verifiedYamlUrl = "";
                     let verifiedPrefix = "";
 
@@ -2423,15 +2423,15 @@ GM_addStyle(`
                             e.preventDefault(); e.stopPropagation();
                             let url = urlInput.value.trim();
                             if (!url) return;
-                            
+
                             if (url.endsWith('/')) url = url.slice(0, -1);
-                            let namespace = "custom"; 
-                            
+                            let namespace = "custom";
+
                             const treeMatch = url.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/tree\/([^\/]+)\/(.+)$/i);
                             if (treeMatch) { namespace = treeMatch[1]; url = `https://raw.githubusercontent.com/${treeMatch[1]}/${treeMatch[2]}/${treeMatch[3]}/${treeMatch[4]}/info.yaml`; }
                             else if (url.includes('github.com') && url.includes('/blob/')) { namespace = url.match(/github\.com\/([^\/]+)\//)?.[1] || ""; url = url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/'); }
                             else if (url.includes('raw.githubusercontent.com')) { namespace = url.match(/raw\.githubusercontent\.com\/([^\/]+)\//)?.[1] || ""; }
-                            
+
                             if (!url.endsWith('.yaml') && !url.endsWith('.yml')) url += '/info.yaml';
                             verifiedPrefix = namespace.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
@@ -2450,7 +2450,7 @@ GM_addStyle(`
                                             const tName = parseYaml('name') || tId;
                                             const tVer = parseYaml('version') || '1.0';
                                             const tDesc = parseYaml('description') || '설명이 없습니다.';
-                                            
+
                                             if (!tId) throw new Error("ID 누락");
 
                                             let expectedLocalId = tId;
@@ -2459,9 +2459,9 @@ GM_addStyle(`
                                             let installedHtml = `<span style="color:#aaa; border:1px solid #444; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;">신규 설치</span>`;
                                             let btnText = '<i class="fas fa-download"></i> 설치';
                                             let btnColor = "#51a351";
-                                            
+
                                             const existingTool = document.querySelector(`.pmh-tool-item[data-id="${expectedLocalId}"]`) || document.querySelector(`.pmh-tool-item[data-id="${tId}"]`);
-                                            
+
                                             if (existingTool) {
                                                 const existingVer = existingTool.dataset.ver || "0.0";
                                                 if (isNewerVersion(existingVer, tVer)) {
@@ -2470,11 +2470,11 @@ GM_addStyle(`
                                                 } else if (existingVer === tVer) {
                                                     installedHtml = `<span style="color:#e5a00d; border:1px solid #e5a00d; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;"><i class="fas fa-equals"></i> 이미 최신 버전 (현재: v${existingVer})</span>`;
                                                     btnText = '<i class="fas fa-redo"></i> 덮어쓰기 (재설치)';
-                                                    btnColor = "#e5a00d"; 
+                                                    btnColor = "#e5a00d";
                                                 } else {
                                                     installedHtml = `<span style="color:#bd362f; border:1px solid #bd362f; padding:2px 6px; border-radius:3px; font-size:10px; margin-left:8px;"><i class="fas fa-arrow-down"></i> 구버전 주의 (현재: v${existingVer})</span>`;
                                                     btnText = '<i class="fas fa-exclamation-triangle"></i> 강제 다운그레이드';
-                                                    btnColor = "#bd362f"; 
+                                                    btnColor = "#bd362f";
                                                 }
                                             }
 
@@ -2490,7 +2490,7 @@ GM_addStyle(`
                                                 </div>
                                                 <div style="color:#ccc; line-height:1.5; background:rgba(0,0,0,0.2); padding:8px; border-radius:4px;">${tDesc}</div>
                                             `;
-                                            
+
                                             btnInstall.disabled = false; btnInstall.innerHTML = btnText; btnInstall.style.background = btnColor; btnInstall.style.color = "#fff"; btnInstall.style.cursor = "pointer"; msgDiv.innerHTML = "";
 
                                         } catch (e) { previewDiv.innerHTML = `<div style="color:#bd362f;"><i class="fas fa-times"></i> 유효한 info.yaml 파일이 아닙니다.</div>`; }
@@ -2509,11 +2509,11 @@ GM_addStyle(`
                         btnInstall.onclick = async (e) => {
                             e.preventDefault(); e.stopPropagation();
                             if (!verifiedYamlUrl) return;
-                            
-                            btnCheck.disabled = true; btnInstall.disabled = true; 
+
+                            btnCheck.disabled = true; btnInstall.disabled = true;
                             btnInstall.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 설치 중...';
                             msgDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${ServerConfig.SERVERS.length}대의 서버에 설치 중...`;
-                            
+
                             let successCount = 0;
                             await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
                                 try {
@@ -2522,11 +2522,11 @@ GM_addStyle(`
                                     res();
                                 } catch(err) { res(); }
                             })));
-                            
+
                             btnCheck.disabled = false;
                             btnInstall.innerHTML = '<i class="fas fa-check"></i> 설치 완료';
-                            
-                            if (successCount > 0) { 
+
+                            if (successCount > 0) {
                                 pmhToolListCache = null;
                                 checkUpdate(true);
 
@@ -2536,8 +2536,8 @@ GM_addStyle(`
                                     btnInstall.style.background = "#555"; btnInstall.style.color = "#aaa"; btnInstall.style.cursor = "not-allowed";
                                     btnInstall.innerHTML = '<i class="fas fa-download"></i> 설치'; msgDiv.innerHTML = "";
                                 }, 2000);
-                            } else { 
-                                msgDiv.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> 설치 실패 (서버 상태 확인)</span>`; 
+                            } else {
+                                msgDiv.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> 설치 실패 (서버 상태 확인)</span>`;
                                 btnInstall.disabled = false; btnInstall.innerHTML = '<i class="fas fa-download"></i> 다시 시도';
                             }
                         };
@@ -2545,7 +2545,7 @@ GM_addStyle(`
                 }, 50);
                 return;
             }
-            
+
             const delBtn = e.target.closest('.pmh-tool-delete-btn');
             if (delBtn) {
                 e.preventDefault(); e.stopPropagation();
@@ -2559,20 +2559,20 @@ GM_addStyle(`
                             res();
                         } catch(err) { res(); }
                     })));
-                    
+
                     pmhToolListCache = null;
                     await checkUpdate(true);
                     fetchTools();
                 }
                 return;
             }
-            
+
             const runBtn = e.target.closest('.pmh-tool-run-btn');
             if (runBtn) {
                 e.preventDefault(); e.stopPropagation();
                 dropdown.style.display = 'none';
                 window._pmh_is_minimized = false;
-                openPmhToolUI(runBtn.dataset.id); 
+                openPmhToolUI(runBtn.dataset.id);
                 return;
             }
         };
@@ -2581,17 +2581,17 @@ GM_addStyle(`
             e.preventDefault(); e.stopPropagation();
             if (dropdown.style.display !== 'block') {
                 const rect = toolMenuBtn.getBoundingClientRect();
-                
+
                 dropdown.style.display = 'block';
                 let leftPos = rect.left + (rect.width / 2) - (dropdown.offsetWidth / 2);
                 if (leftPos + dropdown.offsetWidth > window.innerWidth - 10) {
                     leftPos = window.innerWidth - dropdown.offsetWidth - 10;
                 }
-                
+
                 dropdown.style.top = `${rect.bottom + 10}px`;
                 dropdown.style.left = `${leftPos}px`;
                 dropdown.style.right = 'auto';
-                
+
                 dropdown.innerHTML = `
                     <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
                         <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
@@ -2602,8 +2602,8 @@ GM_addStyle(`
                         서버에서 설치된 툴을 불러오고 있습니다...
                     </div>
                 `;
-                
-                fetchTools(); 
+
+                fetchTools();
             } else {
                 dropdown.style.display = 'none';
             }
@@ -2618,12 +2618,12 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 if (updateLinkBtn.dataset.updating) return;
                 updateLinkBtn.dataset.updating = "true";
-                
+
                 const originalHtml = updateLinkBtn.innerHTML;
                 updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 서버 확인 중...`;
-                
+
                 const targetVer = updateLinkBtn.dataset.ver;
-                
+
                 try {
                     const localPyVers = await pingLocalServer();
                     let actualServersToUpdate = [];
@@ -2635,11 +2635,11 @@ GM_addStyle(`
                             }
                         }
                     }
-                    
+
                     if (actualServersToUpdate.length > 0) {
                         updateLinkBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 서버/툴 업데이트 중...`;
                     }
-                    
+
                     let serverSuccess = true;
                     if (actualServersToUpdate.length > 0) {
                         serverSuccess = await triggerServerUpdate(showStatusMsg, actualServersToUpdate);
@@ -2647,13 +2647,13 @@ GM_addStyle(`
 
                     if (serverSuccess) {
                         infoLog(`[Update] Server update successful to v${targetVer}. Auto-clearing all caches to prevent schema conflicts...`);
-                        
+
                         try {
                             clearMemoryCache();
                             GM_deleteValue('pmh_ui_core_css_cache');
                             GM_deleteValue('pmh_ui_core_js_cache');
                             GM_deleteValue('pmh_ui_cache_version');
-                            
+
                             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear();
                             showStatusMsg(`업데이트 및 캐시 최적화 완료!`, '#51a351', 3000);
                             toastr.info("서버 업데이트가 완료되었으며, 기존 데이터 캐시를 비웠습니다.", "캐시 최적화 완료");
@@ -2665,23 +2665,23 @@ GM_addStyle(`
                         defaultColor = '#51a351';
                         showStatusMsg(defaultMsg, defaultColor, 0);
 
-                        setTimeout(() => { 
+                        setTimeout(() => {
                             let scriptUrl = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js";
                             if (typeof GM_info !== 'undefined' && GM_info.script) {
                                 scriptUrl = GM_info.script.downloadURL || GM_info.script.updateURL || scriptUrl;
                             }
-                            
-                            window.open(`${scriptUrl}?t=${Date.now()}`, "_blank"); 
+
+                            window.open(`${scriptUrl}?t=${Date.now()}`, "_blank");
                         }, 1000);
-                        
+
                     } else {
-                        delete updateLinkBtn.dataset.updating; 
+                        delete updateLinkBtn.dataset.updating;
                         updateLinkBtn.innerHTML = originalHtml;
                     }
                 } catch (e) {
                     errorLog("[Update Link Error]", e);
                     toastr.error("업데이트 중 치명적인 오류가 발생했습니다.");
-                    delete updateLinkBtn.dataset.updating; 
+                    delete updateLinkBtn.dataset.updating;
                     updateLinkBtn.innerHTML = originalHtml;
                 }
                 return;
@@ -2689,22 +2689,22 @@ GM_addStyle(`
 
             const updateBtn = e.target.closest('#pmh-manual-update-btn');
             if (updateBtn) {
-                e.preventDefault(); 
+                e.preventDefault();
                 e.stopPropagation();
-                
+
                 if (updateBtn.dataset.fetching === "true") return;
                 updateBtn.dataset.fetching = "true";
 
                 log("[UI] Manual update check button clicked.");
-                
+
                 const icon = updateBtn.querySelector('.pmh-sync-icon');
                 if (icon) icon.classList.add('fa-spin');
-                
+
                 showStatusMsg(`업데이트 확인 중...`, '#ccc', 0);
 
                 try {
                     const result = await checkUpdate(true);
-                    
+
                     const liveBtn = document.getElementById('pmh-manual-update-btn');
                     if (liveBtn) {
                         delete liveBtn.dataset.fetching;
@@ -2743,7 +2743,7 @@ GM_addStyle(`
                 } catch (err) {
                     errorLog("[Manual Update Error]", err);
                     showStatusMsg(`확인 실패`, '#bd362f', 4000);
-                    
+
                     const liveBtn = document.getElementById('pmh-manual-update-btn');
                     if (liveBtn) {
                         delete liveBtn.dataset.fetching;
@@ -2797,7 +2797,7 @@ GM_addStyle(`
         marker.className = 'pmh-render-marker';
         marker.style.display = 'none';
         marker.setAttribute('data-iid', id);
-        
+
         if (currentStateHash) marker.setAttribute('data-state-hash', currentStateHash);
         poster.appendChild(marker);
 
@@ -2816,7 +2816,7 @@ GM_addStyle(`
 
         if (info.is_friend_pending) {
             marker.setAttribute('data-friend-pending', 'true');
-            
+
             const fetchBtn = document.createElement('div');
             fetchBtn.className = 'plex-list-res-tag friend-fetch-btn';
             fetchBtn.innerHTML = '<i class="fas fa-sync-alt"></i>';
@@ -2922,14 +2922,14 @@ GM_addStyle(`
         if (state.listGuid) {
             const isWide = poster.clientWidth > 200;
             const currentLen = isWide ? state.guidLen * 2 : state.guidLen;
-            
+
             let short = '';
             let isUnmatched = false;
 
             const gBoxWrapper = document.createElement('div');
             gBoxWrapper.className = 'pmh-guid-wrapper pmh-fade-update';
             gBoxWrapper.style.cssText = "display: block; margin-top: 1px; line-height: 1.2;";
-            
+
             if (state.listMultiPath && info.path_count && info.path_count > 1) {
                 const pathBadge = document.createElement('span');
                 pathBadge.className = 'plex-list-multipath-badge';
@@ -2957,7 +2957,7 @@ GM_addStyle(`
                 short = info.g.length > currentLen ? info.g.substring(0, currentLen) + '...' : info.g;
                 gBox.textContent = short;
                 gBox.title = `${info.g} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
-                
+
                 const rawG = (info.raw_g || info.g || '').toLowerCase();
                 const isUnmatched = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
 
@@ -2965,9 +2965,9 @@ GM_addStyle(`
             } else {
                 gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>로딩 중...`;
                 gBox.style.color = '#adb5bd';
-                
-                gBox.title = '클릭 시 데이터 다시 불러오기 (8초 후 자동 시도)'; 
-                gBox.style.cursor = 'pointer'; 
+
+                gBox.title = '클릭 시 데이터 다시 불러오기 (8초 후 자동 시도)';
+                gBox.style.cursor = 'pointer';
 
                 setTimeout(() => {
                     if (gBox.isConnected && gBox.dataset.refreshing !== 'true' && gBox.innerHTML.includes('로딩 중')) {
@@ -2982,15 +2982,15 @@ GM_addStyle(`
 
             let abortPolling = false;
             gBox.addEventListener('click', async (e) => {
-                e.preventDefault(); 
+                e.preventDefault();
                 e.stopPropagation();
-                
+
                 if (gBox.dataset.refreshing === 'true') {
                     const queueInfo = window._pmh_media_queues && window._pmh_media_queues[id];
                     if (queueInfo && queueInfo.state === 'queued') {
                         gBox.innerHTML = `<i class="fas fa-ban" style="margin-right:4px;"></i>취소됨`;
                         gBox.style.color = '#bd362f';
-                        
+
                         let targetServerId = null;
                         try {
                             targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
@@ -2998,10 +2998,10 @@ GM_addStyle(`
                             if (srv) {
                                 await makeRequest(`${srv.relayUrl}/media/queue_cancel`, 'POST', { task_id: queueInfo.task_id }, ClientSettings.masterApiKey);
                             }
-                            
+
                             delete window._pmh_media_queues[id];
                             if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                            
+
                             toastr.warning('작업 대기가 취소되었습니다.', '취소됨', {timeOut: 2000});
                         } catch(err) {
                             console.error("[PMH] Cancel request failed", err);
@@ -3011,8 +3011,8 @@ GM_addStyle(`
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => m.remove());
 
-                            setTimeout(() => { 
-                                if (typeof processList === 'function') processList(); 
+                            setTimeout(() => {
+                                if (typeof processList === 'function') processList();
                             }, 1000);
                         }
                     }
@@ -3066,10 +3066,10 @@ GM_addStyle(`
 
                 try {
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/${id}/${apiAction}`, 'POST', extraData, ClientSettings.masterApiKey);
-                    
+
                     if (res.status === 'queued') {
                         gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px; color:#51a351;"></i>큐 추가됨`;
-                        
+
                         let itemDisplayName = "알 수 없는 항목";
                         if (info.p) {
                             const pParts = info.p.split(/[\\/]/);
@@ -3090,7 +3090,7 @@ GM_addStyle(`
                         setTimeout(() => {
                             if (gBox.isConnected && window._pmh_media_queues && window._pmh_media_queues[id]) {
                                 const currentState = window._pmh_media_queues[id].state;
-                                
+
                                 if (currentState === 'queued') {
                                     gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
                                     gBox.style.color = '#e5a00d';
@@ -3109,7 +3109,7 @@ GM_addStyle(`
                     if (gBox.isConnected) {
                         gBox.innerHTML = `<i class="fas fa-times"></i> 요청 실패`;
                         gBox.style.color = '#bd362f';
-                        
+
                         setTimeout(() => {
                             if (gBox.isConnected) {
                                 gBox.innerHTML = originHTML;
@@ -3156,7 +3156,7 @@ GM_addStyle(`
     window.startQueuePolling = function(serverId) {
         if (window._pmh_polling_active) return;
         if (Object.keys(window._pmh_media_queues).length === 0) return;
-        
+
         window._pmh_polling_active = true;
         let consecutiveErrors = 0;
 
@@ -3180,10 +3180,10 @@ GM_addStyle(`
                         if (!qInfo) continue;
 
                         const status = res[qInfo.task_id];
-                        
+
                         if (!status || status.state === 'unknown' || status.state === 'error') {
                             const isUnknown = !status || status.state === 'unknown';
-                            
+
                             if (status && status.state === 'error') {
                                 const failName = qInfo.title || "알 수 없는 항목";
                                 toastr.error(`<b>[${failName}]</b><br>작업 실패: ${status.msg}`, "오류", {timeOut: 6000});
@@ -3194,10 +3194,10 @@ GM_addStyle(`
                             deleteMemoryCache(`D_${serverId}_${id}`);
                             deleteMemoryCache(`F_${serverId}_${id}`);
                             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
-                            
+
                             delete window._pmh_media_queues[id];
                             if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                            
+
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => {
                                 const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
@@ -3210,11 +3210,11 @@ GM_addStyle(`
                                     m.remove();
                                 }
                             });
-                        } 
-                        
+                        }
+
                         else if (status.state === 'completed') {
                             infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 즉시 강제 갱신을 시도합니다.`);
-                            
+
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => {
                                 const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
@@ -3227,13 +3227,13 @@ GM_addStyle(`
 
                             delete window._pmh_media_queues[id];
                             if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                            
+
                             (async () => {
                                 await new Promise(r => setTimeout(r, 1500));
                                 try {
                                     const plexSrv = extractPlexServerInfo(serverId);
                                     if (!plexSrv) return;
-                                    
+
                                     let meta = await fetchPlexMetaFallback(id, plexSrv);
                                     if (!meta) {
                                         const failMarkers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
@@ -3252,7 +3252,7 @@ GM_addStyle(`
                                     const updatedInfo = convertPlexMetaToLocalData(meta, id);
                                     const oldCache = getMemoryCache(`L_${serverId}_${id}`) || {};
                                     const mergedInfo = { ...oldCache, ...updatedInfo };
-                                    
+
                                     setMemoryCache(`L_${serverId}_${id}`, mergedInfo);
                                     if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.add(id);
 
@@ -3263,34 +3263,34 @@ GM_addStyle(`
                                         let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
                                         if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
                                         if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
-                                            
+
                                             let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
                                             if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
-                                            
+
                                             if (livePoster) {
                                                 livePoster.querySelector('.pmh-render-marker')?.remove();
                                                 livePoster.querySelector('.pmh-top-right-wrapper')?.remove();
                                                 live.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
-                                                
+
                                                 renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
                                             }
                                         }
                                     }
                                 } catch (e) {
                                     errorLog(`[Queue Callback] Direct render failed for ${id}:`, e);
-                                    needsListRefresh = true; 
+                                    needsListRefresh = true;
                                 }
                             })();
                         }
-                        
+
                         else if (status.state === 'processing' || status.state === 'queued') {
                             const previousState = qInfo.state;
                             const newState = status.state;
-                            
+
                             if (previousState !== newState) {
                                 window._pmh_media_queues[id].state = newState;
                                 if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                                
+
                                 const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                                 markers.forEach(m => {
                                     const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
@@ -3311,13 +3311,13 @@ GM_addStyle(`
                 } catch (e) {
                     consecutiveErrors++;
                     errorLog("[Queue Polling] 네트워크 통신 오류 (연속 에러 카운트: " + consecutiveErrors + ")", e);
-                    
+
                     if (consecutiveErrors === 20) {
                         toastr.warning("서버 연결이 원활하지 않아 대기열 추적이 일시 지연되고 있습니다. 연결이 복구되면 자동으로 추적을 재개합니다.", "연결 불안정");
                     }
                 }
             }
-            
+
             if (Object.keys(window._pmh_media_queues).length > 0) {
                 if (window._pmh_queue_poll_timer) clearTimeout(window._pmh_queue_poll_timer);
                 window._pmh_queue_poll_timer = setTimeout(pollLoop, 3000);
@@ -3352,7 +3352,7 @@ GM_addStyle(`
 
         itemWrappers.forEach(cont => {
             let link = cont.querySelector('a.PosterCardLink-link-LozvMm, a[data-testid="metadataTitleLink"]');
-            
+
             if (!link) {
                 const fallbackLinks = cont.querySelectorAll('a[href*="/metadata/"]');
                 link = fallbackLinks[0];
@@ -3377,14 +3377,14 @@ GM_addStyle(`
             const currentStateHash = getItemStateHash(cont);
             const marker = cont.querySelector('.pmh-render-marker');
             let isAlreadyRendered = false;
-            
+
             if (marker && marker.getAttribute('data-iid') === iid) {
                 const markerHash = marker.getAttribute('data-state-hash');
                 const isStale = marker.getAttribute('data-stale') === 'true';
-                
+
                 if (isStale || (markerHash && currentStateHash && markerHash !== currentStateHash)) {
                     log(`[List] UI State changed or marked stale for ID: ${iid}. Forcing bypass validation.`);
-                    changedItems.add(iid); 
+                    changedItems.add(iid);
                     sessionRevalidated.delete(iid);
                     isAlreadyRendered = false;
                 } else {
@@ -3394,11 +3394,11 @@ GM_addStyle(`
                     } else {
                         const isFriendPending = marker.getAttribute('data-friend-pending') === 'true';
                         let badgeMissing = false;
-                        
+
                         if ((state.listTag || state.listPlay || isFriendPending) && !cont.querySelector('.pmh-top-right-wrapper')) badgeMissing = true;
-                        
+
                         if (!isFriendPending && (state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) badgeMissing = true;
-                        
+
                         if (!badgeMissing) isAlreadyRendered = true;
                     }
                 }
@@ -3432,7 +3432,7 @@ GM_addStyle(`
             const srvConfig = getServerConfig(item.sid);
             let cacheKey = srvConfig ? `L_${item.sid}_${item.iid}` : `F_${item.sid}_${item.iid}`;
             let cData = getMemoryCache(cacheKey);
-            
+
             if (!cData && srvConfig) {
                 cData = getMemoryCache(`F_${item.sid}_${item.iid}`);
                 if (cData) cacheKey = `F_${item.sid}_${item.iid}`;
@@ -3440,7 +3440,7 @@ GM_addStyle(`
 
             if (cData) {
                 if (changedItems.has(item.iid)) {
-                    return; 
+                    return;
                 }
 
                 if (cData.ignored) {
@@ -3457,7 +3457,7 @@ GM_addStyle(`
                     item.isRendered = true;
                     return;
                 }
-                
+
                 if (!cData.saved_state_hash && item.currentStateHash) {
                     cData.saved_state_hash = item.currentStateHash;
                     setMemoryCache(`L_${item.sid}_${item.iid}`, cData);
@@ -3523,9 +3523,9 @@ GM_addStyle(`
                 if (idsToFetch.length > 0) {
                     try {
                         const fetchedDbData = await makeRequest(
-                            `${srvConfig.relayUrl}/library/batch`, 
-                            'POST', 
-                            { ids: idsToFetch, check_multi_path: state.listMultiPath }, 
+                            `${srvConfig.relayUrl}/library/batch`,
+                            'POST',
+                            { ids: idsToFetch, check_multi_path: state.listMultiPath },
                             ClientSettings.masterApiKey
                         );
 
@@ -3544,12 +3544,12 @@ GM_addStyle(`
                             sessionRevalidated.add(id);
                             const oldCache = getMemoryCache(`L_${serverId}_${id}`);
                             const newData = fetchedDbData[id] || { ignored: true };
-                            
+
                             const matchingItem = itemsToRevalidate.find(p => p.iid === id);
                             if (matchingItem && matchingItem.currentStateHash) {
                                 newData.saved_state_hash = matchingItem.currentStateHash;
                             }
-                            
+
                             if (oldCache) {
                                 newData.analyze_count = oldCache.analyze_count || 0;
                                 newData.last_analyze_time = oldCache.last_analyze_time || 0;
@@ -3557,19 +3557,29 @@ GM_addStyle(`
                                 newData.last_cooldown_log = oldCache.last_cooldown_log || 0;
                                 newData.saved_title = oldCache.saved_title || '';
                             }
-                            
+
                             if (!oldCache || !isDataEqual(oldCache, newData)) {
                                 setMemoryCache(`L_${serverId}_${id}`, newData);
-                                
-                                pendingItems.filter(p => p.sid === serverId && p.iid === id).forEach(item => {
-                                    item.poster.querySelector('.pmh-render-marker')?.remove();
-                                    
-                                    if (!newData.ignored) {
-                                        let displayData = { ...newData, tags: applyUserTags(newData.p, newData.tags) };
-                                        renderListBadges(item.cont, item.poster, item.link, displayData, srvConfig, id);
-                                        item.isRendered = true;
+
+                                const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
+                                for (const live of liveWrappers) {
+                                    let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
+                                    if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                                    if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
+
+                                        let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+                                        if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+
+                                        if (livePoster) {
+                                            livePoster.querySelector('.pmh-render-marker')?.remove();
+                                            livePoster.querySelector('.pmh-top-right-wrapper')?.remove();
+                                            live.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
+
+                                            let displayData = { ...newData, tags: applyUserTags(newData.p, newData.tags) };
+                                            renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
+                                        }
                                     }
-                                });
+                                }
                             } else {
                                 pendingItems.filter(p => p.sid === serverId && p.iid === id && !p.isRendered).forEach(item => {
                                     item.poster.querySelector('.pmh-render-marker')?.remove();
@@ -3593,7 +3603,7 @@ GM_addStyle(`
                     if (addedToNewQueue.has(id)) return;
                     const existsInPending = pendingItems.some(p => p.iid === id && p.sid === serverId);
                     if (!existsInPending) return;
-                    
+
                     addedToNewQueue.add(id);
                     queueCount++;
 
@@ -3621,7 +3631,7 @@ GM_addStyle(`
 
                                 const fallbackTags = parsePlexFallbackTags(meta);
                                 const updatedInfo = convertPlexMetaToLocalData(meta, id);
-                                
+
                                 const oldCache = getMemoryCache(`L_${serverId}_${id}`);
                                 if (oldCache) {
                                     updatedInfo.analyze_count = oldCache.analyze_count || 0;
@@ -3656,7 +3666,7 @@ GM_addStyle(`
                                 if (session === currentRenderSession) {
                                     setMemoryCache(`L_${serverId}_${id}`, updatedInfo);
                                     sessionRevalidated.add(id);
-                                    
+
                                     let displayData = { ...updatedInfo, tags: applyUserTags(updatedInfo.p, updatedInfo.tags) };
 
                                     const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
@@ -3669,7 +3679,7 @@ GM_addStyle(`
                                             if (livePoster) {
                                                 livePoster.querySelector('.pmh-render-marker')?.remove();
                                                 renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
-                                                
+
                                                 const matchedPending = pendingItems.find(p => p.poster === livePoster);
                                                 if (matchedPending) matchedPending.isRendered = true;
                                             }
@@ -3691,7 +3701,7 @@ GM_addStyle(`
                     if (!info || info.ignored) return;
 
                     const pItem = pendingItems.find(p => p.iid === item.iid && !p.isRendered);
-                    
+
                     if (pItem) {
                         let displayData = { ...info, tags: applyUserTags(info.p, info.tags) };
                         renderListBadges(item.cont, pItem.poster, item.link, displayData, srvConfig, item.iid);
@@ -3699,7 +3709,7 @@ GM_addStyle(`
                     }
 
                     const hasResBadge = info.tags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
-                    const isVideo = !!info.part_id; 
+                    const isVideo = !!info.part_id;
                     const analyzeCount = info.analyze_count || 0;
                     const lastAnalyzeTime = info.last_analyze_time || 0;
                     const now = Date.now();
@@ -3710,7 +3720,7 @@ GM_addStyle(`
                     const isDummyGuid = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
                     const oldGuidAttr = item.cont.querySelector('.plex-guid-list-box')?.getAttribute('title') || '';
                     const isCurrentlyShowingDummy = oldGuidAttr.includes('local://') || oldGuidAttr.includes('none://');
-                    
+
                     const dbStillNotSynced = (changedItems.has(item.iid) || isCurrentlyShowingDummy) && (isDummyGuid || oldGuidAttr.includes(info.g));
 
                     let logTitle = "Unknown Title";
@@ -3740,11 +3750,11 @@ GM_addStyle(`
                             const wrapper = item.cont.querySelector('.pmh-top-right-wrapper');
                             if (wrapper) {
                                 const errBadge = document.createElement('div');
-                                errBadge.className = 'plex-list-res-tag pmh-corrupt-badge'; 
+                                errBadge.className = 'plex-list-res-tag pmh-corrupt-badge';
                                 errBadge.textContent = '?';
                                 errBadge.title = '파일 분석 3회 실패 (손상 의심)';
                                 wrapper.insertBefore(errBadge, wrapper.firstChild);
-                                
+
                                 let tempCache = getMemoryCache(`L_${serverId}_${item.iid}`);
                                 if (tempCache && !tempCache.corrupt_logged) {
                                     warnLog(`[Analyze-Failed] ⚠️ Analysis failed 3 times for [${logTitle}] (ID: ${item.iid}). Marked as Corrupt.`);
@@ -3767,7 +3777,7 @@ GM_addStyle(`
 
                                 const latestCache = getMemoryCache(`L_${serverId}_${item.iid}`);
                                 const alreadyHasRes = latestCache && latestCache.tags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
-                                
+
                                 if (!dbStillNotSynced && latestCache && alreadyHasRes) return;
 
                                 try {
@@ -3788,23 +3798,23 @@ GM_addStyle(`
 
                                     if (!m || ((!m.width || m.width === 0) && !m.videoResolution)) {
                                         currentAnalyzeCount += 1;
-                                        currentAnalyzeTime = Date.now(); 
-                                        
+                                        currentAnalyzeTime = Date.now();
+
                                         meta = await analyzeAndFetchPlexMeta(item.iid, plexSrv);
                                         if (meta) fallbackTags = parsePlexFallbackTags(meta);
                                     }
 
-                                    let updatedInfo = { 
-                                        g: info.g, raw_g: info.raw_g, p: info.p, tags: [...info.tags], 
+                                    let updatedInfo = {
+                                        g: info.g, raw_g: info.raw_g, p: info.p, tags: [...info.tags],
                                         part_id: info.part_id, sub_id: info.sub_id, sub_url: info.sub_url, path_count: info.path_count,
                                         analyze_count: currentAnalyzeCount,
                                         last_analyze_time: currentAnalyzeTime,
                                         corrupt_logged: info.corrupt_logged,
                                         last_cooldown_log: info.last_cooldown_log
                                     };
-                                    
+
                                     let needsUpdate = false;
-                                    
+
                                     if (isUnanalyzed) needsUpdate = true;
 
                                     if (dbStillNotSynced && meta && meta.guid && meta.guid !== updatedInfo.raw_g) {
@@ -3812,7 +3822,7 @@ GM_addStyle(`
                                         updatedInfo.raw_g = meta.guid;
                                         needsUpdate = true;
                                     }
-                                    
+
                                     if (dbStillNotSynced) needsUpdate = true;
 
                                     const newlyHasRes = fallbackTags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
@@ -3826,7 +3836,7 @@ GM_addStyle(`
                                         if (!hasResBadge || dbStillNotSynced) {
                                             updatedInfo.tags = Array.from(new Set([...fallbackTags, ...updatedInfo.tags]));
                                             needsUpdate = true;
-                                        } 
+                                        }
                                         if (fallbackTags.includes("SUB") && !updatedInfo.tags.includes("SUB")) {
                                             updatedInfo.tags.push("SUB");
                                             needsUpdate = true;
@@ -3872,7 +3882,7 @@ GM_addStyle(`
                                                 if (livePoster) {
                                                     livePoster.querySelector('.pmh-render-marker')?.remove();
                                                     renderListBadges(live, livePoster, liveLink, displayData, srvConfig, item.iid);
-                                                    
+
                                                     const matchedPending = pendingItems.find(p => p.poster === livePoster);
                                                     if (matchedPending) matchedPending.isRendered = true;
                                                 }
@@ -3887,7 +3897,7 @@ GM_addStyle(`
 
                 if (queueCount > 0) processGlobalFallbackQueue();
             }
-        }, 500); 
+        }, 500);
     }
 
     // ==========================================
@@ -3896,9 +3906,9 @@ GM_addStyle(`
     function renderLoadingBox(container) {
         const existingBox = document.getElementById('plex-guid-box');
         if (existingBox && existingBox.dataset.state === 'loading') return;
-        
+
         if (existingBox) existingBox.remove();
-        
+
         const loadingHtml = `
         <div id="plex-guid-box" data-state="loading" style="margin-top: 15px; margin-bottom: 10px; width: 100%;">
             <div style="color:#e5a00d; font-size:16px; margin-bottom:8px; font-weight:bold; display:flex; align-items:center;">
@@ -3959,7 +3969,7 @@ GM_addStyle(`
                 let meta = await fetchPlexMetaFallback(itemId, plexSrv);
                 if (meta && session === currentRenderSession) {
                     let friendData = convertPlexMetaToLocalData(meta, itemId);
-                    
+
                     const oldCache = getMemoryCache(cacheKey);
                     if (!hasDisplayedCache || JSON.stringify(oldCache) !== JSON.stringify(friendData)) {
                         setMemoryCache(cacheKey, friendData);
@@ -4126,7 +4136,7 @@ GM_addStyle(`
                     const localPath = getLocalPath(serverPath);
                     const ePath = encodePathSafe(localPath);
                     folderIconHtml = `<a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열기" data-path="${localPath}"><i class="fas fa-folder-open"></i></a>`;
-                    
+
                     if (isRoot) {
                         pathLinkHtml = generateSplitPathHtml(serverPath, data.librarySectionID, 'directory', '');
                     } else {
@@ -4165,25 +4175,25 @@ GM_addStyle(`
             if (data.type === 'album' && data.tracks && data.tracks.length > 0) {
                 versionsHtml += `<div style="border-top: 1px dashed #444; padding: 10px 8px 0 8px;">
                                     <div style="font-size: 12px; color: #a3a3a3; font-weight: bold; margin-bottom: 8px;"><i class="fas fa-list-ol"></i> 수록곡 목록 (${data.tracks.length} 트랙)</div>`;
-                
+
                 data.tracks.forEach(t => {
                     let playExtBtn = `<span style="color:#555;" title="지원하지 않음"><i class="fas fa-play"></i></span>`;
                     let streamBtn = `<span style="color:#555;" title="지원하지 않음"><i class="fas fa-wifi"></i></span>`;
-                    
+
                     if (srvConfig && t.file) {
                         const ePath = encodePathSafe(getLocalPath(t.file));
                         const btnStyle = "display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:4px; background:rgba(0,0,0,0.2); border:1px solid rgba(255,255,255,0.05); transition:0.2s;";
-                        
+
                         playExtBtn = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" style="${btnStyle} color:#2f96b4;" title="로컬 재생" data-filename="${t.file.split(/[\\/]/).pop() || t.file}" onmouseover="this.style.background='rgba(47,150,180,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-play"></i></a>`;
-                        
+
                         if (t.part_id && plexSrv) {
                             const vUrl = `${plexSrv.url}/library/parts/${t.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${data.itemId}`;
                             let justFileName = "Unknown_Audio.mp3";
                             const pathParts = t.file.split(/[\\/]/);
                             justFileName = pathParts[pathParts.length - 1];
-                            
+
                             const streamPayload = encodePathSafe(vUrl) + '%7C%7C' + encodePathSafe(justFileName);
-                            
+
                             streamBtn = `<a href="plexstream://${streamPayload}" class="plex-guid-action plex-play-stream" style="${btnStyle} color:#e5a00d;" title="스트리밍" data-filename="${justFileName}" onmouseover="this.style.background='rgba(229,160,13,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-wifi"></i></a>`;
                         }
                     }
@@ -4308,9 +4318,9 @@ GM_addStyle(`
                     const localFilePath = getLocalPath(v.file);
                     const ePath = encodePathSafe(localFilePath);
                     let justFileName = v.file.split(/[\\/]/).pop() || v.file;
-                    
+
                     playExternalHtml = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" title="로컬 재생" data-filename="${justFileName}"><i class="fas fa-play"></i></a>`;
-                    
+
                     openFolderHtml = `<a href="plexfolder://${ePath}" class="plex-guid-action plex-open-folder" title="폴더 열고 파일 선택" data-path="${localFilePath}"><i class="fas fa-folder-open"></i></a>`;
 
                     const uTags = applyUserTags(v.file, []);
@@ -4396,7 +4406,7 @@ GM_addStyle(`
 
         const boxHtml = `
         <div id="plex-guid-box" class="pmh-fade-update" style="margin-top: 15px; width: 100%; position: relative;">
-            
+
             <div style="color:#e5a00d; font-size:16px; font-weight:bold; display:flex; align-items:baseline;">
                 미디어 정보
                 <span style="margin-left: 12px; font-weight: normal; letter-spacing: -0.5px; font-size: 11px;">
@@ -4404,9 +4414,9 @@ GM_addStyle(`
                     ${refreshMetaBtnHtml}
                 </span>
             </div>
-            
+
             <div style="border-top: 1px solid rgba(255,255,255,0.1);"></div>
-            
+
             <div id="plex-guid-content">
                 ${versionsHtml}
                 ${mateBtnHtml}
@@ -4421,9 +4431,9 @@ GM_addStyle(`
                     ${markersHtml}
                 </div>` : ''}
             </div>
-            
+
             <div style="border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 4px;"></div>
-            
+
         </div>`;
 
         container.insertAdjacentHTML('afterend', boxHtml);
@@ -4467,15 +4477,15 @@ GM_addStyle(`
 
         const smartRefreshChildren = () => {
             if (renderSessionAtClick !== currentRenderSession) return;
-            
+
             const itemWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]`);
-            
+
             itemWrappers.forEach(cont => {
                 if (cont.closest('div[class*="VirtualHubScroller-"]')) return;
 
                 let link = cont.querySelector('a[data-testid="metadataTitleLink"]') || cont.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
                 if (!link) return;
-                
+
                 try {
                     const href = link.getAttribute('href');
                     const keyParam = new URLSearchParams(href.split('?')[1]).get('key');
@@ -4483,7 +4493,7 @@ GM_addStyle(`
                         const iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
                         if (iid && serverId) {
                             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(iid);
-                            
+
                             const marker = cont.querySelector('.pmh-render-marker');
                             if (marker) {
                                 marker.setAttribute('data-stale', 'true');
@@ -4492,7 +4502,7 @@ GM_addStyle(`
                     }
                 } catch(e) {}
             });
-            
+
             setTimeout(() => { if (typeof processList === 'function' && renderSessionAtClick === currentRenderSession) processList(); }, 50);
         };
 
@@ -4501,7 +4511,7 @@ GM_addStyle(`
                 await new Promise(r => setTimeout(r, 2000));
                 const statusRes = await makeRequest(`${srvConfig.relayUrl}/media/queue_status?task_ids=${taskId}`, 'GET', null, ClientSettings.masterApiKey);
                 const statusInfo = statusRes[taskId];
-                
+
                 if (!statusInfo || statusInfo.state === 'completed') return true;
                 if (statusInfo.state === 'error') throw new Error(statusInfo.msg || "서버 작업 실패");
             }
@@ -4514,17 +4524,17 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 if (btnRefreshData.dataset.refreshing) return;
                 infoLog(`[Detail] Data re-fetch requested. Clearing memory cache for Item: ${data.itemId}`);
-                
+
                 btnRefreshData.dataset.refreshing = "true";
                 btnRefreshData.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>정보 새로고침 중...`;
-                
+
                 showBoxLoading();
-                
+
                 deleteMemoryCache(srvConfig ? `D_${serverId}_${data.itemId}` : `F_${serverId}_${data.itemId}`);
                 if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
-                
+
                 currentDisplayedItemId = null;
-                setTimeout(() => { 
+                setTimeout(() => {
                     processDetail(true);
                     smartRefreshChildren();
                 }, 100);
@@ -4546,7 +4556,7 @@ GM_addStyle(`
                     btnRefreshMeta.title = "";
                     hideBoxLoading();
                     toastr.warning("요청이 취소되었습니다.", "취소됨", {timeOut: 2000});
-                    
+
                     setTimeout(() => {
                         if (btnRefreshMeta.isConnected) {
                             btnRefreshMeta.innerHTML = originalHtml;
@@ -4582,7 +4592,7 @@ GM_addStyle(`
 
                     let pollSuccess = false;
                     for (let attempt = 0; attempt < 60; attempt++) {
-                        if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return; 
+                        if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return;
                         await new Promise(r => setTimeout(r, 2500));
                         if (renderSessionAtClick !== currentRenderSession || abortDetailRefresh) return;
 
@@ -4606,10 +4616,10 @@ GM_addStyle(`
                     } else {
                         toastr.warning("응답 지연으로 대기를 종료합니다.<br>현재 확보된 데이터로 UI를 새로고침합니다.", "시간 초과", {timeOut: 4000});
                     }
-                    
+
                     deleteMemoryCache(`D_${serverId}_${data.itemId}`);
                     if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
-                    
+
                     currentDisplayedItemId = null;
                     processDetail(true);
                     smartRefreshChildren();
@@ -4617,7 +4627,7 @@ GM_addStyle(`
                 } else {
                     infoLog(`[Detail] Background Metadata Refresh requested for matched Item: ${data.itemId}`);
                     toastr.success("Plex에 메타 새로고침을 요청했습니다.<br>변경 감지시 정보가 갱신됩니다.", "요청 완료", {timeOut: 4000});
-                    
+
                     triggerPlexMediaAction(data.itemId, 'refresh', plexSrv, srvConfig);
 
                     setTimeout(() => {
@@ -4629,7 +4639,7 @@ GM_addStyle(`
                     }, 1000);
 
                     const checkDelays = [3000, 6000, 9000];
-                    
+
                     checkDelays.forEach(delay => {
                         setTimeout(async () => {
                             if (currentSessionAtRequest !== currentRenderSession || abortDetailRefresh) return;
@@ -4644,7 +4654,7 @@ GM_addStyle(`
                                 const isSubUrlChanged = (oldDataSnapshot.sub_url !== newData.sub_url);
                                 const isGuidChanged = (oldDataSnapshot.guid !== newData.guid);
                                 const isResChanged = JSON.stringify(oldDataSnapshot.tags) !== JSON.stringify(newData.tags);
-                                
+
                                 let isSubCountChanged = false;
                                 if (oldDataSnapshot.versions && newData.versions && oldDataSnapshot.versions[0] && newData.versions[0]) {
                                     const oldSubCount = oldDataSnapshot.versions[0].subs ? oldDataSnapshot.versions[0].subs.length : 0;
@@ -4654,15 +4664,15 @@ GM_addStyle(`
 
                                 if (isSubUrlChanged || isGuidChanged || isResChanged || isSubCountChanged) {
                                     infoLog(`[Detail] Background watcher detected metadata changes after ${delay/1000}s. Auto-refreshing UI.`);
-                                    
+
                                     if (currentSessionAtRequest === currentRenderSession && document.getElementById('plex-guid-box')) {
                                         deleteMemoryCache(`D_${serverId}_${data.itemId}`);
                                         if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
-                                        
+
                                         currentDisplayedItemId = null;
                                         processDetail(true);
                                         smartRefreshChildren();
-                                        abortDetailRefresh = true; 
+                                        abortDetailRefresh = true;
                                     }
                                 }
                             } catch (e) {
@@ -4687,14 +4697,14 @@ GM_addStyle(`
                     abortDetailRefresh = true;
                     btnRematch.innerHTML = `<i class="fas fa-times" style="font-size: 10px; margin-right: 2px;"></i>취소됨`;
                     btnRematch.title = "";
-                    
+
                     if (btnRematch.cancelToken && btnRematch.cancelToken.abort) {
                         btnRematch.cancelToken.abort();
                     }
-                    
+
                     hideBoxLoading();
                     toastr.warning("메타 리매칭이 취소되었습니다.", "취소됨", {timeOut: 2000});
-                    
+
                     setTimeout(() => {
                         if (btnRematch.isConnected) {
                             btnRematch.innerHTML = originalHtml;
@@ -4708,31 +4718,31 @@ GM_addStyle(`
                 abortDetailRefresh = false;
                 btnRematch.dataset.refreshing = 'true';
                 btnRematch.cancelToken = {};
-                
+
                 btnRematch.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>리매칭 진행중`;
                 btnRematch.title = "클릭시 강제 취소";
 
                 showBoxLoading();
                 infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
-                
-                const matchOptions = { 
-                    _try_refresh_first: false, 
-                    _do_unmatch_first: true, 
+
+                const matchOptions = {
+                    _try_refresh_first: false,
+                    _do_unmatch_first: true,
                     _skip_sim_check: ClientSettings.matchSkipSimCheck,
                     _custom_agent_score: ClientSettings.customAgentScore
                 };
-                
+
                 toastr.info("서버에서 메타 리매칭을 수행합니다.", "리매칭 시작", {timeOut: 8000});
 
                 let isRematchSuccess = false;
 
                 try {
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey, btnRematch.cancelToken);
-                    
+
                     if (res.status === 'queued') {
                         await waitQueueTask(res.task_id, srvConfig);
                     }
-                    
+
                     if (globalAbortFlag || renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
 
                     isRematchSuccess = true;
@@ -4745,7 +4755,7 @@ GM_addStyle(`
                         toastr.error(`${err.message}`, "매칭 실패", {timeOut: 5000});
                         errorLog(`[Detail] Rematch failed for Item: ${data.itemId}. Reason: ${err.message}`);
                     }
-                    
+
                     hideBoxLoading();
                     if (btnRematch.isConnected) {
                         btnRematch.innerHTML = originalHtml;
@@ -4757,7 +4767,7 @@ GM_addStyle(`
                         invalidateVisibleCaches(serverId);
                         deleteMemoryCache(`D_${serverId}_${data.itemId}`);
                         currentDisplayedItemId = null;
-                        processDetail(true); 
+                        processDetail(true);
                         smartRefreshChildren();
                     }
                 }
@@ -4777,9 +4787,9 @@ GM_addStyle(`
                     abortDetailRefresh = true;
                     btnAnalyze.innerHTML = `<i class="fas fa-times" style="font-size: 10px; margin-right: 2px;"></i>취소됨`;
                     btnAnalyze.title = "";
-                    hideBoxLoading(); 
+                    hideBoxLoading();
                     toastr.warning("미디어 분석 대기가 취소되었습니다.", "취소됨", {timeOut: 2000});
-                    
+
                     setTimeout(() => {
                         if (btnAnalyze.isConnected) {
                             btnAnalyze.innerHTML = originalHtml;
@@ -4812,16 +4822,16 @@ GM_addStyle(`
                     if (res.status === 'queued') {
                         await waitQueueTask(res.task_id, srvConfig);
                     }
-                    
+
                     toastr.success("미디어 분석 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 3000});
-                    
+
                     deleteMemoryCache(`D_${serverId}_${data.itemId}`);
                     if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
-                    
+
                     currentDisplayedItemId = null;
                     processDetail(true);
                     smartRefreshChildren();
-                    
+
                 } catch (err) {
                     if (err.message !== "Cancelled") {
                         toastr.error(`분석 실패: ${err.message}`, "오류", {timeOut: 5000});
@@ -4834,23 +4844,23 @@ GM_addStyle(`
         }
 
         document.querySelectorAll('#plex-guid-box .plex-play-external').forEach(el => {
-            el.addEventListener('click', () => { 
+            el.addEventListener('click', () => {
                 const fname = el.dataset.filename || '미디어 파일';
-                toastr.info(`로컬 외부 플레이어로 재생을 시도합니다.<br>[${fname}]`, '로컬 재생'); 
+                toastr.info(`로컬 외부 플레이어로 재생을 시도합니다.<br>[${fname}]`, '로컬 재생');
             });
         });
-        
+
         document.querySelectorAll('#plex-guid-box .plex-open-folder').forEach(el => {
-            el.addEventListener('click', () => { 
+            el.addEventListener('click', () => {
                 const path = el.dataset.path || '로컬 폴더';
-                toastr.info(`로컬 탐색기로 경로를 엽니다.<br>[${path}]`, '폴더 열기'); 
+                toastr.info(`로컬 탐색기로 경로를 엽니다.<br>[${path}]`, '폴더 열기');
             });
         });
-        
+
         document.querySelectorAll('#plex-guid-box .plex-play-stream').forEach(el => {
-            el.addEventListener('click', () => { 
+            el.addEventListener('click', () => {
                 const fname = el.dataset.filename || '스트리밍 영상';
-                toastr.info(`네트워크 스트리밍을 호출합니다.<br>[${fname}]`, '스트리밍'); 
+                toastr.info(`네트워크 스트리밍을 호출합니다.<br>[${fname}]`, '스트리밍');
             });
         });
 
@@ -4897,11 +4907,11 @@ GM_addStyle(`
         document.querySelectorAll('#plex-guid-box .plex-path-scan-link').forEach(el => {
             el.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
-                
+
                 let scanPath = el.dataset.path;
                 infoLog(`[PlexMate] VFS/Library Scan requested for path: ${scanPath}`);
                 const sectionId = el.dataset.sectionId;
-                
+
                 if (el.dataset.type === 'video') {
                     const lastSlash = Math.max(scanPath.lastIndexOf('/'), scanPath.lastIndexOf('\\'));
                     if (lastSlash > -1) scanPath = scanPath.substring(0, lastSlash);
@@ -4909,27 +4919,27 @@ GM_addStyle(`
 
                 const parentDiv = el.closest('div');
                 let overlay = null;
-                
+
                 if (parentDiv) {
                     parentDiv.style.position = 'relative';
                     parentDiv.style.pointerEvents = 'none';
-                    
+
                     overlay = document.createElement('div');
                     overlay.className = 'pmh-path-scan-overlay';
                     overlay.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; background-color:rgba(0,0,0,0.4); border-radius:4px; z-index:10;';
                     overlay.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size:16px; color:#e5a00d;"></i>`;
-                    
+
                     parentDiv.appendChild(overlay);
                 }
 
                 try {
                     toastr.info(`[1/2] VFS/Refresh 요청 중...<br>${scanPath}`, "Web 스캔 시작", {timeOut: 3000});
-                    
+
                     const vfsRes = await callPlexMateViaRelay(srvConfig, '/scan/vfs_refresh', { target: scanPath, recursive: 'true', async: 'false' });
                     if (vfsRes.ret !== 'success') throw new Error(vfsRes.msg || "VFS Refresh 실패");
 
                     toastr.info(`[2/2] VFS/Refresh 완료. 라이브러리 스캔 요청 중...`, "스캔", {timeOut: 3000});
-                    
+
                     const scanRes = await callPlexMateViaRelay(srvConfig, '/scan/do_scan', { target: scanPath, target_section_id: sectionId, scanner: 'web' });
 
                     if (scanRes.ret === 'success') {
@@ -4966,22 +4976,22 @@ GM_addStyle(`
                     if (res.status === 'queued') {
                         await waitQueueTask(res.task_id, srvConfig);
                     }
-                    
+
                     toastr.success('YAML/TMDB 반영 완료!', '성공', {timeOut: 5000});
                     infoLog(`[PlexMate] YAML/Marker Sync successful for Item: ${data.itemId}`);
 
                     deleteMemoryCache(`D_${serverId}_${data.itemId}`);
                     if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
-                    
+
                     currentDisplayedItemId = null;
                     processDetail(true);
                     smartRefreshChildren();
-                } catch (err) { 
+                } catch (err) {
                     errorLog(`[PlexMate] VFS/Manual refresh error:`, err);
-                    toastr.error(`오류 발생: ${err.message || err}`, '실패'); 
-                } finally { 
-                    mateBtn.style.pointerEvents = 'auto'; 
-                    mateBtn.innerHTML = originalHtml; 
+                    toastr.error(`오류 발생: ${err.message || err}`, '실패');
+                } finally {
+                    mateBtn.style.pointerEvents = 'auto';
+                    mateBtn.innerHTML = originalHtml;
                 }
             });
         }
@@ -4996,12 +5006,14 @@ GM_addStyle(`
         if (window.location.href !== currentUrl || force) {
             currentUrl = window.location.href;
 
-            isObserverLocked = true; 
+            isObserverLocked = true;
             globalAbortFlag = true;
 
             currentRenderSession++;
             sessionRevalidated.clear();
             abortAllRequests();
+
+            document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .pmh-guid-wrapper').forEach(e => e.remove());
 
             document.getElementById('plex-guid-box')?.remove();
             currentDisplayedItemId = null;
@@ -5011,12 +5023,12 @@ GM_addStyle(`
             injectControlUI();
 
             setTimeout(() => {
-                isObserverLocked = false; 
+                isObserverLocked = false;
                 globalAbortFlag = false;
-                
+
                 if (window.location.hash.includes('/details?key=')) processDetail(false);
                 processList();
-            }, 800); 
+            }, 800);
         }
     }
 
@@ -5033,7 +5045,7 @@ GM_addStyle(`
             observerPending = true;
 
             requestAnimationFrame(() => {
-                processList(); 
+                processList();
                 if (window.location.hash.includes('/details?key=')) {
                     processDetail(false);
                 }
@@ -5055,7 +5067,7 @@ GM_addStyle(`
 
                         if (!guidBox && !isFetchingDetail && currentDisplayedItemId === itemId) {
                             infoLog(`[Detail-Observer] ⚠️ 미디어 패널 증발 감지! (Plex Native UI 리렌더링). 패널을 복구합니다.`);
-                            
+
                             currentDisplayedItemId = null;
 
                             const target = document.querySelector('div[data-testid="metadata-top-level-items"]')
@@ -5063,7 +5075,7 @@ GM_addStyle(`
                                         || document.querySelector('div[data-testid="metadata-ratings"]')
                                         || document.querySelector('button[data-testid="preplay-play"]')
                                         || document.querySelector('span[data-testid="metadata-line2"]');
-                                        
+
                             if (target) {
                                 if(observer.detailTimer) clearTimeout(observer.detailTimer);
                                 observer.detailTimer = setTimeout(() => { processDetail(); }, 100);
@@ -5071,18 +5083,18 @@ GM_addStyle(`
                         }
                         else if (currentDisplayedItemId === itemId && currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash) {
                             infoLog(`[Detail-Observer] 🔄 Plex Native Action detected! Hash changed. Forcing update.`);
-                            currentDetailStateHash = currentHash; 
-                            
+                            currentDetailStateHash = currentHash;
+
                             if (serverId && itemId) {
                                 deleteMemoryCache(`D_${serverId}_${itemId}`);
                                 if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
                             }
-                            
+
                             if (guidBox) {
                                 guidBox.style.opacity = '0.4';
                                 guidBox.innerHTML = '<div style="padding:20px; text-align:center; color:#e5a00d;"><i class="fas fa-spinner fa-spin"></i> 갱신 중...</div>';
                             }
-                            
+
                             if(observer.detailTimer) clearTimeout(observer.detailTimer);
                             observer.detailTimer = setTimeout(() => { processDetail(true); }, 300);
                         }
@@ -5129,21 +5141,21 @@ GM_addStyle(`
                             } else {
                                 const oldHash = marker.getAttribute('data-state-hash');
                                 const currentHash = getItemStateHash(cont);
-                                
+
                                 if (oldHash && currentHash && oldHash !== currentHash) {
-                                    
+
                                     const targetServerId = link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
                                     if (targetServerId) {
                                         if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(iid);
                                     }
-                                    
+
                                     marker.setAttribute('data-stale', 'true');
                                     needsDraw = true;
 
                                     if (itemApiDebounceTimers.has(iid)) {
                                         clearTimeout(itemApiDebounceTimers.get(iid));
                                     }
-                                    
+
                                     itemApiDebounceTimers.set(iid, setTimeout(() => {
                                         itemApiDebounceTimers.delete(iid);
                                         if(observer.listTimer) clearTimeout(observer.listTimer);
@@ -5153,7 +5165,7 @@ GM_addStyle(`
                                 } else {
                                     const isIgnored = marker.getAttribute('data-ignored') === 'true';
                                     const isFriendPending = marker.getAttribute('data-friend-pending') === 'true';
-                                    
+
                                     if (!isIgnored) {
                                         if ((state.listTag || state.listPlay) && !cont.querySelector('.pmh-top-right-wrapper')) needsDraw = true;
                                         if (!isFriendPending && (state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) needsDraw = true;
@@ -5191,7 +5203,7 @@ GM_addStyle(`
             ClientSettings.pathMappings.forEach((m) => {
                 mappingsHtml += `
                     <div class="pmh-path-mapping-row" style="display:flex; gap:10px; margin-bottom:8px; align-items:center;">
-                        <input type="text" class="pmh-input-text pmh-map-srv" value="${m.serverPrefix}" placeholder="서버 경로 (예: 
+                        <input type="text" class="pmh-input-text pmh-map-srv" value="${m.serverPrefix}" placeholder="서버 경로 (예:
                         /gds/)" style="flex:1;">
                         <i class="fas fa-arrow-right" style="color:#777;"></i>
                         <input type="text" class="pmh-input-text pmh-map-loc" value="${m.localPrefix}" placeholder="로컬 경로 (예: Z:/gds/)" style="flex:1;">
@@ -5208,13 +5220,13 @@ GM_addStyle(`
                         <h2 style="margin: 0; color: #e5a00d; font-size: 16px;"><i class="fas fa-cogs"></i> PMH 프론트엔드 설정</h2>
                         <button id="pmh-settings-close" style="background:none; border:none; color:#aaa; cursor:pointer; font-size:16px;"><i class="fas fa-times"></i></button>
                     </div>
-                    
+
                     <div style="padding: 20px; overflow-y: auto; max-height: 70vh;">
                         <div class="pmh-form-group">
                             <label class="pmh-form-label"><i class="fas fa-server"></i> 마스터 서버 주소 (Master URL)</label>
                             <input type="text" id="pmh-set-master-url" class="pmh-input-text" value="${ClientSettings.masterUrl}" placeholder="http://127.0.0.1:8899">
                         </div>
-                        
+
                         <div class="pmh-form-group">
                             <label class="pmh-form-label"><i class="fas fa-key"></i> 접속 키 (API Key)</label>
                             <div style="display:flex; gap:10px;">
@@ -5247,7 +5259,7 @@ GM_addStyle(`
 
                         <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(229, 160, 13, 0.4); padding: 10px; border-radius: 4px;">
                             <label class="pmh-form-label" style="margin-bottom:8px;"><i class="fas fa-link"></i> 스마트 매칭 / 리매칭 동작 설정</label>
-                            
+
                             <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
                                 <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px;" title="SJVA/커스텀 에이전트의 매칭 합격 커트라인을 수동으로 변경합니다.">
                                     <input type="checkbox" id="pmh-set-use-custom-score" style="width:14px; height:14px;" ${ClientSettings.useCustomScore ? 'checked' : ''}>
@@ -5261,7 +5273,7 @@ GM_addStyle(`
                                 <input type="checkbox" id="pmh-set-match-refresh" style="width:14px; height:14px;" ${ClientSettings.matchTryRefreshFirst ? 'checked' : ''}>
                                 <span style="color:#ddd;">매칭 시 리프레시 우선 시도 <span style="color:#777; font-size:11px;">(Plex 기본 에이전트 전용)</span></span>
                             </label>
-                            
+
                             <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="매칭 시도 전 대상 항목을 명시적으로 언매칭(Unmatch) 처리합니다.">
                                 <input type="checkbox" id="pmh-set-match-unmatch" style="width:14px; height:14px;" ${ClientSettings.matchDoUnmatchFirst ? 'checked' : ''}>
                                 <span style="color:#ddd;">매칭 전 언매칭 우선 실행</span>
@@ -5272,7 +5284,7 @@ GM_addStyle(`
                                 <span style="color:#ddd;">매칭시 제목/연도 검증 스킵 <span style="color:#777; font-size:11px;">(Plex 기본 에이전트 전용)</span></span>
                             </label>
                         </div>
-                        
+
                         <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(47, 150, 180, 0.4); padding: 10px; border-radius: 4px;">
                             <label class="pmh-check-label" style="color:#2f96b4; font-weight:bold; cursor:pointer; display:flex; align-items:center; gap:8px;" title="깃허브 대신 무조건 로컬 서버에서 UI Core JS/CSS를 불러오며 캐시를 사용하지 않습니다.">
                                 <input type="checkbox" id="pmh-set-dev-mode" style="width:16px; height:16px; cursor:pointer;" ${ClientSettings.devMode ? 'checked' : ''}>
@@ -5295,7 +5307,7 @@ GM_addStyle(`
         document.body.insertAdjacentHTML('beforeend', modalHtml);
 
         document.getElementById('pmh-settings-close').onclick = () => document.getElementById('pmh-client-settings-modal').remove();
-        
+
         document.getElementById('pmh-settings-close').onclick = () => document.getElementById('pmh-client-settings-modal').remove();
 
         document.getElementById('pmh-settings-copy-key').onclick = (e) => {
@@ -5305,7 +5317,7 @@ GM_addStyle(`
                 toastr.warning("복사할 API Key가 없습니다.");
                 return;
             }
-            
+
             if (navigator.clipboard && window.isSecureContext) {
                 navigator.clipboard.writeText(keyInput.value).then(() => {
                     toastr.success("API Key가 클립보드에 복사되었습니다!");
@@ -5313,7 +5325,7 @@ GM_addStyle(`
                     toastr.error("복사 실패. 브라우저 권한을 확인하세요.");
                 });
             } else {
-                keyInput.type = "text"; 
+                keyInput.type = "text";
                 keyInput.select();
                 try {
                     document.execCommand("copy");
@@ -5321,7 +5333,7 @@ GM_addStyle(`
                 } catch (err) {
                     toastr.error("복사 실패. 수동으로 복사해주세요.");
                 }
-                keyInput.type = "password"; 
+                keyInput.type = "password";
                 window.getSelection().removeAllRanges();
             }
         };
@@ -5330,7 +5342,7 @@ GM_addStyle(`
             const container = document.getElementById('pmh-path-mapping-container');
             const noMsg = container.querySelector('.pmh-no-map-msg');
             if (noMsg) noMsg.remove();
-            
+
             container.insertAdjacentHTML('beforeend', `
                 <div class="pmh-path-mapping-row" style="display:flex; gap:10px; margin-bottom:8px; align-items:center;">
                     <input type="text" class="pmh-input-text pmh-map-srv" placeholder="서버 경로" style="flex:1;">
@@ -5346,7 +5358,7 @@ GM_addStyle(`
             if (btn) {
                 const container = document.getElementById('pmh-path-mapping-container');
                 btn.closest('.pmh-path-mapping-row').remove();
-                
+
                 if (container.querySelectorAll('.pmh-path-mapping-row').length === 0) {
                     container.innerHTML = '<div class="pmh-no-map-msg" style="color:#777; font-size:12px; text-align:center; padding:5px 0;">등록된 매핑이 없습니다.</div>';
                 }
@@ -5360,9 +5372,9 @@ GM_addStyle(`
 
             const btn = document.getElementById('pmh-settings-test');
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 확인 중...';
-            
+
             const secureToken = await generateSecureHeader(key);
-            
+
             GM_xmlhttpRequest({
                 method: "GET", url: `${url}/api/ping`, headers: { "X-PMH-Signature": secureToken }, timeout: 5000,
                 onload: (r) => {
@@ -5403,7 +5415,7 @@ GM_addStyle(`
 
         document.getElementById('pmh-settings-factory-reset').onclick = () => {
             if (confirm("⚠️ 경고: 정말로 공장 초기화를 진행하시겠습니까?\n\n이 작업은 캐시, 설정, 패널 위치 정보 등 PMH가 브라우저에 저장한 모든 데이터를 영구적으로 삭제합니다.\n(Plex 서버나 백엔드 데이터는 삭제되지 않습니다.)")) {
-                
+
                 const btn = document.getElementById('pmh-settings-factory-reset');
                 btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 초기화 중...';
                 btn.disabled = true;
@@ -5411,7 +5423,7 @@ GM_addStyle(`
                 try {
                     const allKeys = GM_listValues();
                     let deletedCount = 0;
-                    
+
                     allKeys.forEach(key => {
                         if (key.startsWith('pmh') || key.startsWith('pmhc_')) {
                             GM_deleteValue(key);
@@ -5423,7 +5435,7 @@ GM_addStyle(`
                     toastr.success(`총 ${deletedCount}개의 캐시 및 설정 데이터가 초기화되었습니다.<br>새로고침합니다.`);
 
                     setTimeout(() => location.reload(), 1500);
-                    
+
                 } catch (e) {
                     errorLog("[Factory Reset Error]", e);
                     toastr.error("초기화 중 오류가 발생했습니다.");
@@ -5474,7 +5486,7 @@ GM_addStyle(`
     async function bootstrapPMH() {
         if (!ClientSettings.masterUrl || !ClientSettings.masterApiKey) {
             console.warn("[PMH] 마스터 서버 정보가 없습니다. 설정 창을 엽니다.");
-            injectControlUI(); 
+            injectControlUI();
             openClientSettingsModal();
             return;
         }
@@ -5518,7 +5530,7 @@ GM_addStyle(`
                 infoLog(`[PMH Boot] 🛠️ DEV_MODE 켜짐! 로컬 서버에서 최신 UI Core 소스를 직접 가져옵니다...`);
                 const LOCAL_UI_CSS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.css?t=${Date.now()}`;
                 const LOCAL_UI_JS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.js?t=${Date.now()}`;
-                
+
                 cachedCss = await new Promise((resolve, reject) => {
                     GM_xmlhttpRequest({
                         method: "GET", url: LOCAL_UI_CSS, timeout: 5000,
@@ -5526,7 +5538,7 @@ GM_addStyle(`
                         onerror: () => reject("Dev CSS 서버 접근 불가"), ontimeout: () => reject("Dev CSS 응답 지연")
                     });
                 });
-                
+
                 cachedJs = await new Promise((resolve, reject) => {
                     GM_xmlhttpRequest({
                         method: "GET", url: LOCAL_UI_JS, timeout: 5000,
@@ -5538,16 +5550,16 @@ GM_addStyle(`
             } else {
                 const GITHUB_UI_CSS = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.css";
                 const GITHUB_UI_JS = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.js";
-                
+
                 const latestVer = GM_getValue('pmh_latest_version', CURRENT_VERSION);
                 const savedVer = GM_getValue('pmh_ui_cache_version', '');
-                
+
                 cachedCss = GM_getValue('pmh_ui_core_css_cache', null);
                 cachedJs = GM_getValue('pmh_ui_core_js_cache', null);
 
                 if (!cachedCss || !cachedJs || savedVer !== latestVer) {
                     infoLog(`[PMH Boot] UI Core 캐시 없음 또는 버전 변경(${savedVer} -> ${latestVer}). GitHub에서 새로 다운로드합니다...`);
-                    
+
                     cachedCss = await new Promise((resolve, reject) => {
                         GM_xmlhttpRequest({
                             method: "GET", url: `${GITHUB_UI_CSS}?t=${Date.now()}`, timeout: 10000,
@@ -5555,7 +5567,7 @@ GM_addStyle(`
                             onerror: () => reject("CSS 네트워크 오류"), ontimeout: () => reject("CSS 시간 초과")
                         });
                     });
-                    
+
                     cachedJs = await new Promise((resolve, reject) => {
                         GM_xmlhttpRequest({
                             method: "GET", url: `${GITHUB_UI_JS}?t=${Date.now()}`, timeout: 10000,
@@ -5563,7 +5575,7 @@ GM_addStyle(`
                             onerror: () => reject("JS 네트워크 오류"), ontimeout: () => reject("JS 시간 초과")
                         });
                     });
-                    
+
                     GM_setValue('pmh_ui_core_css_cache', cachedCss);
                     GM_setValue('pmh_ui_core_js_cache', cachedJs);
                     GM_setValue('pmh_ui_cache_version', latestVer);
@@ -5577,7 +5589,7 @@ GM_addStyle(`
             if (styleEl) styleEl.remove();
             styleEl = document.createElement('style');
             styleEl.id = 'pmh-shared-css-inline';
-            styleEl.textContent = cachedCss; 
+            styleEl.textContent = cachedCss;
             document.head.appendChild(styleEl);
 
             if (typeof window.PmhUICore === 'undefined') {
@@ -5588,11 +5600,11 @@ GM_addStyle(`
 
                         const blob = new Blob([cachedJs], { type: 'application/javascript' });
                         const blobUrl = URL.createObjectURL(blob);
-                        
+
                         const scriptEl = document.createElement('script');
                         scriptEl.id = 'pmh-shared-js-inline';
                         scriptEl.src = blobUrl;
-                        
+
                         scriptEl.onload = () => {
                             URL.revokeObjectURL(blobUrl);
                             infoLog("[PMH Boot] UI Core JS Blob Injection 및 메모리 적재 완료!");
@@ -5602,7 +5614,7 @@ GM_addStyle(`
                             URL.revokeObjectURL(blobUrl);
                             reject("Blob 스크립트 실행 실패");
                         };
-                        
+
                         document.body.appendChild(scriptEl);
                     } catch (err) {
                         reject(`Blob 주입 에러: ${err.message}`);
@@ -5611,7 +5623,7 @@ GM_addStyle(`
             }
 
             infoLog(`[PMH Boot] 설정 동기화 및 UI 코어 로드 완료! (노드 수: ${ServerConfig.SERVERS.length})`);
-            
+
             if (!ClientSettings.devMode) {
                 checkUpdate();
             }
@@ -5629,8 +5641,8 @@ GM_addStyle(`
 
             const lastTool = GM_getValue('pmh_last_open_tool', '');
             if (lastTool && ServerConfig.SERVERS.length > 0) {
-                window._pmh_is_minimized = GM_getValue('pmh_last_minimize_state', false); 
-                
+                window._pmh_is_minimized = GM_getValue('pmh_last_minimize_state', false);
+
                 let checkUiCount = 0;
                 const checkUiReady = setInterval(() => {
                     if (typeof window.showPmhToolPanel === 'function') {
@@ -5649,12 +5661,12 @@ GM_addStyle(`
         } catch (e) {
             errorLog("[PMH Boot Error]", e);
             injectControlUI();
-            
+
             if (e !== "SERVER_RESTART_REQUIRED") {
                 toastr.error("서버와 통신할 수 없거나 구버전 서버입니다.<br>상단 메뉴에서 서버를 업데이트(재시작) 하거나 설정을 확인하세요.", "PMH 부팅 실패", {timeOut: 8000});
                 checkUpdate();
             }
-            
+
             observer.observe(document.body, { childList: true, subtree: true });
             checkUrlChange(true);
         }
