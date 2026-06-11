@@ -95,6 +95,16 @@ def get_ui(core_api=None):
                 "default": True, 
                 "hide_if": {"scan_mode": "file_error"}
             },
+            {"id": "opt_search_priority", "type": "select", "label": "매칭 검색어 우선순위", "options": [
+                {"value": "auto", "text": "자동 (AV 등 커스텀은 파일, 일반은 폴더)"},
+                {"value": "folder", "text": "폴더명 우선 (일반 영화/쇼 강제)"},
+                {"value": "file", "text": "파일명 우선 (단일 파일 강제)"}
+            ], "default": "auto", "hide_if": {"scan_mode": "file_error"}},
+            {"id": "opt_manual_match", "type": "checkbox", "label": "수동 매칭 모드 사용 (모든 사이트 강제 검색)", "default": False, "hide_if": {"scan_mode": "file_error"}},
+            {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭 시 제목/연도 검증 스킵 (모든 에이전트 적용)", "default": False, "hide_if": {"scan_mode": "file_error"}},
+            {"id": "opt_use_custom_score", "type": "checkbox", "label": "에이전트 매칭 통과 점수 직접 지정", "default": False, "hide_if": {"scan_mode": "file_error"}},
+            {"id": "opt_custom_agent_score", "type": "number", "label": "매칭 통과 최소 점수", "default": 80, "width": "60px", "layout": "plain", "show_if": {"opt_use_custom_score": True}},
+
             {
                 "id": "retry_errors",
                 "type": "checkbox",
@@ -294,7 +304,6 @@ def _mark_poster_applied(db_path, section_id, pid):
         with sqlite3.connect(db_path, timeout=5.0) as conn:
             conn.execute("INSERT OR REPLACE INTO poster_history (section_id, pid) VALUES (?, ?)", (str(section_id), pid))
     except Exception as e:
-        print(f"[_mark_poster_applied DB 에러] {e}")
         pass
 
 # ==============================================================================
@@ -402,14 +411,13 @@ def worker(task_data, core_api, start_index):
         def get_all_pids(text):
             extracted = []
             remaining = text
-            for _ in range(10): # 무한루프 방지
+            for _ in range(10): 
                 found = extract_jav_pid(remaining, cfg, compiled_rules)
                 if not found:
                     break
                 for f_l, f_n in found:
                     if (f_l, f_n) not in extracted:
                         extracted.append((f_l, f_n))
-                    # 방금 찾은 패턴을 공백으로 치환하여 뒤에 숨은 패턴을 계속 검색
                     safe_l = re.escape(f_l)
                     safe_n = re.escape(f_n)
                     pattern = r'[a-zA-Z]*' + safe_l + r'[-_]?' + safe_n + r'[a-zA-Z]*'
@@ -810,8 +818,7 @@ def worker(task_data, core_api, start_index):
     work_start_time = time.time()
     
     retry_errors = task_data.get('retry_errors', False)
-    opts = core_api.get('options', {})
-    try: sleep_time = float(opts.get('sleep_time', 1))
+    try: sleep_time = float(task_data.get('sleep_time', 1.0))
     except: sleep_time = 1.0
     
     total = task_data.get('total', 0)
@@ -890,6 +897,11 @@ def worker(task_data, core_api, start_index):
 
                 if op_action == 'match':
                     do_unm = task_data.get('opt_unmatch_first', True)
+                    skip_sim = task_data.get('opt_skip_sim_check', False)
+                    manual_m = task_data.get('opt_manual_match', False)
+                    use_custom = task_data.get('opt_use_custom_score', False)
+                    custom_score = task_data.get('opt_custom_agent_score', 90)
+                    search_pri = task_data.get('opt_search_priority', 'auto')
 
                     success, msg, score = pmh_core.perform_smart_media_action(
                         plex_url=plex._baseurl, 
@@ -902,7 +914,11 @@ def worker(task_data, core_api, start_index):
                         plex_inst=plex,
                         try_refresh_first=False,
                         do_unmatch_first=do_unm,
-                        skip_sim_check=False,
+                        skip_sim_check=skip_sim,
+                        use_custom_score=use_custom,
+                        custom_agent_score=custom_score,
+                        search_priority=search_pri,
+                        manual_match=manual_m,
                         global_config=core_api['config'],
                         task_logger=task.log,
                         cancel_checker=task.is_cancelled
