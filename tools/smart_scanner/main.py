@@ -107,6 +107,7 @@ def get_ui(core_api):
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": True, "show_if": {"opt_match": True}},
             {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"opt_match": True}},
             {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭 시 제목/연도 검증 스킵", "default": False, "show_if": {"opt_match": True}},
+            {"id": "opt_manual_match", "type": "checkbox", "label": "수동 매칭 모드 사용 (모든 사이트 강제 검색)", "default": False, "show_if": {"opt_match": True}},
             {"id": "opt_use_custom_score", "type": "checkbox", "label": "에이전트 매칭 통과 점수 직접 지정", "default": False, "show_if": {"opt_match": True}},
             {"id": "opt_custom_agent_score", "type": "number", "label": "매칭 통과 최소 점수", "default": 90, "width": "60px", "layout": "plain", "show_if": {"opt_use_custom_score": True}},
             {"id": "opt_search_priority", "type": "select", "label": "매칭 검색어 우선순위", "options": [
@@ -596,8 +597,7 @@ def worker(task_data, core_api, start_index):
     actual_fix_counts = {'analyze': 0, 'match': 0, 'refresh': 0, 'yaml_season': 0, 'yaml_marker': 0}
 
     retry_errors = task_data.get('retry_errors', False)
-    opts = core_api.get('options', {})
-    try: sleep_time = float(opts.get('sleep_time', 2))
+    try: sleep_time = float(task_data.get('sleep_time', 2.0))
     except: sleep_time = 2.0
     
     total = task_data.get('total', 0)
@@ -757,6 +757,7 @@ def worker(task_data, core_api, start_index):
                     try_ref = task_data.get('opt_try_refresh', True) if fix_type == 'match' else False
                     do_unm = task_data.get('opt_unmatch_first', False) if fix_type == 'match' else False
                     skip_sim = task_data.get('opt_skip_sim_check', False) if fix_type == 'match' else False
+                    manual_m = task_data.get('opt_manual_match', False) if fix_type == 'match' else False
                     use_custom = task_data.get('opt_use_custom_score', False) if fix_type == 'match' else False
                     custom_score = task_data.get('opt_custom_agent_score', 80) if fix_type == 'match' else 80
                     search_pri = task_data.get('opt_search_priority', 'auto') if fix_type == 'match' else 'auto'
@@ -776,6 +777,7 @@ def worker(task_data, core_api, start_index):
                         use_custom_score=use_custom,
                         custom_agent_score=custom_score,
                         search_priority=search_pri,
+                        manual_match=manual_m,
                         global_config=core_api['config'],
                         task_logger=task.log,
                         cancel_checker=task.is_cancelled
