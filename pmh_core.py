@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.96"
+__version__ = "0.8.97"
 
 def get_version():
     return __version__
@@ -2115,7 +2115,7 @@ def media_action_worker_loop(global_config):
                             
                             perform_smart_media_action(
                                 plex_url=plex_url, plex_token=plex_token, rating_key=target_id,
-                                action_type='yaml_refresh', plex_inst=plex, global_config=global_config,
+                                action_type='yaml_refresh', plex_inst=plex, manual_match=manual_m, global_config=global_config,
                                 task_logger=lambda x: print(f"[PMH Queue] {x}", flush=True), cancel_checker=lambda: False
                             )
                             msg += " (YAML 자동 연계됨)"
