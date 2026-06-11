@@ -660,9 +660,9 @@ def worker(task_data, core_api, start_index):
                         do_unmatch_first=do_unm,
                         skip_sim_check=skip_sim,
                         use_custom_score=use_custom,
-                        manual_match=manual_m,
                         custom_agent_score=custom_score,
                         search_priority=search_pri,
+                        manual_match=manual_m,
                         global_config=core_api['config'],
                         task_logger=task.log,
                         cancel_checker=task.is_cancelled
