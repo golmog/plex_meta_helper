@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.95
+// @version      0.8.96
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -711,7 +711,8 @@ GM_addStyle(`
             matchDoUnmatchFirst: false,
             matchSkipSimCheck: false,
             useCustomScore: false,
-            customAgentScore: 80
+            customAgentScore: 80,
+            manualMatch: false,
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
     }
@@ -1058,7 +1059,14 @@ GM_addStyle(`
                 timeout: 10000,
                 onload: r => {
                     activeRequests.delete(req);
-                    try { resolve(JSON.parse(r.responseText).MediaContainer.Metadata[0]); } catch(e) { resolve(null); }
+                    if (r.status === 404) {
+                        resolve('DELETED');
+                    } else if (r.status === 200) {
+                        try { resolve(JSON.parse(r.responseText).MediaContainer.Metadata[0]); } 
+                        catch(e) { resolve(null); }
+                    } else {
+                        resolve(null);
+                    }
                 },
                 onerror: () => { activeRequests.delete(req); resolve(null); },
                 ontimeout: () => { activeRequests.delete(req); resolve(null); },
@@ -3051,6 +3059,7 @@ GM_addStyle(`
                     apiAction = 'match';
                     extraData = {
                         _try_refresh_first: ClientSettings.matchTryRefreshFirst,
+                        _manual_match: ClientSettings.manualMatch,
                         _do_unmatch_first: ClientSettings.matchDoUnmatchFirst,
                         _skip_sim_check: ClientSettings.matchSkipSimCheck,
                         _use_custom_score: ClientSettings.useCustomScore,
@@ -3214,7 +3223,7 @@ GM_addStyle(`
 
                         else if (status.state === 'completed') {
                             infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 즉시 강제 갱신을 시도합니다.`);
-
+                            
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => {
                                 const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
@@ -3227,34 +3236,95 @@ GM_addStyle(`
 
                             delete window._pmh_media_queues[id];
                             if (typeof window.saveQueueState === 'function') window.saveQueueState();
-
+                            
                             (async () => {
                                 await new Promise(r => setTimeout(r, 1500));
                                 try {
                                     const plexSrv = extractPlexServerInfo(serverId);
                                     if (!plexSrv) return;
-
+                                    
                                     let meta = await fetchPlexMetaFallback(id, plexSrv);
-                                    if (!meta) {
-                                        const failMarkers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                        failMarkers.forEach(m => {
-                                            const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                            const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                            if (gBox) {
-                                                gBox.innerHTML = `<i class="fas fa-ghost" style="margin-right:4px;"></i>병합됨`;
-                                                gBox.style.color = '#777';
-                                                gBox.title = '다른 항목으로 병합되어 사라졌습니다.';
+                                    let oldCache = getMemoryCache(`L_${serverId}_${id}`) || {};
+                                    let newId = id;
+
+                                    if (meta === 'DELETED') {
+                                        meta = null;
+                                        const filePath = oldCache ? oldCache.p : null;
+                                        const sectionId = oldCache ? oldCache.librarySectionID : null;
+
+                                        if (filePath && sectionId && plexSrv) {
+                                            infoLog(`[Queue] ID ${id}가 삭제되었습니다. 파일 경로로 새 ID 역추적을 시작합니다: ${filePath}`);
+                                            
+                                            const searchUrl = `${plexSrv.url}/library/sections/${sectionId}/all?file=${encodeURIComponent(filePath)}&X-Plex-Token=${plexSrv.token}`;
+                                            
+                                            const newMeta = await new Promise((resolve) => {
+                                                GM_xmlhttpRequest({
+                                                    method: 'GET', url: searchUrl,
+                                                    headers: { 'Accept': 'application/json' },
+                                                    timeout: 10000,
+                                                    onload: r => {
+                                                        try {
+                                                            if (r.status === 200) {
+                                                                const resData = JSON.parse(r.responseText);
+                                                                const metadata = resData.MediaContainer.Metadata;
+                                                                if (metadata && metadata.length > 0) {
+                                                                    resolve(metadata[0]);
+                                                                    return;
+                                                                }
+                                                            }
+                                                            resolve(null);
+                                                        } catch(e) { resolve(null); }
+                                                    },
+                                                    onerror: () => resolve(null),
+                                                    ontimeout: () => resolve(null)
+                                                });
+                                            });
+
+                                            if (newMeta) {
+                                                meta = newMeta;
+                                                newId = String(newMeta.ratingKey);
+                                                infoLog(`[Queue] 새 ID 역추적 성공! (구 ID: ${id} -> 신 ID: ${newId})`);
+                                                toastr.success(`[${newMeta.title}]<br>새로운 항목으로 성공적으로 이관 병합되었습니다.`, "이관 병합 완료");
                                             }
-                                        });
+                                        }
+                                        
+                                        if (!meta) {
+                                            const failMarkers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                            failMarkers.forEach(m => {
+                                                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                                const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+                                                if (gBox) {
+                                                    gBox.innerHTML = `<i class="fas fa-ghost" style="margin-right:4px;"></i>병합됨`;
+                                                    gBox.style.color = '#777';
+                                                    gBox.title = '다른 항목으로 완전히 병합되어 원본 ID가 사라졌습니다.';
+                                                }
+                                            });
+                                            return;
+                                        }
+                                    }
+
+                                    if (!meta) {
+                                        infoLog(`[Queue] 일시적인 통신 지연으로 아이템 ${id}의 상태를 갱신하지 못했습니다. 기존 배지로 복원합니다.`);
+                                        
+                                        const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                        markers.forEach(m => m.remove());
+                                        
+                                        setTimeout(() => { 
+                                            if (typeof processList === 'function') processList(); 
+                                        }, 100);
                                         return;
                                     }
 
-                                    const updatedInfo = convertPlexMetaToLocalData(meta, id);
-                                    const oldCache = getMemoryCache(`L_${serverId}_${id}`) || {};
-                                    const mergedInfo = { ...oldCache, ...updatedInfo };
-
-                                    setMemoryCache(`L_${serverId}_${id}`, mergedInfo);
-                                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.add(id);
+                                    const updatedInfo = convertPlexMetaToLocalData(meta, newId);
+                                    const mergedInfo = { ...oldCache, ...updatedInfo, itemId: newId };
+                                    
+                                    if (newId !== id) {
+                                        deleteMemoryCache(`L_${serverId}_${id}`);
+                                        deleteMemoryCache(`D_${serverId}_${id}`);
+                                        deleteMemoryCache(`F_${serverId}_${id}`);
+                                    }
+                                    setMemoryCache(`L_${serverId}_${newId}`, mergedInfo);
+                                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.add(newId);
 
                                     let displayData = { ...mergedInfo, tags: applyUserTags(mergedInfo.p, mergedInfo.tags) };
 
@@ -3262,23 +3332,32 @@ GM_addStyle(`
                                     for (const live of liveWrappers) {
                                         let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
                                         if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
-                                        if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
+                                        
+                                        const hrefAttr = liveLink ? decodeURIComponent(liveLink.getAttribute('href') || '') : '';
+                                        
+                                        if (liveLink && (hrefAttr.includes(id) || hrefAttr.includes(newId))) {
+                                            
+                                            if (newId !== id && hrefAttr.includes(id)) {
+                                                const oldHref = liveLink.getAttribute('href');
+                                                const newHref = oldHref.replace(id, newId).replace(encodeURIComponent('/library/metadata/' + id), encodeURIComponent('/library/metadata/' + newId));
+                                                liveLink.setAttribute('href', newHref);
+                                            }
 
                                             let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
                                             if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
-
+                                            
                                             if (livePoster) {
                                                 livePoster.querySelector('.pmh-render-marker')?.remove();
                                                 livePoster.querySelector('.pmh-top-right-wrapper')?.remove();
                                                 live.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
-
-                                                renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
+                                                
+                                                renderListBadges(live, livePoster, liveLink, displayData, srvConfig, newId);
                                             }
                                         }
                                     }
                                 } catch (e) {
                                     errorLog(`[Queue Callback] Direct render failed for ${id}:`, e);
-                                    needsListRefresh = true;
+                                    needsListRefresh = true; 
                                 }
                             })();
                         }
@@ -5274,6 +5353,11 @@ GM_addStyle(`
                                 <span style="color:#ddd;">매칭 시 리프레시 우선 시도 <span style="color:#777; font-size:11px;">(Plex 기본 에이전트 전용)</span></span>
                             </label>
 
+                            <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="이 옵션을 켜면 Plex의 '수동 매칭(manual=1)' 모드를 사용하여 모든 사이트를 동시 검색합니다. (사이트 IP 밴 주의!)">
+                                <input type="checkbox" id="pmh-set-manual-match" style="width:14px; height:14px;" ${ClientSettings.manualMatch ? 'checked' : ''}>
+                                <span style="color:#ddd;">수동 매칭 모드 사용 (모든 사이트 강제 검색) <span style="color:#777; font-size:11px;">(사이트 차단 주의)</span></span>
+                            </label>
+
                             <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="매칭 시도 전 대상 항목을 명시적으로 언매칭(Unmatch) 처리합니다.">
                                 <input type="checkbox" id="pmh-set-match-unmatch" style="width:14px; height:14px;" ${ClientSettings.matchDoUnmatchFirst ? 'checked' : ''}>
                                 <span style="color:#ddd;">매칭 전 언매칭 우선 실행</span>
@@ -5402,6 +5486,7 @@ GM_addStyle(`
                 devMode: document.getElementById('pmh-set-dev-mode').checked,
                 pathMappings: newMaps,
                 matchTryRefreshFirst: document.getElementById('pmh-set-match-refresh').checked,
+                manualMatch: document.getElementById('pmh-set-manual-match').checked,
                 matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked,
                 matchSkipSimCheck: document.getElementById('pmh-set-match-skip-sim').checked,
                 useCustomScore: document.getElementById('pmh-set-use-custom-score').checked,
