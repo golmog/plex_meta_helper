@@ -479,11 +479,13 @@ def worker(task_data, core_api, start_progress):
         task.log("🚀 [EXECUTE] 실제 DB 변경 작업을 시작합니다...")
         task.update_state('running', progress=20, total=100)
         
-        # 5-1. 더블 체크 (Plex 종료 확인)
-        wal_path = f"{db_path}-wal"
-        if os.path.exists(wal_path):
-            task.log("❌ 치명적 오류: .wal 파일이 감지되었습니다. DB 보호를 위해 작업을 강제 중지합니다.")
+        # 5-1. 더블 체크 (Plex 프로세스 종료 확인)
+        plex_url = task_data.get('plex_url', '')
+        if plex_url and check_plex_running(plex_url):
+            task.log(f"❌ 치명적 오류: Plex 서버({plex_url})가 아직 응답하고 있습니다. DB 보호를 위해 작업을 강제 중지합니다.")
             task.update_state('error'); return
+            
+        task.log("   -> ✅ 더블 체크 통과: Plex 프로세스 종료 확인 완료.")
             
         # 5-2. SQL 구문 생성 (Temp ID 활용)
         # UNIQUE 제약조건 충돌을 막기 위해 모든 변경 대상을 임시 ID(+1000)로 먼저 올린 후 최종 ID로 내림
