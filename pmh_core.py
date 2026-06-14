@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.97"
+__version__ = "0.8.98"
 
 def get_version():
     return __version__
@@ -1145,6 +1145,15 @@ class CoreDataManager:
                 except Exception as e:
                     print(f"[PMH DB] mark_keys_as_done 실패: {e}")
 
+    def remove_item_by_pmh_id(self, pmh_id):
+        with self._lock:
+            if not os.path.exists(self.db_file): return
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
+                if c.fetchone()[0] == 1:
+                    c.execute("UPDATE data SET pmh_status = 'done' WHERE pmh_id = ?", (pmh_id,))
+
 # ==============================================================================
 # [코어 UI 옵션 캐시 관리자 (Options Manager)]
 # ==============================================================================
@@ -1367,8 +1376,9 @@ def dispatch_request(subpath, method, args, data, global_config):
     try:
         if subpath == 'ping' and method == 'GET':
             machine_id = global_config.get("machine_id", "")
-            return {"status": "ok", "version": __version__, "machine_id": machine_id}, 200
-            
+            ignore_res = global_config.get("IGNORE_RES_SECTION", "")
+            return {"status": "ok", "version": __version__, "machine_id": machine_id, "ignore_res_section": ignore_res}, 200
+
         elif subpath == 'library/batch' and method == 'POST':
             return handle_library_batch(data, max_batch_size, db_path)
             
@@ -1659,6 +1669,13 @@ def dispatch_request(subpath, method, args, data, global_config):
                     print(f"[PMH Core] 툴 '{tool_id}' 조회 데이터 초기화")
                     data_mgr.reset_db()
                     return {"status": "success", "message": "조회 목록이 초기화되었습니다."}, 200
+
+                elif action_type == 'remove_cache_item':
+                    pmh_id = data.get('pmh_id')
+                    if pmh_id:
+                        data_mgr.remove_item_by_pmh_id(pmh_id)
+                        return {"status": "success", "message": "항목이 성공적으로 제거되었습니다."}, 200
+                    return {"status": "error", "message": "항목 ID(pmh_id)가 제공되지 않았습니다."}, 400
 
                 elif action_type == 'resume':
                     print(f"[PMH Core] 툴 '{tool_id}' 작업 재개(Resume) 지시")
@@ -2213,6 +2230,8 @@ def perform_smart_media_action(
         try:
             success = execute_plexmate_action('manual_refresh', target_item.ratingKey, global_config)
             if success:
+                if task_logger: task_logger(f"⏳ YAML 반영 요청 성공. 시스템 안정화를 위해 잠시 대기합니다...")
+                time.sleep(4.0)
                 return True, "YAML/TMDB 반영 완료", 100
             else:
                 return False, "Plex Mate 반영 오류", 0

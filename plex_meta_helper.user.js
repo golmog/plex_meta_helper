@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.97
+// @version      0.8.98
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -337,9 +337,12 @@ GM_addStyle(`
                     onload: (res) => {
                         if (res.status === 200) {
                             try {
-                                const ver = JSON.parse(res.responseText).version || "0.0.0";
-                                results[srv.machineIdentifier] = { status: 'ok', version: ver, name: srv.name };
-                                log(`[Ping] Server (${srv.name}) responded successfully. Version: ${ver}`);
+                                const jsonRes = JSON.parse(res.responseText);
+                                const ver = jsonRes.version || "0.0.0";
+                                results[srv.machineIdentifier] = { 
+                                    status: 'ok', version: ver, name: srv.name, 
+                                    ignore_res_section: jsonRes.ignore_res_section || "" 
+                                };
                             } catch(e) {
                                 results[srv.machineIdentifier] = { status: 'error', msg: 'JSON 파싱 오류', name: srv.name };
                             }
@@ -389,6 +392,7 @@ GM_addStyle(`
                 if (Date.now() - lastCheck < 24 * 60 * 60 * 1000) {
                     log("[Update] Background update check skipped (checked recently).");
                     const localPyVers = await pingLocalServer();
+                    window._pmh_latest_ping_results = localPyVers;
 
                     let hasServerError = false;
                     let errorDetails = [];
@@ -418,6 +422,8 @@ GM_addStyle(`
 
             log(`[Update] Requesting full update info from Master Server... (force: ${force})`);
             const localServerVersions = await pingLocalServer();
+            window._pmh_latest_ping_results = localServerVersions;
+
             const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
 
             GM_xmlhttpRequest({
@@ -2844,7 +2850,7 @@ GM_addStyle(`
                 if (plexSrv) {
                     try {
                         const meta = await fetchPlexMetaFallback(id, plexSrv);
-                        if (meta) {
+                        if (meta && meta !== 'DELETED') {
                             const localData = convertPlexMetaToLocalData(meta, id);
                             setMemoryCache(`F_${targetServerId}_${id}`, localData);
                             renderListBadges(cont, poster, link, localData, srvConfig, id);
@@ -3787,8 +3793,20 @@ GM_addStyle(`
                         pItem.isRendered = true;
                     }
 
-                    const hasResBadge = info.tags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
-                    const isVideo = !!info.part_id;
+                    let serverIgnoreList = [];
+                    if (window._pmh_latest_ping_results && window._pmh_latest_ping_results[serverId]) {
+                        const rawStr = window._pmh_latest_ping_results[serverId].ignore_res_section || "";
+                        serverIgnoreList = rawStr.split(',').map(s => s.trim()).filter(Boolean);
+                    }
+
+                    let isIgnoredSection = false;
+                    if (info.librarySectionID && serverIgnoreList.includes(String(info.librarySectionID))) {
+                        isIgnoredSection = true;
+                    }
+
+                    const hasResBadge = isIgnoredSection ? true : info.tags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
+                    const isVideo = isIgnoredSection ? false : !!info.part_id; 
+                    
                     const analyzeCount = info.analyze_count || 0;
                     const lastAnalyzeTime = info.last_analyze_time || 0;
                     const now = Date.now();
@@ -3867,7 +3885,7 @@ GM_addStyle(`
                                     }
 
                                     let meta = await fetchPlexMetaFallback(item.iid, plexSrv);
-                                    if (!meta) return;
+                                    if (!meta || meta === 'DELETED') return;
 
                                     let fallbackTags = parsePlexFallbackTags(meta);
                                     const m = meta.Media && meta.Media[0] ? meta.Media[0] : null;
@@ -4072,7 +4090,7 @@ GM_addStyle(`
                 let meta = await fetchPlexMetaFallback(itemId, plexSrv);
 
                 let stillMissing = false;
-                if (meta && meta.Media) {
+                if (meta && meta !== 'DELETED' && meta.Media) {
                     stillMissing = meta.Media.some(m => !m.width || m.width === 0);
                 }
 
@@ -4725,7 +4743,7 @@ GM_addStyle(`
 
                             try {
                                 const newMeta = await fetchPlexMetaFallback(data.itemId, plexSrv);
-                                if (!newMeta) return;
+                                if (!newMeta || newMeta === 'DELETED') return;
 
                                 const newData = convertPlexMetaToLocalData(newMeta, data.itemId);
                                 if (!newData || !oldDataSnapshot) return;

@@ -27,6 +27,8 @@ BASE:
 
   DELETE_JSON_SECTION: "1, 2, 3"
 
+  IGNORE_RES_SECTION: "1, 2, 3"
+
 # AV 설정이 필요하다면 마스터 설정 샘플에서 관련 부분을 복사해서 삽입
 
 # 일반 노드에서는 MASTER 설정 제거

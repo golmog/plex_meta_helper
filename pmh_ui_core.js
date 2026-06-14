@@ -790,7 +790,21 @@ window.PmhUICore = {
                                 const btnAction = row.action_type || col.action_type || 'execute';
                                 const btnIcon = row.icon || col.icon || 'fas fa-play';
                                 const payload = JSON.stringify({action_type: btnAction, _is_single: true, ...row}).replace(/"/g, '&quot;');
-                                displayHtml = `${isErr ? `<span style="color:#bd362f; margin-right:4px;" title="이전 작업 실패"><i class="fas fa-exclamation-triangle"></i></span>` : ''}<button class="pmh-tbl-action-btn" data-payload="${payload}" style="background:none; border:none; color:#e5a00d; cursor:pointer; font-size:14px;" title="단독 실행"><i class="${btnIcon}"></i></button>`;
+                                const delPayload = JSON.stringify({action_type: 'remove_cache_item', pmh_id: row.pmh_id, _server_id: ctx.srvId}).replace(/"/g, '&quot;');
+                                const delBtnHtml = isErr ? `
+                                    <button class="pmh-tbl-del-btn" data-payload="${delPayload}" style="background:none; border:none; color:#bd362f; cursor:pointer; font-size:13px; opacity:0.7; transition:all 0.2s; padding:0;" title="목록에서 즉시 제거합니다." onmouseover="this.style.opacity='1'; this.style.transform='scale(1.1)';" onmouseout="this.style.opacity='0.7'; this.style.transform='scale(1)';">
+                                        <i class="fas fa-trash-alt"></i>
+                                    </button>
+                                    <span style="color:#444; margin:0 6px; user-select:none; font-size:11px;">|</span>
+                                ` : '';
+
+                                displayHtml = `
+                                    <div style="display:flex; justify-content:center; align-items:center;">
+                                        ${delBtnHtml}
+                                        <button class="pmh-tbl-action-btn" data-payload="${payload}" style="background:none; border:none; color:#e5a00d; cursor:pointer; font-size:13px; padding:0; transition:transform 0.2s;" title="단독 실행" onmouseover="this.style.transform='scale(1.1)';" onmouseout="this.style.transform='scale(1)';">
+                                            <i class="${btnIcon}"></i>
+                                        </button>
+                                    </div>`;
                             }
                             html += `       <td style="padding:8px; overflow:hidden; text-overflow:ellipsis; ${alignStr}" title="${safeTitle}">${displayHtml}</td>`;
 
@@ -916,6 +930,34 @@ window.PmhUICore = {
                     } catch(e){}
                 }
             };
+
+            resEl.querySelectorAll('.pmh-tbl-del-btn').forEach(b => b.onclick = async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                
+                b.disabled = true;
+                b.style.transform = 'scale(1)';
+                b.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`;
+                
+                try {
+                    const payload = JSON.parse(b.dataset.payload);
+                    await config.apiAdapter.run(payload);
+                    
+                    const rowTr = b.closest('.pmh-dt-row');
+                    if (rowTr) {
+                        rowTr.style.transition = 'all 0.3s ease';
+                        rowTr.style.opacity = '0';
+                        rowTr.style.transform = 'translateX(20px)';
+                        
+                        setTimeout(() => {
+                            loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true);
+                        }, 300);
+                    }
+                } catch(err) {
+                    config.toast.error("오류: " + err);
+                    b.disabled = false;
+                    b.innerHTML = `<i class="fas fa-trash-alt"></i>`;
+                }
+            });
 
             resEl.querySelectorAll('.pmh-tbl-action-btn, .pmh-tbl-global-action').forEach(b => b.onclick = async () => {
                 const payload = JSON.parse(b.dataset.payload);

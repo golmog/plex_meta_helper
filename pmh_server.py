@@ -76,6 +76,9 @@ BASE:
 
   # 언매칭시 json 파일을 삭제할 섹션(콤마로 구분(숫자), "all" 또는 비워두기)
   DELETE_JSON_SECTION: ""
+
+  # 해상도 뱃지(SD, HD, 4K 등) 표시 및 자동 분석을 생략할 라이브러리 섹션 ID 목록 (콤마 구분)
+  IGNORE_RES_SECTION: ""
 """
 
 def load_config():
@@ -115,6 +118,7 @@ global_conf = {
     "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
     "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
     "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
+    "IGNORE_RES_SECTION": str(BASE_CFG.get("IGNORE_RES_SECTION", "")),
     "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
     "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
     "JAV_MIN_SCORE": int(BASE_CFG.get("JAV_MIN_SCORE", 95)),
@@ -546,6 +550,7 @@ def api_admin_reload_core():
                 "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
                 "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
                 "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
+                "IGNORE_RES_SECTION": str(BASE_CFG.get("IGNORE_RES_SECTION", "")),
                 "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
                 "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
                 "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
