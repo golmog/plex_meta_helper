@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.98
+// @version      0.8.99
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -266,13 +266,53 @@ GM_addStyle(`
         const timestamp = Math.floor(Date.now() / 10000) * 10;
         const payload = `${apiKey}:${timestamp}`;
 
-        const encoder = new TextEncoder();
-        const data = encoder.encode(payload);
-        const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        if (window.crypto && window.crypto.subtle) {
+            try {
+                const encoder = new TextEncoder();
+                const data = encoder.encode(payload);
+                const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                return `${timestamp}.${hashHex}`;
+            } catch(e) {}
+        }
+        
+        function sha256_fallback(ascii) {
+            function rightRotate(value, amount) { return (value>>>amount) | (value<<(32 - amount)); }
+            var mathPow = Math.pow; var maxWord = mathPow(2, 32); var lengthProperty = 'length'; var i, j;
+            var result = '', words = [], asciiBitLength = ascii[lengthProperty]*8;
+            var hash = [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225];
+            var k = [42853323, 718787259, 928959415, 2272392833, 2952996808, 3624381080, 31158534, 130281384, 396448439, 60092209, 106426741, 271733878, 439062322, 608135816, 933827115, 1192892854, 1426881987, 274413831, 273048592, 130381442, 3238371032, 137330761, 3326164213, 140683074, 3514216896, 157297316, 3629474719, 158914611, 4016624838, 163013233, 4068413645, 166440552, 4287869389, 172605382, 4350106203, 185623062, 127289335, 3383896504, 321870505, 3450917387, 513364230, 3603417383, 622340539, 3615206979, 762283084, 3753716616, 908128362, 3816654763, 1076239103, 3892794017, 1221768822, 3949822452, 1391007871, 4014909180, 1459954752, 4124956100, 1604104925, 4153066914, 1709405628, 4192634456, 1968840628, 4252554790, 2197607755, 4293915123];
+            for (i = 0; i < ascii[lengthProperty]; i++) words[i>>>2] |= (ascii.charCodeAt(i)&0xff)<<(24 - (i%4)*8);
+            words[asciiBitLength>>>5] |= 0x80<<(24 - (asciiBitLength%32));
+            words[(((asciiBitLength + 64)>>>9)<<4) + 15] = asciiBitLength;
+            for (i = 0; i < words[lengthProperty]; i += 16) {
+                var a = hash[0], b = hash[1], c = hash[2], d = hash[3], e = hash[4], f = hash[5], g = hash[6], h = hash[7];
+                for (j = 0; j < 64; j++) {
+                    var w = words[i+j];
+                    if (j < 16) w = words[i+j];
+                    else {
+                        var w15 = words[i+j-15], w2 = words[i+j-2];
+                        w = words[i+j] = ((rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15>>>3)) + words[i+j-7] + (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2>>>10)) + words[i+j-16])|0;
+                    }
+                    var temp1 = (h + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) + ((e&f) ^ (~e&g)) + k[j] + w)|0;
+                    var temp2 = ((rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) + ((a&b) ^ (a&c) ^ (b&c)))|0;
+                    h = g; g = f; f = e; e = (d + temp1)|0; d = c; c = b; b = a; a = (temp1 + temp2)|0;
+                }
+                hash[0] = (hash[0] + a)|0; hash[1] = (hash[1] + b)|0; hash[2] = (hash[2] + c)|0; hash[3] = (hash[3] + d)|0;
+                hash[4] = (hash[4] + e)|0; hash[5] = (hash[5] + f)|0; hash[6] = (hash[6] + g)|0; hash[7] = (hash[7] + h)|0;
+            }
+            for (i = 0; i < 8; i++) {
+                for (j = 3; j + 1; j--) {
+                    var byteVal = (hash[i]>>(j*8))&255;
+                    result += ((byteVal < 16) ? '0' : '') + byteVal.toString(16);
+                }
+            }
+            return result;
+        }
 
-        return `${timestamp}.${hashHex}`;
+        const fallbackHash = sha256_fallback(payload);
+        return `${timestamp}.${fallbackHash}`;
     }
 
     // ==========================================
@@ -3195,8 +3235,9 @@ GM_addStyle(`
                         if (!qInfo) continue;
 
                         const status = res[qInfo.task_id];
+                        const isTimeout = (Date.now() - qInfo.start_time > 43200000);
 
-                        if (!status || status.state === 'unknown' || status.state === 'error') {
+                        if (!status || status.state === 'unknown' || status.state === 'error' || isTimeout) {
                             const isUnknown = !status || status.state === 'unknown';
 
                             if (status && status.state === 'error') {
@@ -3398,14 +3439,15 @@ GM_addStyle(`
                     errorLog("[Queue Polling] 네트워크 통신 오류 (연속 에러 카운트: " + consecutiveErrors + ")", e);
 
                     if (consecutiveErrors === 20) {
-                        toastr.warning("서버 연결이 원활하지 않아 대기열 추적이 일시 지연되고 있습니다. 연결이 복구되면 자동으로 추적을 재개합니다.", "연결 불안정");
+                        toastr.warning("서버 응답 지연으로 대기열 추적이 멈췄습니다.<br>백그라운드 작업은 정상 진행 중이며, 연결 복구 시 화면이 자동 갱신됩니다.", "통신 지연", {timeOut: 8000});
                     }
                 }
             }
 
             if (Object.keys(window._pmh_media_queues).length > 0) {
                 if (window._pmh_queue_poll_timer) clearTimeout(window._pmh_queue_poll_timer);
-                window._pmh_queue_poll_timer = setTimeout(pollLoop, 3000);
+                const nextPollDelay = consecutiveErrors > 5 ? 8000 : 3000;
+                window._pmh_queue_poll_timer = setTimeout(pollLoop, nextPollDelay);
             } else {
                 window._pmh_polling_active = false;
             }
