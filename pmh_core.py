@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.99"
+__version__ = "0.8.100"
 
 def get_version():
     return __version__
@@ -267,14 +267,21 @@ def start_scheduler_daemon(global_config):
                     
             time.sleep(0.5)
 
-    st = threading.Thread(target=scheduler_loop, name=thread_name)
-    st.daemon = True
-    st.start()
+    if any(t.name == thread_name and t.is_alive() for t in threading.enumerate()):
+        print(f"[PMH Daemon] ⚠️ 기존 스케줄러 데몬이 아직 살아있습니다. 중복 생성을 방지합니다.")
+    else:
+        st = threading.Thread(target=scheduler_loop, name=thread_name)
+        st.daemon = True
+        st.start()
 
-    _SCHEDULER_STATES[worker_name] = True
-    media_thread = threading.Thread(target=media_action_worker_loop, args=(global_config,), name=worker_name)
-    media_thread.daemon = True
-    media_thread.start()
+    if any(t.name == worker_name and t.is_alive() for t in threading.enumerate()):
+        print(f"[PMH Daemon] ⚠️ 기존 큐 워커가 아직 살아있습니다. 중복 생성을 방지합니다.")
+        _SCHEDULER_STATES[worker_name] = True
+    else:
+        _SCHEDULER_STATES[worker_name] = True
+        media_thread = threading.Thread(target=media_action_worker_loop, args=(global_config,), name=worker_name)
+        media_thread.daemon = True
+        media_thread.start()
 
 def _update_dashboard_cache(tools_dir, task_logs_dir, base_dir):
     global GLOBAL_DASHBOARD_CACHE
@@ -1382,11 +1389,14 @@ def dispatch_request(subpath, method, args, data, global_config):
         elif subpath == 'library/batch' and method == 'POST':
             return handle_library_batch(data, max_batch_size, db_path)
             
-        elif subpath == 'media/queue_status' and method == 'GET':
-            task_ids = args.get('task_ids', '').split(',')
+        elif subpath == 'media/queue_status' and method == 'POST':
+            task_ids = data.get('task_ids', [])
+            if isinstance(task_ids, str): 
+                task_ids = task_ids.split(',')
+            
             result = {}
             for tid in task_ids:
-                if tid: result[tid] = MEDIA_ACTION_STATUS.get(tid, {'state': 'unknown'})
+                if tid: result[str(tid).strip()] = MEDIA_ACTION_STATUS.get(str(tid).strip(), {'state': 'unknown'})
             return result, 200
 
         elif subpath == 'media/queue_cancel' and method == 'POST':
@@ -2315,10 +2325,12 @@ def perform_smart_media_action(
         highest_sim_found = 0.0
         matched_by = ""
 
-        # 데이터 접근 안전 래퍼 함수 (Dict, Object 모두 호환)
         def _get_val(obj, key, default=""):
-            if isinstance(obj, dict): return obj.get(key, default)
-            return getattr(obj, key, default)
+            if isinstance(obj, dict): 
+                val = obj.get(key)
+            else: 
+                val = getattr(obj, key, None)
+            return val if val is not None else default
 
         # 공통 HTTP 헤더
         api_headers = {

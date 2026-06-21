@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.99
+// @version      0.8.100
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1834,12 +1834,20 @@ GM_addStyle(`
                 GM_deleteValue('pmh_ui_core_js_cache');
                 GM_deleteValue('pmh_ui_cache_version');
 
-                clearMemoryCache();
-                forceReRenderAll();
+                localStorage.removeItem('pmh_media_queues');
+                window._pmh_media_queues = {};
+                window._pmh_polling_active = false;
+                if (window._pmh_queue_poll_timer) {
+                    clearTimeout(window._pmh_queue_poll_timer);
+                    window._pmh_queue_poll_timer = null;
+                }
 
-                if (document.getElementById('plex-guid-box')) {
-                    currentDisplayedItemId = null;
-                    processDetail(true);
+                clearMemoryCache(); 
+                forceReRenderAll();
+                
+                if (document.getElementById('plex-guid-box')) { 
+                    currentDisplayedItemId = null; 
+                    processDetail(true); 
                 }
 
                 showStatusMsg("캐시 초기화 및 코어 리로딩 중...", "#e5a00d");
@@ -3223,11 +3231,11 @@ GM_addStyle(`
             }
 
             const srvConfig = getServerConfig(serverId);
-            const taskIds = queueKeys.map(k => window._pmh_media_queues[k].task_id).join(',');
+            const taskIdsList = queueKeys.map(k => window._pmh_media_queues[k].task_id);
 
-            if (srvConfig && taskIds) {
+            if (srvConfig && taskIdsList.length > 0) {
                 try {
-                    const res = await makeRequest(`${srvConfig.relayUrl}/media/queue_status?task_ids=${taskIds}`, 'GET', null, ClientSettings.masterApiKey);
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/queue_status`, 'POST', { task_ids: taskIdsList }, ClientSettings.masterApiKey);
                     consecutiveErrors = 0;
 
                     for (const id of queueKeys) {
@@ -3238,22 +3246,26 @@ GM_addStyle(`
                         const isTimeout = (Date.now() - qInfo.start_time > 43200000);
 
                         if (!status || status.state === 'unknown' || status.state === 'error' || isTimeout) {
-                            const isUnknown = !status || status.state === 'unknown';
-
-                            if (status && status.state === 'error') {
-                                const failName = qInfo.title || "알 수 없는 항목";
-                                toastr.error(`<b>[${failName}]</b><br>작업 실패: ${status.msg}`, "오류", {timeOut: 6000});
-                            } else if (isUnknown) {
-                                infoLog(`[Queue] 아이템 ${id}의 작업이 서버 메모리에서 만료되었습니다. (서버 재시작 또는 만료)`);
+                            if (!status || status.state === 'unknown') {
+                                infoLog(`[Queue] 아이템 ${id}의 작업 상태를 알 수 없습니다. (서버 재시작 또는 시간 경과)`);
+                                needsListRefresh = true;
+                            } else if (status.state === 'error') {
+                                const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
+                                warnLog(`[Queue] 작업 실패: [${failName}] ${status.msg}`);
+                                needsListRefresh = true;
+                            } else if (isTimeout) {
+                                const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
+                                warnLog(`[Queue] 시간 초과: [${failName}] 서버 응답이 없습니다.`);
+                                needsListRefresh = true;
                             }
 
                             deleteMemoryCache(`D_${serverId}_${id}`);
                             deleteMemoryCache(`F_${serverId}_${id}`);
                             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
-
+                            
                             delete window._pmh_media_queues[id];
                             if (typeof window.saveQueueState === 'function') window.saveQueueState();
-
+                            
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => {
                                 const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
@@ -3267,9 +3279,9 @@ GM_addStyle(`
                                 }
                             });
                         }
-
+                        
                         else if (status.state === 'completed') {
-                            infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 즉시 강제 갱신을 시도합니다.`);
+                            infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 캐시 갱신을 시도합니다.`);
                             
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => {
@@ -3283,9 +3295,9 @@ GM_addStyle(`
 
                             delete window._pmh_media_queues[id];
                             if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                            
+
                             (async () => {
-                                await new Promise(r => setTimeout(r, 1500));
+                                await new Promise(r => setTimeout(r, 2000));
                                 try {
                                     const plexSrv = extractPlexServerInfo(serverId);
                                     if (!plexSrv) return;
@@ -3295,7 +3307,7 @@ GM_addStyle(`
                                     let newId = id;
 
                                     if (meta === 'DELETED') {
-                                        meta = null;
+                                        meta = null; 
                                         const filePath = oldCache ? oldCache.p : null;
                                         const sectionId = oldCache ? oldCache.librarySectionID : null;
 
@@ -3303,7 +3315,6 @@ GM_addStyle(`
                                             infoLog(`[Queue] ID ${id}가 삭제되었습니다. 파일 경로로 새 ID 역추적을 시작합니다: ${filePath}`);
                                             
                                             const searchUrl = `${plexSrv.url}/library/sections/${sectionId}/all?file=${encodeURIComponent(filePath)}&X-Plex-Token=${plexSrv.token}`;
-                                            
                                             const newMeta = await new Promise((resolve) => {
                                                 GM_xmlhttpRequest({
                                                     method: 'GET', url: searchUrl,
@@ -3331,7 +3342,6 @@ GM_addStyle(`
                                                 meta = newMeta;
                                                 newId = String(newMeta.ratingKey);
                                                 infoLog(`[Queue] 새 ID 역추적 성공! (구 ID: ${id} -> 신 ID: ${newId})`);
-                                                toastr.success(`[${newMeta.title}]<br>새로운 항목으로 성공적으로 이관 병합되었습니다.`, "이관 병합 완료");
                                             }
                                         }
                                         
@@ -3352,13 +3362,9 @@ GM_addStyle(`
 
                                     if (!meta) {
                                         infoLog(`[Queue] 일시적인 통신 지연으로 아이템 ${id}의 상태를 갱신하지 못했습니다. 기존 배지로 복원합니다.`);
-                                        
                                         const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                                         markers.forEach(m => m.remove());
-                                        
-                                        setTimeout(() => { 
-                                            if (typeof processList === 'function') processList(); 
-                                        }, 100);
+                                        setTimeout(() => { if (typeof processList === 'function') processList(); }, 100);
                                         return;
                                     }
 
@@ -3383,7 +3389,6 @@ GM_addStyle(`
                                         const hrefAttr = liveLink ? decodeURIComponent(liveLink.getAttribute('href') || '') : '';
                                         
                                         if (liveLink && (hrefAttr.includes(id) || hrefAttr.includes(newId))) {
-                                            
                                             if (newId !== id && hrefAttr.includes(id)) {
                                                 const oldHref = liveLink.getAttribute('href');
                                                 const newHref = oldHref.replace(id, newId).replace(encodeURIComponent('/library/metadata/' + id), encodeURIComponent('/library/metadata/' + newId));
@@ -4648,7 +4653,7 @@ GM_addStyle(`
         const waitQueueTask = async (taskId, srvConfig) => {
             while (!abortDetailRefresh) {
                 await new Promise(r => setTimeout(r, 2000));
-                const statusRes = await makeRequest(`${srvConfig.relayUrl}/media/queue_status?task_ids=${taskId}`, 'GET', null, ClientSettings.masterApiKey);
+                const statusRes = await makeRequest(`${srvConfig.relayUrl}/media/queue_status`, 'POST', { task_ids: [taskId] }, ClientSettings.masterApiKey);
                 const statusInfo = statusRes[taskId];
 
                 if (!statusInfo || statusInfo.state === 'completed') return true;

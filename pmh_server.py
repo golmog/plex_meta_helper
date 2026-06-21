@@ -728,7 +728,7 @@ def relay_to_node(node_id, subpath):
     if req_data:
         headers['Content-Length'] = str(len(req_data))
 
-    if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/run')):
+    if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('/run')):
         print(f"[PMH RELAY] 🚀 {request.method} -> {node_info['name']} ({target_url})")
 
     try:
@@ -807,7 +807,7 @@ def api_gateway(subpath):
         except Exception:
             pass
 
-    if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/run')):
+    if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('/run')):
         print(f"[PMH API] 💻 {method} /{subpath}")
 
     result, status_code = pmh_core.dispatch_request(
