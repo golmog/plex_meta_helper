@@ -341,8 +341,9 @@ def get_target_items(req_data, core_api, task=None):
                     display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
                 lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
 
+                is_cron_run = req_data.get('_is_cron', False)
                 text_dict = {'guid': guid_val, 'title': display_title, 'path': f_path}
-                if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters):
+                if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters, is_cron=is_cron_run):
                     continue
 
                 if mode in ['refresh', 'rematch'] and (re_include or re_exclude):
