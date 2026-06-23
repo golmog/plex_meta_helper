@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.102"
+__version__ = "0.8.103"
 
 def get_version():
     return __version__
@@ -103,33 +103,48 @@ def compile_yaml_filters(base_dir, tool_id, task_logger=None):
             
         for f_type in ['include', 'exclude']:
             rules = yaml_data.get(f_type) or []
-            
-            if not isinstance(rules, list):
-                continue
+            if not isinstance(rules, list): continue
                 
             for rule in rules:
-                if not isinstance(rule, dict):
-                    continue
+                if not isinstance(rule, dict): continue
                     
                 fields = rule.get('field', 'guid,title,path')
                 field_list = [x.strip().lower() for x in re.split(r'[,|]', str(fields)) if x.strip()]
-
+                
                 schedule_only = rule.get('schedule_only', False)
                 if isinstance(schedule_only, str):
                     schedule_only = schedule_only.lower() in ['true', '1', 'yes', 'y']
-                
+
                 keyword_list = rule.get('list') or []
                 if not isinstance(keyword_list, list): keyword_list = [keyword_list]
-
+                    
                 for kw in keyword_list:
                     clean_kw = str(kw).strip()
                     if not clean_kw or clean_kw.lower() == 'none': continue
                     
+                    is_regex = False 
+                    lower_kw = clean_kw.lower()
+                    
+                    if lower_kw.startswith('regex||'):
+                        is_regex = True
+                        clean_kw = clean_kw[7:].strip()
+                    elif lower_kw.startswith('plain||'):
+                        clean_kw = clean_kw[7:].strip()
+                    elif lower_kw.startswith('text||'):
+                        clean_kw = clean_kw[6:].strip()
+                        
+                    if not clean_kw: continue
+                    
                     try:
-                        compiled_pattern = re.compile(clean_kw, re.IGNORECASE)
+                        if is_regex:
+                            compiled_pattern = re.compile(clean_kw, re.IGNORECASE)
+                        else:
+                            compiled_pattern = clean_kw.lower()
+                            
                         compiled_filters[f_type].append({
                             'fields': field_list,
                             'pattern': compiled_pattern,
+                            'is_regex': is_regex,
                             'schedule_only': schedule_only
                         })
                     except Exception as e:
@@ -147,6 +162,13 @@ def check_yaml_filter(text_dict, compiled_filters, is_cron=False):
     includes = compiled_filters.get('include', [])
     excludes = compiled_filters.get('exclude', [])
     
+    def _is_match(target_text, pattern_obj, is_regex):
+        if not target_text: return False
+        if is_regex:
+            return bool(pattern_obj.search(target_text))
+        else:
+            return pattern_obj in target_text.lower()
+
     if includes:
         passed_include = False
         active_include_count = 0
@@ -158,7 +180,7 @@ def check_yaml_filter(text_dict, compiled_filters, is_cron=False):
             active_include_count += 1
             for field in rule['fields']:
                 target_text = text_dict.get(field, "")
-                if target_text and rule['pattern'].search(target_text):
+                if _is_match(target_text, rule['pattern'], rule['is_regex']):
                     passed_include = True
                     break
             if passed_include: break
@@ -173,7 +195,7 @@ def check_yaml_filter(text_dict, compiled_filters, is_cron=False):
                 
             for field in rule['fields']:
                 target_text = text_dict.get(field, "")
-                if target_text and rule['pattern'].search(target_text):
+                if _is_match(target_text, rule['pattern'], rule['is_regex']):
                     return False
 
     return True

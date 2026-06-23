@@ -17,6 +17,7 @@
 # [키워드 작성 (list)]
 # - 대소문자를 구분하지 않습니다. (ABC = abc)
 # - 정규표현식(Regex)을 지원합니다. (예: \.mp4$, ^\[sod\] 등)
+# - 정규식을 사용하려면 규칙 앞에 `regex||`을 사용해 명시적으로 정규식임을 선언합니다.
 # - 정규식에 백슬래시(\)를 쓸 때는 따옴표 없이 쓰거나, 작은 따옴표(' ')로 묶어서 쓰세요.
 #
 # [특수 옵션 (schedule_only)]
@@ -39,6 +40,7 @@ include:
 exclude:
   # 예시 1: 수동 매칭 등 특정 영상을 보호할 때
   - field: guid
+    schedule_only: true                    # 자동 스케줄러에서만 이 필터 작동
     list:
       - 12345abcde                         # 특정 아이템의 고유 해시값
       - "sjva_agent://KD104327"            # 특정 품번
@@ -52,8 +54,9 @@ exclude:
 
   # 예시 3: 특정 경로에 있는 파일이나 특정 확장자를 무시할 때
   - field: path
-    schedule_only: true                    # 자동 스케줄러에서만 이 필터 작동
+    # 아래처럼 정규식과 단순 텍스트(plain)를 한 목록에 자유롭게 섞어 쓸 수 있습니다.
     list:
-      - "/mnt/media/private/"              # 숨기고 싶은 개인 영상 폴더 스킵
-      - \.(avi|wmv)$                       # avi, wmv 확장자 파일 스킵
-      - sample                             # 경로에 sample 이 들어가는 찌꺼기 파일 스킵
+      - regex||\.mp4$                                            # 정규식: mp4로 끝나는 파일
+      - regex||/mnt/media/adult/(vr|3d)/                         # 정규식: vr 또는 3d 폴더
+      - "/mnt/gds/VIDEO/외국TV/IQ246 ~화려한 사건부~ (2016)"     # 단순 텍스트: 괄호나 기호를 특수문자로 인식하지 않음
+      - sample_video_123.mkv                                     # 단순 텍스트: 점(.)을 아무 글자나 매칭하는 특수문자로 인식하지 않음
