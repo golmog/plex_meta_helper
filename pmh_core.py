@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.101"
+__version__ = "0.8.102"
 
 def get_version():
     return __version__
@@ -113,11 +113,14 @@ def compile_yaml_filters(base_dir, tool_id, task_logger=None):
                     
                 fields = rule.get('field', 'guid,title,path')
                 field_list = [x.strip().lower() for x in re.split(r'[,|]', str(fields)) if x.strip()]
-                keyword_list = rule.get('list') or []
+
+                schedule_only = rule.get('schedule_only', False)
+                if isinstance(schedule_only, str):
+                    schedule_only = schedule_only.lower() in ['true', '1', 'yes', 'y']
                 
-                if not isinstance(keyword_list, list):
-                    keyword_list = [keyword_list]
-                    
+                keyword_list = rule.get('list') or []
+                if not isinstance(keyword_list, list): keyword_list = [keyword_list]
+
                 for kw in keyword_list:
                     clean_kw = str(kw).strip()
                     if not clean_kw or clean_kw.lower() == 'none': continue
@@ -126,7 +129,8 @@ def compile_yaml_filters(base_dir, tool_id, task_logger=None):
                         compiled_pattern = re.compile(clean_kw, re.IGNORECASE)
                         compiled_filters[f_type].append({
                             'fields': field_list,
-                            'pattern': compiled_pattern
+                            'pattern': compiled_pattern,
+                            'schedule_only': schedule_only
                         })
                     except Exception as e:
                         if task_logger: task_logger(f"⚠️ 필터 정규식 문법 오류 무시됨 -> '{clean_kw}': {e}")
@@ -139,24 +143,34 @@ def compile_yaml_filters(base_dir, tool_id, task_logger=None):
         
     return compiled_filters
 
-def check_yaml_filter(text_dict, compiled_filters):
+def check_yaml_filter(text_dict, compiled_filters, is_cron=False):
     includes = compiled_filters.get('include', [])
     excludes = compiled_filters.get('exclude', [])
     
     if includes:
         passed_include = False
+        active_include_count = 0
+        
         for rule in includes:
+            if rule.get('schedule_only') and not is_cron:
+                continue
+                
+            active_include_count += 1
             for field in rule['fields']:
                 target_text = text_dict.get(field, "")
                 if target_text and rule['pattern'].search(target_text):
                     passed_include = True
                     break
             if passed_include: break
-        if not passed_include:
+            
+        if active_include_count > 0 and not passed_include:
             return False
 
     if excludes:
         for rule in excludes:
+            if rule.get('schedule_only') and not is_cron:
+                continue
+                
             for field in rule['fields']:
                 target_text = text_dict.get(field, "")
                 if target_text and rule['pattern'].search(target_text):
