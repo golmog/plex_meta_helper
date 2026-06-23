@@ -83,8 +83,8 @@ def get_ui(core_api=None):
                 {"value": "title", "text": "제목 (Title)"},
                 {"value": "path", "text": "파일/폴더 경로 (Path)"}
             ], "default": ["title", "path"]},
-            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식 지원)", "placeholder": "예: (fc2|carib) 또는 ^\[sod\]"},
-            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식 지원)", "placeholder": "예: vr 또는 \.mp4$"}
+            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: fc2 또는 regex||^\[sod\]"},
+            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\.mp4$"}
         ],
         "execute_inputs": [
             {
@@ -353,17 +353,35 @@ def worker(task_data, core_api, start_index):
             current_tool_id = core_api['task'].tool_id if task else "jav_manager"
             compiled_yaml_filters = pmh_core.compile_yaml_filters(base_dir, current_tool_id, task.log if task else None)
 
-            ui_filter_fields = task_data.get('filter_fields', ['title', 'path'])
+            ui_filter_fields = task_data.get('filter_fields', ['guid', 'title'])
             filter_include = task_data.get('filter_include', '').strip()
             filter_exclude = task_data.get('filter_exclude', '').strip()
             
-            re_include, re_exclude = None, None
-            if filter_include:
-                try: re_include = re.compile(filter_include, re.IGNORECASE)
-                except Exception as e: task.log(f"⚠️ 포함 키워드 정규식 오류 (무시됨): {e}")
-            if filter_exclude:
-                try: re_exclude = re.compile(filter_exclude, re.IGNORECASE)
-                except Exception as e: task.log(f"⚠️ 제외 키워드 정규식 오류 (무시됨): {e}")
+            inc_rule, exc_rule = None, None
+
+            def _parse_ui_filter(raw_text):
+                if not raw_text: return None
+                is_rx = False
+                lower_txt = raw_text.lower()
+                if lower_txt.startswith('regex||'):
+                    is_rx = True
+                    raw_text = raw_text[7:].strip()
+                elif lower_txt.startswith('plain||'):
+                    raw_text = raw_text[7:].strip()
+                elif lower_txt.startswith('text||'):
+                    raw_text = raw_text[6:].strip()
+                    
+                if not raw_text: return None
+                
+                try:
+                    if is_rx:
+                        return {'is_regex': True, 'pattern': re.compile(raw_text, re.IGNORECASE)}
+                    else:
+                        return {'is_regex': False, 'pattern': raw_text.lower()}
+                except Exception: return None
+
+            inc_rule = _parse_ui_filter(filter_include)
+            exc_rule = _parse_ui_filter(filter_exclude)
                 
             filtered_items = []
             for item in all_items:
@@ -380,21 +398,25 @@ def worker(task_data, core_api, start_index):
                 if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters, is_cron=is_cron_run):
                     continue
 
-                if re_include or re_exclude:
-                    texts_to_check = []
-                    if 'guid' in ui_filter_fields and guid_val: texts_to_check.append(guid_val)
-                    if 'title' in ui_filter_fields and title_val: texts_to_check.append(title_val)
-                    if 'path' in ui_filter_fields and item.get('all_files'):
-                        for p in item['all_files'].split('|||'):
-                            if p: texts_to_check.append(p)
+                if inc_rule or exc_rule:
+                    ui_texts = []
+                    if 'guid' in ui_filter_fields and guid_val: ui_texts.append(guid_val)
+                    if 'title' in ui_filter_fields and title_val: ui_texts.append(title_val)
+                    if 'path' in ui_filter_fields and first_path: ui_texts.append(first_path)
 
-                    if re_include and not any(re_include.search(txt) for txt in texts_to_check): passed = False
-                    if passed and re_exclude and any(re_exclude.search(txt) for txt in texts_to_check): passed = False
+                    def _ui_match(rule, texts):
+                        if rule['is_regex']:
+                            return any(rule['pattern'].search(txt) for txt in texts)
+                        else:
+                            return any(rule['pattern'] in txt.lower() for txt in texts)
+
+                    if inc_rule and not _ui_match(inc_rule, ui_texts): continue
+                    if exc_rule and _ui_match(exc_rule, ui_texts): continue
                         
                 if passed:
                     filtered_items.append(item)
                     
-            if (re_include or re_exclude) or (compiled_yaml_filters['include'] or compiled_yaml_filters['exclude']):
+            if (inc_rule or exc_rule) or (compiled_yaml_filters['include'] or compiled_yaml_filters['exclude']):
                 task.log(f"  -> 고급 필터 적용: {len(all_items):,}개 중 {len(filtered_items):,}개 통과")
             all_items = filtered_items
 
