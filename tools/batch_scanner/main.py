@@ -76,7 +76,7 @@ def get_ui(core_api):
                 {"value": "path", "text": "파일/폴더 경로 (Path)"}
             ], "default": ["guid"], "show_if": {"mode": ["refresh", "rematch"]}},
             {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: marvel 또는 regex||^\[sod\]"},
-            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\.mp4$"}
+            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\.mp4$"},
 
             {"id": "scan_depth", "type": "number", "label": "경로 스캔 Depth (기본: 3)", "default": 3, "layout": "plain", "width": "60px", "show_if": {"mode": "path_scan"}}
         ],
