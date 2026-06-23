@@ -6,11 +6,11 @@
 """
 
 import os
+import re
 import urllib.request
 import urllib.parse
 import time
 import unicodedata
-import re
 import json
 import sqlite3
 import pmh_core
@@ -101,7 +101,14 @@ def get_ui(core_api):
                 {"id": "opt_yaml_season", "label": "3자리 시즌 에피소드 중 YAML 미적용 항목 감지", "default": True},
                 {"id": "opt_yaml_marker", "label": "인트로/크레딧 마커 누락 항목 YAML 적용", "default": True}
             ]},
-            {"id": "opt_analyze_audio", "type": "checkbox", "label": "비디오 분석 시 오디오 코덱 검사 포함", "default": True, "show_if": {"opt_analyze": True}}
+            {"id": "opt_analyze_audio", "type": "checkbox", "label": "비디오 분석 시 오디오 코덱 검사 포함", "default": True, "show_if": {"opt_analyze": True}},
+            {"id": "filter_fields", "type": "multi_select", "label": "정규식 필터 적용 대상 필드", "options": [
+                {"value": "guid", "text": "에이전트 (GUID)"},
+                {"value": "title", "text": "제목 (Title)"},
+                {"value": "path", "text": "파일/폴더 경로 (Path)"}
+            ], "default": ["guid", "title"]},
+            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식 지원)", "placeholder": "예: (marvel|dc) 또는 ^tv\.plex"},
+            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식 지원)", "placeholder": "예: theporndb 또는 \.mp4$"}
         ],
         "execute_inputs": [
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": True, "show_if": {"opt_match": True}},
@@ -159,6 +166,22 @@ def get_ui(core_api):
 # =====================================================================
 def get_target_issues(req_data, core_api, task=None):
     target_sections = req_data.get('target_sections', [])
+    
+    ui_filter_fields = req_data.get('filter_fields', ['guid', 'title'])
+    filter_include = req_data.get('filter_include', '').strip()
+    filter_exclude = req_data.get('filter_exclude', '').strip()
+    re_include, re_exclude = None, None
+    if filter_include:
+        try: re_include = re.compile(filter_include, re.IGNORECASE)
+        except Exception: pass
+    if filter_exclude:
+        try: re_exclude = re.compile(filter_exclude, re.IGNORECASE)
+        except Exception: pass
+
+    base_dir = core_api['config'].get('base_dir', '')
+    current_tool_id = core_api['task'].tool_id if task else "smart_scanner"
+    compiled_yaml_filters = pmh_core.compile_yaml_filters(base_dir, current_tool_id, core_api['task'].log)
+
     opts = {
         'analyze': req_data.get('opt_analyze', True),
         'match': req_data.get('opt_match', True),
@@ -365,6 +388,29 @@ def get_target_issues(req_data, core_api, task=None):
                     for r in rows:
                         rk, m_type, title, f_path, parent_id, grandparent_id = r[0], r[1], r[2], r[3], r[5], r[8]
                         sec_name = lib_map.get(str(r[7]), 'Unknown')
+                        guid_val = str(r[6] or "")
+                        f_path_val = str(f_path or "")
+
+                        # 타이틀 생성
+                        display_title = ""
+                        if m_type == 1: display_title = format_title(r)
+                        elif m_type in (2, 3, 8, 9): display_title = format_title(r, is_parent=True)
+                        elif m_type in (4, 10): display_title = format_title(r, is_episode=True)
+
+                        # [1] YAML 파일 필터 검사
+                        text_dict = {'guid': guid_val, 'title': display_title, 'path': f_path_val}
+                        if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters):
+                            continue
+
+                        # [2] UI 입력 폼 필터 검사
+                        if re_include or re_exclude:
+                            ui_texts = []
+                            if 'guid' in ui_filter_fields and guid_val: ui_texts.append(guid_val)
+                            if 'title' in ui_filter_fields and display_title: ui_texts.append(display_title)
+                            if 'path' in ui_filter_fields and f_path_val: ui_texts.append(f_path_val)
+
+                            if re_include and not any(re_include.search(txt) for txt in ui_texts): continue
+                            if re_exclude and any(re_exclude.search(txt) for txt in ui_texts): continue
                         
                         if m_type == 1: 
                             display_title = format_title(r)
