@@ -374,8 +374,10 @@ def worker(task_data, core_api, start_index):
                 
                 first_path = ""
                 if item.get('all_files'): first_path = item['all_files'].split('|||')[0]
+
+                is_cron_run = task_data.get('_is_cron', False)
                 text_dict = {'guid': guid_val, 'title': title_val, 'path': first_path}
-                if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters):
+                if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters, is_cron=is_cron_run):
                     continue
 
                 if re_include or re_exclude:
