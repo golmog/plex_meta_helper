@@ -1,6 +1,6 @@
 id: "jav_manager"
 name: "JAV 매니저"
 description: "JAV 전용 관리 도구입니다."
-version: "0.8.9"
+version: "0.8.10"
 icon: "fas fa-heart"
 entry_file: "main.py"

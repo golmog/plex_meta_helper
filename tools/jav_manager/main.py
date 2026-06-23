@@ -78,7 +78,6 @@ def get_ui(core_api=None):
                     {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"}
                 ]
             },
-            # 고급 정규식 필터링 (모든 모드 공통 적용)
             {"id": "filter_fields", "type": "multi_select", "label": "정규식 필터 적용 대상 필드", "options": [
                 {"value": "guid", "text": "에이전트 (GUID)"},
                 {"value": "title", "text": "제목 (Title)"},
@@ -350,7 +349,11 @@ def worker(task_data, core_api, start_index):
                 task.update_state('completed', 100, 100)
                 return
 
-            filter_fields = task_data.get('filter_fields', ['title', 'path'])
+            base_dir = core_api['config'].get('base_dir', '')
+            current_tool_id = core_api['task'].tool_id if task else "jav_manager"
+            compiled_yaml_filters = pmh_core.compile_yaml_filters(base_dir, current_tool_id, task.log if task else None)
+
+            ui_filter_fields = task_data.get('filter_fields', ['title', 'path'])
             filter_include = task_data.get('filter_include', '').strip()
             filter_exclude = task_data.get('filter_exclude', '').strip()
             
@@ -362,33 +365,36 @@ def worker(task_data, core_api, start_index):
                 try: re_exclude = re.compile(filter_exclude, re.IGNORECASE)
                 except Exception as e: task.log(f"⚠️ 제외 키워드 정규식 오류 (무시됨): {e}")
                 
-            if re_include or re_exclude:
-                filtered_items = []
-                for item in all_items:
+            filtered_items = []
+            for item in all_items:
+                guid_val = str(item.get('guid') or "")
+                title_val = str(item.get('title') or "")
+                
+                passed = True
+                
+                first_path = ""
+                if item.get('all_files'): first_path = item['all_files'].split('|||')[0]
+                text_dict = {'guid': guid_val, 'title': title_val, 'path': first_path}
+                if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters):
+                    continue
+
+                if re_include or re_exclude:
                     texts_to_check = []
-                    if 'guid' in filter_fields and item.get('guid'): 
-                        texts_to_check.append(item['guid'])
-                    if 'title' in filter_fields and item.get('title'): 
-                        texts_to_check.append(item['title'])
-                    if 'path' in filter_fields and item.get('all_files'):
+                    if 'guid' in ui_filter_fields and guid_val: texts_to_check.append(guid_val)
+                    if 'title' in ui_filter_fields and title_val: texts_to_check.append(title_val)
+                    if 'path' in ui_filter_fields and item.get('all_files'):
                         for p in item['all_files'].split('|||'):
                             if p: texts_to_check.append(p)
 
-                    passed = True
-                    
-                    if re_include:
-                        if not any(re_include.search(txt) for txt in texts_to_check):
-                            passed = False
-                            
-                    if passed and re_exclude:
-                        if any(re_exclude.search(txt) for txt in texts_to_check):
-                            passed = False
-                            
-                    if passed:
-                        filtered_items.append(item)
+                    if re_include and not any(re_include.search(txt) for txt in texts_to_check): passed = False
+                    if passed and re_exclude and any(re_exclude.search(txt) for txt in texts_to_check): passed = False
                         
+                if passed:
+                    filtered_items.append(item)
+                    
+            if (re_include or re_exclude) or (compiled_yaml_filters['include'] or compiled_yaml_filters['exclude']):
                 task.log(f"  -> 고급 필터 적용: {len(all_items):,}개 중 {len(filtered_items):,}개 통과")
-                all_items = filtered_items
+            all_items = filtered_items
 
             if not all_items:
                 task.log("필터 적용 후 검사할 대상이 없습니다.")
