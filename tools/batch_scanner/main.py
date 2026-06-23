@@ -7,13 +7,13 @@
 
 import time
 import os
+import re
 import unicodedata
 import urllib.request
 import urllib.parse
 import json
 import sqlite3
 import pmh_core
-import re
 
 # =====================================================================
 # 디스코드 알림 기본 템플릿
@@ -138,19 +138,21 @@ def get_target_items(req_data, core_api, task=None):
     mode = req_data.get('mode', 'refresh')
     scan_depth = int(req_data.get('scan_depth', 1))
 
-    filter_fields = req_data.get('filter_fields', ['guid'])
+    ui_filter_fields = req_data.get('filter_fields', ['guid', 'title'])
     filter_include = req_data.get('filter_include', '').strip()
     filter_exclude = req_data.get('filter_exclude', '').strip()
-    
     re_include, re_exclude = None, None
     if filter_include:
         try: re_include = re.compile(filter_include, re.IGNORECASE)
-        except Exception as e:
-            if task: task.log(f"⚠️ 포함 키워드 정규식 오류 (무시됨): {e}")
+        except Exception: pass
     if filter_exclude:
         try: re_exclude = re.compile(filter_exclude, re.IGNORECASE)
-        except Exception as e:
-            if task: task.log(f"⚠️ 제외 키워드 정규식 오류 (무시됨): {e}")
+        except Exception: pass
+
+    # === [YAML 고급 필터 로드] ===
+    base_dir = core_api['config'].get('base_dir', '')
+    current_tool_id = core_api['task'].tool_id if task else "batch_scanner"
+    compiled_yaml_filters = pmh_core.compile_yaml_filters(base_dir, current_tool_id, task.log if task else None)
 
     opt_smart_refresh = req_data.get('opt_smart_refresh', False)
     opt_smart_match = req_data.get('opt_smart_match', False)
@@ -331,38 +333,28 @@ def get_target_items(req_data, core_api, task=None):
                     clean_guid = guid_val.replace("com.plexapp.agents.", "").replace("tv.plex.agents.", "")
                     if "?" in clean_guid: clean_guid = clean_guid.split("?")[0]
 
-                # 고급 정규식 필터링 적용
                 actual_parent = grandparent_id or parent_id
                 target_rk = actual_parent if actual_parent and mode in ['refresh', 'rematch'] else rk
 
                 display_title = format_title(r, is_parent=(mode in ['refresh', 'rematch'] and m_type in (4, 8, 10)))
                 if m_type not in (1, 2, 3, 4, 8, 9, 10):
                     display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
+                lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
+
+                text_dict = {'guid': guid_val, 'title': display_title, 'path': f_path}
+                if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters):
+                    continue
 
                 if mode in ['refresh', 'rematch'] and (re_include or re_exclude):
-                    # 선택된 필드의 텍스트 수집
-                    texts_to_check = []
-                    if 'guid' in filter_fields and guid_val: texts_to_check.append(guid_val) # 원본 GUID로 검사
-                    if 'title' in filter_fields and display_title: texts_to_check.append(display_title)
-                    if 'path' in filter_fields and f_path: texts_to_check.append(f_path)
+                    ui_texts = []
+                    if 'guid' in ui_filter_fields and guid_val: ui_texts.append(guid_val)
+                    if 'title' in ui_filter_fields and display_title: ui_texts.append(display_title)
+                    if 'path' in ui_filter_fields and f_path: ui_texts.append(f_path)
 
-                    # 포함 조건: 하나라도 매칭되어야 통과
-                    if re_include:
-                        if not any(re_include.search(txt) for txt in texts_to_check):
-                            continue # 매칭되는게 하나도 없으면 스킵
-
-                    # 제외 조건: 하나라도 매칭되면 탈락
-                    if re_exclude:
-                        if any(re_exclude.search(txt) for txt in texts_to_check):
-                            continue # 매칭되는게 있으면 스킵
+                    if re_include and not any(re_include.search(txt) for txt in ui_texts): continue
+                    if re_exclude and any(re_exclude.search(txt) for txt in ui_texts): continue
 
                 if target_rk not in targets:
-                    display_title = format_title(r, is_parent=(mode in ['refresh', 'rematch'] and m_type in (4, 8, 10)))
-                    if m_type not in (1, 2, 3, 4, 8, 9, 10):
-                        display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
-
-                    lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
-
                     targets[target_rk] = {
                         'id': str(target_rk),
                         'section': lib_name,
