@@ -398,8 +398,9 @@ def get_target_issues(req_data, core_api, task=None):
                         elif m_type in (4, 10): display_title = format_title(r, is_episode=True)
 
                         # [1] YAML 파일 필터 검사
+                        is_cron_run = req_data.get('_is_cron', False)
                         text_dict = {'guid': guid_val, 'title': display_title, 'path': f_path_val}
-                        if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters):
+                        if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters, is_cron=is_cron_run):
                             continue
 
                         # [2] UI 입력 폼 필터 검사
