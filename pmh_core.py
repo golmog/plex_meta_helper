@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.100"
+__version__ = "0.8.101"
 
 def get_version():
     return __version__
@@ -59,7 +59,7 @@ def generate_secure_header(api_key):
     
     return f"{timestamp}.{hash_hex}"
 
-def execute_plex_action_safe(action_func, max_retries=3, wait_sec=3.0):
+def execute_plex_action_safe(action_func, max_retries=5, wait_sec=5.0):
     last_err = None
     for i in range(max_retries):
         try:
@@ -75,7 +75,7 @@ def execute_plex_action_safe(action_func, max_retries=3, wait_sec=3.0):
     raise last_err
 
 # ==============================================================================
-# [코어 중앙 자연 정렬 엔진]
+# [유틸리티 함수]
 # ==============================================================================
 def core_natural_sort(data_list, default_sort):
     if not data_list or not default_sort: return data_list
@@ -87,6 +87,82 @@ def core_natural_sort(data_list, default_sort):
         d = rule.get('dir', 'asc').lower()
         data_list.sort(key=lambda x: n_key(str(x.get(k, ''))), reverse=(d == 'desc'))
     return data_list
+
+def compile_yaml_filters(base_dir, tool_id, task_logger=None):
+    filter_path = os.path.join(base_dir, 'tools', tool_id, 'filters.yaml')
+    compiled_filters = {'include': [], 'exclude': []}
+    
+    if not os.path.exists(filter_path):
+        return compiled_filters
+
+    try:
+        with open(filter_path, 'r', encoding='utf-8-sig') as f:
+            raw_text = f.read()
+            clean_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
+            yaml_data = yaml.safe_load(clean_text) or {}
+            
+        for f_type in ['include', 'exclude']:
+            rules = yaml_data.get(f_type) or []
+            
+            if not isinstance(rules, list):
+                continue
+                
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                    
+                fields = rule.get('field', 'guid,title,path')
+                field_list = [x.strip().lower() for x in re.split(r'[,|]', str(fields)) if x.strip()]
+                keyword_list = rule.get('list') or []
+                
+                if not isinstance(keyword_list, list):
+                    keyword_list = [keyword_list]
+                    
+                for kw in keyword_list:
+                    clean_kw = str(kw).strip()
+                    if not clean_kw or clean_kw.lower() == 'none': continue
+                    
+                    try:
+                        compiled_pattern = re.compile(clean_kw, re.IGNORECASE)
+                        compiled_filters[f_type].append({
+                            'fields': field_list,
+                            'pattern': compiled_pattern
+                        })
+                    except Exception as e:
+                        if task_logger: task_logger(f"⚠️ 필터 정규식 문법 오류 무시됨 -> '{clean_kw}': {e}")
+                        
+        if task_logger and (compiled_filters['include'] or compiled_filters['exclude']):
+            task_logger(f"🛡️ {os.path.basename(filter_path)} 로드 완료 (포함: {len(compiled_filters['include'])}개, 제외: {len(compiled_filters['exclude'])}개 규칙)")
+            
+    except Exception as e:
+        if task_logger: task_logger(f"⚠️ {os.path.basename(filter_path)} 파싱 실패 (파일 형식을 확인하세요): {e}")
+        
+    return compiled_filters
+
+def check_yaml_filter(text_dict, compiled_filters):
+    includes = compiled_filters.get('include', [])
+    excludes = compiled_filters.get('exclude', [])
+    
+    if includes:
+        passed_include = False
+        for rule in includes:
+            for field in rule['fields']:
+                target_text = text_dict.get(field, "")
+                if target_text and rule['pattern'].search(target_text):
+                    passed_include = True
+                    break
+            if passed_include: break
+        if not passed_include:
+            return False
+
+    if excludes:
+        for rule in excludes:
+            for field in rule['fields']:
+                target_text = text_dict.get(field, "")
+                if target_text and rule['pattern'].search(target_text):
+                    return False
+
+    return True
 
 # ==============================================================================
 # [디스코드 통합 알림 팩토리]
@@ -2018,7 +2094,7 @@ def execute_plexmate_action(action_type, target, global_config, **kwargs):
             'recursive': recursive_opt,
             'async': async_opt
         })
-        timeout = 30
+        timeout = 3600
         
     elif action_type == 'scan':
         url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/do_scan"
@@ -2028,14 +2104,14 @@ def execute_plexmate_action(action_type, target, global_config, **kwargs):
         })
         if kwargs.get('scanner'):
             payload['scanner'] = kwargs.get('scanner')
-        timeout = 60
+        timeout = 120
         
     elif action_type == 'manual_refresh':
         url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/manual_refresh"
         payload.update({
             'metadata_item_id': target
         })
-        timeout = 60
+        timeout = 120
         
     else:
         raise ValueError(f"지원하지 않는 Plex Mate 액션입니다: {action_type}")
@@ -2452,9 +2528,9 @@ def perform_smart_media_action(
                     try:
                         execute_plex_action_safe(lambda: target_item.unmatch())
                         unmatch_verified = False
-                        for _ in range(8):
+                        for _ in range(15):
                             if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
-                            time.sleep(2.0)
+                            time.sleep(3.0)
                             execute_plex_action_safe(lambda: target_item.reload())
                             check_guid = (target_item.guid or '').lower()
                             if not check_guid or 'local://' in check_guid or 'none://' in check_guid or check_guid == '-':
@@ -2476,9 +2552,9 @@ def perform_smart_media_action(
                 try:
                     execute_plex_action_safe(lambda: target_item.refresh())
                     match_success = False
-                    for _ in range(8):
+                    for _ in range(15):
                         if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
-                        time.sleep(2.5)
+                        time.sleep(3.0)
                         execute_plex_action_safe(lambda: target_item.reload())
                         temp_guid = (target_item.guid or '').lower()
                         if temp_guid and temp_guid != initial_guid and 'local://' not in temp_guid and 'none://' not in temp_guid and temp_guid != '-':
@@ -2764,9 +2840,9 @@ def perform_smart_media_action(
             match_verified = False
             if task_logger: task_logger(f"⏳ 매칭 적용 중... GUID 갱신을 확인합니다.")
             
-            for _ in range(8):
+            for _ in range(20):
                 if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
-                time.sleep(2.5)
+                time.sleep(3.0)
                 try:
                     execute_plex_action_safe(lambda: target_item.reload())
                     new_guid = (target_item.guid or '').lower()

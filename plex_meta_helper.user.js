@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.100
+// @version      0.8.101
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1451,7 +1451,7 @@ GM_addStyle(`
                     'X-PMH-Signature': secureToken
                 },
                 data: JSON.stringify(paramsObj),
-                timeout: 60000,
+                timeout: 3600000,
                 onload: r => {
                     try {
                         const parsed = JSON.parse(r.responseText);
@@ -2334,7 +2334,7 @@ GM_addStyle(`
                 })));
 
                 if (successCount > 0) {
-                    toastr.success(`[${targetId}] 설치 완료!`);
+                    toastr.success(`'${targetId}' 설치 완료!`);
                     pmhToolListCache = null;
 
                     await checkUpdate(true);
@@ -2429,7 +2429,7 @@ GM_addStyle(`
                 })));
 
                 if (successCount > 0) {
-                    toastr.success(`[${targetId}] 업데이트 완료!`);
+                    toastr.success(`'${targetId}' 업데이트 완료!`);
                     delete doUpdateBtn.dataset.updating;
                     doUpdateBtn.style.display = 'none';
                     const parentItem = doUpdateBtn.closest('.pmh-tool-item');
@@ -2823,27 +2823,42 @@ GM_addStyle(`
     function getItemStateHash(cont) {
         let hashParts = [];
 
-        const posterLink = cont.querySelector('[aria-label]');
-        if (posterLink) {
-            const label = posterLink.getAttribute('aria-label').trim();
-            if (label) hashParts.push(label);
+        const mainLink = cont.querySelector('a[aria-label]');
+        if (mainLink) {
+            const label = mainLink.getAttribute('aria-label');
+            if (label) hashParts.push(label.trim());
         }
 
-        const textNodes = cont.querySelectorAll('[class*="MetadataPosterCardTitle"], [data-testid="metadataTitleLink"]');
+        const textNodes = cont.querySelectorAll(`
+            [class*="MetadataPosterCardTitle-"], 
+            [class*="Link-link-"], 
+            [data-testid="metadataTitleLink"]
+        `);
+
         textNodes.forEach(node => {
-            const text = node.textContent.trim();
-            if (text && !hashParts.includes(text)) hashParts.push(text);
+            const titleAttr = node.getAttribute('title');
+            if (titleAttr && !hashParts.includes(titleAttr.trim())) {
+                hashParts.push(titleAttr.trim());
+            }
+
+            let directText = "";
+            for (const child of node.childNodes) {
+                if (child.nodeType === Node.TEXT_NODE) {
+                    directText += child.textContent;
+                }
+            }
+            directText = directText.replace(/\s+/g, ' ').trim();
+            if (directText && directText !== "·" && !hashParts.includes(directText)) {
+                hashParts.push(directText);
+            }
         });
 
         const img = cont.querySelector('img[src*="/thumb/"], img[src*="/art/"]');
         if (img) {
             const match = img.src.match(/\/(?:thumb|art)\/(\d+)/);
-            if (match) hashParts.push(match[1]);
-        }
-
-        const overlayText = cont.querySelector('[class*="MetadataPosterCardOverlay"], [class*="ProgressBar"]');
-        if (overlayText && overlayText.textContent.trim()) {
-            hashParts.push(overlayText.textContent.trim());
+            if (match && !hashParts.includes(match[1])) {
+                hashParts.push(match[1]);
+            }
         }
 
         return hashParts.join('|');
@@ -3923,6 +3938,9 @@ GM_addStyle(`
                                 const alreadyHasRes = latestCache && latestCache.tags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
 
                                 if (!dbStillNotSynced && latestCache && alreadyHasRes) return;
+
+                                await new Promise(r => setTimeout(r, 1000));
+                                if (session !== currentRenderSession) return;
 
                                 try {
                                     if (dbStillNotSynced) {
@@ -5023,7 +5041,7 @@ GM_addStyle(`
                             ? `${plexSrv.url}${dataKey}?X-Plex-Token=${plexSrv.token}`
                             : `${plexSrv.url}/library/streams/${streamId}?X-Plex-Token=${plexSrv.token}`;
 
-                toastr.info(`[${finalFileName}]<br>다운로드를 시작합니다.`, "자막 다운로드");
+                toastr.info(`'${finalFileName}'<br>다운로드를 시작합니다.`, "자막 다운로드");
 
                 GM_xmlhttpRequest({
                     method: 'GET', url: url, responseType: 'blob',
