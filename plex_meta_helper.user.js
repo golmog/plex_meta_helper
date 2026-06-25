@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.103
+// @version      0.8.104
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3022,7 +3022,10 @@ GM_addStyle(`
             const queueInfo = window._pmh_media_queues && window._pmh_media_queues[id];
 
             if (queueInfo) {
-                if (queueInfo.state === 'queued') {
+                if (queueInfo.state === 'requesting') {
+                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>요청중...`;
+                    gBox.style.color = '#ccc';
+                } else if (queueInfo.state === 'queued') {
                     gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
                     gBox.style.color = '#e5a00d';
                 } else {
@@ -3115,17 +3118,14 @@ GM_addStyle(`
                 let extraData = {};
 
                 if (srvConfig && !isUnmatched && info.g && isShiftClick) {
-                    actionName = '리매칭';
-                    apiAction = 'match';
+                    actionName = '리매칭'; apiAction = 'match';
                     extraData = { _try_refresh_first: false, _do_unmatch_first: true };
                 }
                 else if (srvConfig && !isUnmatched && info.g && !isShiftClick) {
-                    actionName = '메타 새로고침';
-                    apiAction = 'refresh';
+                    actionName = '메타 새로고침'; apiAction = 'refresh';
                 }
                 else if (srvConfig && plexSrv && (isUnmatched || !info.g)) {
-                    actionName = '자동 매칭';
-                    apiAction = 'match';
+                    actionName = '자동 매칭'; apiAction = 'match';
                     extraData = {
                         _try_refresh_first: ClientSettings.matchTryRefreshFirst,
                         _manual_match: ClientSettings.manualMatch,
@@ -3139,63 +3139,69 @@ GM_addStyle(`
                     return;
                 }
 
-                gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>${actionName} 대기...`;
+                let itemDisplayName = "알 수 없는 항목";
+                if (info.p) {
+                    const pParts = info.p.split(/[\\/]/);
+                    itemDisplayName = pParts[pParts.length - 1];
+                } else {
+                    const labelEl = cont.querySelector('[aria-label]');
+                    if (labelEl) itemDisplayName = labelEl.getAttribute('aria-label');
+                }
+
+                window._pmh_media_queues = window._pmh_media_queues || {};
+                window._pmh_media_queues[id] = { 
+                    task_id: 'pending', start_time: Date.now(), state: 'requesting', 
+                    title: itemDisplayName, server_id: targetServerId 
+                };
+                if (typeof window.saveQueueState === 'function') window.saveQueueState();
+
+                const updateLiveBadge = (html, color, isRefreshing = true) => {
+                    const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                    markers.forEach(m => {
+                        const container = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                        const currentGBox = container ? container.querySelector('.plex-guid-list-box') : null;
+                        if (currentGBox) {
+                            currentGBox.innerHTML = html; currentGBox.style.color = color;
+                            if (isRefreshing) currentGBox.dataset.refreshing = 'true';
+                            else delete currentGBox.dataset.refreshing;
+                        }
+                    });
+                };
+
+                updateLiveBadge(`<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>${actionName} 대기...`, '#ccc', true);
                 toastr.info(`서버 대기열에 [${actionName}] 작업을 추가합니다...`, "대기열 추가", {timeOut: 2000});
 
                 try {
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/${id}/${apiAction}`, 'POST', extraData, ClientSettings.masterApiKey);
 
                     if (res.status === 'queued') {
-                        gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px; color:#51a351;"></i>큐 추가됨`;
+                        updateLiveBadge(`<i class="fas fa-check" style="margin-right:4px;"></i>큐 추가됨`, '#51a351', true);
 
-                        let itemDisplayName = "알 수 없는 항목";
-                        if (info.p) {
-                            const pParts = info.p.split(/[\\/]/);
-                            itemDisplayName = pParts[pParts.length - 1];
-                        } else {
-                            const labelEl = cont.querySelector('[aria-label]');
-                            if (labelEl) itemDisplayName = labelEl.getAttribute('aria-label');
-                        }
-
-                        window._pmh_media_queues = window._pmh_media_queues || {};
                         window._pmh_media_queues[id] = { task_id: res.task_id, start_time: Date.now(), state: 'queued', title: itemDisplayName, server_id: targetServerId };
                         if (typeof window.saveQueueState === 'function') window.saveQueueState();
 
-                        if (typeof window.startQueuePolling === 'function') {
-                            window.startQueuePolling(targetServerId);
-                        }
+                        if (typeof window.startQueuePolling === 'function') window.startQueuePolling(targetServerId);
 
                         setTimeout(() => {
-                            if (gBox.isConnected && window._pmh_media_queues && window._pmh_media_queues[id]) {
+                            if (window._pmh_media_queues && window._pmh_media_queues[id]) {
                                 const currentState = window._pmh_media_queues[id].state;
-
                                 if (currentState === 'queued') {
-                                    gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
-                                    gBox.style.color = '#e5a00d';
+                                    updateLiveBadge(`<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`, '#e5a00d', true);
                                 } else if (currentState === 'processing') {
-                                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
-                                    gBox.style.color = '#2f96b4';
+                                    updateLiveBadge(`<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`, '#2f96b4', true);
                                 }
                             }
                         }, 1500);
 
-                    } else {
-                        throw new Error(res.error || res.message || "큐 등록 실패");
-                    }
+                    } else { throw new Error(res.error || res.message || "큐 등록 실패"); }
                 } catch (err) {
                     toastr.error(`${actionName} 요청 실패: ${err.message}`, "오류", {timeOut: 4000});
-                    if (gBox.isConnected) {
-                        gBox.innerHTML = `<i class="fas fa-times"></i> 요청 실패`;
-                        gBox.style.color = '#bd362f';
+                    
+                    delete window._pmh_media_queues[id];
+                    if (typeof window.saveQueueState === 'function') window.saveQueueState();
 
-                        setTimeout(() => {
-                            if (gBox.isConnected) {
-                                gBox.innerHTML = originHTML;
-                                gBox.style.color = originColor;
-                                delete gBox.dataset.refreshing;
-                            }
-                        }, 3000);
-                    }
+                    updateLiveBadge(`<i class="fas fa-times" style="margin-right:4px;"></i>요청 실패`, '#bd362f', false);
+                    setTimeout(() => { updateLiveBadge(originHTML, originColor, false); }, 3000);
                 }
             });
 
@@ -3232,226 +3238,253 @@ GM_addStyle(`
     }, 2500);
 
     window.startQueuePolling = function(serverId) {
-        if (window._pmh_polling_active) return;
-        if (Object.keys(window._pmh_media_queues).length === 0) return;
+        window._pmh_polling_active = window._pmh_polling_active || {};
+        if (window._pmh_polling_active[serverId]) return;
+        
+        const hasServerTask = Object.values(window._pmh_media_queues).some(q => q.server_id === serverId);
+        if (!hasServerTask) return;
 
-        window._pmh_polling_active = true;
+        window._pmh_polling_active[serverId] = true;
         let consecutiveErrors = 0;
 
         const pollLoop = async () => {
-            const queueKeys = Object.keys(window._pmh_media_queues);
-            if (queueKeys.length === 0) {
-                window._pmh_polling_active = false;
+            const serverQueueKeys = Object.keys(window._pmh_media_queues).filter(k => 
+                window._pmh_media_queues[k].server_id === serverId &&
+                window._pmh_media_queues[k].state !== 'requesting'
+            );
+            
+            if (serverQueueKeys.length === 0) {
+                window._pmh_polling_active[serverId] = false;
                 return;
             }
 
             const srvConfig = getServerConfig(serverId);
-            const taskIdsList = queueKeys.map(k => window._pmh_media_queues[k].task_id);
+            const taskIdsList = serverQueueKeys.map(k => window._pmh_media_queues[k].task_id);
 
             if (srvConfig && taskIdsList.length > 0) {
                 try {
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/queue_status`, 'POST', { task_ids: taskIdsList }, ClientSettings.masterApiKey);
                     consecutiveErrors = 0;
 
-                    for (const id of queueKeys) {
-                        const qInfo = window._pmh_media_queues[id];
-                        if (!qInfo) continue;
+                    for (const id of serverQueueKeys) {
+                        try {
+                            const qInfo = window._pmh_media_queues[id];
+                            if (!qInfo) continue;
 
-                        const status = res[qInfo.task_id];
-                        const isTimeout = (Date.now() - qInfo.start_time > 43200000);
+                            const status = res[qInfo.task_id];
+                            const isTimeout = (Date.now() - qInfo.start_time > 43200000);
 
-                        if (!status || status.state === 'unknown' || status.state === 'error' || isTimeout) {
-                            if (!status || status.state === 'unknown') {
-                                infoLog(`[Queue] 아이템 ${id}의 작업 상태를 알 수 없습니다. (서버 재시작 또는 시간 경과)`);
-                                needsListRefresh = true;
-                            } else if (status.state === 'error') {
-                                const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
-                                warnLog(`[Queue] 작업 실패: [${failName}] ${status.msg}`);
-                                needsListRefresh = true;
-                            } else if (isTimeout) {
-                                const failName = window._pmh_media_queues[id]?.title || "알 수 없는 항목";
-                                warnLog(`[Queue] 시간 초과: [${failName}] 서버 응답이 없습니다.`);
-                                needsListRefresh = true;
-                            }
+                            if (!status || status.state === 'unknown' || status.state === 'error' || isTimeout) {
+                                const isUnknown = (!status || status.state === 'unknown');
 
-                            deleteMemoryCache(`D_${serverId}_${id}`);
-                            deleteMemoryCache(`F_${serverId}_${id}`);
-                            if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
-                            
-                            delete window._pmh_media_queues[id];
-                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                            
-                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                            markers.forEach(m => {
-                                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                if (gBox) {
-                                    gBox.innerHTML = isUnknown ? `<i class="fas fa-sync-alt"></i> 대기 해제` : `<i class="fas fa-exclamation-triangle"></i> 실패`;
-                                    gBox.style.color = isUnknown ? '#777' : '#bd362f';
-                                    setTimeout(() => m.remove(), 2000);
-                                } else {
-                                    m.remove();
+                                if (isUnknown) {
+                                    infoLog(`[Queue] 아이템 ${id}의 작업 상태를 알 수 없습니다. (서버 재시작 또는 시간 경과)`);
+                                } else if (status.state === 'error') {
+                                    const failName = qInfo.title || "알 수 없는 항목";
+                                    warnLog(`[Queue] 작업 실패: [${failName}] ${status.msg}`);
+                                } else if (isTimeout) {
+                                    const failName = qInfo.title || "알 수 없는 항목";
+                                    warnLog(`[Queue] 시간 초과: [${failName}] 서버 응답이 없습니다.`);
                                 }
-                            });
-                        }
-                        
-                        else if (status.state === 'completed') {
-                            infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 캐시 갱신을 시도합니다.`);
-                            
-                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                            markers.forEach(m => {
-                                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                if (gBox) {
-                                    gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>반영 중...`;
-                                    gBox.style.color = '#51a351';
-                                }
-                            });
 
-                            delete window._pmh_media_queues[id];
-                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
-
-                            (async () => {
-                                await new Promise(r => setTimeout(r, 2000));
-                                try {
-                                    const plexSrv = extractPlexServerInfo(serverId);
-                                    if (!plexSrv) return;
-                                    
-                                    let meta = await fetchPlexMetaFallback(id, plexSrv);
-                                    let oldCache = getMemoryCache(`L_${serverId}_${id}`) || {};
-                                    let newId = id;
-
-                                    if (meta === 'DELETED') {
-                                        meta = null; 
-                                        const filePath = oldCache ? oldCache.p : null;
-                                        const sectionId = oldCache ? oldCache.librarySectionID : null;
-
-                                        if (filePath && sectionId && plexSrv) {
-                                            infoLog(`[Queue] ID ${id}가 삭제되었습니다. 파일 경로로 새 ID 역추적을 시작합니다: ${filePath}`);
-                                            
-                                            const searchUrl = `${plexSrv.url}/library/sections/${sectionId}/all?file=${encodeURIComponent(filePath)}&X-Plex-Token=${plexSrv.token}`;
-                                            const newMeta = await new Promise((resolve) => {
-                                                GM_xmlhttpRequest({
-                                                    method: 'GET', url: searchUrl,
-                                                    headers: { 'Accept': 'application/json' },
-                                                    timeout: 10000,
-                                                    onload: r => {
-                                                        try {
-                                                            if (r.status === 200) {
-                                                                const resData = JSON.parse(r.responseText);
-                                                                const metadata = resData.MediaContainer.Metadata;
-                                                                if (metadata && metadata.length > 0) {
-                                                                    resolve(metadata[0]);
-                                                                    return;
-                                                                }
-                                                            }
-                                                            resolve(null);
-                                                        } catch(e) { resolve(null); }
-                                                    },
-                                                    onerror: () => resolve(null),
-                                                    ontimeout: () => resolve(null)
-                                                });
-                                            });
-
-                                            if (newMeta) {
-                                                meta = newMeta;
-                                                newId = String(newMeta.ratingKey);
-                                                infoLog(`[Queue] 새 ID 역추적 성공! (구 ID: ${id} -> 신 ID: ${newId})`);
-                                            }
-                                        }
-                                        
-                                        if (!meta) {
-                                            const failMarkers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                            failMarkers.forEach(m => {
-                                                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                                const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                                if (gBox) {
-                                                    gBox.innerHTML = `<i class="fas fa-ghost" style="margin-right:4px;"></i>병합됨`;
-                                                    gBox.style.color = '#777';
-                                                    gBox.title = '다른 항목으로 완전히 병합되어 원본 ID가 사라졌습니다.';
-                                                }
-                                            });
-                                            return;
-                                        }
-                                    }
-
-                                    if (!meta) {
-                                        infoLog(`[Queue] 일시적인 통신 지연으로 아이템 ${id}의 상태를 갱신하지 못했습니다. 기존 배지로 복원합니다.`);
-                                        const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                        markers.forEach(m => m.remove());
-                                        setTimeout(() => { if (typeof processList === 'function') processList(); }, 100);
-                                        return;
-                                    }
-
-                                    const updatedInfo = convertPlexMetaToLocalData(meta, newId);
-                                    const mergedInfo = { ...oldCache, ...updatedInfo, itemId: newId };
-                                    
-                                    if (newId !== id) {
-                                        deleteMemoryCache(`L_${serverId}_${id}`);
-                                        deleteMemoryCache(`D_${serverId}_${id}`);
-                                        deleteMemoryCache(`F_${serverId}_${id}`);
-                                    }
-                                    setMemoryCache(`L_${serverId}_${newId}`, mergedInfo);
-                                    if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.add(newId);
-
-                                    let displayData = { ...mergedInfo, tags: applyUserTags(mergedInfo.p, mergedInfo.tags) };
-
-                                    const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
-                                    for (const live of liveWrappers) {
-                                        let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
-                                        if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
-                                        
-                                        const hrefAttr = liveLink ? decodeURIComponent(liveLink.getAttribute('href') || '') : '';
-                                        
-                                        if (liveLink && (hrefAttr.includes(id) || hrefAttr.includes(newId))) {
-                                            if (newId !== id && hrefAttr.includes(id)) {
-                                                const oldHref = liveLink.getAttribute('href');
-                                                const newHref = oldHref.replace(id, newId).replace(encodeURIComponent('/library/metadata/' + id), encodeURIComponent('/library/metadata/' + newId));
-                                                liveLink.setAttribute('href', newHref);
-                                            }
-
-                                            let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
-                                            if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
-                                            
-                                            if (livePoster) {
-                                                livePoster.querySelector('.pmh-render-marker')?.remove();
-                                                livePoster.querySelector('.pmh-top-right-wrapper')?.remove();
-                                                live.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
-                                                
-                                                renderListBadges(live, livePoster, liveLink, displayData, srvConfig, newId);
-                                            }
-                                        }
-                                    }
-                                } catch (e) {
-                                    errorLog(`[Queue Callback] Direct render failed for ${id}:`, e);
-                                    needsListRefresh = true; 
-                                }
-                            })();
-                        }
-
-                        else if (status.state === 'processing' || status.state === 'queued') {
-                            const previousState = qInfo.state;
-                            const newState = status.state;
-
-                            if (previousState !== newState) {
-                                window._pmh_media_queues[id].state = newState;
+                                deleteMemoryCache(`D_${serverId}_${id}`);
+                                deleteMemoryCache(`F_${serverId}_${id}`);
+                                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
+                                
+                                delete window._pmh_media_queues[id];
                                 if (typeof window.saveQueueState === 'function') window.saveQueueState();
-
+                                
                                 const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                                 markers.forEach(m => {
                                     const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
                                     const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
                                     if (gBox) {
-                                        if (newState === 'queued') {
-                                            gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
-                                            gBox.style.color = '#e5a00d';
-                                        } else if (newState === 'processing') {
-                                            gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
-                                            gBox.style.color = '#2f96b4';
-                                        }
+                                        gBox.innerHTML = isUnknown ? `<i class="fas fa-sync-alt"></i> 대기 해제` : `<i class="fas fa-exclamation-triangle"></i> 실패`;
+                                        gBox.style.color = isUnknown ? '#777' : '#bd362f';
+                                        setTimeout(() => m.remove(), 2000);
+                                    } else {
+                                        m.remove();
                                     }
                                 });
+
+                                setTimeout(() => { if (typeof processList === 'function') processList(); }, 500);
                             }
+                            
+                            else if (status.state === 'completed') {
+                                infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 캐시 갱신을 시도합니다.`);
+                                
+                                const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                markers.forEach(m => {
+                                    const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                    const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+                                    if (gBox) {
+                                        gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>반영 중...`;
+                                        gBox.style.color = '#51a351';
+                                    }
+                                });
+
+                                delete window._pmh_media_queues[id];
+                                if (typeof window.saveQueueState === 'function') window.saveQueueState();
+
+                                (async () => {
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    try {
+                                        const plexSrv = extractPlexServerInfo(serverId);
+                                        if (!plexSrv) return;
+                                        
+                                        let meta = null;
+                                        let oldCache = getMemoryCache(`L_${serverId}_${id}`) || {};
+                                        let newId = id;
+
+                                        for (let retry = 0; retry < 3; retry++) {
+                                            meta = await fetchPlexMetaFallback(id, plexSrv);
+                                            
+                                            if (meta === 'DELETED') break;
+                                            
+                                            if (meta) {
+                                                const checkGuid = (meta.guid || '').toLowerCase();
+                                                if (!checkGuid.includes('local://') && !checkGuid.includes('none://') && checkGuid !== '-') {
+                                                    break;
+                                                }
+                                            }
+                                            infoLog(`[Queue] Plex API 반환값이 아직 갱신되지 않았습니다(local://). 3초 후 재시도... (${retry+1}/3)`);
+                                            await new Promise(r => setTimeout(r, 3000));
+                                        }
+
+                                        if (meta === 'DELETED') {
+                                            meta = null; 
+                                            const filePath = oldCache ? oldCache.p : null;
+                                            const sectionId = oldCache ? oldCache.librarySectionID : null;
+
+                                            if (filePath && sectionId && plexSrv) {
+                                                infoLog(`[Queue] ID ${id}가 삭제되었습니다. 파일 경로로 새 ID 역추적을 시작합니다: ${filePath}`);
+                                                
+                                                const searchUrl = `${plexSrv.url}/library/sections/${sectionId}/all?file=${encodeURIComponent(filePath)}&X-Plex-Token=${plexSrv.token}`;
+                                                const newMeta = await new Promise((resolve) => {
+                                                    GM_xmlhttpRequest({
+                                                        method: 'GET', url: searchUrl,
+                                                        headers: { 'Accept': 'application/json' },
+                                                        timeout: 10000,
+                                                        onload: r => {
+                                                            try {
+                                                                if (r.status === 200) {
+                                                                    const resData = JSON.parse(r.responseText);
+                                                                    const metadata = resData.MediaContainer.Metadata;
+                                                                    if (metadata && metadata.length > 0) {
+                                                                        resolve(metadata[0]);
+                                                                        return;
+                                                                    }
+                                                                }
+                                                                resolve(null);
+                                                            } catch(e) { resolve(null); }
+                                                        },
+                                                        onerror: () => resolve(null),
+                                                        ontimeout: () => resolve(null)
+                                                    });
+                                                });
+
+                                                if (newMeta) {
+                                                    meta = newMeta;
+                                                    newId = String(newMeta.ratingKey);
+                                                    infoLog(`[Queue] 새 ID 역추적 성공! (구 ID: ${id} -> 신 ID: ${newId})`);
+                                                }
+                                            }
+                                            
+                                            if (!meta) {
+                                                const failMarkers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                                failMarkers.forEach(m => {
+                                                    const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                                    const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+                                                    if (gBox) {
+                                                        gBox.innerHTML = `<i class="fas fa-ghost" style="margin-right:4px;"></i>병합됨`;
+                                                        gBox.style.color = '#777';
+                                                        gBox.title = '다른 항목으로 완전히 병합되어 원본 ID가 사라졌습니다.';
+                                                    }
+                                                });
+                                                return;
+                                            }
+                                        }
+
+                                        if (!meta) {
+                                            infoLog(`[Queue] 일시적인 통신 지연으로 아이템 ${id}의 상태를 갱신하지 못했습니다. 기존 배지로 복원합니다.`);
+                                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                            markers.forEach(m => m.remove());
+                                            setTimeout(() => { if (typeof processList === 'function') processList(); }, 100);
+                                            return;
+                                        }
+
+                                        const updatedInfo = convertPlexMetaToLocalData(meta, newId);
+                                        const mergedInfo = { ...oldCache, ...updatedInfo, itemId: newId };
+                                        
+                                        if (newId !== id) {
+                                            deleteMemoryCache(`L_${serverId}_${id}`);
+                                            deleteMemoryCache(`D_${serverId}_${id}`);
+                                            deleteMemoryCache(`F_${serverId}_${id}`);
+                                        }
+                                        setMemoryCache(`L_${serverId}_${newId}`, mergedInfo);
+                                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.add(newId);
+
+                                        let displayData = { ...mergedInfo, tags: applyUserTags(mergedInfo.p, mergedInfo.tags) };
+
+                                        const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
+                                        for (const live of liveWrappers) {
+                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
+                                            if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                                            
+                                            const hrefAttr = liveLink ? decodeURIComponent(liveLink.getAttribute('href') || '') : '';
+                                            
+                                            if (liveLink && (hrefAttr.includes(id) || hrefAttr.includes(newId))) {
+                                                if (newId !== id && hrefAttr.includes(id)) {
+                                                    const oldHref = liveLink.getAttribute('href');
+                                                    const newHref = oldHref.replace(id, newId).replace(encodeURIComponent('/library/metadata/' + id), encodeURIComponent('/library/metadata/' + newId));
+                                                    liveLink.setAttribute('href', newHref);
+                                                }
+
+                                                let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+                                                if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+                                                
+                                                if (livePoster) {
+                                                    livePoster.querySelector('.pmh-render-marker')?.remove();
+                                                    livePoster.querySelector('.pmh-top-right-wrapper')?.remove();
+                                                    live.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
+                                                    
+                                                    renderListBadges(live, livePoster, liveLink, displayData, srvConfig, newId);
+                                                }
+                                            }
+                                        }
+                                    } catch (e) {
+                                        errorLog(`[Queue Callback] Direct render failed for ${id}:`, e);
+                                        setTimeout(() => { if (typeof processList === 'function') processList(); }, 500);
+                                    }
+                                })();
+                            }
+
+                            else if (status.state === 'processing' || status.state === 'queued') {
+                                const previousState = qInfo.state;
+                                const newState = status.state;
+
+                                if (previousState !== newState) {
+                                    window._pmh_media_queues[id].state = newState;
+                                    if (typeof window.saveQueueState === 'function') window.saveQueueState();
+
+                                    const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
+                                    markers.forEach(m => {
+                                        const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                        const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+                                        if (gBox) {
+                                            if (newState === 'queued') {
+                                                gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
+                                                gBox.style.color = '#e5a00d';
+                                            } else if (newState === 'processing') {
+                                                gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                                                gBox.style.color = '#2f96b4';
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        } catch (innerError) {
+                            errorLog(`[Queue Polling] Error processing item ${id}:`, innerError);
                         }
                     }
                 } catch (e) {
@@ -3464,12 +3497,15 @@ GM_addStyle(`
                 }
             }
 
-            if (Object.keys(window._pmh_media_queues).length > 0) {
-                if (window._pmh_queue_poll_timer) clearTimeout(window._pmh_queue_poll_timer);
+            const stillHasServerTask = Object.values(window._pmh_media_queues).some(q => q.server_id === serverId);
+            if (stillHasServerTask) {
+                window._pmh_queue_poll_timer = window._pmh_queue_poll_timer || {};
+                if (window._pmh_queue_poll_timer[serverId]) clearTimeout(window._pmh_queue_poll_timer[serverId]);
+                
                 const nextPollDelay = consecutiveErrors > 5 ? 8000 : 3000;
-                window._pmh_queue_poll_timer = setTimeout(pollLoop, nextPollDelay);
+                window._pmh_queue_poll_timer[serverId] = setTimeout(pollLoop, nextPollDelay);
             } else {
-                window._pmh_polling_active = false;
+                window._pmh_polling_active[serverId] = false;
             }
         };
 

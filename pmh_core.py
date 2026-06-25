@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.103"
+__version__ = "0.8.104"
 
 def get_version():
     return __version__
@@ -310,6 +310,10 @@ def stop_scheduler_daemon():
         _SCHEDULER_STATES[worker_name] = False
         
         try:
+            while not MEDIA_ACTION_QUEUE.empty():
+                try: MEDIA_ACTION_QUEUE.get_nowait()
+                except: break
+            MEDIA_ACTION_STATUS.clear()
             MEDIA_ACTION_QUEUE.put({'task_id': 'KILL', 'item_id': 0, 'action': 'kill', 'plex_url': '', 'plex_token': '', 'data': {}})
         except Exception:
             pass
@@ -2283,7 +2287,7 @@ def media_action_worker_loop(global_config):
             time.sleep(1)
 
 def perform_smart_media_action(
-    plex_url, plex_token, rating_key, action_type='match', 
+    plex_url, plex_token, rating_key, action_type='refresh', 
     item_title=None, item_year=None, target_agent=None, plex_inst=None, 
     try_refresh_first=False, do_unmatch_first=False, skip_sim_check=False,
     use_custom_score=False, custom_agent_score=80, search_priority='auto',
@@ -2802,7 +2806,7 @@ def perform_smart_media_action(
                 else:
                     if task_logger: task_logger(f"💡 [텍스트 유사도 모드] 텍스트 유사도 검증(커트라인 90%)을 진행합니다.")
                     import difflib
-                    norm_pattern = r'[\s~`!@#$%^&*()\-_+={[}\]|\\:;"\'<,>.?/,]'
+                    norm_pattern = r'[^\w\s]|_'
                     norm_folder_q = re.sub(norm_pattern, '', folder_query.lower())
                     norm_file_q = re.sub(norm_pattern, '', file_query.lower())
 
@@ -2885,6 +2889,9 @@ def perform_smart_media_action(
                     if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
                         match_verified = True
                         if task_logger: task_logger(f"✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
+                        if task_logger: task_logger(f"⏳ Plex 메타데이터 다운로드 큐 안정화를 위해 4초 대기합니다...")
+                        time.sleep(4.0)
+
                         return True, f"매칭 성공 ({candidate_name})", best_score
                 except Exception as reload_err:
                     if "404" in str(reload_err) or "not_found" in str(reload_err).lower():
