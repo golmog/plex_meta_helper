@@ -94,15 +94,15 @@ def get_ui(core_api=None):
                 "default": True, 
                 "hide_if": {"scan_mode": "file_error"}
             },
+            {"id": "opt_manual_match", "type": "checkbox", "label": "수동 매칭 모드 사용 (모든 사이트 강제 검색)", "default": False, "hide_if": {"scan_mode": "file_error"}},
+            {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭 시 제목/연도 검증 스킵 (모든 에이전트 적용)", "default": False, "hide_if": {"scan_mode": "file_error"}},
+            {"id": "opt_use_custom_score", "type": "checkbox", "label": "에이전트 매칭 통과 점수 직접 지정", "default": False, "hide_if": {"scan_mode": "file_error"}},
+            {"id": "opt_custom_agent_score", "type": "number", "label": "매칭 통과 최소 점수", "default": 80, "width": "60px", "layout": "plain", "show_if": {"opt_use_custom_score": True}},
             {"id": "opt_search_priority", "type": "select", "label": "매칭 검색어 우선순위", "options": [
                 {"value": "auto", "text": "자동 (AV 등 커스텀은 파일, 일반은 폴더)"},
                 {"value": "folder", "text": "폴더명 우선 (일반 영화/쇼 강제)"},
                 {"value": "file", "text": "파일명 우선 (단일 파일 강제)"}
             ], "default": "auto", "hide_if": {"scan_mode": "file_error"}},
-            {"id": "opt_manual_match", "type": "checkbox", "label": "수동 매칭 모드 사용 (모든 사이트 강제 검색)", "default": False, "hide_if": {"scan_mode": "file_error"}},
-            {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭 시 제목/연도 검증 스킵 (모든 에이전트 적용)", "default": False, "hide_if": {"scan_mode": "file_error"}},
-            {"id": "opt_use_custom_score", "type": "checkbox", "label": "에이전트 매칭 통과 점수 직접 지정", "default": False, "hide_if": {"scan_mode": "file_error"}},
-            {"id": "opt_custom_agent_score", "type": "number", "label": "매칭 통과 최소 점수", "default": 80, "width": "60px", "layout": "plain", "show_if": {"opt_use_custom_score": True}},
 
             {
                 "id": "retry_errors",
