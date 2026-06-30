@@ -791,12 +791,13 @@ window.PmhUICore = {
                                 const btnIcon = row.icon || col.icon || 'fas fa-play';
                                 const payload = JSON.stringify({action_type: btnAction, _is_single: true, ...row}).replace(/"/g, '&quot;');
                                 const delPayload = JSON.stringify({action_type: 'remove_cache_item', pmh_id: row.pmh_id, _server_id: ctx.srvId}).replace(/"/g, '&quot;');
-                                const delBtnHtml = isErr ? `
-                                    <button class="pmh-tbl-del-btn" data-payload="${delPayload}" style="background:none; border:none; color:#bd362f; cursor:pointer; font-size:13px; opacity:0.7; transition:all 0.2s; padding:0;" title="목록에서 즉시 제거합니다." onmouseover="this.style.opacity='1'; this.style.transform='scale(1.1)';" onmouseout="this.style.opacity='0.7'; this.style.transform='scale(1)';">
+                                const delColor = isErr ? '#bd362f' : '#777';
+                                const delBtnHtml = `
+                                    <button class="pmh-tbl-del-btn" data-payload="${delPayload}" style="background:none; border:none; color:${delColor}; cursor:pointer; font-size:13px; opacity:0.7; transition:all 0.2s; padding:0;" title="작업 목록에서 즉시 제거합니다." onmouseover="this.style.opacity='1'; this.style.color='#bd362f'; this.style.transform='scale(1.1)';" onmouseout="this.style.opacity='0.7'; this.style.color='${delColor}'; this.style.transform='scale(1)';">
                                         <i class="fas fa-trash-alt"></i>
                                     </button>
                                     <span style="color:#444; margin:0 6px; user-select:none; font-size:11px;">|</span>
-                                ` : '';
+                                `;
 
                                 displayHtml = `
                                     <div style="display:flex; justify-content:center; align-items:center;">
