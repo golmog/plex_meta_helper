@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.104
+// @version      0.8.105
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1407,7 +1407,7 @@ GM_addStyle(`
             const fontWeight = isLast ? 'normal' : 'normal';
             const clickType = isLast ? itemType : 'directory';
 
-            html += `<a href="#" class="plex-path-scan-link" data-path="${currentAccumulatedPath}" data-section-id="${sectionId}" data-type="${clickType}" title="[ ${currentAccumulatedPath} ] 경로 스캔" style="color:${color}; font-weight:${fontWeight}; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='${color}'; this.style.textDecoration='none';">${seg}</a>`;
+            html += `<a href="#" class="plex-path-scan-link" data-path="${currentAccumulatedPath}" data-section-id="${sectionId}" data-type="${clickType}" title="클릭: 단순 스캔 / Shift+클릭: VFS 갱신 후 스캔" style="color:${color}; font-weight:${fontWeight}; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='${color}'; this.style.textDecoration='none';">${seg}</a>`;
 
             if (!isLast) html += `<span style="color:#999; margin:0 1px;">${sep}</span>`;
         });
@@ -4338,7 +4338,7 @@ GM_addStyle(`
                     if (isRoot) {
                         pathLinkHtml = generateSplitPathHtml(serverPath, data.librarySectionID, 'directory', '');
                     } else {
-                        pathLinkHtml = `<a href="#" class="plex-path-scan-link" data-path="${serverPath}" data-section-id="${data.librarySectionID}" data-type="directory" title="클릭하여 Plex Mate로 스캔" style="color:#9E9E9E; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='#9E9E9E'; this.style.textDecoration='none';">${displayPath}</a>`;
+                        pathLinkHtml = `<a href="#" class="plex-path-scan-link" data-path="${serverPath}" data-section-id="${data.librarySectionID}" data-type="directory" title="클릭: 단순 스캔 / Shift+클릭: VFS 갱신 후 스캔" style="color:#9E9E9E; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='#9E9E9E'; this.style.textDecoration='none';">${displayPath}</a>`;
                     }
                 }
 
@@ -5106,8 +5106,13 @@ GM_addStyle(`
             el.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
 
+                const isShiftClick = e.shiftKey;
+                if (isShiftClick && window.getSelection) {
+                    window.getSelection().removeAllRanges();
+                }
+
                 let scanPath = el.dataset.path;
-                infoLog(`[PlexMate] VFS/Library Scan requested for path: ${scanPath}`);
+                infoLog(`[PlexMate] VFS/Library Scan requested for path: ${scanPath} (VFS_Refresh: ${isShiftClick})`);
                 const sectionId = el.dataset.sectionId;
 
                 if (el.dataset.type === 'video') {
@@ -5131,12 +5136,16 @@ GM_addStyle(`
                 }
 
                 try {
-                    toastr.info(`[1/2] VFS/Refresh 요청 중...<br>${scanPath}`, "Web 스캔 시작", {timeOut: 3000});
+                    if (isShiftClick) {
+                        toastr.info(`[1/2] VFS/Refresh 요청 중...<br>${scanPath}`, "스캔", {timeOut: 3000});
 
-                    const vfsRes = await callPlexMateViaRelay(srvConfig, '/scan/vfs_refresh', { target: scanPath, recursive: 'true', async: 'false' });
-                    if (vfsRes.ret !== 'success') throw new Error(vfsRes.msg || "VFS Refresh 실패");
+                        const vfsRes = await callPlexMateViaRelay(srvConfig, '/scan/vfs_refresh', { target: scanPath, recursive: 'true', async: 'false' });
+                        if (vfsRes.ret !== 'success') throw new Error(vfsRes.msg || "VFS Refresh 실패");
 
-                    toastr.info(`[2/2] VFS/Refresh 완료. 라이브러리 스캔 요청 중...`, "스캔", {timeOut: 3000});
+                        toastr.info(`[2/2] VFS/Refresh 완료. 라이브러리 스캔 요청 중...`, "스캔", {timeOut: 3000});
+                    } else {
+                        toastr.info(`라이브러리 스캔을 요청합니다.<br>${scanPath}`, "스캔", {timeOut: 3000});
+                    }
 
                     const scanRes = await callPlexMateViaRelay(srvConfig, '/scan/do_scan', { target: scanPath, target_section_id: sectionId, scanner: 'web' });
 
