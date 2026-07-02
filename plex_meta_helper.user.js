@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.106
+// @version      0.8.107
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2949,7 +2949,7 @@ GM_addStyle(`
                     e.preventDefault(); e.stopPropagation();
                     infoLog(`[List] Local protocol (plexplay://) invoked for path: ${info.p}`);
                     const fileName = info.p.split(/[\\/]/).pop() || info.p;
-                    toastr.info(`로컬 재생을 시도합니다.<br>[${fileName}]`);
+                    toastr.info(`로컬 재생을 시도합니다.<br>'${fileName}'`);
                     window.location.assign(pBtn.href);
                 });
                 wrapper.appendChild(pBtn);
@@ -2988,7 +2988,7 @@ GM_addStyle(`
                     sBtn.addEventListener('click', (e) => {
                         e.preventDefault(); e.stopPropagation();
                         infoLog(`[List] Streaming protocol (plexstream://) invoked for part: ${info.part_id}`);
-                        toastr.info(`스트리밍 플레이어를 호출합니다.<br>[${justFileName}]`);
+                        toastr.info(`스트리밍 플레이어를 호출합니다.<br>'${justFileName}'`);
                         window.location.assign(sBtn.href);
                     });
                     wrapper.appendChild(sBtn);
@@ -5044,21 +5044,21 @@ GM_addStyle(`
         document.querySelectorAll('#plex-guid-box .plex-play-external').forEach(el => {
             el.addEventListener('click', () => {
                 const fname = el.dataset.filename || '미디어 파일';
-                toastr.info(`로컬 외부 플레이어로 재생을 시도합니다.<br>[${fname}]`, '로컬 재생');
+                toastr.info(`로컬 외부 플레이어로 재생을 시도합니다.<br>'${fname}'`, '로컬 재생');
             });
         });
 
         document.querySelectorAll('#plex-guid-box .plex-open-folder').forEach(el => {
             el.addEventListener('click', () => {
                 const path = el.dataset.path || '로컬 폴더';
-                toastr.info(`로컬 탐색기로 경로를 엽니다.<br>[${path}]`, '폴더 열기');
+                toastr.info(`로컬 탐색기로 경로를 엽니다.<br>'${path}'`, '폴더 열기');
             });
         });
 
         document.querySelectorAll('#plex-guid-box .plex-play-stream').forEach(el => {
             el.addEventListener('click', () => {
                 const fname = el.dataset.filename || '스트리밍 영상';
-                toastr.info(`네트워크 스트리밍을 호출합니다.<br>[${fname}]`, '스트리밍');
+                toastr.info(`네트워크 스트리밍을 호출합니다.<br>'${fname}'`, '스트리밍');
             });
         });
 
@@ -5842,6 +5842,86 @@ GM_addStyle(`
             }
             observer.observe(document.body, { childList: true, subtree: true });
             checkUrlChange(true);
+
+            setTimeout(async () => {
+                if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) return;
+                try {
+                    const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+                    let needsSave = false;
+
+                    window._pmh_media_queues = window._pmh_media_queues || {};
+                    for (const srv of ServerConfig.SERVERS) {
+                        try {
+                            const activeRes = await new Promise((resolve, reject) => {
+                                GM_xmlhttpRequest({
+                                    method: 'GET',
+                                    url: `${srv.relayUrl}/media/active_queues`,
+                                    headers: { 'X-PMH-Signature': secureToken },
+                                    timeout: 5000,
+                                    onload: r => r.status === 200 ? resolve(JSON.parse(r.responseText)) : reject(),
+                                    onerror: () => reject(), ontimeout: () => reject()
+                                });
+                            });
+
+                            if (activeRes && Object.keys(activeRes).length > 0) {
+                                for (const [taskId, status] of Object.entries(activeRes)) {
+                                    const parts = taskId.split('_');
+                                    if (parts.length >= 3) {
+                                        const itemId = parts[1];
+                                        
+                                        window._pmh_media_queues[itemId] = {
+                                            task_id: taskId,
+                                            start_time: status.timestamp ? status.timestamp * 1000 : Date.now(),
+                                            state: status.state,
+                                            title: "서버 동기화 항목",
+                                            server_id: srv.machineIdentifier
+                                        };
+                                        needsSave = true;
+                                        infoLog(`[Sync] 서버 동기화 성공: 아이템 ${itemId} 추적 복구 완료 (${status.state})`);
+                                        
+                                        const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${itemId}"]`);
+                                        markers.forEach(m => {
+                                            const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                                            const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+                                            if (gBox) {
+                                                if (status.state === 'queued') {
+                                                    gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
+                                                    gBox.style.color = '#e5a00d';
+                                                } else if (status.state === 'processing') {
+                                                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                                                    gBox.style.color = '#2f96b4';
+                                                }
+                                                gBox.dataset.refreshing = 'true';
+                                            }
+                                        });
+                                    }
+                                }
+
+                                if (typeof window.startQueuePolling === 'function') {
+                                    window.startQueuePolling(srv.machineIdentifier);
+                                }
+                            }
+
+                            for (const [id, qInfo] of Object.entries(window._pmh_media_queues)) {
+                                if (qInfo.server_id === srv.machineIdentifier) {
+                                    if (!activeRes || !activeRes[qInfo.task_id]) {
+                                        delete window._pmh_media_queues[id];
+                                        needsSave = true;
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            console.warn(`[Sync] 큐 상태 복구 실패 (Server: ${srv.name}). 서버 오프라인 의심.`);
+                        }
+                    }
+
+                    if (needsSave && typeof window.saveQueueState === 'function') {
+                        window.saveQueueState();
+                    }
+                } catch (e) {
+                    console.error("[Sync Error] 서버 동기화 중 오류:", e);
+                }
+            }, 3000);
 
             const closeBtn = document.getElementById('pmh-panel-close');
             if(closeBtn) {

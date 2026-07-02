@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.106"
+__version__ = "0.8.107"
 
 def get_version():
     return __version__
@@ -1514,6 +1514,15 @@ def dispatch_request(subpath, method, args, data, global_config):
             for tid in task_ids:
                 if tid: result[str(tid).strip()] = MEDIA_ACTION_STATUS.get(str(tid).strip(), {'state': 'unknown'})
             return result, 200
+
+        elif subpath == 'media/active_queues' and method == 'GET':
+            active_tasks = {}
+            now = time.time()
+            for k, v in MEDIA_ACTION_STATUS.items():
+                if v.get('state') in ['queued', 'processing']:
+                    if now - v.get('timestamp', now) < 86400:
+                        active_tasks[k] = v
+            return active_tasks, 200
 
         elif subpath == 'media/queue_cancel' and method == 'POST':
             task_id = data.get('task_id')
