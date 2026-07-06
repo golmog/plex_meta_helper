@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.107
+// @version      0.8.108
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -4597,7 +4597,7 @@ GM_addStyle(`
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
             <a href="#" id="pmh-btn-refresh-meta" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 메타 새로고침을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-bolt" style="font-size: 10px; margin-right: 2px;"></i>메타 새로고침</a>
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
-            <a href="#" id="pmh-btn-rematch" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="기존 메타를 언매치하고 다시 매칭합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>메타 리매칭</a>
+            <a href="#" id="pmh-btn-rematch" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="일반 클릭: 덮어쓰기 리매칭 / Shift+클릭: 언매치 후 클린 리매칭" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>메타 리매칭</a>
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
             <a href="#" id="pmh-btn-analyze" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 미디어 분석을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-search-plus" style="font-size: 10px; margin-right: 2px;"></i>미디어 분석</a>
         ` : '';
@@ -4886,10 +4886,16 @@ GM_addStyle(`
         if (btnRematch) {
             btnRematch.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
+
+                const isShiftClick = e.shiftKey;
+                if (isShiftClick && window.getSelection) {
+                    window.getSelection().removeAllRanges();
+                }
+
                 if (!plexSrv) return toastr.error("토큰을 찾을 수 없습니다.");
 
                 const originalHtml = `<i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>메타 리매칭`;
-                const originalTitle = "기존 메타를 언매치하고 다시 매칭합니다.";
+                const originalTitle = "일반 클릭: 덮어쓰기 리매칭 / Shift+클릭: 언매치 후 클린 리매칭";
 
                 if (btnRematch.dataset.refreshing === 'true') {
                     abortDetailRefresh = true;
@@ -4921,16 +4927,20 @@ GM_addStyle(`
                 btnRematch.title = "클릭시 강제 취소";
 
                 showBoxLoading();
-                infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
+                infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId} (Unmatch First: ${isShiftClick})`);
 
                 const matchOptions = {
                     _try_refresh_first: false,
-                    _do_unmatch_first: true,
+                    _do_unmatch_first: isShiftClick,
                     _skip_sim_check: ClientSettings.matchSkipSimCheck,
                     _custom_agent_score: ClientSettings.customAgentScore
                 };
 
-                toastr.info("서버에서 메타 리매칭을 수행합니다.", "리매칭 시작", {timeOut: 8000});
+                if (isShiftClick) {
+                    toastr.info("기존 메타데이터를 언매치 후 리매칭을 시도합니다.", "클린 리매칭 (Shift)", {timeOut: 8000});
+                } else {
+                    toastr.info("서버에서 메타 덮어쓰기(리매칭)를 시도합니다.", "일반 리매칭", {timeOut: 8000});
+                }
 
                 let isRematchSuccess = false;
 

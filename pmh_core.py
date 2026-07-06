@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.107"
+__version__ = "0.8.108"
 
 def get_version():
     return __version__
@@ -2887,21 +2887,29 @@ def perform_smart_media_action(
             
             # --- 10. 적용 결과 확인 (Reload & Validate) ---
             match_verified = False
-            if task_logger: task_logger(f"⏳ 매칭 적용 중... GUID 갱신을 확인합니다.")
+            if task_logger: task_logger(f"⏳ 매칭 적용 중... GUID 갱신 상태를 확인합니다.")
             
+            target_candidate_guid = (candidate_guid or '').lower()
+
             for _ in range(20):
                 if cancel_checker and cancel_checker(): return False, "작업 취소됨", 0
                 time.sleep(3.0)
                 try:
                     execute_plex_action_safe(lambda: target_item.reload())
                     new_guid = (target_item.guid or '').lower()
-                    if new_guid != initial_guid and 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-':
+                    
+                    is_valid_guid = 'local://' not in new_guid and 'none://' not in new_guid and new_guid != '-'
+                    
+                    # 성공 조건: GUID가 달라졌거나, 매칭 요청한 GUID와 같거나, 언매칭을 생략했을 경우
+                    if is_valid_guid and (new_guid != initial_guid or new_guid == target_candidate_guid or not do_unmatch_first):
                         match_verified = True
                         if task_logger: task_logger(f"✅ 매칭 최종 승인 및 갱신 완료! (새 GUID: {target_item.guid})")
+                        
                         if task_logger: task_logger(f"⏳ Plex 메타데이터 다운로드 큐 안정화를 위해 4초 대기합니다...")
                         time.sleep(4.0)
-
+                        
                         return True, f"매칭 성공 ({candidate_name})", best_score
+
                 except Exception as reload_err:
                     if "404" in str(reload_err) or "not_found" in str(reload_err).lower():
                         if task_logger: task_logger(f"✅ 매칭 승인! (Plex가 기존 항목을 삭제하고 병합했습니다.)")
