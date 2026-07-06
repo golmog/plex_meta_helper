@@ -264,7 +264,7 @@ def get_target_items(req_data, core_api, task=None):
     if mode == 'refresh' and opt_smart_refresh:
         where_conditions = f"""
             mi.library_section_id IN ({lib_ids_str}) 
-            AND mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != ''
+            AND mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != '' AND mi.guid != '-'
             AND (
                 -- 1. 영화, 쇼, 아티스트 (제한 없음)
                 (mi.metadata_type IN (1, 2, 9) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url = 'upload://' OR mi.user_thumb_url = 'metadata://' OR mi.user_thumb_url LIKE '%discord%attachments%'))
@@ -279,6 +279,15 @@ def get_target_items(req_data, core_api, task=None):
                  AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url = 'upload://' OR mi.user_thumb_url = 'metadata://' OR mi.user_thumb_url LIKE '%discord%attachments%'))
             )
         """
+        
+    elif mode == 'rematch' and opt_smart_match:
+        where_conditions = f"""
+            mi.library_section_id IN ({lib_ids_str}) 
+            AND mi.metadata_type IN (1, 2, 3, 4, 8, 9, 10) 
+            AND (mi.guid LIKE 'local://%' OR mi.guid LIKE 'none://%' OR mi.guid = '' OR mi.guid = '-' OR mi.guid IS NULL)
+            {safe_season_condition}
+        """
+        
     else:
         where_conditions = f"mi.library_section_id IN ({lib_ids_str}) AND mi.metadata_type IN (1, 2, 3, 4, 8, 9, 10) {safe_season_condition}"
 
