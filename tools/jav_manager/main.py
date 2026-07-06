@@ -75,7 +75,8 @@ def get_ui(core_api=None):
                     {"value": "dupes", "label": "품번 기준 분리/중복 등록 검출"},
                     {"value": "actor", "label": "배우 이름 한글화 대상 검출"},
                     {"value": "user_poster", "label": "유저 포스터 일괄 적용 (이미지 서버 사용시)"},
-                    {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"}
+                    {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"},
+                    {"value": "llm_translation", "label": "LLM (Ollama) 번역 미적용 항목 검출 및 리매칭"}
                 ]
             },
             {"id": "filter_fields", "type": "multi_select", "label": "정규식 필터 적용 대상 필드", "options": [
@@ -797,6 +798,71 @@ def worker(task_data, core_api, start_index):
                         "raw_path": matched_fpath
                     })
 
+        # ----- [6] LLM (Ollama) 번역 메타데이터 검증 -----
+        elif mode == "llm_translation":
+            for idx, item in enumerate(all_items):
+                if task.is_cancelled(): break
+                if idx > 0 and idx % 1000 == 0: 
+                    task.log(f"  ...JSON 메타데이터 검증 중: {idx:,} / {total_items:,} 완료")
+                    task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
+                
+                files_raw = item.get('all_files')
+                if not files_raw: continue
+                
+                fpath = files_raw.split('|||')[0]
+                dir_name = os.path.dirname(fpath)
+                base_name = os.path.splitext(os.path.basename(fpath))[0]
+                
+                db_title = item.get('title', '').strip()
+                match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
+                db_pid = match.group(1) if match else None
+
+                # FF/SJVA 에이전트가 주로 생성하는 JSON 파일명 후보군
+                json_candidates = [
+                    os.path.join(dir_name, f"{base_name}.json")
+                ]
+                if db_pid:
+                    json_candidates.extend([
+                        os.path.join(dir_name, f"{db_pid}.json"),
+                        os.path.join(dir_name, f"[{db_pid}].json"),
+                        os.path.join(dir_name, f"{db_pid.upper()}.json"),
+                        os.path.join(dir_name, f"[{db_pid.upper()}].json")
+                    ])
+
+                target_json = None
+                for cand in json_candidates:
+                    if os.path.exists(cand):
+                        target_json = cand
+                        break
+
+                reason = ""
+                if not target_json:
+                    reason = "메타데이터(JSON) 파일 없음"
+                else:
+                    try:
+                        with open(target_json, 'r', encoding='utf-8') as f:
+                            json_data = json.load(f)
+                        
+                        ai_trans = json_data.get("extra_info", {}).get("ai_translator", "")
+                        if not ai_trans or "Ollama" not in ai_trans:
+                            reason = f"구버전 번역 ({ai_trans or 'Default'})"
+                        else:
+                            continue # Ollama 적용 항목이므로 스킵!
+                            
+                    except Exception as e:
+                        reason = "JSON 파싱 오류 (구조 손상)"
+
+                if reason:
+                    result_data.append({
+                        "id": item['id'], 
+                        "section_name": item['section_name'], 
+                        "title": db_title, 
+                        "reason": reason, 
+                        "op_action": "match",
+                        "_target_json": target_json, # 나중에 삭제하기 위해 경로 보관
+                        "raw_path": fpath
+                    })
+
         if task.is_cancelled():
             task.log("🛑 검사가 사용자 취소로 중단되었습니다.")
             return
@@ -926,6 +992,15 @@ def worker(task_data, core_api, start_index):
                         op_action = 'match'
 
                 if op_action == 'match':
+                    if mode == "llm_translation":
+                        old_json_path = item.get('_target_json')
+                        if old_json_path and os.path.exists(old_json_path):
+                            try:
+                                os.remove(old_json_path)
+                                task.log("  -> 🗑️ 새로운 LLM 번역을 위해 기존 JSON 메타데이터 삭제 완료")
+                            except Exception as e:
+                                task.log(f"  -> ⚠️ 기존 JSON 삭제 실패 (권한 문제 의심): {e}")
+
                     do_unm = task_data.get('opt_unmatch_first', True)
                     skip_sim = task_data.get('opt_skip_sim_check', False)
                     manual_m = task_data.get('opt_manual_match', False)
@@ -990,7 +1065,8 @@ def worker(task_data, core_api, start_index):
                 task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
                 mode_label = "품번 불일치/오매칭 복구" if mode == "mismatch" else "중복 아이템 재매칭" if mode == "dupes" else "배우 한글화 갱신" if mode == "actor" else "유저 포스터 일괄 갱신"
                 if mode == "file_error": mode_label = "파일명 오류 항목(수동 확인/작업 필요)"
-                
+                if mode == "llm_translation": mode_label = "LLM 미적용 항목 검출 및 리매칭"
+
                 tool_vars = {"total": f"{total:,}", "elapsed_time": elapsed_str, "scan_mode_label": mode_label}
                 core_api['notify']("JAV 매니저 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
             
