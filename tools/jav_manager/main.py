@@ -79,13 +79,15 @@ def get_ui(core_api=None):
                     {"value": "llm_translation", "label": "LLM (Ollama) 번역 미적용 항목 검출 및 리매칭"}
                 ]
             },
-            {"id": "filter_fields", "type": "multi_select", "label": "정규식 필터 적용 대상 필드", "options": [
+            
+            # (기존) 수동 조회 시 1회성으로 사용하는 임시 필터
+            {"id": "filter_fields", "type": "multi_select", "label": "임시 검색 필터 적용 필드", "options": [
                 {"value": "guid", "text": "에이전트 (GUID)"},
                 {"value": "title", "text": "제목 (Title)"},
                 {"value": "path", "text": "파일/폴더 경로 (Path)"}
             ], "default": ["title", "path"]},
-            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: fc2 또는 regex||^\[sod\]"},
-            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\.mp4$"}
+            {"id": "filter_include", "type": "text", "label": "포함 키워드 (1회성, 정규표현식은 regex|| 사용)", "placeholder": "예: fc2 또는 regex||^\\[sod\\]"},
+            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (1회성, 정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\\.mp4$"}
         ],
         "execute_inputs": [
             {
@@ -114,6 +116,17 @@ def get_ui(core_api=None):
             }
         ],
         "settings_inputs": [
+            # (신규) filters.yaml을 대체하는 전역/고정 필터
+            {"id": "s_h_filter", "type": "header", "label": "<i class='fas fa-filter'></i> 전역 필터링 설정 (filters.yaml 대체)"},
+            {"id": "fixed_filter_cron_only", "type": "checkbox", "label": "자동 스케줄러(Cron) 실행 시에만 고정 필터 적용 (수동 조회 시 무시)", "default": False},
+            {"id": "fixed_filter_fields", "type": "multi_select", "label": "고정 필터 적용 필드", "options": [
+                {"value": "guid", "text": "에이전트 (GUID)"},
+                {"value": "title", "text": "제목 (Title)"},
+                {"value": "path", "text": "파일/폴더 경로 (Path)"}
+            ], "default": ["title", "path"]},
+            {"id": "fixed_filter_include", "type": "textarea", "label": "고정 포함 키워드 (한 줄에 하나씩 입력)", "height": 80, "placeholder": "예: fc2\nregex||^\\[sod\\]"},
+            {"id": "fixed_filter_exclude", "type": "textarea", "label": "고정 제외 키워드 (한 줄에 하나씩 입력)", "height": 80, "placeholder": "예: sjva_agent://\nregex||\\.mp4$"},
+
             {"id": "s_h1", "type": "header", "label": "<i class='fas fa-tachometer-alt'></i> 실행 속도 제어"},
             {
                 "id": "sleep_time", 
@@ -350,74 +363,94 @@ def worker(task_data, core_api, start_index):
                 task.update_state('completed', 100, 100)
                 return
 
-            base_dir = core_api['config'].get('base_dir', '')
-            current_tool_id = core_api['task'].tool_id if task else "jav_manager"
-            compiled_yaml_filters = pmh_core.compile_yaml_filters(base_dir, current_tool_id, task.log if task else None)
-
+            # 1. 1회성 임시 필터 (조회 탭)
             ui_filter_fields = task_data.get('filter_fields', ['guid', 'title'])
-            filter_include = task_data.get('filter_include', '').strip()
-            filter_exclude = task_data.get('filter_exclude', '').strip()
+            filter_include_raw = task_data.get('filter_include', '')
+            filter_exclude_raw = task_data.get('filter_exclude', '')
             
-            inc_rule, exc_rule = None, None
+            # 2. 고정 전역 필터 (환경설정 탭)
+            fixed_filter_cron_only = task_data.get('fixed_filter_cron_only', False)
+            fixed_filter_fields = task_data.get('fixed_filter_fields', ['title', 'path'])
+            fixed_filter_include_raw = task_data.get('fixed_filter_include', '')
+            fixed_filter_exclude_raw = task_data.get('fixed_filter_exclude', '')
+            is_cron_run = task_data.get('_is_cron', False)
 
-            def _parse_ui_filter(raw_text):
-                if not raw_text: return None
-                is_rx = False
-                lower_txt = raw_text.lower()
-                if lower_txt.startswith('regex||'):
-                    is_rx = True
-                    raw_text = raw_text[7:].strip()
-                elif lower_txt.startswith('plain||'):
-                    raw_text = raw_text[7:].strip()
-                elif lower_txt.startswith('text||'):
-                    raw_text = raw_text[6:].strip()
+            def _parse_filter_text(raw_text):
+                rules = []
+                for line in str(raw_text).splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#'): continue
                     
-                if not raw_text: return None
-                
-                try:
-                    if is_rx:
-                        return {'is_regex': True, 'pattern': re.compile(raw_text, re.IGNORECASE)}
+                    is_rx = False
+                    lower_line = line.lower()
+                    if lower_line.startswith('regex||'):
+                        is_rx = True
+                        val = line[7:].strip()
+                    elif lower_line.startswith('plain||') or lower_line.startswith('text||'):
+                        val = line.split('||', 1)[1].strip()
                     else:
-                        return {'is_regex': False, 'pattern': raw_text.lower()}
-                except Exception: return None
+                        val = line
+                        
+                    if not val: continue
+                    
+                    try:
+                        if is_rx: rules.append({'is_regex': True, 'pattern': re.compile(val, re.IGNORECASE)})
+                        else: rules.append({'is_regex': False, 'pattern': val.lower()})
+                    except Exception as e:
+                        if task: task.log(f"⚠️ 필터 정규식 오류 무시됨 ('{val}'): {e}")
+                return rules
 
-            inc_rule = _parse_ui_filter(filter_include)
-            exc_rule = _parse_ui_filter(filter_exclude)
+            ui_inc_rules = _parse_filter_text(filter_include_raw)
+            ui_exc_rules = _parse_filter_text(filter_exclude_raw)
+            fixed_inc_rules = _parse_filter_text(fixed_filter_include_raw)
+            fixed_exc_rules = _parse_filter_text(fixed_filter_exclude_raw)
+
+            apply_fixed_filters = True
+            if fixed_filter_cron_only and not is_cron_run:
+                apply_fixed_filters = False
                 
             filtered_items = []
             for item in all_items:
                 guid_val = str(item.get('guid') or "")
                 title_val = str(item.get('title') or "")
-                
-                passed = True
-                
                 first_path = ""
                 if item.get('all_files'): first_path = item['all_files'].split('|||')[0]
 
-                is_cron_run = task_data.get('_is_cron', False)
-                text_dict = {'guid': guid_val, 'title': title_val, 'path': first_path}
-                if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters, is_cron=is_cron_run):
-                    continue
+                def _get_texts(fields):
+                    texts = []
+                    if 'guid' in fields and guid_val: texts.append(guid_val)
+                    if 'title' in fields and title_val: texts.append(title_val)
+                    if 'path' in fields and first_path: texts.append(first_path)
+                    return texts
 
-                if inc_rule or exc_rule:
-                    ui_texts = []
-                    if 'guid' in ui_filter_fields and guid_val: ui_texts.append(guid_val)
-                    if 'title' in ui_filter_fields and title_val: ui_texts.append(title_val)
-                    if 'path' in ui_filter_fields and first_path: ui_texts.append(first_path)
-
-                    def _ui_match(rule, texts):
+                def _is_match(rules, texts):
+                    for rule in rules:
                         if rule['is_regex']:
-                            return any(rule['pattern'].search(txt) for txt in texts)
+                            if any(rule['pattern'].search(txt) for txt in texts): return True
                         else:
-                            return any(rule['pattern'] in txt.lower() for txt in texts)
+                            if any(rule['pattern'] in txt.lower() for txt in texts): return True
+                    return False
 
-                    if inc_rule and not _ui_match(inc_rule, ui_texts): continue
-                    if exc_rule and _ui_match(exc_rule, ui_texts): continue
-                        
-                if passed:
+                skip_item = False
+                
+                # 1. 고정 필터 검사
+                if apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules):
+                    fixed_texts = _get_texts(fixed_filter_fields)
+                    if fixed_inc_rules and not _is_match(fixed_inc_rules, fixed_texts): skip_item = True
+                    if fixed_exc_rules and _is_match(fixed_exc_rules, fixed_texts): skip_item = True
+
+                if skip_item: continue
+
+                # 2. 수동 임시 필터 검사
+                if ui_inc_rules or ui_exc_rules:
+                    ui_texts = _get_texts(ui_filter_fields)
+                    if ui_inc_rules and not _is_match(ui_inc_rules, ui_texts): skip_item = True
+                    if ui_exc_rules and _is_match(ui_exc_rules, ui_texts): skip_item = True
+                    
+                if not skip_item:
                     filtered_items.append(item)
                     
-            if (inc_rule or exc_rule) or (compiled_yaml_filters['include'] or compiled_yaml_filters['exclude']):
+            if (ui_inc_rules or ui_exc_rules) or (apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules)):
                 task.log(f"  -> 고급 필터 적용: {len(all_items):,}개 중 {len(filtered_items):,}개 통과")
             all_items = filtered_items
 
