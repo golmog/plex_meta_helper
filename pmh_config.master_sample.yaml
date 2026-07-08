@@ -7,6 +7,15 @@ BASE:
   # 프론트엔드나 마스터 서버가 이 노드에 접근할 때 사용할 키
   APIKEY: "YOUR_SECRET_KEY"
 
+  # 실행 환경: standalone (로그파일 생성/타임스탬프 O) 또는 ff (로그파일X/타임스탬프 X)
+  ENV_TYPE: "ff"
+  LOG_LEVEL: "INFO"  # INFO, DEBUG
+  TZ: "Asia/Seoul"
+
+  # 파일 소유권 강제 (컨테이너 환경 등에서 생성 파일 권한 매칭). 비활성화시 -1
+  PUID: -1
+  PGID: -1
+
   # Plex 서버 설정 (Plex API 통신용)
   PLEX_URL: "http://plex:32400"
   PLEX_TOKEN: "YOUR_PLEX_TOKEN"

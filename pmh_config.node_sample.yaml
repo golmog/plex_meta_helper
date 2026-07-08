@@ -5,6 +5,13 @@ BASE:
   PORT: 8899
   APIKEY: "WORKER_SECRET_KEY"  # 마스터 서버가 이 노드로 명령을 보낼 때 사용할 암호
 
+  ENV_TYPE: "ff"     # standalone, ff
+  LOG_LEVEL: "INFO"  # INFO, DEBUG
+  TZ: "Asia/Seoul"
+
+  PUID: -1
+  PGID: -1
+
   PLEX_URL: "http://plex:32400"
   PLEX_TOKEN: "WORKER_PLEX_TOKEN"
   PLEX_MACHINE_IDENTIFIER: "YOUR_PLEX_MACHINE_ID_HERE"

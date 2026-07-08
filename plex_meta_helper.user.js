@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.108
+// @version      0.8.109
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -134,6 +134,47 @@ GM_addStyle(`
     .pmh-input-select { width: 100%; padding: 8px; background: #111; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 13px; cursor: pointer; box-sizing: border-box; text-align: left; }
     .pmh-path-mapping-row { display: flex; gap: 10px; margin-bottom: 8px; align-items: center; }
     .pmh-btn-remove-row { background: #bd362f; color: #fff; border: none; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
+
+    /* YAML 에디터 & 모달 리사이징 CSS */
+    #pmh-client-settings-modal .pmh-modal-content {
+        resize: both;
+        overflow: hidden;
+        min-width: 500px;
+        min-height: 400px;
+    }
+    
+    .pmh-yaml-container {
+        width: 100%;
+        background: #1e1e1e;
+        border: 1px solid #444;
+        border-radius: 4px;
+        display: flex;
+        flex-direction: column;
+        flex-grow: 1;
+        min-height: 300px;
+    }
+
+    .pmh-yaml-container textarea {
+        flex-grow: 1;
+        margin: 0;
+        padding: 15px;
+        border: none;
+        outline: none;
+        background: transparent;
+        color: #a6e22e;
+        font-family: Consolas, Monaco, "Courier New", monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        tab-size: 2;
+        white-space: pre;
+        word-wrap: normal;
+        resize: none;
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+        overflow: auto;
+    }
+
 `);
 
 (function() {
@@ -256,6 +297,193 @@ GM_addStyle(`
         }
         return direction === 'asc' ? ax.length - bx.length : bx.length - ax.length;
     };
+
+    // ==========================================
+    // Shift 키 상태 감지 및 커스텀 툴팁 동적 UI
+    // ==========================================
+    GM_addStyle(`
+        #pmh-custom-tooltip {
+            position: fixed;
+            background-color: rgba(20, 23, 26, 0.95);
+            color: #eee;
+            border: 1px solid #e5a00d;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: normal;
+            pointer-events: none;
+            z-index: 9999999;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.1s ease-in-out;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+            white-space: pre-wrap;
+            text-align: center;
+            line-height: 1.4;
+            transform: translate(-50%, -100%);
+            margin-top: -15px;
+        }
+        #pmh-custom-tooltip .hl { color: #f89406; font-weight: bold; }
+    `);
+
+    let isShiftPressed = false;
+    const customTooltip = document.createElement('div');
+    customTooltip.id = 'pmh-custom-tooltip';
+    document.body.appendChild(customTooltip);
+
+    let currentHoverTarget = null;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+
+    function getDynamicTooltipText(el, isShift) {
+        if (el.id === 'pmh-btn-rematch') {
+            return isShift 
+                ? "<span class='hl'><i class='fas fa-broom'></i> 클린 리매칭 (Shift+클릭)</span>\n<span style='color:#999;'>언매치 후 클린 리매칭</span>"
+                : "<span style='color:#2f96b4;'><i class='fas fa-link'></i> 일반 리매칭 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 클린 리매칭)</span>";
+        }
+        if (el.classList.contains('plex-path-scan-link')) {
+            return isShift 
+                ? "<span class='hl'><i class='fas fa-hdd'></i> VFS 갱신 + 스캔 (Shift+클릭)</span>\n<span style='color:#999;'>VFS/Refresh 후 경로 스캔</span>"
+                : "<span style='color:#2f96b4;'><i class='fas fa-search'></i> 경로 스캔 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 VFS/Refresh 후 스캔)</span>";
+        }
+        if (el.classList.contains('plex-guid-list-box')) {
+            if (el.dataset.refreshing || el.innerHTML.includes('fa-spinner')) return "";
+            
+            const baseTxt = el.textContent;
+            const isUnmatched = el.dataset.unmatched === 'true';
+            
+            if (isShift) {
+                return `<span class='hl'><i class='fas fa-broom'></i> 클린 리매칭 (Shift+클릭)</span>\n<span style='color:#999;'>언매치 후 클린 리매칭</span>`;
+            } else {
+                if (isUnmatched) {
+                    return `<span style='color:#2f96b4;'><i class='fas fa-magic'></i> 자동 매칭 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 클린 리매칭)</span>`;
+                } else {
+                    return `<span style='color:#2f96b4;'><i class='fas fa-bolt'></i> 메타 새로고침 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 클린 리매칭)</span>`;
+                }
+            }
+        }
+        return "";
+    }
+
+    function positionTooltip(x, y) {
+        customTooltip.style.left = x + 'px';
+        customTooltip.style.top = y + 'px';
+        
+        customTooltip.style.transform = 'translate(-50%, 0)';
+        customTooltip.style.marginTop = '20px';
+        
+        const rect = customTooltip.getBoundingClientRect();
+        
+        if (rect.left < 5) customTooltip.style.left = (rect.width / 2 + 5) + 'px';
+        if (rect.right > window.innerWidth - 5) customTooltip.style.left = (window.innerWidth - rect.width / 2 - 5) + 'px';
+        
+        if (rect.bottom > window.innerHeight - 5) {
+            customTooltip.style.transform = 'translate(-50%, -100%)';
+            customTooltip.style.marginTop = '-20px';
+        }
+    }
+
+    function updateShiftUI(isShift) {
+        const btnRematch = document.getElementById('pmh-btn-rematch');
+        if (btnRematch && !btnRematch.dataset.refreshing) {
+            if (isShift) {
+                btnRematch.innerHTML = '<i class="fas fa-broom" style="font-size: 10px; margin-right: 2px;"></i>클린 리매칭';
+                btnRematch.style.color = '#f89406'; 
+            } else {
+                btnRematch.innerHTML = '<i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>메타 리매칭';
+                btnRematch.style.color = '#adb5bd';
+            }
+        }
+
+        document.querySelectorAll('.plex-path-scan-link').forEach(link => {
+            const isLastNode = link.dataset.type !== 'directory';
+            if (isShift) {
+                if (!link.dataset.origColor) link.dataset.origColor = link.style.color;
+                link.style.color = '#2f96b4';
+                link.style.textDecoration = 'underline dashed';
+            } else {
+                link.style.color = link.dataset.origColor || (isLastNode ? '#e5a00d' : '#9E9E9E');
+                link.style.textDecoration = 'none';
+            }
+        });
+
+        document.querySelectorAll('.plex-guid-list-box').forEach(box => {
+            if (!box.dataset.refreshing && !box.innerHTML.includes('fa-spinner')) {
+                if (isShift) {
+                    if (!box.dataset.origColor) box.dataset.origColor = box.style.color;
+                    box.style.color = '#f89406'; 
+                } else {
+                    box.style.color = box.dataset.origColor || '#e5a00d';
+                }
+            }
+        });
+
+        if (currentHoverTarget) {
+            const textHTML = getDynamicTooltipText(currentHoverTarget, isShift);
+            if (textHTML) {
+                customTooltip.innerHTML = textHTML;
+                positionTooltip(lastMouseX, lastMouseY);
+            }
+        }
+    }
+
+    document.addEventListener('mouseover', (e) => {
+        const target = e.target.closest('#pmh-btn-rematch, .plex-path-scan-link, .plex-guid-list-box');
+        if (target) {
+            if (target.hasAttribute('title')) target.removeAttribute('title');
+            
+            currentHoverTarget = target;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            
+            const textHTML = getDynamicTooltipText(target, isShiftPressed);
+            if (textHTML) {
+                customTooltip.innerHTML = textHTML;
+                customTooltip.style.visibility = 'visible';
+                customTooltip.style.opacity = '1';
+                positionTooltip(e.clientX, e.clientY);
+            }
+        }
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (currentHoverTarget) {
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            positionTooltip(e.clientX, e.clientY);
+        }
+    });
+
+    document.addEventListener('mouseout', (e) => {
+        if (currentHoverTarget) {
+            if (e.relatedTarget && currentHoverTarget.contains(e.relatedTarget)) return;
+            
+            currentHoverTarget = null;
+            customTooltip.style.opacity = '0';
+            setTimeout(() => {
+                if (!currentHoverTarget) customTooltip.style.visibility = 'hidden';
+            }, 150);
+        }
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Shift' && !isShiftPressed) {
+            isShiftPressed = true;
+            updateShiftUI(true);
+        }
+    });
+    document.addEventListener('keyup', (e) => {
+        if (e.key === 'Shift' && isShiftPressed) {
+            isShiftPressed = false;
+            updateShiftUI(false);
+        }
+    });
+    window.addEventListener('blur', () => {
+        if (isShiftPressed) {
+            isShiftPressed = false;
+            updateShiftUI(false);
+        }
+    });
 
     // ==========================================
     // API Key 보안 서명 생성 함수
@@ -600,7 +828,7 @@ GM_addStyle(`
         const checkPromises = targetServers.map(srv => {
             return new Promise((resolve) => {
                 GM_xmlhttpRequest({
-                    method: "GET", url: `${srv.relayUrl}/tools`,
+                    method: "GET", url: `${srv.relayUrl}/tools?t=${Date.now()}`,
                     headers: { "X-PMH-Signature": secureToken },
                     timeout: 10000,
                     onload: (res) => {
@@ -2123,7 +2351,7 @@ GM_addStyle(`
             const fetchPromises = ServerConfig.SERVERS.map(srv => {
                 return new Promise(async (resolve) => {
                     try {
-                        const res = await PmhToolAPI.call(srv, `/tools`, "GET");
+                        const res = await PmhToolAPI.call(srv, `/tools?t=${Date.now()}`, "GET");
                         if (res.status === 200) resolve({ server: srv, data: JSON.parse(res.responseText) });
                         else resolve({ server: srv, error: `HTTP ${res.status}` });
                     } catch(e) { resolve({ server: srv, error: "Network Error" }); }
@@ -3042,6 +3270,9 @@ GM_addStyle(`
                 const isUnmatched = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
 
                 if (isUnmatched) gBox.style.color = '#a68241';
+
+                gBox.dataset.unmatched = isUnmatched ? 'true' : 'false';
+                gBox.dataset.rawGuid = rawG;
             } else {
                 gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>로딩 중...`;
                 gBox.style.color = '#adb5bd';
@@ -5432,8 +5663,8 @@ GM_addStyle(`
 
         const modalHtml = `
             <div id="pmh-client-settings-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 999999; display: flex; justify-content: center; align-items: center; backdrop-filter: blur(5px);">
-                <div style="background: #1e2124; border: 1px solid #e5a00d; border-radius: 8px; width: 500px; max-width: 90vw; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.8);">
-                    <div style="background: #111; padding: 15px; border-bottom: 1px solid #333; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center;">
+                <div class="pmh-modal-content" style="background: #1e2124; border: 1px solid #e5a00d; border-radius: 8px; width: 550px; max-width: 95vw; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.8); position: relative;">
+                    <div style="background: #111; padding: 15px; border-bottom: 1px solid #333; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
                         <h2 style="margin: 0; color: #e5a00d; font-size: 16px;"><i class="fas fa-cogs"></i> PMH 프론트엔드 설정</h2>
                         <button id="pmh-settings-close" style="background:none; border:none; color:#aaa; cursor:pointer; font-size:16px;"><i class="fas fa-times"></i></button>
                     </div>
@@ -5513,6 +5744,23 @@ GM_addStyle(`
                                 <i class="fas fa-laptop-code"></i> 프론트엔드 개발 모드 (Local Assets Only)
                             </label>
                         </div>
+
+                        <div class="pmh-form-header" style="display:flex; margin-top:30px; justify-content:space-between; align-items:center;">
+                            <span><i class="fas fa-file-code"></i> 서버 구성 파일 (pmh_config.yaml) 편집</span>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.2); padding:10px; border:1px solid #333; border-radius:4px; margin-bottom:20px; display:flex; flex-direction:column; flex-grow:1; min-height:400px;">
+                            <div style="display:flex; gap:10px; margin-bottom:10px; flex-shrink:0;">
+                                <select id="pmh-yaml-server-select" class="pmh-input-select" style="flex:1;">
+                                    ${ServerConfig.SERVERS.map(s => `<option value="${s.id}">${s.name || s.id}</option>`).join('')}
+                                </select>
+                                <button id="pmh-btn-load-yaml" style="background:#2f96b4; color:#fff; border:none; border-radius:4px; padding:6px 15px; cursor:pointer;"><i class="fas fa-download"></i> 불러오기</button>
+                                <button id="pmh-btn-save-yaml" style="background:#e5a00d; color:#1f1f1f; border:none; border-radius:4px; padding:6px 15px; cursor:pointer; font-weight:bold;"><i class="fas fa-save"></i> 저장 및 반영</button>
+                            </div>
+                            
+                            <div class="pmh-yaml-container">
+                                <textarea id="pmh-yaml-editor" spellcheck="false" placeholder="서버를 선택하고 '불러오기' 버튼을 누르세요."></textarea>
+                            </div>
+                        </div>
                     </div>
 
                     <div style="padding: 15px; background: #111; border-top: 1px solid #333; border-radius: 0 0 8px 8px; display: flex; justify-content: space-between; align-items: center;">
@@ -5527,36 +5775,21 @@ GM_addStyle(`
         `;
 
         document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-        document.getElementById('pmh-settings-close').onclick = () => document.getElementById('pmh-client-settings-modal').remove();
-
         document.getElementById('pmh-settings-close').onclick = () => document.getElementById('pmh-client-settings-modal').remove();
 
         document.getElementById('pmh-settings-copy-key').onclick = (e) => {
             e.preventDefault();
             const keyInput = document.getElementById('pmh-set-api-key');
-            if (!keyInput.value) {
-                toastr.warning("복사할 API Key가 없습니다.");
-                return;
-            }
+            if (!keyInput.value) { toastr.warning("복사할 API Key가 없습니다."); return; }
 
             if (navigator.clipboard && window.isSecureContext) {
-                navigator.clipboard.writeText(keyInput.value).then(() => {
-                    toastr.success("API Key가 클립보드에 복사되었습니다!");
-                }).catch(err => {
-                    toastr.error("복사 실패. 브라우저 권한을 확인하세요.");
-                });
+                navigator.clipboard.writeText(keyInput.value).then(() => { toastr.success("API Key가 클립보드에 복사되었습니다!"); })
+                .catch(err => { toastr.error("복사 실패. 브라우저 권한을 확인하세요."); });
             } else {
-                keyInput.type = "text";
-                keyInput.select();
-                try {
-                    document.execCommand("copy");
-                    toastr.success("API Key가 클립보드에 복사되었습니다!");
-                } catch (err) {
-                    toastr.error("복사 실패. 수동으로 복사해주세요.");
-                }
-                keyInput.type = "password";
-                window.getSelection().removeAllRanges();
+                keyInput.type = "text"; keyInput.select();
+                try { document.execCommand("copy"); toastr.success("API Key가 클립보드에 복사되었습니다!"); } 
+                catch (err) { toastr.error("복사 실패. 수동으로 복사해주세요."); }
+                keyInput.type = "password"; window.getSelection().removeAllRanges();
             }
         };
 
@@ -5580,12 +5813,84 @@ GM_addStyle(`
             if (btn) {
                 const container = document.getElementById('pmh-path-mapping-container');
                 btn.closest('.pmh-path-mapping-row').remove();
-
                 if (container.querySelectorAll('.pmh-path-mapping-row').length === 0) {
                     container.innerHTML = '<div class="pmh-no-map-msg" style="color:#777; font-size:12px; text-align:center; padding:5px 0;">등록된 매핑이 없습니다.</div>';
                 }
             }
         });
+
+        const yamlEditor = document.getElementById('pmh-yaml-editor');
+        const btnLoadYaml = document.getElementById('pmh-btn-load-yaml');
+        const btnSaveYaml = document.getElementById('pmh-btn-save-yaml');
+        const yamlServerSelect = document.getElementById('pmh-yaml-server-select');
+
+        yamlEditor.addEventListener('keydown', function(e) {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const start = this.selectionStart;
+                const end = this.selectionEnd;
+                this.value = this.value.substring(0, start) + "    " + this.value.substring(end);
+                this.selectionStart = this.selectionEnd = start + 4;
+            }
+        });
+
+        btnLoadYaml.onclick = async () => {
+            const serverId = yamlServerSelect.value;
+            const originalHtml = btnLoadYaml.innerHTML;
+            btnLoadYaml.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            btnLoadYaml.disabled = true;
+
+            try {
+                const srv = ServerConfig.SERVERS.find(s => s.id === serverId);
+                const res = await makeRequest(`${srv.relayUrl}/admin/config`, 'GET', null, ClientSettings.masterApiKey);
+                yamlEditor.value = res.yaml;
+                toastr.success(`${srv.name || serverId}의 설정 파일을 성공적으로 불러왔습니다.`);
+            } catch (err) {
+                toastr.error(`불러오기 실패: ${err.message}`);
+                yamlEditor.value = "";
+            } finally {
+                btnLoadYaml.innerHTML = originalHtml;
+                btnLoadYaml.disabled = false;
+            }
+        };
+
+        btnSaveYaml.onclick = async () => {
+            const serverId = yamlServerSelect.value;
+            const yamlContent = yamlEditor.value.trim();
+            if (!yamlContent) return toastr.warning("저장할 내용이 없습니다.");
+
+            if (!confirm(`주의: YAML 문법이 잘못되면 해당 서버의 구동이 정지될 수 있습니다.\n\n정말로 [${yamlServerSelect.options[yamlServerSelect.selectedIndex].text}] 서버의 설정 파일을 덮어쓰고 즉시 코어를 리로드 하시겠습니까?`)) {
+                return;
+            }
+
+            const originalHtml = btnSaveYaml.innerHTML;
+            btnSaveYaml.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 적용 중...';
+            btnSaveYaml.disabled = true;
+
+            try {
+                const srv = ServerConfig.SERVERS.find(s => s.id === serverId);
+                
+                await makeRequest(`${srv.relayUrl}/admin/config`, 'POST', { yaml: yamlContent }, ClientSettings.masterApiKey);
+                toastr.success("파일 저장 완료. 코어를 리로드합니다...", "저장 성공", {timeOut: 2000});
+
+                setTimeout(async () => {
+                    try {
+                        await makeRequest(`${srv.relayUrl}/admin/reload_core`, 'POST', null, ClientSettings.masterApiKey);
+                        toastr.success("변경된 설정이 코어에 정상적으로 반영되었습니다!", "리로드 성공");
+                    } catch (reloadErr) {
+                        toastr.error(`코어 리로드 실패: ${reloadErr.message}<br>서버를 수동으로 재시작해야 할 수 있습니다.`, "리로드 실패", {timeOut: 8000});
+                    } finally {
+                        btnSaveYaml.innerHTML = originalHtml;
+                        btnSaveYaml.disabled = false;
+                    }
+                }, 1000);
+
+            } catch (err) {
+                toastr.error(err.message.replace(/\n/g, '<br>'), "저장 실패", {timeOut: 10000});
+                btnSaveYaml.innerHTML = originalHtml;
+                btnSaveYaml.disabled = false;
+            }
+        };
 
         document.getElementById('pmh-settings-test').onclick = async () => {
             const url = document.getElementById('pmh-set-master-url').value.trim().replace(/\/$/, '');
@@ -5594,7 +5899,6 @@ GM_addStyle(`
 
             const btn = document.getElementById('pmh-settings-test');
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 확인 중...';
-
             const secureToken = await generateSecureHeader(key);
 
             GM_xmlhttpRequest({
@@ -5604,7 +5908,7 @@ GM_addStyle(`
                     if(r.status === 200) toastr.success("마스터 서버 연결 성공!");
                     else toastr.error(`연결 실패 (HTTP ${r.status})`);
                 },
-                onerror: () => { btn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트'; toastr.error("네트워크 오류 (서버 다운 또는 주소 확인)"); }
+                onerror: () => { btn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트'; toastr.error("네트워크 오류"); }
             });
         };
 
@@ -5632,7 +5936,7 @@ GM_addStyle(`
             };
 
             GM_setValue(CLIENT_SETTINGS_KEY, ClientSettings);
-            toastr.success("설정이 저장되었습니다. 페이지를 새로고침합니다.");
+            toastr.success("클라이언트 설정이 저장되었습니다. 페이지를 새로고침합니다.");
             setTimeout(() => location.reload(), 500);
         };
 

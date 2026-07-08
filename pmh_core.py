@@ -17,6 +17,8 @@ import csv
 import io
 import hashlib
 import difflib
+import traceback
+import logging
 from datetime import datetime
 from contextlib import contextmanager
 from urllib.request import Request, urlopen
@@ -26,11 +28,26 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.108"
+__version__ = "0.8.109"
+
+logger = logging.getLogger("PMH")
 
 def get_version():
     return __version__
 
+def apply_permissions(filepath, config):
+    if not config: return
+    puid = config.get('puid', -1)
+    pgid = config.get('pgid', -1)
+    if puid != -1 and pgid != -1 and os.path.exists(filepath):
+        try:
+            os.chown(filepath, puid, pgid)
+        except Exception as e:
+            logger.debug(f"권한 설정 실패 ({filepath}): {e}")
+
+# ==============================================================================
+# [전역 캐시 및 상태 변수]
+# ==============================================================================
 GLOBAL_DASHBOARD_CACHE = {
     "running": [],
     "cron": [],
@@ -43,6 +60,27 @@ _TOOL_SERVER_LOCKS_GUARD = threading.Lock()
 MEDIA_ACTION_QUEUE = queue.Queue()
 MEDIA_ACTION_STATUS = {}
 
+_TOOL_NAME_CACHE = {}
+
+def get_tool_name(base_dir, tool_id):
+    """tool_id를 기반으로 info.yaml을 읽어 실제 툴 이름(name)을 반환 (메모리 캐싱)"""
+    if tool_id in _TOOL_NAME_CACHE:
+        return _TOOL_NAME_CACHE[tool_id]
+    
+    info_path = os.path.join(base_dir, 'tools', tool_id, 'info.yaml')
+    try:
+        if os.path.exists(info_path):
+            with open(info_path, 'r', encoding='utf-8') as f:
+                info_data = yaml.safe_load(f)
+                name = info_data.get('name', tool_id)
+                _TOOL_NAME_CACHE[tool_id] = name
+                return name
+    except Exception:
+        pass
+    
+    _TOOL_NAME_CACHE[tool_id] = tool_id
+    return tool_id
+
 def get_tool_lock(tool_id, server_id):
     lock_key = f"{tool_id}_{server_id}"
     with _TOOL_SERVER_LOCKS_GUARD:
@@ -52,11 +90,9 @@ def get_tool_lock(tool_id, server_id):
 
 def generate_secure_header(api_key):
     if not api_key: return ""
-    
     timestamp = int(time.time() / 10) * 10
     payload = f"{api_key}:{timestamp}".encode('utf-8')
     hash_hex = hashlib.sha256(payload).hexdigest()
-    
     return f"{timestamp}.{hash_hex}"
 
 def execute_plex_action_safe(action_func, max_retries=5, wait_sec=5.0):
@@ -68,7 +104,7 @@ def execute_plex_action_safe(action_func, max_retries=5, wait_sec=5.0):
             last_err = e
             err_str = str(e)
             if any(x in err_str for x in ["500", "502", "503", "504", "Timeout", "database is locked"]):
-                print(f"[PMH Retry] Plex 서버 부하/오류 감지: {err_str}. {wait_sec}초 후 재시도 ({i+1}/{max_retries})...")
+                logger.warning(f"[Retry] Plex 서버 부하/오류 감지: {err_str}. {wait_sec}초 후 재시도 ({i+1}/{max_retries})...")
                 time.sleep(wait_sec)
             else:
                 raise e
@@ -88,118 +124,6 @@ def core_natural_sort(data_list, default_sort):
         data_list.sort(key=lambda x: n_key(str(x.get(k, ''))), reverse=(d == 'desc'))
     return data_list
 
-def compile_yaml_filters(base_dir, tool_id, task_logger=None):
-    filter_path = os.path.join(base_dir, 'tools', tool_id, 'filters.yaml')
-    compiled_filters = {'include': [], 'exclude': []}
-    
-    if not os.path.exists(filter_path):
-        return compiled_filters
-
-    try:
-        with open(filter_path, 'r', encoding='utf-8-sig') as f:
-            raw_text = f.read()
-            clean_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
-            yaml_data = yaml.safe_load(clean_text) or {}
-            
-        for f_type in ['include', 'exclude']:
-            rules = yaml_data.get(f_type) or []
-            if not isinstance(rules, list): continue
-                
-            for rule in rules:
-                if not isinstance(rule, dict): continue
-                    
-                fields = rule.get('field', 'guid,title,path')
-                field_list = [x.strip().lower() for x in re.split(r'[,|]', str(fields)) if x.strip()]
-                
-                schedule_only = rule.get('schedule_only', False)
-                if isinstance(schedule_only, str):
-                    schedule_only = schedule_only.lower() in ['true', '1', 'yes', 'y']
-
-                keyword_list = rule.get('list') or []
-                if not isinstance(keyword_list, list): keyword_list = [keyword_list]
-                    
-                for kw in keyword_list:
-                    clean_kw = str(kw).strip()
-                    if not clean_kw or clean_kw.lower() == 'none': continue
-                    
-                    is_regex = False 
-                    lower_kw = clean_kw.lower()
-                    
-                    if lower_kw.startswith('regex||'):
-                        is_regex = True
-                        clean_kw = clean_kw[7:].strip()
-                    elif lower_kw.startswith('plain||'):
-                        clean_kw = clean_kw[7:].strip()
-                    elif lower_kw.startswith('text||'):
-                        clean_kw = clean_kw[6:].strip()
-                        
-                    if not clean_kw: continue
-                    
-                    try:
-                        if is_regex:
-                            compiled_pattern = re.compile(clean_kw, re.IGNORECASE)
-                        else:
-                            compiled_pattern = clean_kw.lower()
-                            
-                        compiled_filters[f_type].append({
-                            'fields': field_list,
-                            'pattern': compiled_pattern,
-                            'is_regex': is_regex,
-                            'schedule_only': schedule_only
-                        })
-                    except Exception as e:
-                        if task_logger: task_logger(f"⚠️ 필터 정규식 문법 오류 무시됨 -> '{clean_kw}': {e}")
-                        
-        if task_logger and (compiled_filters['include'] or compiled_filters['exclude']):
-            task_logger(f"🛡️ {os.path.basename(filter_path)} 로드 완료 (포함: {len(compiled_filters['include'])}개, 제외: {len(compiled_filters['exclude'])}개 규칙)")
-            
-    except Exception as e:
-        if task_logger: task_logger(f"⚠️ {os.path.basename(filter_path)} 파싱 실패 (파일 형식을 확인하세요): {e}")
-        
-    return compiled_filters
-
-def check_yaml_filter(text_dict, compiled_filters, is_cron=False):
-    includes = compiled_filters.get('include', [])
-    excludes = compiled_filters.get('exclude', [])
-    
-    def _is_match(target_text, pattern_obj, is_regex):
-        if not target_text: return False
-        if is_regex:
-            return bool(pattern_obj.search(target_text))
-        else:
-            return pattern_obj in target_text.lower()
-
-    if includes:
-        passed_include = False
-        active_include_count = 0
-        
-        for rule in includes:
-            if rule.get('schedule_only') and not is_cron:
-                continue
-                
-            active_include_count += 1
-            for field in rule['fields']:
-                target_text = text_dict.get(field, "")
-                if _is_match(target_text, rule['pattern'], rule['is_regex']):
-                    passed_include = True
-                    break
-            if passed_include: break
-            
-        if active_include_count > 0 and not passed_include:
-            return False
-
-    if excludes:
-        for rule in excludes:
-            if rule.get('schedule_only') and not is_cron:
-                continue
-                
-            for field in rule['fields']:
-                target_text = text_dict.get(field, "")
-                if _is_match(target_text, rule['pattern'], rule['is_regex']):
-                    return False
-
-    return True
-
 # ==============================================================================
 # [디스코드 통합 알림 팩토리]
 # ==============================================================================
@@ -216,11 +140,13 @@ def create_discord_notifier(base_dir, tool_id, server_id, global_config):
         
         url = current_opts.get('discord_webhook', '').strip() or (global_config.get('discord_webhook', '').strip() if global_config else '')
         if not url: return
-            
-        print(f"[PMH Discord] '{tool_id}' 알림 발송 시도 (제목: {title})")
+        
+        tool_name = get_tool_name(base_dir, tool_id)
+        logger.info(f"[{tool_name}] 알림 발송 시도 (제목: {title})")
         
         core_vars = {
             "tool_id": tool_id,
+            "tool_name": tool_name,
             "server_id": server_id[:8],
             "server_name": current_opts.get('_server_name', f"Server-{server_id[:8]}"),
             "date": datetime.now().strftime('%Y-%m-%d'),
@@ -265,9 +191,9 @@ def create_discord_notifier(base_dir, tool_id, server_id, global_config):
             headers = {'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             req = Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
             urlopen(req, timeout=5)
-            print(f"[PMH Discord] ✅ '{tool_id}' 알림 발송 성공.")
+            logger.info(f"[{tool_name}] 디스코드 알림 발송 성공.")
         except Exception as e:
-            print(f"[PMH Discord Error] ❌ 발송 실패: {e}")
+            logger.error(f"❌ 디스코드 알림 발송 실패: {e}")
             
     return send_discord_notify
 
@@ -305,7 +231,7 @@ def stop_scheduler_daemon():
     worker_name = "PMH_Media_Worker"
     
     if _SCHEDULER_STATES.get(thread_name, False):
-        print("[PMH Daemon] 🛑 기존 데몬 및 큐 워커 스레드 종료 지시를 내립니다...")
+        logger.info("🛑 기존 데몬 및 큐 워커 스레드 종료 지시를 내립니다...")
         _SCHEDULER_STATES[thread_name] = False
         _SCHEDULER_STATES[worker_name] = False
         
@@ -349,13 +275,13 @@ def start_scheduler_daemon(global_config):
                     except Exception: pass
                     
             if ghost_count > 0:
-                print(f"[PMH Cleanup] 총 {ghost_count}개의 툴에서 중단된 유령 작업(Ghost Tasks)을 정리했습니다.")
+                logger.info(f"총 {ghost_count}개의 툴에서 중단된 유령 작업(Ghost Tasks)을 정리했습니다.")
     except Exception as cleanup_err:
-        print(f"[PMH Cleanup Error] 유령 작업 정리 중 오류: {cleanup_err}")
+        logger.error(f"유령 작업 정리 중 오류: {cleanup_err}")
 
     def scheduler_loop():
         tz_info = time.strftime('%z (%Z)')
-        print(f"[PMH Daemon] 자동 실행 스케줄러 시작. (현재 타임존: {tz_info})")
+        logger.info(f"자동 실행 스케줄러 시작. (현재 타임존: {tz_info})")
 
         _SCHEDULER_STATES[thread_name] = True
         
@@ -370,7 +296,7 @@ def start_scheduler_daemon(global_config):
                 try:
                     _execute_scheduled_tasks(global_config, now)
                 except Exception as e:
-                    print(f"[PMH Scheduler Error] {e}")
+                    logger.error(f"Scheduler Error: {e}")
                 time.sleep(1)
                 
             current_time = time.time()
@@ -384,14 +310,14 @@ def start_scheduler_daemon(global_config):
             time.sleep(0.5)
 
     if any(t.name == thread_name and t.is_alive() for t in threading.enumerate()):
-        print(f"[PMH Daemon] ⚠️ 기존 스케줄러 데몬이 아직 살아있습니다. 중복 생성을 방지합니다.")
+        logger.warning(f"⚠️ 기존 스케줄러 데몬이 아직 살아있습니다. 중복 생성을 방지합니다.")
     else:
         st = threading.Thread(target=scheduler_loop, name=thread_name)
         st.daemon = True
         st.start()
 
     if any(t.name == worker_name and t.is_alive() for t in threading.enumerate()):
-        print(f"[PMH Daemon] ⚠️ 기존 큐 워커가 아직 살아있습니다. 중복 생성을 방지합니다.")
+        logger.warning(f"⚠️ 기존 큐 워커가 아직 살아있습니다. 중복 생성을 방지합니다.")
         _SCHEDULER_STATES[worker_name] = True
     else:
         _SCHEDULER_STATES[worker_name] = True
@@ -408,7 +334,6 @@ def _update_dashboard_cache(tools_dir, task_logs_dir, base_dir):
     
     for f_name in os.listdir(task_logs_dir):
         if f_name.endswith('_task.db'):
-            # 파일명 구조: {tool_id}_{server_id}_task.db
             parts = f_name[:-8].rsplit('_', 1)
             if len(parts) == 2:
                 t_id, s_id = parts
@@ -421,7 +346,6 @@ def _update_dashboard_cache(tools_dir, task_logs_dir, base_dir):
                     })
                     
         elif f_name.endswith('_options.db'):
-            # 파일명 구조: {tool_id}_{server_id}_options.db
             parts = f_name[:-11].rsplit('_', 1)
             if len(parts) == 2:
                 t_id, s_id = parts
@@ -476,11 +400,13 @@ def _execute_scheduled_tasks(global_config, now):
             # 중복 실행 방지
             task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
             task_state = task_mgr.load(include_target_items=False)
+            tool_name = get_tool_name(base_dir, tool_id)
+            
             if task_state and task_state.get('state') == 'running':
-                print(f"[PMH Scheduler] '{tool_id}' (서버:{server_id[:8]}) 이미 작업이 실행 중이므로 스킵합니다.")
+                logger.info(f"[{tool_name}] (서버:{server_id[:8]}) 이미 작업이 실행 중이므로 스킵합니다.")
                 continue
 
-            print(f"[PMH Scheduler] '{tool_id}' (서버:{server_id[:8]}) 크론 조건({cron_expr}) 달성. 워커 스레드를 트리거합니다.")
+            logger.info(f"[{tool_name}] (서버:{server_id[:8]}) 크론 조건({cron_expr}) 달성. 워커 스레드를 트리거합니다.")
 
             try:
                 info_path = os.path.join(tools_dir, tool_id, 'info.yaml')
@@ -525,7 +451,7 @@ def _execute_scheduled_tasks(global_config, now):
                     
                     tool_lock = get_tool_lock(tool_id, server_id)
                     if not tool_lock.acquire(blocking=False):
-                        print(f"[PMH Scheduler] '{tool_id}' (서버:{server_id[:8]}) 이전 작업이 진행 중이어서 이번 스케줄은 건너뜁니다.")
+                        logger.warning(f"[{tool_name}] (서버:{server_id[:8]}) 이전 작업이 진행 중이어서 이번 스케줄은 건너뜁니다.")
                         continue
                     
                     try:
@@ -542,7 +468,7 @@ def _execute_scheduled_tasks(global_config, now):
                         raise start_err
                     
             except Exception as e:
-                print(f"[PMH Scheduler Error] Tool {tool_id} execution failed: {e}")
+                logger.error(f"Scheduler Error: Tool {tool_id} execution failed: {e}")
 
 # ==============================================================================
 # [DB 헬퍼 함수]
@@ -556,10 +482,10 @@ def get_db_connection(db_path):
         conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=10.0, isolation_level=None)
         yield conn
     except sqlite3.OperationalError as e:
-        print(f"[PMH DB ERROR] SQLite Operational Error: {str(e)}")
+        logger.error(f"SQLite Operational Error: {str(e)}")
         raise
     except Exception as e:
-        print(f"[PMH DB ERROR] Connection failed: {str(e)}")
+        logger.error(f"DB Connection failed: {str(e)}")
         raise
     finally:
         if conn:
@@ -720,7 +646,7 @@ def handle_library_batch(data, max_batch_size, db_path):
 
         return result_map, 200
     except Exception as e:
-        print(f"[PMH BATCH ERROR] Failed processing batch: {str(e)}")
+        logger.error(f"Batch processing failed: {e}")
         return {"error": str(e)}, 500
 
 def handle_media_detail(rating_key, db_path):
@@ -942,7 +868,7 @@ def handle_media_detail(rating_key, db_path):
             "librarySectionID": lib_section_id, "versions": versions, "markers": markers 
         }, 200
     except Exception as e:
-        print(f"[PMH DETAIL ERROR] Failed processing item {rating_key}: {str(e)}")
+        logger.error(f"Failed processing item {rating_key}: {e}")
         return {"error": str(e)}, 500
 
 # ==============================================================================
@@ -950,6 +876,7 @@ def handle_media_detail(rating_key, db_path):
 # ==============================================================================
 class CoreTaskManager:
     def __init__(self, base_dir, tool_id, server_id="default"):
+        self.base_dir = base_dir
         self.tool_id = tool_id
         self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_task.db")
         os.makedirs(os.path.dirname(self.db_file), exist_ok=True)
@@ -972,7 +899,6 @@ class CoreTaskManager:
                 c.execute("INSERT INTO task_info (state, progress, total, task_data) VALUES ('completed', 0, 0, '{}')")
 
     def load(self, include_target_items=False):
-        """UI 폴링 병목 제거를 위해 include_target_items 옵션 제공"""
         with self._lock:
             if not os.path.exists(self.db_file): return None
             try:
@@ -1028,7 +954,8 @@ class CoreTaskManager:
     def log(self, msg):
         stamp = datetime.now().strftime('%H:%M:%S')
         log_line = f"[{stamp}] {msg}"
-        print(f"[PMH {self.tool_id}] {msg}")
+        tool_name = get_tool_name(self.base_dir, self.tool_id)
+        logger.info(f"[{tool_name}] {msg}")
         with self._lock:
             self._setup_db()
             with self._get_conn() as conn:
@@ -1266,7 +1193,7 @@ class CoreDataManager:
                 try:
                     c.execute(f'UPDATE data SET pmh_status = "done" WHERE "{key_column}" IN ({placeholders})', keys_list)
                 except Exception as e:
-                    print(f"[PMH DB] mark_keys_as_done 실패: {e}")
+                    logger.error(f"[DB] mark_keys_as_done 실패: {e}")
 
     def remove_item_by_pmh_id(self, pmh_id):
         with self._lock:
@@ -1340,7 +1267,7 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, se
     except Exception as e:
         import traceback
         core_api['task'].log(f"[System Error] 작업 중 치명적 오류 발생: {str(e)}")
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         core_api['task'].update_state('error')
     finally:
         try:
@@ -1400,7 +1327,7 @@ def create_db_api(db_path, sqlite_bin=None):
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
                 
         else:
-            print("[PMH DB] Plex 서버 종료 감지. 안전을 위해 Plex SQLite 바이너리로 SELECT 쿼리를 우회 실행합니다.")
+            logger.warning("[DB] Plex 서버 종료 감지. 안전을 위해 Plex SQLite 바이너리로 SELECT 쿼리를 우회 실행합니다.")
             return _run_cli_query(query, params, is_select=True)
 
     def execute_via_bin(query, params=()):
@@ -1446,7 +1373,7 @@ def check_update_readiness(base_dir, force_update=False):
     if not force_update:
         return False, len(active_workers), f"현재 진행 중인 작업({len(active_workers)}건)이 있습니다."
         
-    print(f"[PMH Core] Force update requested. Sending cancel signals to {len(active_workers)} workers in parallel...")
+    logger.info(f"Force update requested. Sending cancel signals to {len(active_workers)} workers in parallel...")
     
     logs_dir = os.path.join(base_dir, 'task_logs')
     
@@ -1466,25 +1393,25 @@ def check_update_readiness(base_dir, force_update=False):
                         c.execute("UPDATE task_info SET state='cancelled' WHERE state IN ('running', 'pending')")
                         c.execute("INSERT INTO logs (log_text) VALUES (?)", ("🛑 서버 업데이트 요청으로 인해 작업을 중단합니다.",))
                         conn.commit()
-                    print(f"[PMH Core] Cancel signal sent to DB: {tool_id} on {server_id[:8]}")
+                    logger.warning(f"Cancel signal sent to DB: {tool_id} on {server_id[:8]}")
                 except Exception as db_err:
-                    print(f"[PMH Core] Failed to send cancel signal to DB: {db_err}")
-                    
-    print("[PMH Core] Waiting for all worker threads to physically terminate...")
+                    logger.error(f"Failed to send cancel signal to DB: {db_err}")
+
+    logger.info("Waiting for all worker threads to physically terminate...")
     max_wait_seconds = 15.0
     start_wait = time.time()
     
     while time.time() - start_wait < max_wait_seconds:
         still_running = [t for t in active_workers if t.is_alive()]
         if not still_running:
-            print(f"[PMH Core] All workers successfully terminated in {time.time() - start_wait:.1f} seconds.")
+            logger.info(f"All workers successfully terminated in {time.time() - start_wait:.1f} seconds.")
             return True, 0, "모든 작업이 안전하게 종료되었습니다."
             
         time.sleep(0.5)
         
     still_running = [t.name for t in active_workers if t.is_alive()]
-    print(f"[PMH Core Error] Timeout! Following threads did not terminate: {still_running}")
-    print("[PMH Core Error] Update aborted to prevent database corruption or incomplete state.")
+    logger.error(f"Timeout! Following threads did not terminate: {still_running}")
+    logger.error("Update aborted to prevent database corruption or incomplete state.")
     
     return False, len(still_running), f"{max_wait_seconds}초 대기 후에도 {len(still_running)}개의 작업이 종료되지 않았습니다."
 
@@ -1565,7 +1492,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                     'data': data or {}
                 })
                 
-                print(f"[PMH API] 📥 큐에 작업 추가됨 -> Action: {action}, Item: {rating_key}")
+                logger.debug(f"📥 큐에 작업 추가됨 -> Action: {action}, Item: {rating_key}")
                 
                 return {"status": "queued", "task_id": task_id}, 202
 
@@ -1590,7 +1517,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                 key_str = str(log_payload['apikey'])
                 log_payload['apikey'] = f"{key_str[:3]}...{key_str[-3:]}" if len(key_str) > 6 else "****"
             
-            print(f"[PMH Core] 🚀 Plex Mate 중계 요청: {target_url} | Payload: {log_payload}")
+            logger.info(f"🚀 Plex Mate 중계 요청: {target_url} | Payload: {log_payload}")
             
             try:
                 req = Request(target_url, data=encoded_data, method='POST')
@@ -1606,10 +1533,10 @@ def dispatch_request(subpath, method, args, data, global_config):
                         
             except HTTPError as e:
                 err_body = e.read().decode('utf-8')
-                print(f"[PMH Core Error] FF HTTP Error: {e.code} - {err_body}")
+                logger.error(f"FF HTTP Error: {e.code} - {err_body}")
                 return {"ret": "error", "msg": f"FF API HTTP 오류 ({e.code})"}, e.code
             except URLError as e:
-                print(f"[PMH Core Error] FF Network Error: {e}")
+                logger.error(f"FF Network Error: {e}")
                 return {"ret": "error", "msg": f"FF 서버 통신 실패: {str(e)}"}, 502
 
         elif subpath == 'tools' and method == 'GET':
@@ -1624,7 +1551,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                             tool_info['id'] = item 
                             installed_tools.append(tool_info)
                     except Exception as e:
-                        print(f"[PMH TOOL ERROR] Could not read {info_path}: {e}")
+                        logger.error(f"info.yaml 파싱 실패 {info_path}: {e}")
                         
             global GLOBAL_DASHBOARD_CACHE
             return {
@@ -1686,7 +1613,7 @@ def dispatch_request(subpath, method, args, data, global_config):
 
             if os.path.exists(tool_path):
                 shutil.rmtree(tool_path)
-                print(f"[PMH TOOL DELETE] {tool_id} 및 관련 데이터 완전 삭제됨.")
+                logger.info(f"[{get_tool_name(base_dir, tool_id)}] 및 관련 데이터 완전 삭제됨.")
                 return {"status": "success"}, 200
             return {"error": "해당 툴을 찾을 수 없습니다."}, 404
 
@@ -1729,7 +1656,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                         stat_info = os.stat(target_for_stat)
                         current_opts['uid_gid'] = f"{stat_info.st_uid}:{stat_info.st_gid}"
                 except Exception as e:
-                    print(f"[PMH Core] UID:GID 자동 감지 실패: {e}")
+                    logger.error(f"UID:GID 자동 감지 실패: {e}")
 
             db_api = create_db_api(current_opts['db_path'], current_opts['sqlite_bin'])
             
@@ -1793,15 +1720,17 @@ def dispatch_request(subpath, method, args, data, global_config):
                 if not hasattr(module, 'run'): return {"error": "해당 툴에 실행(run) 함수가 없습니다."}, 500
                 action_type = data.get('action_type', 'preview')
 
+                tool_name = get_tool_name(base_dir, tool_id)
+
                 if action_type == 'reset':
-                    print(f"[PMH Core] 툴 '{tool_id}' 캐시 및 설정 완전 초기화")
+                    logger.info(f"[{tool_name}] 캐시 및 설정 완전 초기화")
                     task_mgr.reset()
                     data_mgr.reset_db()
                     options_mgr.reset()
                     return {"status": "success", "message": "초기화 완료"}, 200
 
                 elif action_type == 'clear_data':
-                    print(f"[PMH Core] 툴 '{tool_id}' 조회 데이터 초기화")
+                    logger.info(f"[{tool_name}] 조회 데이터 초기화")
                     data_mgr.reset_db()
                     return {"status": "success", "message": "조회 목록이 초기화되었습니다."}, 200
 
@@ -1813,7 +1742,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                     return {"status": "error", "message": "항목 ID(pmh_id)가 제공되지 않았습니다."}, 400
 
                 elif action_type == 'resume':
-                    print(f"[PMH Core] 툴 '{tool_id}' 작업 재개(Resume) 지시")
+                    logger.info(f"[{tool_name}] 작업 재개(Resume) 지시")
                     saved_task = task_mgr.load(include_target_items=True)
                     if not saved_task or 'task_data' not in saved_task:
                         return {"error": "이어서 실행할 작업 데이터가 없습니다."}, 400
@@ -1879,9 +1808,9 @@ def dispatch_request(subpath, method, args, data, global_config):
                     c_enable = current_opts.get('cron_enable')
                     c_expr = current_opts.get('cron_expr', '')
                     if c_enable and str(c_expr).strip():
-                        print(f"[PMH Core] ⏰ '{tool_id}' 툴 스케줄 등록 완료: {c_expr}")
+                        logger.info(f"⏰ [{tool_name}] 스케줄 등록 완료: {c_expr}")
                     else:
-                        print(f"[PMH Core] ⚙️ '{tool_id}' 툴 설정 저장 완료 (스케줄 비활성)")
+                        logger.info(f"⚙️ [{tool_name}] 설정 저장 완료 (스케줄 비활성)")
                     return {"status": "success"}, 200
 
                 else:
@@ -1894,7 +1823,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                     options_mgr.save(db_save_opts)
 
                     if action_type in ['preview', 'execute']:
-                        print(f"[PMH Core] 툴 '{tool_id}' 메인 워커 작업 라우팅 (Action: {action_type.upper()})")
+                        logger.info(f"[{tool_name}] 메인 워커 작업 라우팅 (Action: {action_type.upper()})")
 
                     res, code = module.run(data, core_api)
 
@@ -1943,8 +1872,7 @@ def dispatch_request(subpath, method, args, data, global_config):
         return {"error": f"Endpoint '/api/{subpath}' not found."}, 404
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         return {"error": str(e)}, 500
 
 # ==============================================================================
@@ -2084,7 +2012,7 @@ def extract_jav_pid(text, config, compiled_rules):
                             seen_labels.add(l_lower)
                             matched_in_this_type = True
             except Exception as e:
-                print(f"[PMH Parse Error] Rule: {rule['pattern']} -> {e}")
+                logger.error(f"Rule: {rule['pattern']} -> {e}")
             
             if matched_in_this_type:
                 break
@@ -2177,7 +2105,7 @@ def execute_plexmate_action(action_type, target, global_config, **kwargs):
 # [공용 미디어 관리 엔진] - 스마트 매칭 / 리프레시 / 분석 통합
 # ==============================================================================
 def media_action_worker_loop(global_config):
-    print("[PMH Daemon] Media Action Queue Worker 시작됨.")
+    logger.info("Media Action Queue Worker 시작됨.")
     while _SCHEDULER_STATES.get("PMH_Media_Worker", False):
         try:
             task = MEDIA_ACTION_QUEUE.get(timeout=1.0)
@@ -2188,7 +2116,7 @@ def media_action_worker_loop(global_config):
                 continue
 
             if MEDIA_ACTION_STATUS.get(task_id, {}).get('state') == 'cancelled':
-                print(f"[PMH Queue] 🚫 취소된 큐 작업 스킵됨 (Item: {task['item_id']})")
+                logger.info(f"🚫 취소된 큐 작업 스킵됨 (Item: {task['item_id']})")
                 MEDIA_ACTION_QUEUE.task_done()
                 continue
 
@@ -2245,13 +2173,13 @@ def media_action_worker_loop(global_config):
                         use_custom_score=use_custom, custom_agent_score=custom_score,
                         manual_match=manual_m,
                         global_config=global_config, 
-                        task_logger=lambda x: print(f"[PMH Queue] {x}", flush=True),
+                        task_logger=lambda x: logger.info(f"[Queue] {x}"),
                         cancel_checker=lambda: False
                     )
                     
                     if success:
                         if item.type in ['season', 'episode'] and action in ['match', 'refresh']:
-                            print(f"[PMH Queue] ⏳ 하위 항목({item.type})으로 메타데이터가 전파될 때까지 대기합니다...", flush=True)
+                            logger.info(f"⏳ 하위 항목({item.type})으로 메타데이터가 전파될 때까지 대기합니다...")
                             for _ in range(8):
                                 time.sleep(2.0)
                                 try:
@@ -2263,12 +2191,12 @@ def media_action_worker_loop(global_config):
                                     break
 
                         if is_3digit_season and action in ['match', 'refresh']:
-                            print(f"[PMH Queue] 💡 내부 데이터에서 3자리 특수 시즌이 감지되었습니다. '{action}' 완료 후 YAML 적용을 연계합니다.", flush=True)
+                            logger.info(f"💡 3자리 시즌이 감지되었습니다. '{action}' 완료 후 YAML 적용을 연계합니다.")
                             
                             perform_smart_media_action(
                                 plex_url=plex_url, plex_token=plex_token, rating_key=target_id,
                                 action_type='yaml_refresh', plex_inst=plex, manual_match=manual_m, global_config=global_config,
-                                task_logger=lambda x: print(f"[PMH Queue] {x}", flush=True), cancel_checker=lambda: False
+                                task_logger=lambda x: logger.info(f"[Queue] {x}"), cancel_checker=lambda: False
                             )
                             msg += " (YAML 자동 연계됨)"
 
@@ -2292,7 +2220,7 @@ def media_action_worker_loop(global_config):
         except queue.Empty:
             continue
         except Exception as e:
-            print(f"[PMH Media Worker Error] {e}")
+            logger.error(f"Media Worker Error: {e}")
             time.sleep(1)
 
 def perform_smart_media_action(
@@ -2618,7 +2546,7 @@ def perform_smart_media_action(
 
             # --- 7. 매칭 검색 (Search) ---
             def _fetch_plex_api(req_url):
-                with urlopen(Request(req_url, headers=api_headers), timeout=45) as response:
+                with urlopen(Request(req_url, headers=api_headers), timeout=120) as response:
                     return json.loads(response.read().decode('utf-8')).get('MediaContainer', {}).get('SearchResult', [])
 
             # 언어(language) 결정 및 동적 라이브러리 설정 오버라이드
@@ -2881,7 +2809,7 @@ def perform_smart_media_action(
                     
                 match_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/match?{urlencode(match_params)}"
                 req = Request(match_url, method='PUT', headers=api_headers)
-                execute_plex_action_safe(lambda: urlopen(req, timeout=30))
+                execute_plex_action_safe(lambda: urlopen(req, timeout=120))
             except Exception as put_e:
                 if task_logger: task_logger(f"⚠️ HTTP PUT 매칭 전송 오류 (무시하고 결과 대기 시도): {put_e}")
             
@@ -2922,8 +2850,7 @@ def perform_smart_media_action(
             return False, "Plex 서버 지연: 매칭 명령이 즉시 적용되지 않았습니다.", best_score
             
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
             if task_logger: task_logger(f"❌ 매칭 작업 중 내부 오류: {e}")
             return False, f"매칭 작업 중 내부 오류: {e}", 0
 

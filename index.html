@@ -417,7 +417,7 @@
 
             try {
                 const masterNodeId = AppState.servers[0].id || 'master_node';
-                const res = await PmhAPI.call(`/relay/${masterNodeId}/tools`);
+                const res = await PmhAPI.call(`/relay/${masterNodeId}/tools?t=${Date.now()}`);
                 
                 const runCnt = res.dashboard.running.length;
                 const cronCnt = res.dashboard.cron.length;

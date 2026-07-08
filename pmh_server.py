@@ -3,6 +3,7 @@
 import os
 import sys
 import logging
+from logging.handlers import RotatingFileHandler
 import urllib.request
 import urllib.error
 import importlib
@@ -48,6 +49,15 @@ BASE:
   PORT: 8899
   APIKEY: "YOUR_SECRET_KEY"
 
+  # 실행 환경: standalone (로그파일 생성/타임스탬프 O) 또는 ff (로그파일X/타임스탬프 X)
+  ENV_TYPE: "ff"
+  LOG_LEVEL: "INFO"  # INFO, DEBUG
+  TZ: "Asia/Seoul"
+
+  # 파일 소유권 강제 (컨테이너 환경 등에서 생성 파일 권한 매칭). 비활성화시 -1
+  PUID: -1
+  PGID: -1
+
   # Plex 서버 설정 (Plex API 통신용)
   PLEX_URL: "http://plex:32400"
   PLEX_TOKEN: "YOUR_PLEX_TOKEN"
@@ -61,7 +71,7 @@ BASE:
   FF_URL: "http://localhost:9999"
   FF_APIKEY: "YOUR_FF_API_KEY_HERE"
   
-  # (선택) 노드 전역 디스코드 알림 웹훅 URL
+  # 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
 
   # Fail2Ban 기능 활성화 여부 및 예외 IP 목록
@@ -83,8 +93,7 @@ BASE:
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        print(f"[PMH CONFIG] 설정 파일({CONFIG_FILE})이 존재하지 않습니다.")
-        print("[PMH CONFIG] 기본 템플릿을 생성했습니다. 파일을 환경에 맞게 수정한 후 서버를 다시 시작해주세요.")
+        print(f"[PMH CONFIG] 설정 파일({CONFIG_FILE})이 존재하지 않아 기본 템플릿을 생성합니다.")
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             f.write(YAML_TEMPLATE)
         sys.exit(1)
@@ -106,9 +115,62 @@ DEV_MODE = BASE_CFG.get("DEV_MODE", False)
 
 SERVER_PORT = BASE_CFG.get("PORT", 8899)
 API_KEY = BASE_CFG.get("APIKEY", "")
+PUID = int(BASE_CFG.get("PUID", -1))
+PGID = int(BASE_CFG.get("PGID", -1))
+
+TZ_STR = BASE_CFG.get("TZ", "Asia/Seoul")
+if TZ_STR:
+    os.environ['TZ'] = TZ_STR
+    if hasattr(time, 'tzset'):
+        time.tzset()
+
+def apply_permissions(target_path):
+    """지정된 PUID/PGID가 있다면 파일/폴더의 소유권을 강제합니다."""
+    if PUID != -1 and PGID != -1 and os.path.exists(target_path):
+        try:
+            os.chown(target_path, PUID, PGID)
+        except Exception:
+            pass
+
+pmh_logger = logging.getLogger("PMH")
+pmh_logger.propagate = False
+
+def setup_logger():
+    env_type = BASE_CFG.get("ENV_TYPE", "ff").lower()
+    log_level_str = BASE_CFG.get("LOG_LEVEL", "INFO").upper()
+    log_level = getattr(logging, log_level_str, logging.INFO)
+    
+    pmh_logger.setLevel(log_level)
+    pmh_logger.handlers.clear()
+
+    if env_type == "ff":
+        fmt = "[PMH] [%(levelname)s] %(message)s"
+    else:
+        fmt = "[%(asctime)s] [%(levelname)s] %(message)s"
+        
+    formatter = logging.Formatter(fmt)
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(formatter)
+    pmh_logger.addHandler(ch)
+
+    if env_type == "standalone":
+        log_dir = os.path.join(BASE_DIR, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        apply_permissions(log_dir)
+        
+        log_file = os.path.join(log_dir, "pmh_server.log")
+        fh = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+        fh.setFormatter(formatter)
+        pmh_logger.addHandler(fh)
+        apply_permissions(log_file)
+
+setup_logger()
 
 global_conf = {
     "base_dir": BASE_DIR,
+    "puid": PUID,
+    "pgid": PGID,
     "plex_db_path": BASE_CFG.get("PLEX_DB_PATH", ""),
     "plex_url": BASE_CFG.get("PLEX_URL", ""),
     "plex_token": BASE_CFG.get("PLEX_TOKEN", ""),
@@ -130,12 +192,12 @@ global_conf = {
 def download_file_if_missing(url, filename):
     file_path = os.path.join(BASE_DIR, filename)
     if not os.path.exists(file_path):
-        print(f"[PMH BOOTSTRAP] {filename} 파일이 존재하지 않아 다운로드합니다...")
+        pmh_logger.info(f"필수 파일 다운로드: {filename}")
         try:
             urllib.request.urlretrieve(url, file_path)
-            print(f"[PMH BOOTSTRAP] {filename} 다운로드 완료.")
+            apply_permissions(file_path)
         except Exception as e:
-            print(f"[PMH BOOTSTRAP WARNING] {filename} 다운로드 실패: {e}")
+            pmh_logger.warning(f"다운로드 실패 ({filename}): {e}")
 
 def get_static_assets_from_github():
     try:
@@ -145,22 +207,22 @@ def get_static_assets_from_github():
             info_data = yaml.safe_load(response.read().decode('utf-8'))
             return info_data.get('static_assets', [])
     except Exception as e:
-        print(f"[PMH ERROR] info.yaml에서 에셋 목록을 가져오지 못했습니다: {e}")
+        pmh_logger.error(f"info.yaml 에셋 파싱 실패: {e}")
         return []
 
-print("[PMH BOOTSTRAP] 필수 정적 에셋 무결성을 검사합니다...")
+pmh_logger.info("정적 에셋 무결성 검사를 시작합니다.")
 assets = get_static_assets_from_github()
 for asset in assets:
     download_file_if_missing(asset['url'], asset['name'])
 
 CORE_FILE_PATH = os.path.join(BASE_DIR, "pmh_core.py")
 if not os.path.exists(CORE_FILE_PATH):
-    print("[PMH BOOTSTRAP] pmh_core.py 가 존재하지 않아 GitHub에서 다운로드합니다...")
+    pmh_logger.info("pmh_core.py 다운로드 시작...")
     try:
         urllib.request.urlretrieve(CORE_URL, CORE_FILE_PATH)
-        print("[PMH BOOTSTRAP] 코어 다운로드 완료.")
+        apply_permissions(CORE_FILE_PATH)
     except Exception as e:
-        print(f"[PMH BOOTSTRAP ERROR] 코어 모듈 다운로드 실패: {e}")
+        pmh_logger.error(f"코어 모듈 다운로드 실패: {e}")
         sys.exit(1)
 
 import pmh_core
@@ -175,55 +237,36 @@ if not isinstance(FAIL2BAN_WHITELIST, list):
     FAIL2BAN_WHITELIST = [FAIL2BAN_WHITELIST]
 
 if len(API_KEY) < 8:
-    print("\n" + "!"*60)
-    print(" [PMH SECURITY FATAL] API Key 보안 취약 알림!")
-    print(" 설정된 API_KEY가 너무 짧아 무차별 대입 공격에 취약합니다.")
-    print(" 서버를 안전하게 보호하기 위해 구동을 중단합니다. pmh_config.yaml을 수정하세요.")
-    print("!"*60 + "\n")
+    pmh_logger.critical("API_KEY 길이가 너무 짧아 구동을 중단합니다. (보안 취약)")
     sys.exit(1)
 elif len(API_KEY) < 16:
-    print("\n[PMH SECURITY WARNING] API Key 길이가 16자 미만입니다. 더 강력한 키 사용을 권장합니다.")
+    pmh_logger.warning("API_KEY 길이가 16자 미만입니다. 더 강력한 키 사용을 권장합니다.")
 
-# 인메모리 Fail2Ban (연속 실패 기반 IP 차단 기록)
 FAILED_ATTEMPTS = {}
-MAX_FAILURES = 10            # 최대 허용 연속 실패 횟수
-BLOCK_TIME = 300             # 차단 유지 시간 (초 단위, 5분)
-MAX_TRACKED_IPS = 10000      # [보안] 메모리 보호를 위한 동시 추적 최대 IP 개수
-LAST_GC_TIME = time.time()   # 가비지 컬렉션 타이머
+MAX_FAILURES = 10
+BLOCK_TIME = 300
+MAX_TRACKED_IPS = 10000
+LAST_GC_TIME = time.time()
 
 def _is_ip_whitelisted(ip_addr):
     if not FAIL2BAN_WHITELIST: return False
-    
     for pattern in FAIL2BAN_WHITELIST:
         pattern = str(pattern).strip()
         if not pattern: continue
-        
-        if pattern == ip_addr: 
-            return True
-            
+        if pattern == ip_addr: return True
         if pattern.endswith("*"):
             prefix = pattern.rstrip("*")
-            if ip_addr.startswith(prefix):
-                return True
-                
+            if ip_addr.startswith(prefix): return True
     return False
 
 def _garbage_collect_failed_ips():
     if not ENABLE_FAIL2BAN: return
     global LAST_GC_TIME
     now = time.time()
-    
     if now - LAST_GC_TIME < 300: return
     LAST_GC_TIME = now
     
-    expired_ips = []
-    for ip, attempts in FAILED_ATTEMPTS.items():
-        valid_attempts = [t for t in attempts if now - t < BLOCK_TIME]
-        if not valid_attempts: 
-            expired_ips.append(ip)
-        else: 
-            FAILED_ATTEMPTS[ip] = valid_attempts
-            
+    expired_ips = [ip for ip, att in FAILED_ATTEMPTS.items() if not [t for t in att if now - t < BLOCK_TIME]]
     for ip in expired_ips:
         del FAILED_ATTEMPTS[ip]
 
@@ -237,7 +280,6 @@ def is_ip_blocked(ip_addr):
     if ip_addr in FAILED_ATTEMPTS:
         valid_attempts = [t for t in FAILED_ATTEMPTS[ip_addr] if now - t < BLOCK_TIME]
         FAILED_ATTEMPTS[ip_addr] = valid_attempts
-        
         if len(valid_attempts) >= MAX_FAILURES:
             return True
     return False
@@ -246,13 +288,10 @@ def record_failed_attempt(ip_addr):
     if not ENABLE_FAIL2BAN: return
     if _is_ip_whitelisted(ip_addr): return
     
-    now = time.time()
     if ip_addr not in FAILED_ATTEMPTS:
-        if len(FAILED_ATTEMPTS) >= MAX_TRACKED_IPS:
-            FAILED_ATTEMPTS.clear()
+        if len(FAILED_ATTEMPTS) >= MAX_TRACKED_IPS: FAILED_ATTEMPTS.clear()
         FAILED_ATTEMPTS[ip_addr] = []
-        
-    FAILED_ATTEMPTS[ip_addr].append(now)
+    FAILED_ATTEMPTS[ip_addr].append(time.time())
 
 def reset_failed_attempt(ip_addr):
     if not ENABLE_FAIL2BAN: return
@@ -268,7 +307,6 @@ def generate_secure_header(api_key):
 
 def verify_signature(signature, api_key):
     if not signature or "." not in signature: return False
-    
     try:
         req_ts_str, req_hash = signature.split('.')
         req_ts = int(req_ts_str)
@@ -279,7 +317,6 @@ def verify_signature(signature, api_key):
             
         payload = f"{api_key}:{req_ts}".encode('utf-8')
         expected_hash = hashlib.sha256(payload).hexdigest()
-        
         return hmac.compare_digest(req_hash, expected_hash)
     except Exception:
         return False
@@ -337,73 +374,43 @@ def add_header(response):
 # ==============================================================================
 def safe_download_and_replace(url, target_filepath):
     ts = int(time.time())
-    no_cache_url = f"{url}?t={ts}"
-    
-    req = urllib.request.Request(no_cache_url, headers={
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-    })
-    
-    original_uid = -1
-    original_gid = -1
-    if os.path.exists(target_filepath):
-        try:
-            stat_info = os.stat(target_filepath)
-            original_uid = stat_info.st_uid
-            original_gid = stat_info.st_gid
-        except Exception as e:
-            pass
+    req = urllib.request.Request(f"{url}?t={ts}", headers={'Cache-Control': 'no-cache'})
 
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
             raw_data = response.read()
-            
             is_binary = target_filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico'))
             is_python = target_filepath.lower().endswith('.py')
             
             if is_binary:
-                if len(raw_data) == 0:
-                    raise Exception("다운로드된 파일(바이너리)의 크기가 0바이트입니다.")
-                with open(target_filepath, 'wb') as f:
-                    f.write(raw_data)
+                if len(raw_data) == 0: raise Exception("0 bytes downloaded.")
+                with open(target_filepath, 'wb') as f: f.write(raw_data)
             else:
                 code_content = raw_data.decode('utf-8')
-                
-                if is_python:
-                    if len(code_content) < 100 or "def " not in code_content:
-                        raise Exception("다운로드된 파이썬 코드의 크기가 너무 작거나 비정상적입니다.")
-                else:
-                    if len(code_content) < 10:
-                        raise Exception(f"다운로드된 {os.path.basename(target_filepath)} 내용이 비어있습니다.")
-                
+                if is_python and (len(code_content) < 100 or "def " not in code_content):
+                    raise Exception("다운로드된 파이썬 코드 비정상.")
                 with open(target_filepath, 'w', encoding='utf-8') as f:
                     f.write(code_content)
             
-        if original_uid != -1 and original_gid != -1:
-            try:
-                os.chown(target_filepath, original_uid, original_gid)
-            except Exception as e:
-                pass
-                
-        print(f"[PMH UPDATE] ✅ 성공: {os.path.basename(target_filepath)} 업데이트 완료.")
+        apply_permissions(target_filepath)
+        pmh_logger.info(f"✅ 업데이트 완료: {os.path.basename(target_filepath)}")
         return True
         
     except Exception as e:
-        print(f"[PMH UPDATE ERROR] ❌ 실패: {os.path.basename(target_filepath)} 다운로드/덮어쓰기 오류: {e}")
+        pmh_logger.error(f"❌ 업데이트 실패 ({os.path.basename(target_filepath)}): {e}")
         raise e
 
 def background_update_task():
-    print("[PMH UPDATE BACKGROUND] 워커 스레드 종료 대기 및 코어 업데이트 시작...")
+    pmh_logger.info("워커 스레드 종료 대기 및 코어 업데이트 시작...")
     
     if DEV_MODE:
-        print("[PMH DEV] 🛠️ DEV_MODE: GitHub 다운로드를 생략하고 로컬 모듈만 리로드합니다.")
+        pmh_logger.info("🛠️ DEV_MODE: GitHub 다운로드를 생략하고 로컬 모듈만 리로드합니다.")
         try:
             importlib.reload(pmh_core)
             pmh_core.start_scheduler_daemon(global_conf)
-            print(f"[PMH DEV] 코어 모듈 리로드 완료! (v{pmh_core.get_version()})")
+            pmh_logger.info(f"코어 모듈 리로드 완료! (v{pmh_core.get_version()})")
         except Exception as e:
-            print(f"[PMH DEV FATAL] 모듈 리로드 실패: {e}")
+            pmh_logger.error(f"모듈 리로드 실패: {e}")
         return
 
     try:
@@ -411,81 +418,48 @@ def background_update_task():
         import threading
         
         active_workers = [t for t in threading.enumerate() if t.name.startswith("Worker_")]
-        max_wait = 15
-        waited = 0
+        max_wait = 15; waited = 0
         while active_workers and waited < max_wait:
-            time.sleep(1)
-            waited += 1
+            time.sleep(1); waited += 1
             active_workers = [t for t in threading.enumerate() if t.name.startswith("Worker_")]
         
         if active_workers:
-            print(f"[PMH UPDATE WARNING] ⚠️ {waited}초 대기 초과! {len(active_workers)}개의 워커를 무시하고 강제 업데이트 진행.")
-        else:
-            print("[PMH UPDATE BACKGROUND] 워커 종료 확인 완료. 다운로드 시작.")
+            pmh_logger.warning(f"⚠️ {waited}초 대기 초과! {len(active_workers)}개의 워커를 무시하고 강제 업데이트 진행.")
 
-        # ---------------------------------------------------------
-        # 1. 코어 파일 (pmh_core.py) 안전 업데이트
-        # ---------------------------------------------------------
+        # 1. 코어 파일 업데이트
         safe_download_and_replace(CORE_URL, CORE_FILE_PATH)
             
-        # ---------------------------------------------------------
-        # 2. 정적 에셋 (UI JS/CSS 등) 안전 업데이트
-        # ---------------------------------------------------------
+        # 2. 정적 에셋 업데이트
         assets = get_static_assets_from_github()
         for asset in assets:
-            asset_path = os.path.join(BASE_DIR, asset['name'])
-            try:
-                safe_download_and_replace(asset['url'], asset_path)
-            except Exception as e:
-                print(f"[PMH UPDATE WARNING] 에셋({asset['name']}) 업데이트 건너뜀: {e}")
+            try: safe_download_and_replace(asset['url'], os.path.join(BASE_DIR, asset['name']))
+            except Exception as e: pmh_logger.warning(f"에셋 건너뜀({asset['name']}): {e}")
             
-        # 코어 리로드 및 데몬 재시작
         importlib.reload(pmh_core)
         pmh_core.start_scheduler_daemon(global_conf)
-        print(f"[PMH UPDATE BACKGROUND] 🎉 코어 핫-리로드 완료! (현재 버전: v{pmh_core.get_version()})")
+        pmh_logger.info(f"🎉 코어 핫-리로드 완료! (v{pmh_core.get_version()})")
 
-        # ---------------------------------------------------------
-        # 3. 서버 자신 (pmh_server.py) 안전 업데이트
-        # ---------------------------------------------------------
-        print("[PMH UPDATE BACKGROUND] 서버 스크립트 업데이트를 시도합니다...")
-        
+        # 3. 서버 자신 업데이트
+        pmh_logger.info("서버 스크립트 업데이트를 시도합니다...")
         try:
             with open(SERVER_FILE_PATH, 'r', encoding='utf-8') as f:
                 old_server_code = f.read()
         except Exception:
             old_server_code = ""
 
-        server_original_uid = -1
-        server_original_gid = -1
-        if os.path.exists(SERVER_FILE_PATH):
-            try:
-                stat_info = os.stat(SERVER_FILE_PATH)
-                server_original_uid = stat_info.st_uid
-                server_original_gid = stat_info.st_gid
-            except: pass
-
-        ts = int(time.time())
-        req_svr = urllib.request.Request(f"{SERVER_URL}?t={ts}", headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
-        
+        req_svr = urllib.request.Request(f"{SERVER_URL}?t={int(time.time())}", headers={'Cache-Control': 'no-cache'})
         with urllib.request.urlopen(req_svr, timeout=10) as response_svr:
             new_server_code = response_svr.read().decode('utf-8')
-            
             if new_server_code != old_server_code:
                 with open(SERVER_FILE_PATH, 'w', encoding='utf-8') as f:
                     f.write(new_server_code)
-                
-                if server_original_uid != -1 and server_original_gid != -1:
-                    try:
-                        os.chown(SERVER_FILE_PATH, server_original_uid, server_original_gid)
-                    except: pass
-                    
-                print("[PMH UPDATE BACKGROUND] 🔄 서버 스크립트가 성공적으로 덮어씌워졌습니다! (반드시 파이썬 프로세스를 수동으로 재시작하세요.)")
+                apply_permissions(SERVER_FILE_PATH)
+                pmh_logger.info("🔄 서버 스크립트가 덮어씌워졌습니다. (수동 재시작 필요)")
             else:
-                print("[PMH UPDATE BACKGROUND] 서버 스크립트는 이미 최신 상태입니다. (재시작 불필요)")
+                pmh_logger.info("서버 스크립트는 이미 최신 상태입니다.")
 
     except Exception as e:
-        import traceback
-        print(f"[PMH UPDATE FATAL ERROR] 백그라운드 업데이트가 치명적 오류로 중단되었습니다:\n{traceback.format_exc()}")
+        pmh_logger.critical(f"업데이트 중 치명적 오류:\n{traceback.format_exc()}")
 
 @app.route('/api/admin/update', methods=['POST'])
 def api_admin_update():
@@ -494,39 +468,31 @@ def api_admin_update():
     
     try:
         is_ready, running_count, msg = pmh_core.check_update_readiness(BASE_DIR, force_update)
-        
         if not is_ready:
-            print(f"[PMH UPDATE] 거부됨: {msg}")
+            pmh_logger.info(f"업데이트 거부됨: {msg}")
             return jsonify({"status": "busy", "running_count": running_count, "message": msg}), 200
-
     except Exception as e:
-        print(f"[PMH UPDATE ERROR] 상태 확인 실패: {e}")
-        return jsonify({"status": "error", "message": f"코어 상태 확인 실패: {e}"}), 500
+        pmh_logger.error(f"상태 확인 실패: {e}")
+        return jsonify({"status": "error", "message": f"상태 확인 실패: {e}"}), 500
 
     import threading
     t = threading.Thread(target=background_update_task, name="PMH_Updater")
     t.daemon = True
     t.start()
-
-    return jsonify({
-        "status": "success", 
-        "message": "Update process started in background.",
-        "version": pmh_core.get_version()
-    })
+    return jsonify({"status": "success", "message": "Update started in background.", "version": pmh_core.get_version()})
 
 @app.route('/api/admin/reload_core', methods=['POST'])
 def api_admin_reload_core():
     global cfg, BASE_CFG, MASTER_CFG, IS_MASTER, DEV_MODE, API_KEY
     global ENABLE_FAIL2BAN, FAIL2BAN_WHITELIST, global_conf, NODE_INFO_CACHE
+    global PUID, PGID
     
     try:
         is_ready, running_count, msg = pmh_core.check_update_readiness(BASE_DIR, force_update=False)
-        
         if not is_ready:
-            print(f"[PMH RELOAD] 거부됨: {msg}")
             return jsonify({"status": "error", "running_count": running_count, "message": msg}), 200
             
-        print("[PMH RELOAD] 1. pmh_config.yaml 설정을 다시 불러옵니다...")
+        pmh_logger.info("1. 설정 재로드 및 로거 적용...")
         try:
             cfg = load_config()
             BASE_CFG = cfg.get("BASE", {})
@@ -535,12 +501,16 @@ def api_admin_reload_core():
             DEV_MODE = BASE_CFG.get("DEV_MODE", False)
             API_KEY = BASE_CFG.get("APIKEY", "")
             
+            PUID = int(BASE_CFG.get("PUID", -1))
+            PGID = int(BASE_CFG.get("PGID", -1))
+            setup_logger()
+
             ENABLE_FAIL2BAN = BASE_CFG.get("ENABLE_FAIL2BAN", True)
             FAIL2BAN_WHITELIST = BASE_CFG.get("FAIL2BAN_WHITELIST", [])
-            if not isinstance(FAIL2BAN_WHITELIST, list):
-                FAIL2BAN_WHITELIST = [FAIL2BAN_WHITELIST]
+            if not isinstance(FAIL2BAN_WHITELIST, list): FAIL2BAN_WHITELIST = [FAIL2BAN_WHITELIST]
 
             global_conf.update({
+                "puid": PUID, "pgid": PGID,
                 "plex_db_path": BASE_CFG.get("PLEX_DB_PATH", ""),
                 "plex_url": BASE_CFG.get("PLEX_URL", ""),
                 "plex_token": BASE_CFG.get("PLEX_TOKEN", ""),
@@ -556,54 +526,74 @@ def api_admin_reload_core():
                 "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
                 "is_master": IS_MASTER
             })
-            
             NODE_INFO_CACHE.clear()
-            print("[PMH RELOAD] 설정 파일(YAML) 반영 완료.")
         except Exception as cfg_err:
-            print(f"[PMH RELOAD WARNING] 설정 파일 다시 읽기 실패 (기존 설정 유지): {cfg_err}")
+            pmh_logger.warning(f"설정 갱신 실패 (기존 유지): {cfg_err}")
 
-        print("[PMH RELOAD] 2. pmh_core.py 모듈 리로드를 시작합니다...")
-        
+        pmh_logger.info("2. 모듈 리로드 시작...")
         if hasattr(pmh_core, 'stop_scheduler_daemon'):
             pmh_core.stop_scheduler_daemon()
             time.sleep(1.0)
             
         importlib.reload(pmh_core)
-        
         pmh_core.start_scheduler_daemon(global_conf)
         
-        print(f"[PMH RELOAD] ✅ 설정 및 코어 리로드 완료! (v{pmh_core.get_version()})")
-        return jsonify({"status": "success", "message": "설정 및 코어 모듈 리로드 완료"}), 200
-        
+        pmh_logger.info(f"✅ 리로드 완료! (v{pmh_core.get_version()})")
+        return jsonify({"status": "success", "message": "모듈 리로드 완료"}), 200
     except Exception as e:
-        print(f"[PMH RELOAD ERROR] 리로드 실패: {e}")
+        pmh_logger.error(f"리로드 실패: {e}")
         return jsonify({"status": "error", "message": f"리로드 실패: {e}"}), 500
 
+@app.route('/api/admin/config', methods=['GET', 'POST'])
+def api_admin_config():
+    if request.method == 'GET':
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return jsonify({"status": "success", "yaml": content}), 200
+        except Exception as e:
+            return jsonify({"error": f"설정 파일을 읽을 수 없습니다: {e}"}), 500
+
+    if request.method == 'POST':
+        req_data = request.get_json() if request.is_json else {}
+        yaml_text = req_data.get('yaml', '')
+        if not yaml_text: return jsonify({"error": "내용이 비어있습니다."}), 400
+        
+        try:
+            parsed = yaml.safe_load(yaml_text)
+            if not isinstance(parsed, dict) or "BASE" not in parsed:
+                return jsonify({"error": "잘못된 구조. 'BASE' 노드가 필수입니다."}), 400
+        except Exception as e:
+            return jsonify({"error": f"문법 오류:\n{e}"}), 400
+
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                f.write(yaml_text)
+            apply_permissions(CONFIG_FILE)
+            pmh_logger.info("관리자 UI를 통해 pmh_config.yaml 수정됨.")
+            return jsonify({"status": "success", "message": "저장 완료"}), 200
+        except Exception as e:
+            return jsonify({"error": f"파일 저장 실패: {e}"}), 500
+            
+    return jsonify({"error": "Method Not Allowed"}), 405
+
 # ==============================================================================
-# 프론트엔드 클라이언트 초기화 동기화 라우팅
+# 프론트엔드 클라이언트 라우팅
 # ==============================================================================
 NODE_INFO_CACHE = {}
 
 @app.route('/api/client/config', methods=['GET'])
 def get_client_config():
-    if not IS_MASTER:
-        return jsonify({"error": "이 서버는 Master 노드가 아닙니다."}), 400
+    if not IS_MASTER: return jsonify({"error": "Master 노드가 아닙니다."}), 400
     
-    servers = [{
-        "id": "master_node",
-        "name": "1.MAIN (Master)",
-        "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", "")
-    }]
-    
+    servers = [{"id": "master_node", "name": "1.MAIN (Master)", "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", "")}]
     nodes = MASTER_CFG.get("NODES") or []
     
     for node in nodes:
         node_id = node.get("id", "")
-        plex_machine_id = ""
+        plex_machine_id = NODE_INFO_CACHE.get(node_id, "")
         
-        if node_id in NODE_INFO_CACHE:
-            plex_machine_id = NODE_INFO_CACHE[node_id]
-        else:
+        if not plex_machine_id:
             try:
                 import json
                 req = urllib.request.Request(f"{node['url'].rstrip('/')}/api/ping", headers={"X-API-Key": node['apikey']})
@@ -612,15 +602,9 @@ def get_client_config():
                     plex_machine_id = data.get("machine_id", "")
                     NODE_INFO_CACHE[node_id] = plex_machine_id
             except Exception as e:
-                print(f"[PMH MASTER] 워커 노드({node.get('name')}) 정보 자동 조회 실패: {e}")
+                pmh_logger.debug(f"워커({node.get('name')}) 핑 실패: {e}")
         
-        servers.append({
-            "id": node_id,
-            "name": node.get("name", ""),
-            "machine_id": plex_machine_id
-        })
-
-    print(f"[PMH MASTER] 프론트엔드 설정 동기화 요청 처리 (노드 수: {len(servers)})")
+        servers.append({"id": node_id, "name": node.get("name", ""), "machine_id": plex_machine_id})
 
     return jsonify({
         "status": "success",
@@ -634,8 +618,7 @@ UPDATE_INFO_CACHE = {"data": None, "timestamp": 0}
 
 @app.route('/api/master/check_update', methods=['GET'])
 def check_update_from_github():
-    if not IS_MASTER:
-        return jsonify({"error": "이 서버는 Master 노드가 아닙니다."}), 400
+    if not IS_MASTER: return jsonify({"error": "Master 노드가 아닙니다."}), 400
 
     force = request.args.get('force', 'false').lower() == 'true'
     now = time.time()
@@ -649,41 +632,27 @@ def check_update_from_github():
             main_info = yaml.safe_load(response.read().decode('utf-8'))
 
         latest_version = main_info.get('version', '0.0.0')
-        bundled_tools_raw = main_info.get('bundled_tools', [])
-        
         parsed_bundles = []
-        for bundle in bundled_tools_raw:
-            bundle_url = bundle.get('url', '')
-            bundle_id = bundle.get('id', '')
-            if not bundle_url: continue
+        for bundle in main_info.get('bundled_tools', []):
+            b_url = bundle.get('url', '')
+            b_id = bundle.get('id', '')
+            if not b_url: continue
             
-            bundle_meta = {}
+            b_meta = {}
             try:
-                b_req = urllib.request.Request(f"{bundle_url}?t={int(now)}", headers={'Cache-Control': 'no-cache'})
+                b_req = urllib.request.Request(f"{b_url}?t={int(now)}", headers={'Cache-Control': 'no-cache'})
                 with urllib.request.urlopen(b_req, timeout=5) as b_resp:
-                    bundle_meta = yaml.safe_load(b_resp.read().decode('utf-8'))
-            except Exception as e:
-                print(f"[PMH UPDATE] 번들 툴({bundle_id}) 메타 파싱 실패 (무시됨): {e}")
+                    b_meta = yaml.safe_load(b_resp.read().decode('utf-8'))
+            except Exception: pass
 
-            parsed_bundles.append({
-                "id": bundle_id,
-                "url": bundle_url,
-                "meta": bundle_meta
-            })
+            parsed_bundles.append({"id": b_id, "url": b_url, "meta": b_meta})
 
-        result_data = {
-            "status": "success",
-            "latest_version": latest_version,
-            "bundled_tools": parsed_bundles
-        }
-
-        UPDATE_INFO_CACHE["data"] = result_data
+        res_data = {"status": "success", "latest_version": latest_version, "bundled_tools": parsed_bundles}
+        UPDATE_INFO_CACHE["data"] = res_data
         UPDATE_INFO_CACHE["timestamp"] = now
-
-        return jsonify(result_data), 200
-
+        return jsonify(res_data), 200
     except Exception as e:
-        print(f"[PMH UPDATE ERROR] 업데이트 정보 파싱 실패: {e}")
+        pmh_logger.error(f"GitHub 정보 파싱 실패: {e}")
         return jsonify({"error": "GitHub 파싱 실패", "message": str(e)}), 500
 
 # ==============================================================================
@@ -696,40 +665,32 @@ def relay_to_node(node_id, subpath):
         raw_body = request.get_data()
     
     if not IS_MASTER:
-        return jsonify({"error": "이 서버는 마스터 노드가 아닙니다. 릴레이 기능이 비활성화되어 있습니다."}), 400
+        return jsonify({"error": "마스터 노드가 아닙니다."}), 400
 
     if node_id in ["master_node", "self"]:
-        if subpath == 'admin/update':
-            return api_admin_update()
-        elif subpath == 'admin/reload_core':
-            return api_admin_reload_core()
-        elif subpath.startswith('mate/'):
-            return api_gateway(subpath)
-        else:
-            return api_gateway(subpath)
+        if subpath == 'admin/update': return api_admin_update()
+        elif subpath == 'admin/reload_core': return api_admin_reload_core()
+        elif subpath == 'admin/config': return api_admin_config()
+        return api_gateway(subpath)
 
     nodes = MASTER_CFG.get("NODES") or []
     node_info = next((n for n in nodes if n.get("id") == node_id), None)
-
-    if not node_info:
-        return jsonify({"error": f"등록되지 않은 노드입니다 (ID: {node_id})"}), 404
+    if not node_info: return jsonify({"error": f"등록되지 않은 노드({node_id})"}), 404
 
     target_url = f"{node_info['url'].rstrip('/')}/api/{subpath}"
     qs = request.query_string.decode('utf-8')
     if qs: target_url += f"?{qs}"
 
-    secure_token = generate_secure_header(node_info['apikey'])
-    
-    headers = { "X-PMH-Signature": secure_token }
+    headers = { "X-PMH-Signature": generate_secure_header(node_info['apikey']) }
     content_type = request.headers.get("Content-Type")
     if content_type: headers["Content-Type"] = content_type
 
     req_data = raw_body if raw_body else None
-    if req_data:
-        headers['Content-Length'] = str(len(req_data))
+    if req_data: headers['Content-Length'] = str(len(req_data))
 
-    if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('/run')):
-        print(f"[PMH RELAY] 🚀 {request.method} -> {node_info['name']} ({target_url})")
+    is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('active_queues')
+    if not is_silent:
+        pmh_logger.debug(f"🚀 Relay [{request.method}] -> {node_info['name']} ({target_url})")
 
     try:
         req = urllib.request.Request(target_url, data=req_data, headers=headers, method=request.method)
@@ -743,23 +704,11 @@ def relay_to_node(node_id, subpath):
 
     except urllib.error.HTTPError as e:
         try:
-            err_body = e.read().decode('utf-8')
-            import json
-            resp = make_response(jsonify(json.loads(err_body)))
-            resp.status_code = e.code
-            return resp
-        except Exception:
-            resp = make_response(jsonify({"error": f"워커 노드 에러 (HTTP {e.code})"}))
-            resp.status_code = e.code
-            return resp
-    except urllib.error.URLError as e:
-        resp = make_response(jsonify({"error": f"네트워크 연결 실패: {str(e)}"}))
-        resp.status_code = 502
-        return resp
+            resp = make_response(jsonify(importlib.import_module('json').loads(e.read().decode('utf-8'))))
+            resp.status_code = e.code; return resp
+        except Exception: return make_response(jsonify({"error": f"HTTP {e.code}"})), e.code
     except Exception as e:
-        resp = make_response(jsonify({"error": f"워커 노드 통신 실패: {str(e)}"}))
-        resp.status_code = 502
-        return resp
+        return make_response(jsonify({"error": f"통신 실패: {str(e)}"})), 502
 
 @app.route('/')
 def serve_index():
@@ -767,26 +716,12 @@ def serve_index():
     if os.path.exists(path): return send_file(path, mimetype='text/html')
     return "Not Found", 404
 
-assets = get_static_assets_from_github()
-for asset in assets:
-    file_path = os.path.join(BASE_DIR, asset['name'])
-    if not os.path.exists(file_path):
-        print(f"[PMH BOOTSTRAP] {asset['name']} 다운로드 중...")
-        try:
-            urllib.request.urlretrieve(asset['url'], file_path)
-        except Exception as e:
-            print(f" -> 실패: {e}")
-
 @app.route('/api/client/<filename>')
 def serve_static_client(filename):
-    if ".." in filename or not (filename.endswith('.js') or filename.endswith('.css') or filename.endswith('.png')):
-        return "Unauthorized Request", 403
-    
+    if ".." in filename or not filename.endswith(('.js', '.css', '.png')): return "Unauthorized", 403
     path = os.path.join(BASE_DIR, filename)
     if os.path.exists(path):
-        if filename.endswith('.css'): mime = 'text/css'
-        elif filename.endswith('.png'): mime = 'image/png'
-        else: mime = 'application/javascript'
+        mime = 'text/css' if filename.endswith('.css') else 'image/png' if filename.endswith('.png') else 'application/javascript'
         return Response(open(path, 'rb').read(), mimetype=mime)
     return "Not Found", 404
 
@@ -796,26 +731,20 @@ def api_gateway(subpath):
     if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
         raw_body = request.get_data()
     
-    method = request.method
-    args = request.args.to_dict()
-    
     json_data = {}
-    if method in ['POST', 'PUT'] and raw_body:
+    if request.method in ['POST', 'PUT'] and raw_body:
         import json
-        try:
-            json_data = json.loads(raw_body.decode('utf-8'))
-        except Exception:
-            pass
+        try: json_data = json.loads(raw_body.decode('utf-8'))
+        except Exception: pass
 
-    if not (subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('/run')):
-        print(f"[PMH API] 💻 {method} /{subpath}")
+    is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('active_queues')
+    if not is_silent:
+        pmh_logger.debug(f"💻 API [{request.method}] /{subpath}")
+        pmh_logger.debug(f"Payload: {json_data}")
 
     result, status_code = pmh_core.dispatch_request(
-        subpath=subpath,
-        method=method,
-        args=args,
-        data=json_data,
-        global_config=global_conf
+        subpath=subpath, method=request.method, args=request.args.to_dict(), 
+        data=json_data, global_config=global_conf
     )
     
     resp = make_response(jsonify(result))
@@ -824,20 +753,17 @@ def api_gateway(subpath):
     return resp
 
 if __name__ == '__main__':
-    tz_info = time.strftime('%z (%Z)')
     print("\n" + "="*60)
     print(" 🚀 PMH API Server Initialized")
     print("="*60)
-    mode_text = "MASTER (Gateway Enabled)" if IS_MASTER else "WORKER NODE (Standalone)"
-    print(f" [ Mode ] {mode_text}")
-    if DEV_MODE:
-        print(" [ Dev  ] ⚠️ DEV_MODE = True (GitHub 자동 업데이트 무시됨)")
-    else:
-        print(" [ Dev  ] False (GitHub 자동 업데이트 활성화됨)")
-    print(f" [ Core ] Loaded v{pmh_core.get_version()}")
-    print(f" [ Time ] Timezone: {tz_info}")
-    print(f" [ Port ] Listening on {SERVER_PORT}")
+    print(f" [ Mode ] {'MASTER' if IS_MASTER else 'WORKER NODE'}")
+    print(f" [ Env  ] {BASE_CFG.get('ENV_TYPE', 'standalone').upper()}")
+    print(f" [ Dev  ] {'ON' if DEV_MODE else 'OFF'}")
+    print(f" [ Core ] v{pmh_core.get_version()}")
+    print(f" [ Time ] {time.strftime('%z (%Z)')}")
+    print(f" [ Port ] {SERVER_PORT}")
     print(f" [ DB   ] {BASE_CFG.get('PLEX_DB_PATH', 'Not Set')}")
+    print(f" [ PUID ] {PUID} / PGID: {PGID}")
     print("="*60 + "\n")
     
     app.run(host='0.0.0.0', port=SERVER_PORT)
