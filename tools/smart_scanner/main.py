@@ -125,6 +125,16 @@ def get_ui(core_api):
             {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
         ],
         "settings_inputs": [
+            {"id": "s_h_filter", "type": "header", "label": "<i class='fas fa-filter'></i> 전역 필터링 설정"},
+            {"id": "fixed_filter_cron_only", "type": "checkbox", "label": "자동 스케줄러(Cron) 실행 시에만 고정 필터 적용 (수동 조회 시 무시)", "default": False},
+            {"id": "fixed_filter_fields", "type": "multi_select", "label": "고정 필터 적용 필드", "options": [
+                {"value": "guid", "text": "에이전트 (GUID)"},
+                {"value": "title", "text": "제목 (Title)"},
+                {"value": "path", "text": "파일/폴더 경로 (Path)"}
+            ], "default": ["guid", "title"]},
+            {"id": "fixed_filter_include", "type": "textarea", "label": "고정 포함 키워드 (한 줄에 하나씩 입력)", "height": 80, "placeholder": "예: marvel\nregex||^\\[sod\\]"},
+            {"id": "fixed_filter_exclude", "type": "textarea", "label": "고정 제외 키워드 (한 줄에 하나씩 입력)", "height": 80, "placeholder": "예: sjva_agent://\nregex||\\.mp4$"},
+
             {"id": "s_h1", "type": "header", "label": "<i class='fas fa-tachometer-alt'></i> 실행 속도 제어"},
             {"id": "sleep_time", "type": "number", "label": "항목 처리 후 대기 시간 (단위: 초)", "default": 2},
             {"id": "s_h_cron", "type": "header", "label": "<i class='fas fa-clock'></i> 자동 실행 스케줄러"},
@@ -167,40 +177,53 @@ def get_ui(core_api):
 def get_target_issues(req_data, core_api, task=None):
     target_sections = req_data.get('target_sections', [])
     
+    # 1. 1회성 임시 필터 (조회 탭)
     ui_filter_fields = req_data.get('filter_fields', ['guid', 'title'])
-    filter_include = req_data.get('filter_include', '').strip()
-    filter_exclude = req_data.get('filter_exclude', '').strip()
+    filter_include_raw = req_data.get('filter_include', '')
+    filter_exclude_raw = req_data.get('filter_exclude', '')
     
-    # 구조체 형태: {'is_regex': bool, 'pattern': object/string}
-    inc_rule, exc_rule = None, None
+    # 2. 고정 전역 필터 (환경설정 탭)
+    fixed_filter_cron_only = req_data.get('fixed_filter_cron_only', False)
+    fixed_filter_fields = req_data.get('fixed_filter_fields', ['guid', 'title'])
+    fixed_filter_include_raw = req_data.get('fixed_filter_include', '')
+    fixed_filter_exclude_raw = req_data.get('fixed_filter_exclude', '')
+    is_cron_run = req_data.get('_is_cron', False)
 
-    def _parse_ui_filter(raw_text):
-        if not raw_text: return None
-        is_rx = False
-        lower_txt = raw_text.lower()
-        if lower_txt.startswith('regex||'):
-            is_rx = True
-            raw_text = raw_text[7:].strip()
-        elif lower_txt.startswith('plain||'):
-            raw_text = raw_text[7:].strip()
-        elif lower_txt.startswith('text||'):
-            raw_text = raw_text[6:].strip()
+    # 텍스트 파싱 헬퍼 (다중 라인/단일 라인 모두 지원)
+    def _parse_filter_text(raw_text):
+        rules = []
+        for line in str(raw_text).splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'): continue
             
-        if not raw_text: return None
-        
-        try:
-            if is_rx:
-                return {'is_regex': True, 'pattern': re.compile(raw_text, re.IGNORECASE)}
+            is_rx = False
+            lower_line = line.lower()
+            if lower_line.startswith('regex||'):
+                is_rx = True
+                val = line[7:].strip()
+            elif lower_line.startswith('plain||') or lower_line.startswith('text||'):
+                val = line.split('||', 1)[1].strip()
             else:
-                return {'is_regex': False, 'pattern': raw_text.lower()}
-        except Exception: return None
+                val = line
+                
+            if not val: continue
+            
+            try:
+                if is_rx: rules.append({'is_regex': True, 'pattern': re.compile(val, re.IGNORECASE)})
+                else: rules.append({'is_regex': False, 'pattern': val.lower()})
+            except Exception as e:
+                if task: task.log(f"⚠️ 필터 정규식 오류 무시됨 ('{val}'): {e}")
+        return rules
 
-    inc_rule = _parse_ui_filter(filter_include)
-    exc_rule = _parse_ui_filter(filter_exclude)
+    ui_inc_rules = _parse_filter_text(filter_include_raw)
+    ui_exc_rules = _parse_filter_text(filter_exclude_raw)
+    
+    fixed_inc_rules = _parse_filter_text(fixed_filter_include_raw)
+    fixed_exc_rules = _parse_filter_text(fixed_filter_exclude_raw)
 
-    base_dir = core_api['config'].get('base_dir', '')
-    current_tool_id = core_api['task'].tool_id if task else "smart_scanner"
-    compiled_yaml_filters = pmh_core.compile_yaml_filters(base_dir, current_tool_id, core_api['task'].log)
+    apply_fixed_filters = True
+    if fixed_filter_cron_only and not is_cron_run:
+        apply_fixed_filters = False
 
     opts = {
         'analyze': req_data.get('opt_analyze', True),
@@ -411,34 +434,46 @@ def get_target_issues(req_data, core_api, task=None):
                         guid_val = str(r[6] or "")
                         f_path_val = str(f_path or "")
 
-                        # 타이틀 생성
                         display_title = ""
                         if m_type == 1: display_title = format_title(r)
                         elif m_type in (2, 3, 8, 9): display_title = format_title(r, is_parent=True)
                         elif m_type in (4, 10): display_title = format_title(r, is_episode=True)
 
-                        # [1] YAML 파일 필터 검사
-                        is_cron_run = req_data.get('_is_cron', False)
-                        text_dict = {'guid': guid_val, 'title': display_title, 'path': f_path_val}
-                        if not pmh_core.check_yaml_filter(text_dict, compiled_yaml_filters, is_cron=is_cron_run):
-                            continue
+                        # [필터 로직] - 고정 필터(Settings)와 임시 필터(Inputs) 각각 독립 적용
+                        def _get_texts(fields):
+                            texts = []
+                            if 'guid' in fields and guid_val: texts.append(guid_val)
+                            if 'title' in fields and display_title: texts.append(display_title)
+                            if 'path' in fields and f_path_val: texts.append(f_path_val)
+                            return texts
 
-                        # [2] UI 입력 폼 필터 검사
-                        if inc_rule or exc_rule:
-                            ui_texts = []
-                            if 'guid' in ui_filter_fields and guid_val: ui_texts.append(guid_val)
-                            if 'title' in ui_filter_fields and display_title: ui_texts.append(display_title)
-                            if 'path' in ui_filter_fields and f_path_val: ui_texts.append(f_path_val)
-
-                            def _ui_match(rule, texts):
+                        def _is_match(rules, texts):
+                            for rule in rules:
                                 if rule['is_regex']:
-                                    return any(rule['pattern'].search(txt) for txt in texts)
+                                    if any(rule['pattern'].search(txt) for txt in texts): return True
                                 else:
-                                    return any(rule['pattern'] in txt.lower() for txt in texts)
+                                    if any(rule['pattern'] in txt.lower() for txt in texts): return True
+                            return False
 
-                            if inc_rule and not _ui_match(inc_rule, ui_texts): continue
-                            if exc_rule and _ui_match(exc_rule, ui_texts): continue
+                        skip_item = False
                         
+                        # 1. 고정 필터 검사 (적용 대상일 때만)
+                        if apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules):
+                            fixed_texts = _get_texts(fixed_filter_fields)
+                            if fixed_inc_rules and not _is_match(fixed_inc_rules, fixed_texts): skip_item = True
+                            if fixed_exc_rules and _is_match(fixed_exc_rules, fixed_texts): skip_item = True
+
+                        if skip_item: continue
+
+                        # 2. 수동 임시 필터 검사
+                        if ui_inc_rules or ui_exc_rules:
+                            ui_texts = _get_texts(ui_filter_fields)
+                            if ui_inc_rules and not _is_match(ui_inc_rules, ui_texts): skip_item = True
+                            if ui_exc_rules and _is_match(ui_exc_rules, ui_texts): skip_item = True
+                            
+                        if skip_item: continue
+                        
+                        # 대상 추가
                         if m_type == 1:
                             display_title = format_title(r)
                             add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk)
