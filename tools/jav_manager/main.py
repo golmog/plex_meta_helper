@@ -986,6 +986,8 @@ def worker(task_data, core_api, start_index):
 
     history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'jav_manager_poster_history.db')
 
+    processed_pids = set()
+
     try:
         for item in pending_items:
             if task.is_cancelled():
@@ -1014,7 +1016,17 @@ def worker(task_data, core_api, start_index):
                     continue
 
                 safe_endpoint = f"/library/metadata/{item_id}"
-                plex_item = plex.fetchItem(safe_endpoint)
+                
+                try:
+                    plex_item = plex.fetchItem(safe_endpoint)
+                except Exception as fetch_e:
+                    err_str = str(fetch_e).lower()
+                    if "404" in err_str or "not found" in err_str or "not_found" in err_str:
+                        task.log("  -> ✅ 이미 삭제되거나 다른 항목으로 병합되었습니다. (정상 완료 처리)")
+                        core_api['cache'].mark_keys_as_done('id', [item_id])
+                        continue
+                    else:
+                        raise fetch_e
                 
                 if op_action == 'split':
                     if len(plex_item.media) > 1:
@@ -1040,6 +1052,22 @@ def worker(task_data, core_api, start_index):
                     use_custom = task_data.get('opt_use_custom_score', False)
                     custom_score = task_data.get('opt_custom_agent_score', 90)
                     search_pri = task_data.get('opt_search_priority', 'auto')
+
+                    if mode == 'dupes':
+                        match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', title)
+                        pid = normalize_pid(match.group(1)) if match else None
+                        
+                        if pid:
+                            if pid in processed_pids:
+                                #task.log("  -> 📦 [중복 그룹] 선행 항목의 메타(JSON) 유실 방지를 위해 파일 삭제를 생략하고 즉시 병합을 시도합니다.")
+                                if do_unm:
+                                    try:
+                                        plex_item.unmatch()
+                                        time.sleep(1.0)
+                                    except: pass
+                                do_unm = False 
+                            else:
+                                processed_pids.add(pid)
 
                     success, msg, score = pmh_core.perform_smart_media_action(
                         plex_url=plex._baseurl, 
