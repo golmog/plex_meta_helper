@@ -28,7 +28,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.109"
+__version__ = "0.8.110"
 
 logger = logging.getLogger("PMH")
 
@@ -51,6 +51,7 @@ def apply_permissions(filepath, config):
 GLOBAL_DASHBOARD_CACHE = {
     "running": [],
     "cron": [],
+    "completed_items": {},
     "last_updated": 0
 }
 
@@ -345,6 +346,17 @@ def _update_dashboard_cache(tools_dir, task_logs_dir, base_dir):
                         "progress": t_state.get('progress', 0), "total": t_state.get('total', 0)
                     })
                     
+                popped = mgr.pop_completed_items()
+                if popped:
+                    if "completed_items" not in GLOBAL_DASHBOARD_CACHE:
+                        GLOBAL_DASHBOARD_CACHE["completed_items"] = {}
+                    if s_id not in GLOBAL_DASHBOARD_CACHE["completed_items"]:
+                        GLOBAL_DASHBOARD_CACHE["completed_items"][s_id] = []
+                    
+                    for p in popped:
+                        if p not in GLOBAL_DASHBOARD_CACHE["completed_items"][s_id]:
+                            GLOBAL_DASHBOARD_CACHE["completed_items"][s_id].append(p)
+
         elif f_name.endswith('_options.db'):
             parts = f_name[:-11].rsplit('_', 1)
             if len(parts) == 2:
@@ -418,7 +430,7 @@ def _execute_scheduled_tasks(global_config, now):
                 req_data['action_type'] = 'execute'
                 req_data['_is_cron'] = True
                 
-                data_mgr = CoreDataManager(base_dir, tool_id, server_id)
+                data_mgr = CoreDataManager(base_dir, tool_id, server_id, task_mgr=task_mgr)
                 
                 db_api = create_db_api(db_path, sqlite_bin)
                 
@@ -894,9 +906,32 @@ class CoreTaskManager:
             c = conn.cursor()
             c.execute("CREATE TABLE IF NOT EXISTS task_info (state TEXT, progress INTEGER, total INTEGER, task_data TEXT)")
             c.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, log_text TEXT)")
+            c.execute("CREATE TABLE IF NOT EXISTS completed_items (item_id TEXT)")
             c.execute("SELECT count(*) FROM task_info")
             if c.fetchone()[0] == 0:
                 c.execute("INSERT INTO task_info (state, progress, total, task_data) VALUES ('completed', 0, 0, '{}')")
+
+    def push_completed_item(self, item_id):
+        with self._lock:
+            self._setup_db()
+            try:
+                with self._get_conn() as conn:
+                    conn.execute("INSERT INTO completed_items (item_id) VALUES (?)", (str(item_id),))
+            except: pass
+
+    def pop_completed_items(self):
+        with self._lock:
+            if not os.path.exists(self.db_file): return []
+            try:
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT DISTINCT item_id FROM completed_items")
+                    rows = c.fetchall()
+                    items = [r['item_id'] for r in rows]
+                    if items:
+                        c.execute("DELETE FROM completed_items")
+                    return items
+            except: return []
 
     def load(self, include_target_items=False):
         with self._lock:
@@ -941,6 +976,7 @@ class CoreTaskManager:
             with self._get_conn() as conn:
                 c = conn.cursor()
                 c.execute("DELETE FROM logs")
+                c.execute("DELETE FROM completed_items")
                 c.execute("UPDATE task_info SET state='running', progress=0, total=?, task_data=?", 
                           (task_data.get('total', 0), json.dumps(task_data, ensure_ascii=False)))
                 c.execute("INSERT INTO logs (log_text) VALUES ('작업을 시작합니다...')")
@@ -990,8 +1026,9 @@ class CoreTaskManager:
 # [코어 데이터 캐시 관리자]
 # ==============================================================================
 class CoreDataManager:
-    def __init__(self, base_dir, tool_id, server_id="default"):
+    def __init__(self, base_dir, tool_id, server_id="default", task_mgr=None):
         self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_cache.db")
+        self.task_mgr = task_mgr
         os.makedirs(os.path.dirname(self.db_file), exist_ok=True)
         self._lock = threading.Lock()
 
@@ -1160,6 +1197,9 @@ class CoreDataManager:
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
                 if c.fetchone()[0] == 1:
                     c.execute(f"UPDATE data SET pmh_status = 'done' WHERE \"{key_column}\" = ?", (str(key_value),))
+                    
+        if getattr(self, 'task_mgr', None):
+            self.task_mgr.push_completed_item(str(key_value))
 
     def mark_as_error(self, key_column, key_value):
         with self._lock:
@@ -1194,6 +1234,10 @@ class CoreDataManager:
                     c.execute(f'UPDATE data SET pmh_status = "done" WHERE "{key_column}" IN ({placeholders})', keys_list)
                 except Exception as e:
                     logger.error(f"[DB] mark_keys_as_done 실패: {e}")
+                    
+        if getattr(self, 'task_mgr', None):
+            for k in keys_list:
+                self.task_mgr.push_completed_item(k)
 
     def remove_item_by_pmh_id(self, pmh_id):
         with self._lock:
@@ -1554,13 +1598,16 @@ def dispatch_request(subpath, method, args, data, global_config):
                         logger.error(f"info.yaml 파싱 실패 {info_path}: {e}")
                         
             global GLOBAL_DASHBOARD_CACHE
-            return {
+            res_data = {
                 "tools": installed_tools, 
                 "dashboard": {
                     "running": GLOBAL_DASHBOARD_CACHE.get("running", []),
-                    "cron": GLOBAL_DASHBOARD_CACHE.get("cron", [])
+                    "cron": GLOBAL_DASHBOARD_CACHE.get("cron", []),
+                    "completed_items": GLOBAL_DASHBOARD_CACHE.get("completed_items", {})
                 }
-            }, 200
+            }
+            GLOBAL_DASHBOARD_CACHE["completed_items"] = {}
+            return res_data, 200
 
         elif subpath == 'tools/install' and method == 'POST':
             yaml_url = data.get('url')
@@ -1661,7 +1708,7 @@ def dispatch_request(subpath, method, args, data, global_config):
             db_api = create_db_api(current_opts['db_path'], current_opts['sqlite_bin'])
             
             task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
-            data_mgr = CoreDataManager(base_dir, tool_id, server_id)
+            data_mgr = CoreDataManager(base_dir, tool_id, server_id, task_mgr=task_mgr)
 
             cfg_plex_url = global_config.get("plex_url", "")
             cfg_plex_token = global_config.get("plex_token", "")
@@ -2028,7 +2075,7 @@ def normalize_pid_for_comparison(pid_str):
         label_part, num_part = pid_str.split('-', 1)
         norm_label = label_part.lower()
         if not norm_label.startswith("741"):
-            stripped = norm_label.lstrip('0123456789')
+            stripped = norm_label.lstrip('0')
             if stripped and not norm_label.isdigit(): norm_label = stripped
             
         num_match = re.match(r"([\d_-]+)([a-z]*)?$", num_part.lower())
@@ -2243,8 +2290,13 @@ def perform_smart_media_action(
     try:
         item = execute_plex_action_safe(lambda: plex_inst.fetchItem(ekey))
     except Exception as e:
-        if task_logger: task_logger(f"❌ Plex 항목 조회 실패: {e}")
-        return False, "Plex 항목을 조회할 수 없습니다.", 0
+        err_str = str(e).lower()
+        if "404" in err_str or "not_found" in err_str or "not found" in err_str:
+            if task_logger: task_logger("✅ 항목이 이미 삭제되었거나 다른 항목으로 병합되었습니다. (목록에서 제외)")
+            return True, "이미 병합/삭제된 항목", 100
+        else:
+            if task_logger: task_logger(f"❌ Plex 항목 조회 실패: {e}")
+            return False, f"Plex 항목을 조회할 수 없습니다 ({e}).", 0
     
     target_item = item
     if action_type in ['match', 'refresh', 'yaml_refresh'] and item.type in ['episode', 'season', 'track', 'album']:

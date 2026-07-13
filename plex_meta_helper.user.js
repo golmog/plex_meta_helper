@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.109
+// @version      0.8.110
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -343,7 +343,7 @@ GM_addStyle(`
         }
         if (el.classList.contains('plex-path-scan-link')) {
             return isShift 
-                ? "<span class='hl'><i class='fas fa-hdd'></i> VFS 갱신 + 스캔 (Shift+클릭)</span>\n<span style='color:#999;'>VFS/Refresh 후 경로 스캔</span>"
+                ? "<span class='hl'><i class='fas fa-hdd'></i> VFS/Refresh + 스캔 (Shift+클릭)</span>\n<span style='color:#999;'>VFS/Refresh 후 경로 스캔</span>"
                 : "<span style='color:#2f96b4;'><i class='fas fa-search'></i> 경로 스캔 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 VFS/Refresh 후 스캔)</span>";
         }
         if (el.classList.contains('plex-guid-list-box')) {
@@ -1635,7 +1635,7 @@ GM_addStyle(`
             const fontWeight = isLast ? 'normal' : 'normal';
             const clickType = isLast ? itemType : 'directory';
 
-            html += `<a href="#" class="plex-path-scan-link" data-path="${currentAccumulatedPath}" data-section-id="${sectionId}" data-type="${clickType}" title="클릭: 단순 스캔 / Shift+클릭: VFS 갱신 후 스캔" style="color:${color}; font-weight:${fontWeight}; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='${color}'; this.style.textDecoration='none';">${seg}</a>`;
+            html += `<a href="#" class="plex-path-scan-link" data-path="${currentAccumulatedPath}" data-section-id="${sectionId}" data-type="${clickType}" title="클릭: 단순 스캔 / Shift+클릭: VFS/Refresh + 스캔" style="color:${color}; font-weight:${fontWeight}; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='${color}'; this.style.textDecoration='none';">${seg}</a>`;
 
             if (!isLast) html += `<span style="color:#999; margin:0 1px;">${sep}</span>`;
         });
@@ -3743,6 +3743,209 @@ GM_addStyle(`
         pollLoop();
     };
 
+    window._pmh_global_task_watcher_timer = null;
+
+    async function forceBackgroundItemRefresh(serverId, itemId, taskSession) {
+        if (currentRenderSession !== taskSession) return;
+        
+        const plexSrv = extractPlexServerInfo(serverId);
+        if (!plexSrv) return;
+        const srvConfig = getServerConfig(serverId);
+
+        try {
+            let meta = null;
+            let oldCache = getMemoryCache(`L_${serverId}_${itemId}`) || {};
+            let newId = itemId;
+
+            for (let retry = 0; retry < 3; retry++) {
+                meta = await fetchPlexMetaFallback(itemId, plexSrv);
+                
+                if (meta === 'DELETED') break;
+                
+                if (meta) {
+                    const checkGuid = (meta.guid || '').toLowerCase();
+                    if (!checkGuid.includes('local://') && !checkGuid.includes('none://') && checkGuid !== '-') {
+                        break;
+                    }
+                }
+                infoLog(`[Background Refresh] API 반환값이 아직 갱신되지 않았습니다. 3초 후 재시도... (${retry+1}/3)`);
+                await new Promise(r => setTimeout(r, 3000));
+            }
+
+            if (currentRenderSession !== taskSession) return;
+
+            if (meta === 'DELETED') {
+                meta = null; 
+                const filePath = oldCache ? oldCache.p : null;
+                const sectionId = oldCache ? oldCache.librarySectionID : null;
+
+                if (filePath && sectionId) {
+                    infoLog(`[Background Refresh] ID ${itemId} 삭제 감지됨. 파일 경로로 새 ID 역추적을 시작합니다: ${filePath}`);
+                    
+                    const searchUrl = `${plexSrv.url}/library/sections/${sectionId}/all?file=${encodeURIComponent(filePath)}&X-Plex-Token=${plexSrv.token}`;
+                    const newMeta = await new Promise((resolve) => {
+                        GM_xmlhttpRequest({
+                            method: 'GET', url: searchUrl,
+                            headers: { 'Accept': 'application/json' },
+                            timeout: 10000,
+                            onload: r => {
+                                try {
+                                    if (r.status === 200) {
+                                        const resData = JSON.parse(r.responseText);
+                                        const metadata = resData.MediaContainer.Metadata;
+                                        if (metadata && metadata.length > 0) {
+                                            resolve(metadata[0]);
+                                            return;
+                                        }
+                                    }
+                                    resolve(null);
+                                } catch(e) { resolve(null); }
+                            },
+                            onerror: () => resolve(null),
+                            ontimeout: () => resolve(null)
+                        });
+                    });
+
+                    if (newMeta) {
+                        meta = newMeta;
+                        newId = String(newMeta.ratingKey);
+                        infoLog(`[Background Refresh] 새 ID 역추적 성공! (구 ID: ${itemId} -> 신 ID: ${newId})`);
+                    }
+                }
+                
+                if (!meta) {
+                    const failMarkers = document.querySelectorAll(`.pmh-render-marker[data-iid="${itemId}"]`);
+                    failMarkers.forEach(m => {
+                        const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                        const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+                        if (gBox) {
+                            gBox.innerHTML = `<i class="fas fa-ghost" style="margin-right:4px;"></i>병합됨`;
+                            gBox.style.color = '#777';
+                            gBox.title = '다른 항목으로 완전히 병합되어 원본 ID가 사라졌습니다.';
+                        }
+                    });
+                    return;
+                }
+            }
+
+            if (!meta) return;
+
+            const updatedInfo = convertPlexMetaToLocalData(meta, newId);
+            const mergedInfo = { ...oldCache, ...updatedInfo, itemId: newId };
+            
+            if (newId !== itemId) {
+                deleteMemoryCache(`L_${serverId}_${itemId}`);
+                deleteMemoryCache(`D_${serverId}_${itemId}`);
+                deleteMemoryCache(`F_${serverId}_${itemId}`);
+            }
+            setMemoryCache(`L_${serverId}_${newId}`, mergedInfo);
+            
+            if (typeof sessionRevalidated !== 'undefined') {
+                sessionRevalidated.add(itemId);
+                sessionRevalidated.add(newId);
+            }
+
+            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${itemId}"]`);
+            markers.forEach(m => {
+                const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                if (cont) {
+                    cont.querySelector('.pmh-top-right-wrapper')?.remove();
+                    cont.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
+                    
+                    if (newId !== itemId) {
+                        let liveLink = cont.querySelector('a[data-testid="metadataTitleLink"]') || cont.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                        if (liveLink) {
+                            const oldHref = liveLink.getAttribute('href');
+                            const newHref = oldHref.replace(itemId, newId).replace(encodeURIComponent('/library/metadata/' + itemId), encodeURIComponent('/library/metadata/' + newId));
+                            liveLink.setAttribute('href', newHref);
+                        }
+                    }
+                }
+                m.remove(); 
+            });
+
+            infoLog(`[Background Refresh] 캐시 갱신 완료 (ID: ${newId}). UI 렌더링을 메인 루프에 위임합니다.`);
+            setTimeout(() => { if (typeof processList === 'function') processList(); }, 150);
+
+        } catch(e) {
+            errorLog(`[Background Refresh] Error updating item ${itemId}`, e);
+        }
+    }
+
+    function startGlobalTaskWatcher() {
+        if (window._pmh_global_task_watcher_timer) return;
+        
+        const watchLoop = async () => {
+            if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) {
+                window._pmh_global_task_watcher_timer = setTimeout(watchLoop, 10000);
+                return;
+            }
+
+            try {
+                let currentRunningCount = 0;
+                const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+
+                const promises = ServerConfig.SERVERS.map(srv => {
+                    return new Promise((resolve) => {
+                        GM_xmlhttpRequest({
+                            method: "GET", 
+                            url: `${srv.relayUrl}/tools?t=${Date.now()}`,
+                            headers: { "X-PMH-Signature": secureToken },
+                            timeout: 5000,
+                            onload: (res) => {
+                                if (res.status === 200) {
+                                    try {
+                                        const data = JSON.parse(res.responseText);
+                                        resolve({ 
+                                            server: srv, 
+                                            running: data.dashboard ? data.dashboard.running : [],
+                                            completed: data.dashboard ? data.dashboard.completed_items : {}
+                                        });
+                                    } catch(e) { resolve({ server: srv, running: [], completed: {} }); }
+                                } else resolve({ server: srv, running: [], completed: {} });
+                            },
+                            onerror: () => resolve({ server: srv, running: [], completed: {} }),
+                            ontimeout: () => resolve({ server: srv, running: [], completed: {} })
+                        });
+                    });
+                });
+
+                const results = await Promise.all(promises);
+
+                results.forEach(res => {
+                    res.running.forEach(() => { currentRunningCount++; });
+                    
+                    if (res.completed && Object.keys(res.completed).length > 0) {
+                        for (const [srvId, itemIds] of Object.entries(res.completed)) {
+                            if (itemIds && itemIds.length > 0) {
+                                infoLog(`[Global Watcher] 백엔드 툴로부터 ${itemIds.length}건의 작업 완료 항목을 감지했습니다. 백그라운드 캐시 갱신을 수행합니다.`);
+                                itemIds.forEach(itemId => {
+                                    const capturedSession = currentRenderSession;
+                                    globalFallbackQueue.push({
+                                        id: itemId,
+                                        session: capturedSession,
+                                        task: async () => {
+                                            await forceBackgroundItemRefresh(srvId, itemId, capturedSession);
+                                        }
+                                    });
+                                });
+                                processGlobalFallbackQueue();
+                            }
+                        }
+                    }
+                });
+
+                const nextDelay = currentRunningCount > 0 ? 2500 : 10000;
+                window._pmh_global_task_watcher_timer = setTimeout(watchLoop, nextDelay);
+
+            } catch (err) {
+                window._pmh_global_task_watcher_timer = setTimeout(watchLoop, 10000);
+            }
+        };
+
+        watchLoop();
+    }
+
     async function processList() {
         if (!state.listGuid && !state.listTag && !state.listPlay && !state.listMultiPath) return;
 
@@ -4569,7 +4772,7 @@ GM_addStyle(`
                     if (isRoot) {
                         pathLinkHtml = generateSplitPathHtml(serverPath, data.librarySectionID, 'directory', '');
                     } else {
-                        pathLinkHtml = `<a href="#" class="plex-path-scan-link" data-path="${serverPath}" data-section-id="${data.librarySectionID}" data-type="directory" title="클릭: 단순 스캔 / Shift+클릭: VFS 갱신 후 스캔" style="color:#9E9E9E; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='#9E9E9E'; this.style.textDecoration='none';">${displayPath}</a>`;
+                        pathLinkHtml = `<a href="#" class="plex-path-scan-link" data-path="${serverPath}" data-section-id="${data.librarySectionID}" data-type="directory" title="클릭: 단순 스캔 / Shift+클릭: VFS/Refresh + 스캔" style="color:#9E9E9E; text-decoration:none; transition:0.2s;" onmouseover="this.style.color='#fff'; this.style.textDecoration='underline';" onmouseout="this.style.color='#9E9E9E'; this.style.textDecoration='none';">${displayPath}</a>`;
                     }
                 }
 
@@ -6156,6 +6359,8 @@ GM_addStyle(`
             }
             observer.observe(document.body, { childList: true, subtree: true });
             checkUrlChange(true);
+
+            startGlobalTaskWatcher();
 
             setTimeout(async () => {
                 if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) return;
