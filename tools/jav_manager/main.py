@@ -538,8 +538,7 @@ def worker(task_data, core_api, start_index):
                     
                     if not guid or 'local://' in guid or 'none://' in guid or guid == '-':
                         reason = f"미매칭 상태 (로컬/없음) / 검출: {matched_disp}"
-                    elif not guid.startswith('com.plexapp.agents.sjva'):
-                        reason = f"타 에이전트로 매칭됨 / 검출: {matched_disp}"
+                        
                 else:
                     if len(f_pids_norm) > 1:
                         if len(files) > 1:
