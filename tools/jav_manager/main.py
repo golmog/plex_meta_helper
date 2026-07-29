@@ -843,43 +843,34 @@ def worker(task_data, core_api, start_index):
                 
                 fpath = files_raw.split('|||')[0]
                 dir_name = os.path.dirname(fpath)
-                base_name = os.path.splitext(os.path.basename(fpath))[0]
                 
                 db_title = item.get('title', '').strip()
                 match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
-                db_pid = match.group(1) if match else None
-
-                # FF/SJVA 에이전트가 주로 생성하는 JSON 파일명 후보군
-                json_candidates = [
-                    os.path.join(dir_name, f"{base_name}.json")
-                ]
-                if db_pid:
-                    json_candidates.extend([
-                        os.path.join(dir_name, f"{db_pid}.json"),
-                        os.path.join(dir_name, f"[{db_pid}].json"),
-                        os.path.join(dir_name, f"{db_pid.upper()}.json"),
-                        os.path.join(dir_name, f"[{db_pid.upper()}].json")
-                    ])
-
-                target_json = None
-                for cand in json_candidates:
-                    if os.path.exists(cand):
-                        target_json = cand
-                        break
-
+                
                 reason = ""
-                if not target_json:
-                    reason = "메타데이터(JSON) 파일 없음"
+                if match:
+                    # JAV: '품번(소문자).json'
+                    db_pid = match.group(1).lower()
+                    target_json = os.path.join(dir_name, f"{db_pid}.json")
+                else:
+                    # 타이틀에 품번 포맷이 없는 경우 (서양 AV 등) '영상파일명.json'
+                    base_name = os.path.splitext(os.path.basename(fpath))[0]
+                    target_json = os.path.join(dir_name, f"{base_name}.json")
+
+                if not os.path.exists(target_json):
+                    reason = "JSON 메타 파일 없음"
                 else:
                     try:
                         with open(target_json, 'r', encoding='utf-8') as f:
                             json_data = json.load(f)
                         
-                        ai_trans = json_data.get("extra_info", {}).get("ai_translator", "")
-                        if not ai_trans or "Ollama" not in ai_trans:
-                            reason = f"구버전 번역 ({ai_trans or 'Default'})"
+                        extra_info = json_data.get("extra_info") or {}
+                        ai_trans = str(extra_info.get("ai_translator", ""))
+                        
+                        if "ollama" not in ai_trans.lower():
+                            reason = f"구버전/일반 번역 ({ai_trans or '기본값'})"
                         else:
-                            continue # Ollama 적용 항목이므로 스킵!
+                            continue
                             
                     except Exception as e:
                         reason = "JSON 파싱 오류 (구조 손상)"
@@ -891,7 +882,7 @@ def worker(task_data, core_api, start_index):
                         "title": db_title, 
                         "reason": reason, 
                         "op_action": "match",
-                        "_target_json": target_json, # 나중에 삭제하기 위해 경로 보관
+                        "_target_json": target_json,
                         "raw_path": fpath
                     })
 
@@ -1037,13 +1028,15 @@ def worker(task_data, core_api, start_index):
 
                 if op_action == 'match':
                     if mode == "llm_translation":
-                        old_json_path = item.get('_target_json')
-                        if old_json_path and os.path.exists(old_json_path):
+                        target_json = item.get('_target_json')
+                        if target_json and os.path.exists(target_json):
                             try:
-                                os.remove(old_json_path)
-                                task.log("  -> 🗑️ 새로운 LLM 번역을 위해 기존 JSON 메타데이터 삭제 완료")
+                                os.remove(target_json)
+                                task.log(f"  -> 🗑️ 새로운 LLM 번역을 위해 기존 JSON 메타데이터 삭제 완료")
                             except Exception as e:
                                 task.log(f"  -> ⚠️ 기존 JSON 삭제 실패 (권한 문제 의심): {e}")
+                        else:
+                            task.log("  -> ⚠️ 삭제할 JSON 메타데이터 파일을 찾지 못했습니다.")
 
                     do_unm = task_data.get('opt_unmatch_first', True)
                     skip_sim = task_data.get('opt_skip_sim_check', False)
