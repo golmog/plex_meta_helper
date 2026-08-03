@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.110
+// @version      0.8.111
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -355,7 +355,7 @@ GM_addStyle(`
             if (isShift) {
                 return `<span class='hl'><i class='fas fa-broom'></i> 클린 리매칭 (Shift+클릭)</span>\n<span style='color:#999;'>언매치 후 클린 리매칭</span>`;
             } else {
-                if (isUnmatched) {
+                if (isUnmatched && ClientSettings.autoMatchOnClick) {
                     return `<span style='color:#2f96b4;'><i class='fas fa-magic'></i> 자동 매칭 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 클린 리매칭)</span>`;
                 } else {
                     return `<span style='color:#2f96b4;'><i class='fas fa-bolt'></i> 메타 새로고침 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 클린 리매칭)</span>`;
@@ -987,6 +987,7 @@ GM_addStyle(`
             useCustomScore: false,
             customAgentScore: 80,
             manualMatch: false,
+            autoMatchOnClick: false,
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
     }
@@ -3348,14 +3349,11 @@ GM_addStyle(`
                 let apiAction = '';
                 let extraData = {};
 
-                if (srvConfig && !isUnmatched && info.g && isShiftClick) {
-                    actionName = '리매칭'; apiAction = 'match';
+                if (srvConfig && isShiftClick) {
+                    actionName = '클린 리매칭'; apiAction = 'match';
                     extraData = { _try_refresh_first: false, _do_unmatch_first: true };
                 }
-                else if (srvConfig && !isUnmatched && info.g && !isShiftClick) {
-                    actionName = '메타 새로고침'; apiAction = 'refresh';
-                }
-                else if (srvConfig && plexSrv && (isUnmatched || !info.g)) {
+                else if (srvConfig && plexSrv && (isUnmatched || !info.g) && ClientSettings.autoMatchOnClick) {
                     actionName = '자동 매칭'; apiAction = 'match';
                     extraData = {
                         _try_refresh_first: ClientSettings.matchTryRefreshFirst,
@@ -3365,6 +3363,9 @@ GM_addStyle(`
                         _use_custom_score: ClientSettings.useCustomScore,
                         _custom_agent_score: ClientSettings.customAgentScore
                     };
+                } 
+                else if (srvConfig && !isShiftClick) {
+                    actionName = '메타 새로고침'; apiAction = 'refresh';
                 } else {
                     gBox.dataset.refreshing = 'false';
                     return;
@@ -5935,6 +5936,11 @@ GM_addStyle(`
                                 <span style="color:#ddd;">매칭 전 언매칭 우선 실행</span>
                             </label>
 
+                            <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="목록에서 언매칭(local:// 등) 상태인 항목을 일반 클릭할 때, '새로고침(Refresh)' 대신 '자동 매칭(Match)'을 강제 실행합니다.">
+                                <input type="checkbox" id="pmh-set-auto-match-click" style="width:14px; height:14px;" ${ClientSettings.autoMatchOnClick ? 'checked' : ''}>
+                                <span style="color:#ddd;">언매칭 항목 일반 클릭 시 '자동 매칭'으로 전환</span>
+                            </label>
+
                             <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="Plex 기본 에이전트 사용 시, 텍스트/연도 검증을 무시하고 첫 번째 결과를 무조건 수용합니다.">
                                 <input type="checkbox" id="pmh-set-match-skip-sim" style="width:14px; height:14px;" ${ClientSettings.matchSkipSimCheck ? 'checked' : ''}>
                                 <span style="color:#ddd;">매칭시 제목/연도 검증 스킵 <span style="color:#777; font-size:11px;">(Plex 기본 에이전트 전용)</span></span>
@@ -6135,7 +6141,8 @@ GM_addStyle(`
                 matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked,
                 matchSkipSimCheck: document.getElementById('pmh-set-match-skip-sim').checked,
                 useCustomScore: document.getElementById('pmh-set-use-custom-score').checked,
-                customAgentScore: parseInt(document.getElementById('pmh-set-custom-score').value, 10) || 80
+                customAgentScore: parseInt(document.getElementById('pmh-set-custom-score').value, 10) || 80,
+                autoMatchOnClick: document.getElementById('pmh-set-auto-match-click').checked
             };
 
             GM_setValue(CLIENT_SETTINGS_KEY, ClientSettings);
