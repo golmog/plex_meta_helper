@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.111
+// @version      0.8.112
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -125,7 +125,7 @@ GM_addStyle(`
     .pmh-tool-install-bundle-btn { color: #51a351 !important; transition: color 0.2s, transform 0.2s; opacity: 0.7; }
     .pmh-tool-install-bundle-btn:hover { opacity: 1.0; transform: scale(1.1); text-shadow: 0 0 5px rgba(81,163,81,0.5); }
 
-    /* 5. 클라이언트 전역 설정(모달) CSS 자립형 요소 (마스터 연결 전 렌더링 대비 필수 폼 요소만 유지) */
+    /* 5. 클라이언트 전역 설정(모달) CSS 자립형 요소 */
     .pmh-form-group { margin-bottom: 15px; text-align: left; }
     .pmh-form-label { display: block; color: #e5a00d; font-size: 12px; margin-bottom: 6px; font-weight: bold; text-align: left; }
     .pmh-form-header { margin-top: 20px; margin-bottom: 12px; font-size: 14px; font-weight: bold; color: #2f96b4; border-bottom: 1px solid #333; padding-bottom: 6px; text-align: left; }
@@ -136,44 +136,16 @@ GM_addStyle(`
     .pmh-btn-remove-row { background: #bd362f; color: #fff; border: none; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
 
     /* YAML 에디터 & 모달 리사이징 CSS */
-    #pmh-client-settings-modal .pmh-modal-content {
-        resize: both;
-        overflow: hidden;
-        min-width: 500px;
-        min-height: 400px;
-    }
-    
-    .pmh-yaml-container {
-        width: 100%;
-        background: #1e1e1e;
-        border: 1px solid #444;
-        border-radius: 4px;
-        display: flex;
-        flex-direction: column;
-        flex-grow: 1;
-        min-height: 300px;
-    }
+    #pmh-client-settings-modal .pmh-modal-content { resize: both; overflow: hidden; min-width: 500px; min-height: 400px; }
+    .pmh-yaml-container { width: 100%; background: #1e1e1e; border: 1px solid #444; border-radius: 4px; display: flex; flex-direction: column; flex-grow: 1; min-height: 300px; }
+    .pmh-yaml-container textarea { flex-grow: 1; margin: 0; padding: 15px; border: none; outline: none; background: transparent; color: #a6e22e; font-family: Consolas, Monaco, "Courier New", monospace; font-size: 13px; line-height: 1.5; tab-size: 2; white-space: pre; word-wrap: normal; resize: none; width: 100%; height: 100%; box-sizing: border-box; overflow: auto; }
 
-    .pmh-yaml-container textarea {
-        flex-grow: 1;
-        margin: 0;
-        padding: 15px;
-        border: none;
-        outline: none;
-        background: transparent;
-        color: #a6e22e;
-        font-family: Consolas, Monaco, "Courier New", monospace;
-        font-size: 13px;
-        line-height: 1.5;
-        tab-size: 2;
-        white-space: pre;
-        word-wrap: normal;
-        resize: none;
-        width: 100%;
-        height: 100%;
-        box-sizing: border-box;
-        overflow: auto;
-    }
+    /* 인터랙티브 컨텍스트 메뉴 */
+    #pmh-action-menu { position: fixed; background-color: rgba(20, 23, 26, 0.98); border-radius: 6px; z-index: 9999999; opacity: 0; visibility: hidden; transition: opacity 0.1s ease-in-out; display: flex; flex-direction: column; min-width: 130px; background-clip: padding-box; border: 4px solid transparent; box-shadow: inset 0 0 0 1px #e5a00d, 0 4px 15px rgba(0,0,0,0.8); padding: 0; backdrop-filter: blur(5px); user-select: none; overflow: hidden; }
+    .pmh-menu-item { padding: 6px 10px; cursor: pointer; font-size: 11px; color: #eee; transition: background-color 0.15s; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+    .pmh-menu-item:hover { background-color: rgba(255,255,255,0.1); }
+    .pmh-menu-icon-wrap { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex-shrink: 0; }
+    .pmh-force-hover { color: #f0ad4e !important; text-decoration: underline !important; text-shadow: 0 0 2px rgba(255,255,255,0.5); }
 
 `);
 
@@ -299,191 +271,152 @@ GM_addStyle(`
     };
 
     // ==========================================
-    // Shift 키 상태 감지 및 커스텀 툴팁 동적 UI
+    // 인터랙티브 컨텍스트 메뉴
     // ==========================================
-    GM_addStyle(`
-        #pmh-custom-tooltip {
-            position: fixed;
-            background-color: rgba(20, 23, 26, 0.95);
-            color: #eee;
-            border: 1px solid #e5a00d;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: normal;
-            pointer-events: none;
-            z-index: 9999999;
-            opacity: 0;
-            visibility: hidden;
-            transition: opacity 0.1s ease-in-out;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.6);
-            white-space: pre-wrap;
-            text-align: center;
-            line-height: 1.4;
-            transform: translate(-50%, -100%);
-            margin-top: -15px;
-        }
-        #pmh-custom-tooltip .hl { color: #f89406; font-weight: bold; }
-    `);
-
-    let isShiftPressed = false;
-    const customTooltip = document.createElement('div');
-    customTooltip.id = 'pmh-custom-tooltip';
-    document.body.appendChild(customTooltip);
-
     let currentHoverTarget = null;
-    let lastMouseX = 0;
-    let lastMouseY = 0;
+    let currentMenuSessionId = 0;
+    let menuHideTimer = null;
 
-    function getDynamicTooltipText(el, isShift) {
-        if (el.id === 'pmh-btn-rematch') {
-            return isShift 
-                ? "<span class='hl'><i class='fas fa-broom'></i> 클린 리매칭 (Shift+클릭)</span>\n<span style='color:#999;'>언매치 후 클린 리매칭</span>"
-                : "<span style='color:#2f96b4;'><i class='fas fa-link'></i> 일반 리매칭 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 클린 리매칭)</span>";
+    const pmhActionMenu = document.createElement('div');
+    pmhActionMenu.id = 'pmh-action-menu';
+    document.body.appendChild(pmhActionMenu);
+
+    function showMenu(targetElement) {
+        if (targetElement.dataset.refreshing || targetElement.innerHTML.includes('fa-spinner')) return;
+        
+        currentMenuSessionId++;
+        currentHoverTarget = targetElement;
+        if (menuHideTimer) clearTimeout(menuHideTimer);
+
+        document.querySelectorAll('.pmh-force-hover').forEach(el => el.classList.remove('pmh-force-hover'));
+
+        targetElement.classList.add('pmh-force-hover');
+
+        if (targetElement.classList.contains('plex-path-scan-link')) {
+            pmhActionMenu.innerHTML = `
+                <div class="pmh-menu-item" data-action="scan_normal">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-search" style="color:#e5a00d;"></i></div>
+                    일반 경로 스캔
+                </div>
+                <div class="pmh-menu-item" data-action="scan_vfs">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-hdd" style="color:#2f96b4;"></i></div>
+                    VFS 갱신 후 스캔
+                </div>
+            `;
+        } else {
+            pmhActionMenu.innerHTML = `
+                <div class="pmh-menu-item" data-action="refresh">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-bolt" style="color:#2f96b4;"></i></div>
+                    메타 새로고침
+                </div>
+                <div class="pmh-menu-item" data-action="rematch">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-link" style="color:#adb5bd;"></i></div>
+                    일반 리매칭
+                </div>
+                <div class="pmh-menu-item" data-action="clean_match">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-broom" style="color:#f89406;"></i></div>
+                    클린 리매칭
+                </div>
+            `;
         }
-        if (el.classList.contains('plex-path-scan-link')) {
-            return isShift 
-                ? "<span class='hl'><i class='fas fa-hdd'></i> VFS/Refresh + 스캔 (Shift+클릭)</span>\n<span style='color:#999;'>VFS/Refresh 후 경로 스캔</span>"
-                : "<span style='color:#2f96b4;'><i class='fas fa-search'></i> 경로 스캔 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 VFS/Refresh 후 스캔)</span>";
+
+        pmhActionMenu.style.visibility = 'hidden'; 
+        pmhActionMenu.style.opacity = '0';
+        pmhActionMenu.style.display = 'flex';
+
+        const rect = targetElement.getBoundingClientRect();
+        let menuWidth = pmhActionMenu.offsetWidth || 130;
+        let menuHeight = pmhActionMenu.offsetHeight || 100;
+
+        let topPos = rect.bottom; 
+        let leftPos = rect.left - 4; 
+
+        if (leftPos < -4) leftPos = -4; 
+        if (leftPos + menuWidth > window.innerWidth + 3) leftPos = window.innerWidth - menuWidth + 3;
+        
+        if (topPos + menuHeight > window.innerHeight) {
+            topPos = rect.top - menuHeight + 4; 
         }
-        if (el.classList.contains('plex-guid-list-box')) {
-            if (el.dataset.refreshing || el.innerHTML.includes('fa-spinner')) return "";
-            
-            const baseTxt = el.textContent;
-            const isUnmatched = el.dataset.unmatched === 'true';
-            
-            if (isShift) {
-                return `<span class='hl'><i class='fas fa-broom'></i> 클린 리매칭 (Shift+클릭)</span>\n<span style='color:#999;'>언매치 후 클린 리매칭</span>`;
-            } else {
-                if (isUnmatched && ClientSettings.autoMatchOnClick) {
-                    return `<span style='color:#2f96b4;'><i class='fas fa-magic'></i> 자동 매칭 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 클린 리매칭)</span>`;
-                } else {
-                    return `<span style='color:#2f96b4;'><i class='fas fa-bolt'></i> 메타 새로고침 (클릭)</span>\n<span style='color:#999;'>(Shift+클릭 시 클린 리매칭)</span>`;
-                }
-            }
-        }
-        return "";
+
+        pmhActionMenu.style.left = leftPos + 'px';
+        pmhActionMenu.style.top = topPos + 'px';
+        
+        requestAnimationFrame(() => {
+            pmhActionMenu.style.visibility = 'visible';
+            pmhActionMenu.style.opacity = '1';
+        });
     }
 
-    function positionTooltip(x, y) {
-        customTooltip.style.left = x + 'px';
-        customTooltip.style.top = y + 'px';
-        
-        customTooltip.style.transform = 'translate(-50%, 0)';
-        customTooltip.style.marginTop = '20px';
-        
-        const rect = customTooltip.getBoundingClientRect();
-        
-        if (rect.left < 5) customTooltip.style.left = (rect.width / 2 + 5) + 'px';
-        if (rect.right > window.innerWidth - 5) customTooltip.style.left = (window.innerWidth - rect.width / 2 - 5) + 'px';
-        
-        if (rect.bottom > window.innerHeight - 5) {
-            customTooltip.style.transform = 'translate(-50%, -100%)';
-            customTooltip.style.marginTop = '-20px';
-        }
-    }
+    function hideMenu(targetSessionId) {
+        if (targetSessionId !== currentMenuSessionId) return;
 
-    function updateShiftUI(isShift) {
-        const btnRematch = document.getElementById('pmh-btn-rematch');
-        if (btnRematch && !btnRematch.dataset.refreshing) {
-            if (isShift) {
-                btnRematch.innerHTML = '<i class="fas fa-broom" style="font-size: 10px; margin-right: 2px;"></i>클린 리매칭';
-                btnRematch.style.color = '#f89406'; 
-            } else {
-                btnRematch.innerHTML = '<i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>메타 리매칭';
-                btnRematch.style.color = '#adb5bd';
-            }
-        }
-
-        document.querySelectorAll('.plex-path-scan-link').forEach(link => {
-            const isLastNode = link.dataset.type !== 'directory';
-            if (isShift) {
-                if (!link.dataset.origColor) link.dataset.origColor = link.style.color;
-                link.style.color = '#2f96b4';
-                link.style.textDecoration = 'underline dashed';
-            } else {
-                link.style.color = link.dataset.origColor || (isLastNode ? '#e5a00d' : '#9E9E9E');
-                link.style.textDecoration = 'none';
-            }
-        });
-
-        document.querySelectorAll('.plex-guid-list-box').forEach(box => {
-            if (!box.dataset.refreshing && !box.innerHTML.includes('fa-spinner')) {
-                if (isShift) {
-                    if (!box.dataset.origColor) box.dataset.origColor = box.style.color;
-                    box.style.color = '#f89406'; 
-                } else {
-                    box.style.color = box.dataset.origColor || '#e5a00d';
-                }
-            }
-        });
-
+        pmhActionMenu.style.opacity = '0';
+        
         if (currentHoverTarget) {
-            const textHTML = getDynamicTooltipText(currentHoverTarget, isShift);
-            if (textHTML) {
-                customTooltip.innerHTML = textHTML;
-                positionTooltip(lastMouseX, lastMouseY);
-            }
+            currentHoverTarget.classList.remove('pmh-force-hover');
         }
+
+        setTimeout(() => {
+            if (targetSessionId === currentMenuSessionId) {
+                pmhActionMenu.style.visibility = 'hidden';
+                currentHoverTarget = null;
+            }
+        }, 100);
     }
 
+    // 마우스 이벤트 로직
     document.addEventListener('mouseover', (e) => {
-        const target = e.target.closest('#pmh-btn-rematch, .plex-path-scan-link, .plex-guid-list-box');
+        const target = e.target.closest('.plex-guid-list-box, .plex-path-scan-link');
         if (target) {
-            if (target.hasAttribute('title')) target.removeAttribute('title');
-            
-            currentHoverTarget = target;
-            lastMouseX = e.clientX;
-            lastMouseY = e.clientY;
-            
-            const textHTML = getDynamicTooltipText(target, isShiftPressed);
-            if (textHTML) {
-                customTooltip.innerHTML = textHTML;
-                customTooltip.style.visibility = 'visible';
-                customTooltip.style.opacity = '1';
-                positionTooltip(e.clientX, e.clientY);
-            }
-        }
-    });
-
-    document.addEventListener('mousemove', (e) => {
-        if (currentHoverTarget) {
-            lastMouseX = e.clientX;
-            lastMouseY = e.clientY;
-            positionTooltip(e.clientX, e.clientY);
+            if (target.hasAttribute('title')) target.removeAttribute('title'); 
+            showMenu(target);
+        } else if (pmhActionMenu.contains(e.target)) {
+            if (menuHideTimer) clearTimeout(menuHideTimer);
         }
     });
 
     document.addEventListener('mouseout', (e) => {
-        if (currentHoverTarget) {
-            if (e.relatedTarget && currentHoverTarget.contains(e.relatedTarget)) return;
-            
-            currentHoverTarget = null;
-            customTooltip.style.opacity = '0';
-            setTimeout(() => {
-                if (!currentHoverTarget) customTooltip.style.visibility = 'hidden';
-            }, 150);
+        if (!currentHoverTarget) return;
+
+        const isOutsideMenu = !pmhActionMenu.contains(e.relatedTarget);
+        const isOutsideBadge = !currentHoverTarget.contains(e.relatedTarget);
+
+        if (isOutsideMenu && isOutsideBadge) {
+            if (menuHideTimer) clearTimeout(menuHideTimer);
+            const sessionToClose = currentMenuSessionId;
+            menuHideTimer = setTimeout(() => { hideMenu(sessionToClose); }, 50); 
         }
     });
 
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Shift' && !isShiftPressed) {
-            isShiftPressed = true;
-            updateShiftUI(true);
+    // 클릭 이벤트 로직
+    document.addEventListener('click', (e) => {
+        if (pmhActionMenu.style.visibility === 'visible') {
+            const menuItem = e.target.closest('.pmh-menu-item');
+            if (menuItem && currentHoverTarget) {
+                e.preventDefault(); e.stopPropagation();
+                const actionType = menuItem.dataset.action;
+                
+                const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+                clickEvent.pmhMenuAction = actionType; 
+                currentHoverTarget.dispatchEvent(clickEvent);
+                
+                hideMenu(currentMenuSessionId);
+                return;
+            }
+
+            if (!pmhActionMenu.contains(e.target) && (!currentHoverTarget || !currentHoverTarget.contains(e.target))) {
+                hideMenu(currentMenuSessionId);
+            }
         }
     });
-    document.addEventListener('keyup', (e) => {
-        if (e.key === 'Shift' && isShiftPressed) {
-            isShiftPressed = false;
-            updateShiftUI(false);
-        }
-    });
-    window.addEventListener('blur', () => {
-        if (isShiftPressed) {
-            isShiftPressed = false;
-            updateShiftUI(false);
-        }
-    });
+
+    // 스크롤 시 닫기
+    function hideMenuOnScroll() {
+        if (pmhActionMenu.style.visibility === 'visible') hideMenu(currentMenuSessionId); 
+    }
+    window.addEventListener('scroll', hideMenuOnScroll, true);
+    window.addEventListener('touchmove', hideMenuOnScroll, { passive: true, capture: true });
+
 
     // ==========================================
     // API Key 보안 서명 생성 함수
@@ -987,7 +920,6 @@ GM_addStyle(`
             useCustomScore: false,
             customAgentScore: 80,
             manualMatch: false,
-            autoMatchOnClick: false,
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
     }
@@ -3294,8 +3226,11 @@ GM_addStyle(`
 
             let abortPolling = false;
             gBox.addEventListener('click', async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                e.preventDefault(); e.stopPropagation();
+
+                if (!e.pmhMenuAction && gBox.dataset.refreshing !== 'true') {
+                    showMenu(gBox); return; 
+                }
 
                 if (gBox.dataset.refreshing === 'true') {
                     const queueInfo = window._pmh_media_queues && window._pmh_media_queues[id];
@@ -3316,60 +3251,44 @@ GM_addStyle(`
 
                             toastr.warning('작업 대기가 취소되었습니다.', '취소됨', {timeOut: 2000});
                         } catch(err) {
-                            console.error("[PMH] Cancel request failed", err);
                             delete window._pmh_media_queues[id];
                             if (typeof window.saveQueueState === 'function') window.saveQueueState();
                         } finally {
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => m.remove());
-
-                            setTimeout(() => {
-                                if (typeof processList === 'function') processList();
-                            }, 1000);
+                            setTimeout(() => { if (typeof processList === 'function') processList(); }, 1000);
                         }
                     }
                     return;
                 }
 
-                const isShiftClick = e.shiftKey;
-                if (isShiftClick && window.getSelection) {
-                    window.getSelection().removeAllRanges();
+                if (!e.pmhMenuAction) {
+                    showMenu(gBox);
+                    return; 
                 }
 
-                const originHTML = gBox.innerHTML;
-                const originColor = gBox.style.color;
-
-                gBox.dataset.refreshing = 'true';
-                gBox.style.color = '#ccc';
-
+                const menuAction = e.pmhMenuAction;
                 const targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
                 const plexSrv = targetServerId ? extractPlexServerInfo(targetServerId) : null;
+
+                if (!srvConfig || !plexSrv) return;
 
                 let actionName = '';
                 let apiAction = '';
                 let extraData = {};
 
-                if (srvConfig && isShiftClick) {
+                if (menuAction === 'clean_match') {
                     actionName = '클린 리매칭'; apiAction = 'match';
                     extraData = { _try_refresh_first: false, _do_unmatch_first: true };
                 }
-                else if (srvConfig && plexSrv && (isUnmatched || !info.g) && ClientSettings.autoMatchOnClick) {
-                    actionName = '자동 매칭'; apiAction = 'match';
-                    extraData = {
-                        _try_refresh_first: ClientSettings.matchTryRefreshFirst,
-                        _manual_match: ClientSettings.manualMatch,
-                        _do_unmatch_first: ClientSettings.matchDoUnmatchFirst,
-                        _skip_sim_check: ClientSettings.matchSkipSimCheck,
-                        _use_custom_score: ClientSettings.useCustomScore,
-                        _custom_agent_score: ClientSettings.customAgentScore
-                    };
-                } 
-                else if (srvConfig && !isShiftClick) {
-                    actionName = '메타 새로고침'; apiAction = 'refresh';
-                } else {
-                    gBox.dataset.refreshing = 'false';
-                    return;
+                else if (menuAction === 'rematch') {
+                    actionName = '일반 리매칭'; apiAction = 'match';
+                    extraData = { _try_refresh_first: false, _do_unmatch_first: false };
                 }
+                else if (menuAction === 'refresh') {
+                    actionName = '메타 새로고침'; apiAction = 'refresh';
+                }
+                else return;
 
                 let itemDisplayName = "알 수 없는 항목";
                 if (info.p) {
@@ -5032,7 +4951,9 @@ GM_addStyle(`
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
             <a href="#" id="pmh-btn-refresh-meta" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 메타 새로고침을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-bolt" style="font-size: 10px; margin-right: 2px;"></i>메타 새로고침</a>
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
-            <a href="#" id="pmh-btn-rematch" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="일반 클릭: 덮어쓰기 리매칭 / Shift+클릭: 언매치 후 클린 리매칭" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>메타 리매칭</a>
+            <a href="#" id="pmh-btn-rematch" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="언매칭 없이 일반 리매칭을 시도합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>일반 리매칭</a>
+            <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
+            <a href="#" id="pmh-btn-clean-match" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="현재 메타데이터를 언매치 후 클린 리매칭합니다." onmouseover="this.style.color='#f89406'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-broom" style="font-size: 10px; margin-right: 2px;"></i>클린 리매칭</a>
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
             <a href="#" id="pmh-btn-analyze" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 미디어 분석을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-search-plus" style="font-size: 10px; margin-right: 2px;"></i>미디어 분석</a>
         ` : '';
@@ -5322,15 +5243,9 @@ GM_addStyle(`
             btnRematch.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
 
-                const isShiftClick = e.shiftKey;
-                if (isShiftClick && window.getSelection) {
-                    window.getSelection().removeAllRanges();
-                }
-
                 if (!plexSrv) return toastr.error("토큰을 찾을 수 없습니다.");
 
-                const originalHtml = `<i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>메타 리매칭`;
-                const originalTitle = "일반 클릭: 덮어쓰기 리매칭 / Shift+클릭: 언매치 후 클린 리매칭";
+                const originalHtml = `<i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>일반 리매칭`;
 
                 if (btnRematch.dataset.refreshing === 'true') {
                     abortDetailRefresh = true;
@@ -5359,25 +5274,17 @@ GM_addStyle(`
                 btnRematch.cancelToken = {};
 
                 btnRematch.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>리매칭 진행중`;
-                btnRematch.title = "클릭시 강제 취소";
-
                 showBoxLoading();
-                infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId} (Unmatch First: ${isShiftClick})`);
+                
+                infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
+                toastr.info("서버에서 기존 데이터 덮어쓰기(일반 리매칭)를 시도합니다.", "일반 리매칭", {timeOut: 5000});
 
                 const matchOptions = {
                     _try_refresh_first: false,
-                    _do_unmatch_first: isShiftClick,
+                    _do_unmatch_first: false,
                     _skip_sim_check: ClientSettings.matchSkipSimCheck,
                     _custom_agent_score: ClientSettings.customAgentScore
                 };
-
-                if (isShiftClick) {
-                    toastr.info("기존 메타데이터를 언매치 후 리매칭을 시도합니다.", "클린 리매칭 (Shift)", {timeOut: 8000});
-                } else {
-                    toastr.info("서버에서 메타 덮어쓰기(리매칭)를 시도합니다.", "일반 리매칭", {timeOut: 8000});
-                }
-
-                let isRematchSuccess = false;
 
                 try {
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey, btnRematch.cancelToken);
@@ -5405,6 +5312,67 @@ GM_addStyle(`
                         btnRematch.title = originalTitle;
                         delete btnRematch.dataset.refreshing;
                     }
+                } finally {
+                    if (isRematchSuccess && !globalAbortFlag && renderSessionAtClick === currentRenderSession && !abortDetailRefresh) {
+                        invalidateVisibleCaches(serverId);
+                        deleteMemoryCache(`D_${serverId}_${data.itemId}`);
+                        currentDisplayedItemId = null;
+                        processDetail(true);
+                        smartRefreshChildren();
+                    }
+                }
+            });
+        }
+
+        const btnCleanMatch = document.getElementById('pmh-btn-clean-match');
+        if (btnCleanMatch) {
+            btnCleanMatch.addEventListener('click', async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                if (!plexSrv) return toastr.error("토큰을 찾을 수 없습니다.");
+
+                const originalHtml = `<i class="fas fa-broom" style="font-size: 10px; margin-right: 2px;"></i>클린 리매칭`;
+                
+                if (btnCleanMatch.dataset.refreshing === 'true') {
+                    abortDetailRefresh = true;
+                    btnCleanMatch.innerHTML = `<i class="fas fa-times" style="font-size: 10px; margin-right: 2px;"></i>취소됨`;
+                    if (btnCleanMatch.cancelToken && btnCleanMatch.cancelToken.abort) btnCleanMatch.cancelToken.abort();
+                    hideBoxLoading();
+                    toastr.warning("메타 리매칭이 취소되었습니다.", "취소됨", {timeOut: 2000});
+                    setTimeout(() => {
+                        if (btnCleanMatch.isConnected) { btnCleanMatch.innerHTML = originalHtml; delete btnCleanMatch.dataset.refreshing; }
+                    }, 1500);
+                    return;
+                }
+
+                abortDetailRefresh = false;
+                btnCleanMatch.dataset.refreshing = 'true';
+                btnCleanMatch.cancelToken = {};
+
+                btnCleanMatch.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>리매칭 진행중`;
+                showBoxLoading();
+                
+                infoLog(`[Detail] Foreground Clean Rematch requested for Item: ${data.itemId}`);
+                toastr.info("기존 메타데이터를 언매치(초기화)한 후 클린 리매칭을 시도합니다.", "클린 리매칭", {timeOut: 5000});
+
+                const matchOptions = {
+                    _try_refresh_first: false,
+                    _do_unmatch_first: true,
+                    _skip_sim_check: ClientSettings.matchSkipSimCheck,
+                    _custom_agent_score: ClientSettings.customAgentScore
+                };
+
+                let isRematchSuccess = false;
+                try {
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey, btnCleanMatch.cancelToken);
+                    if (res.status === 'queued') await waitQueueTask(res.task_id, srvConfig);
+                    if (globalAbortFlag || renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
+                    isRematchSuccess = true;
+                    toastr.success("클린 리매칭 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 4000});
+                } catch (err) {
+                    if (err.message === "Cancelled" || err.message === "Aborted") infoLog(`[Detail] Clean Rematch process cancelled.`);
+                    else toastr.error(`${err.message}`, "매칭 실패", {timeOut: 5000});
+                    hideBoxLoading();
+                    if (btnCleanMatch.isConnected) { btnCleanMatch.innerHTML = originalHtml; delete btnCleanMatch.dataset.refreshing; }
                 } finally {
                     if (isRematchSuccess && !globalAbortFlag && renderSessionAtClick === currentRenderSession && !abortDetailRefresh) {
                         invalidateVisibleCaches(serverId);
@@ -5551,13 +5519,15 @@ GM_addStyle(`
             el.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
 
-                const isShiftClick = e.shiftKey;
-                if (isShiftClick && window.getSelection) {
-                    window.getSelection().removeAllRanges();
+                if (!e.pmhMenuAction) {
+                    showMenu(el); return;
                 }
 
+                const menuAction = e.pmhMenuAction;
+                const isVfsScan = (menuAction === 'scan_vfs');
+
                 let scanPath = el.dataset.path;
-                infoLog(`[PlexMate] VFS/Library Scan requested for path: ${scanPath} (VFS_Refresh: ${isShiftClick})`);
+                infoLog(`[PlexMate] VFS/Library Scan requested for path: ${scanPath} (VFS_Refresh: ${isVfsScan})`);
                 const sectionId = el.dataset.sectionId;
 
                 if (el.dataset.type === 'video') {
@@ -5581,7 +5551,7 @@ GM_addStyle(`
                 }
 
                 try {
-                    if (isShiftClick) {
+                    if (isVfsScan) {
                         toastr.info(`[1/2] VFS/Refresh 요청 중...<br>${scanPath}`, "스캔", {timeOut: 3000});
 
                         const vfsRes = await callPlexMateViaRelay(srvConfig, '/scan/vfs_refresh', { target: scanPath, recursive: 'true', async: 'false' });
@@ -5936,11 +5906,6 @@ GM_addStyle(`
                                 <span style="color:#ddd;">매칭 전 언매칭 우선 실행</span>
                             </label>
 
-                            <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="목록에서 언매칭(local:// 등) 상태인 항목을 일반 클릭할 때, '새로고침(Refresh)' 대신 '자동 매칭(Match)'을 강제 실행합니다.">
-                                <input type="checkbox" id="pmh-set-auto-match-click" style="width:14px; height:14px;" ${ClientSettings.autoMatchOnClick ? 'checked' : ''}>
-                                <span style="color:#ddd;">언매칭 항목 일반 클릭 시 '자동 매칭'으로 전환</span>
-                            </label>
-
                             <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;" title="Plex 기본 에이전트 사용 시, 텍스트/연도 검증을 무시하고 첫 번째 결과를 무조건 수용합니다.">
                                 <input type="checkbox" id="pmh-set-match-skip-sim" style="width:14px; height:14px;" ${ClientSettings.matchSkipSimCheck ? 'checked' : ''}>
                                 <span style="color:#ddd;">매칭시 제목/연도 검증 스킵 <span style="color:#777; font-size:11px;">(Plex 기본 에이전트 전용)</span></span>
@@ -6142,7 +6107,6 @@ GM_addStyle(`
                 matchSkipSimCheck: document.getElementById('pmh-set-match-skip-sim').checked,
                 useCustomScore: document.getElementById('pmh-set-use-custom-score').checked,
                 customAgentScore: parseInt(document.getElementById('pmh-set-custom-score').value, 10) || 80,
-                autoMatchOnClick: document.getElementById('pmh-set-auto-match-click').checked
             };
 
             GM_setValue(CLIENT_SETTINGS_KEY, ClientSettings);
