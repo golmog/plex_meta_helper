@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.112
+// @version      0.8.113
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -112,7 +112,7 @@ GM_addStyle(`
     #pmdv-controls button.on { background-color: #e5a00d !important; color: #1f1f1f !important; border-color: #e5a00d !important; font-weight: bold; }
     #pmdv-controls button.on:hover { background-color: #d4910c !important; }
 
-    #pmh-tool-dropdown { position: absolute; background-color: rgba(25, 28, 32, 0.98); border: 1px solid #444; border-radius: 6px; min-width: 280px; max-width: 450px; z-index: 99999; box-shadow: 0 8px 20px rgba(0,0,0,0.7); display: none; backdrop-filter: blur(5px); }
+    #pmh-tool-dropdown { position: absolute; background-color: rgba(25, 28, 32, 0.98); border: 1px solid #444; border-radius: 6px; min-width: 280px; max-width: 450px; z-index: 9999999; box-shadow: 0 8px 20px rgba(0,0,0,0.7); display: none; backdrop-filter: blur(5px); }
     .pmh-tool-item { color: #ccc; font-size: 12px; transition: 0.2s; border-bottom: 1px solid #333; }
     .pmh-tool-item:last-child { border-bottom: none; }
     .pmh-tool-item:hover { background-color: rgba(255, 255, 255, 0.08) !important; }
@@ -1975,85 +1975,7 @@ GM_addStyle(`
             }
         });
 
-        const clearCacheBtn = document.createElement('button');
-        clearCacheBtn.textContent = '캐시 초기화'; clearCacheBtn.style.marginLeft = '10px';
-        clearCacheBtn.addEventListener('click', async () => {
-            if (confirm("브라우저/메모리 캐시를 초기화하고 서버 코어 모듈을 재시작하시겠습니까?\n(설정은 유지됩니다.)")) {
-                if (window.PmhUICore && window.PmhUICore.destroyActiveInstance) {
-                    window.PmhUICore.destroyActiveInstance();
-                    delete window.PmhUICore;
-                }
-
-                const oldCss = document.getElementById('pmh-shared-css-inline');
-                if (oldCss) oldCss.remove();
-                const oldJs = document.getElementById('pmh-shared-js-inline');
-                if (oldJs) oldJs.remove();
-                const toolPanel = document.getElementById('pmh-tool-panel');
-                if (toolPanel) toolPanel.remove();
-
-                GM_deleteValue('pmh_ui_core_css_cache');
-                GM_deleteValue('pmh_ui_core_js_cache');
-                GM_deleteValue('pmh_ui_cache_version');
-
-                localStorage.removeItem('pmh_media_queues');
-                window._pmh_media_queues = {};
-                window._pmh_polling_active = false;
-                if (window._pmh_queue_poll_timer) {
-                    clearTimeout(window._pmh_queue_poll_timer);
-                    window._pmh_queue_poll_timer = null;
-                }
-
-                clearMemoryCache(); 
-                forceReRenderAll();
-                
-                if (document.getElementById('plex-guid-box')) { 
-                    currentDisplayedItemId = null; 
-                    processDetail(true); 
-                }
-
-                showStatusMsg("캐시 초기화 및 코어 리로딩 중...", "#e5a00d");
-
-                try {
-                    const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
-
-                    const reloadPromises = ServerConfig.SERVERS.map(srv => {
-                        return new Promise((resolve) => {
-                            GM_xmlhttpRequest({
-                                method: "POST",
-                                url: `${srv.relayUrl}/admin/reload_core`,
-                                headers: { "X-PMH-Signature": secureToken },
-                                timeout: 10000,
-                                onload: (r) => {
-                                    if (r.status === 200) {
-                                        infoLog(`[Core Reload] Successfully reloaded core on Server: ${srv.name}`);
-                                        resolve(true);
-                                    } else {
-                                        warnLog(`[Core Reload] Failed on Server: ${srv.name} (HTTP ${r.status})`);
-                                        resolve(false);
-                                    }
-                                },
-                                onerror: () => resolve(false),
-                                ontimeout: () => resolve(false)
-                            });
-                        });
-                    });
-
-                    await Promise.all(reloadPromises);
-
-                } catch (e) {
-                    errorLog("[Core Reload] Server Sync Error:", e);
-                }
-
-                bootstrapPMH().then(() => {
-                    showStatusMsg("캐시 초기화 및 코어 리로딩 완료", "#51a351");
-                    toastr.success("로컬 캐시 초기화 및 서버 코어 리로딩이 완료되었습니다.");
-                }).catch(() => {
-                    showStatusMsg("코어 리로딩 실패", "#bd362f");
-                });
-            }
-        });
-
-        settingsWrapper.appendChild(lenInp); settingsWrapper.appendChild(lenBtn); settingsWrapper.appendChild(clearCacheBtn);
+        settingsWrapper.appendChild(lenInp); settingsWrapper.appendChild(lenBtn);
 
         const clientSettingsBtn = document.createElement('a');
         clientSettingsBtn.href = '#'; clientSettingsBtn.id = 'pmh-client-settings-btn';
@@ -5938,7 +5860,10 @@ GM_addStyle(`
                     </div>
 
                     <div style="padding: 15px; background: #111; border-top: 1px solid #333; border-radius: 0 0 8px 8px; display: flex; justify-content: space-between; align-items: center;">
-                        <button id="pmh-settings-factory-reset" style="padding: 8px 15px; background: #bd362f; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;" title="저장된 모든 PMH 프론트엔드 데이터를 삭제합니다."><i class="fas fa-trash-alt"></i> 공장 초기화</button>
+                        <div style="display:flex; gap:8px;">
+                            <button id="pmh-settings-factory-reset" style="padding: 8px 15px; background: #bd362f; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;" title="저장된 모든 PMH 프론트엔드 데이터를 영구 삭제합니다."><i class="fas fa-trash-alt"></i> 공장 초기화</button>
+                            <button id="pmh-settings-clear-cache" style="padding: 8px 15px; background: #e5a00d; color: #1f1f1f; font-weight:bold; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;" title="메모리 캐시를 초기화하고 서버 코어 모듈을 재시작합니다."><i class="fas fa-broom"></i> 캐시 초기화</button>
+                        </div>
                         <div>
                             <button id="pmh-settings-test" style="padding: 8px 15px; background: #2f96b4; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-right: 8px;"><i class="fas fa-plug"></i> 연결 테스트</button>
                             <button id="pmh-settings-save" style="padding: 8px 20px; background: #51a351; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight:bold;"><i class="fas fa-save"></i> 저장 및 재시작</button>
@@ -6063,6 +5988,73 @@ GM_addStyle(`
                 toastr.error(err.message.replace(/\n/g, '<br>'), "저장 실패", {timeOut: 10000});
                 btnSaveYaml.innerHTML = originalHtml;
                 btnSaveYaml.disabled = false;
+            }
+        };
+
+        document.getElementById('pmh-settings-clear-cache').onclick = async () => {
+            if (confirm("브라우저/메모리 캐시를 초기화하고 서버 코어 모듈을 재시작하시겠습니까?\n(설정은 유지됩니다.)")) {
+                const btn = document.getElementById('pmh-settings-clear-cache');
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 처리 중...';
+                btn.disabled = true;
+
+                if (window.PmhUICore && window.PmhUICore.destroyActiveInstance) {
+                    window.PmhUICore.destroyActiveInstance();
+                    delete window.PmhUICore;
+                }
+
+                const oldCss = document.getElementById('pmh-shared-css-inline'); if (oldCss) oldCss.remove();
+                const oldJs = document.getElementById('pmh-shared-js-inline'); if (oldJs) oldJs.remove();
+                const toolPanel = document.getElementById('pmh-tool-panel'); if (toolPanel) toolPanel.remove();
+
+                GM_deleteValue('pmh_ui_core_css_cache');
+                GM_deleteValue('pmh_ui_core_js_cache');
+                GM_deleteValue('pmh_ui_cache_version');
+
+                localStorage.removeItem('pmh_media_queues');
+                window._pmh_media_queues = {};
+                window._pmh_polling_active = false;
+                if (window._pmh_queue_poll_timer) {
+                    clearTimeout(window._pmh_queue_poll_timer);
+                    window._pmh_queue_poll_timer = null;
+                }
+
+                clearMemoryCache(); 
+                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear();
+                document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e=>e.remove());
+                if (typeof processList === 'function') processList();
+
+                if (document.getElementById('plex-guid-box')) { 
+                    currentDisplayedItemId = null; 
+                    if (typeof processDetail === 'function') processDetail(true); 
+                }
+
+                toastr.info("캐시 초기화 및 코어 리로딩 중...", "처리 중", {timeOut: 3000});
+
+                try {
+                    const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+                    const reloadPromises = ServerConfig.SERVERS.map(srv => {
+                        return new Promise((resolve) => {
+                            GM_xmlhttpRequest({
+                                method: "POST", url: `${srv.relayUrl}/admin/reload_core`,
+                                headers: { "X-PMH-Signature": secureToken }, timeout: 10000,
+                                onload: (r) => { resolve(r.status === 200); },
+                                onerror: () => resolve(false), ontimeout: () => resolve(false)
+                            });
+                        });
+                    });
+                    await Promise.all(reloadPromises);
+                } catch (e) {
+                    errorLog("[Core Reload] Server Sync Error:", e);
+                }
+
+                bootstrapPMH().then(() => {
+                    toastr.success("로컬 캐시 초기화 및 서버 코어 리로딩이 완료되었습니다.");
+                    document.getElementById('pmh-client-settings-modal').remove();
+                }).catch(() => {
+                    toastr.error("코어 리로딩 중 일부 통신에 실패했습니다.");
+                    btn.innerHTML = '<i class="fas fa-broom"></i> 캐시 초기화';
+                    btn.disabled = false;
+                });
             }
         };
 
