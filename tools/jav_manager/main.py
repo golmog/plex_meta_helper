@@ -80,7 +80,6 @@ def get_ui(core_api=None):
                 ]
             },
             
-            # (기존) 수동 조회 시 1회성으로 사용하는 임시 필터
             {"id": "filter_fields", "type": "multi_select", "label": "임시 검색 필터 적용 필드", "options": [
                 {"value": "guid", "text": "에이전트 (GUID)"},
                 {"value": "title", "text": "제목 (Title)"},
@@ -116,7 +115,6 @@ def get_ui(core_api=None):
             }
         ],
         "settings_inputs": [
-            # (신규) filters.yaml을 대체하는 전역/고정 필터
             {"id": "s_h_filter", "type": "header", "label": "<i class='fas fa-filter'></i> 전역 필터링 설정 (filters.yaml 대체)"},
             {"id": "fixed_filter_cron_only", "type": "checkbox", "label": "자동 스케줄러(Cron) 실행 시에만 고정 필터 적용 (수동 조회 시 무시)", "default": False},
             {"id": "fixed_filter_fields", "type": "multi_select", "label": "고정 필터 적용 필드", "options": [
@@ -330,8 +328,13 @@ def update_ff_user_images(global_config, files_list):
     if not mate_url or not mate_apikey:
         return False, "FF(Plex Mate) 연결 설정(BASE.FF_URL / BASE.FF_APIKEY) 누락"
 
-    url = f"{mate_url.rstrip('/')}/metadata/api/jav_censored/user_image_update?apikey={mate_apikey}"
-    headers = {'Content-Type': 'application/json'}
+    params = urllib.parse.urlencode({'apikey': mate_apikey})
+    url = f"{mate_url.rstrip('/')}/metadata/api/jav_censored/user_image_update?{params}"
+    headers = {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0',
+        'X-API-Key': mate_apikey
+    }
     
     CHUNK_SIZE = 500
     total_updated = 0
@@ -341,7 +344,7 @@ def update_ff_user_images(global_config, files_list):
     try:
         for i in range(0, len(files_list), CHUNK_SIZE):
             chunk = files_list[i:i + CHUNK_SIZE]
-            payload = json.dumps({'files': chunk}).encode('utf-8')
+            payload = json.dumps({'apikey': mate_apikey, 'files': chunk}).encode('utf-8')
             req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
             with urllib.request.urlopen(req, timeout=30) as resp:
                 res_json = json.loads(resp.read().decode('utf-8'))
@@ -353,8 +356,13 @@ def update_ff_user_images(global_config, files_list):
                     return False, f"FF API 오류: {res_json.get('msg', '알 수 없는 응답')}"
                     
         return True, f"FF 로컬 메타 DB 동기화 성공 (갱신: {total_updated:,}건, 스킵: {total_skipped:,}건, 미등록: {total_not_found:,}건)"
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try: err_body = f" - {e.read().decode('utf-8')}"
+        except: pass
+        return False, f"FF HTTP 오류 ({e.code}{err_body})"
     except Exception as e:
-        return False, f"FF API 통신 실패: {e}"
+        return False, f"FF 통신 실패: {e}"
 
 
 # ==============================================================================
@@ -1048,7 +1056,10 @@ def worker(task_data, core_api, start_index):
             if success:
                 task.log(f"   ✅ {msg}")
             else:
-                task.log(f"   ⚠️ {msg} (리매칭을 계속 진행합니다)")
+                task.log(f"   ❌ {msg}")
+                task.log("   🛑 FF 메타데이터 DB 동기화에 실패하여 안전을 위해 리매칭을 중단합니다.")
+                task.update_state('error')
+                return
 
     history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'jav_manager_poster_history.db')
 
