@@ -10,8 +10,7 @@ import re
 import sqlite3
 import json
 import time
-import urllib.request
-import urllib.parse
+import urllib.request, urllib.parse, urllib.error
 import pmh_core
 from collections import defaultdict
 from pmh_core import compile_jav_rules, extract_jav_pid, normalize_pid_for_comparison
@@ -328,13 +327,9 @@ def update_ff_user_images(global_config, files_list):
     if not mate_url or not mate_apikey:
         return False, "FF(Plex Mate) 연결 설정(BASE.FF_URL / BASE.FF_APIKEY) 누락"
 
+    # URL에도 파라미터를 붙이고
     params = urllib.parse.urlencode({'apikey': mate_apikey})
     url = f"{mate_url.rstrip('/')}/metadata/api/jav_censored/user_image_update?{params}"
-    headers = {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0',
-        'X-API-Key': mate_apikey
-    }
     
     CHUNK_SIZE = 500
     total_updated = 0
@@ -344,18 +339,33 @@ def update_ff_user_images(global_config, files_list):
     try:
         for i in range(0, len(files_list), CHUNK_SIZE):
             chunk = files_list[i:i + CHUNK_SIZE]
-            payload = json.dumps({'apikey': mate_apikey, 'files': chunk}).encode('utf-8')
-            req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
+            
+            form_payload = {
+                'apikey': mate_apikey,
+                'files': json.dumps(chunk)
+            }
+            encoded_data = urllib.parse.urlencode(form_payload).encode('utf-8')
+            
+            req = urllib.request.Request(url, data=encoded_data, method='POST')
+            req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+
             with urllib.request.urlopen(req, timeout=30) as resp:
-                res_json = json.loads(resp.read().decode('utf-8'))
-                if res_json.get('ret') in ['success', 'warning']:
-                    total_updated += res_json.get('updated_count', 0)
-                    total_skipped += res_json.get('skipped_count', 0)
-                    total_not_found += res_json.get('not_found_count', 0)
-                else:
-                    return False, f"FF API 오류: {res_json.get('msg', '알 수 없는 응답')}"
+                raw_resp = resp.read().decode('utf-8')
+                try:
+                    res_json = json.loads(raw_resp)
+                except Exception:
+                    return False, f"FF 응답 파싱 실패 (Raw: {raw_resp[:100]})"
+
+                if res_json.get('ret') != 'success':
+                    return False, f"FF 처리 실패 ({res_json.get('ret')}): {res_json.get('msg', '상세 사유 없음')}"
+
+                total_updated += res_json.get('updated_count', 0)
+                total_skipped += res_json.get('skipped_count', 0)
+                total_not_found += res_json.get('not_found_count', 0)
                     
-        return True, f"FF 로컬 메타 DB 동기화 성공 (갱신: {total_updated:,}건, 스킵: {total_skipped:,}건, 미등록: {total_not_found:,}건)"
+        return True, f"FF 메타 DB 반영 성공 (갱신: {total_updated:,}건, 스킵: {total_skipped:,}건, 미등록: {total_not_found:,}건)"
+
     except urllib.error.HTTPError as e:
         err_body = ""
         try: err_body = f" - {e.read().decode('utf-8')}"
@@ -537,7 +547,7 @@ def worker(task_data, core_api, start_index):
         columns = [
             {"key": "section_name", "label": "라이브러리", "width": "12%"},
             {"key": "title", "label": "제목 (클릭시 이동)", "width": "40%", "type": "link", "link_key": "id"},
-            {"key": "reason", "label": "상태 / 사유", "width": "38%"},
+            {"key": "reason", "label": "상태 / 사유", "width": "38%", "type": "image_preview", "img_url_key": "img_url"},
             {"key": "action", "label": "실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn"}
         ]
 
@@ -713,10 +723,8 @@ def worker(task_data, core_api, start_index):
                         "op_action": "match", "raw_path": item.get('all_files', '').split('|||')[0]
                     })
 
-        # ----- [4] 유저 포스터 일괄 적용 (영구 DB 캐시 및 Base64 팝업) -----
+        # ----- [4] 유저 포스터 일괄 적용 (영구 DB 캐시) -----
         elif mode == "user_poster":
-            import base64
-            
             img_root = task_data.get('image_server_path')
             web_url_root = task_data.get('image_web_url', '').rstrip('/')
             
@@ -742,10 +750,8 @@ def worker(task_data, core_api, start_index):
                             
                             if not user_posters[raw_pid]['preview']:
                                 user_posters[raw_pid]['preview'] = rel_path
-                                
                             if f not in user_posters[raw_pid]['files']:
                                 user_posters[raw_pid]['files'].append(f)
-
             except Exception as e:
                 task.log(f"포스터 경로 스캔 오류: {e}")
                 task.update_state('error')
@@ -762,20 +768,6 @@ def worker(task_data, core_api, start_index):
             task.log(f"스캔 완료. {len(user_posters):,}개의 고유 품번 포스터와 대조를 시작합니다. (이전 적용 완료: {len(applied_posters):,}건 제외)")
             
             title_regex = re.compile(r'^\[([A-Za-z0-9\-_]+)\]')
-            
-            modal_html_content = """
-            <div style="background:#111; padding:15px; border-radius:8px; border:1px solid #444; max-width:90%; max-height:90%; display:flex; flex-direction:column; box-shadow:0 10px 30px rgba(0,0,0,0.8);">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <span id="pmh-poster-title" style="color:#e5a00d; font-weight:bold; font-size:15px;">포스터 보기</span>
-                    <button onclick="document.getElementById('pmh-poster-modal').remove();" style="background:none; border:none; color:#aaa; cursor:pointer; font-size:18px;"><i class="fas fa-times"></i></button>
-                </div>
-                <div style="flex-grow:1; display:flex; justify-content:center; align-items:center; min-height:0; position:relative;">
-                    <i id="pmh-poster-spin" class="fas fa-spinner fa-spin" style="position:absolute; font-size:30px; color:#e5a00d;"></i>
-                    <img id="pmh-poster-img" src="" style="max-width:100%; max-height:70vh; object-fit:contain; border-radius:4px; opacity:0; transition:opacity 0.2s;" onload="this.style.opacity=1; document.getElementById('pmh-poster-spin').style.display='none';">
-                </div>
-            </div>
-            """
-            b64_html = base64.b64encode(modal_html_content.encode('utf-8')).decode('utf-8')
             
             skip_count = 0
             for idx, item in enumerate(all_items):
@@ -797,7 +789,6 @@ def worker(task_data, core_api, start_index):
                     
                     if db_pid in user_posters:
                         poster_info = user_posters[db_pid]
-                        
                         if isinstance(poster_info, dict):
                             rel_path = poster_info.get('preview', '')
                             poster_files = poster_info.get('files', [])
@@ -808,28 +799,6 @@ def worker(task_data, core_api, start_index):
                         safe_rel_path = urllib.parse.quote(str(rel_path), safe='/')
                         img_url = f"{web_url_root}/{safe_rel_path}"
                         
-                        safe_title = db_title.replace("'", " ").replace('"', ' ')
-                        
-                        popup_js = f"""
-                        event.preventDefault();
-                        let m = document.getElementById('pmh-poster-modal');
-                        if (!m) {{
-                            m = document.createElement('div');
-                            m.id = 'pmh-poster-modal';
-                            m.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:999999; display:flex; justify-content:center; align-items:center; flex-direction:column; backdrop-filter:blur(5px);';
-                            m.innerHTML = decodeURIComponent(escape(window.atob('{b64_html}')));
-                            document.body.appendChild(m);
-                            m.addEventListener('click', function(e) {{ if(e.target===m) m.remove(); }});
-                        }}
-                        document.getElementById('pmh-poster-title').innerText = '{safe_title}';
-                        document.getElementById('pmh-poster-spin').style.display = 'block';
-                        document.getElementById('pmh-poster-img').style.opacity = '0';
-                        document.getElementById('pmh-poster-img').src = '{img_url}';
-                        """
-                        
-                        popup_js = popup_js.replace('\n', ' ').replace('\r', '').replace('  ', ' ')
-                        reason_html = f'<a href="#" onclick="{popup_js}" style="color:#2f96b4; text-decoration:none;" title="클릭하여 포스터 미리보기"><i class="fas fa-image"></i> 적용 가능 (미리보기)</a>'
-                        
                         result_data.append({
                             "id": item['id'], 
                             "section_name": item['section_name'], 
@@ -837,8 +806,10 @@ def worker(task_data, core_api, start_index):
                             "_raw_sec_id": sec_id,
                             "_poster_files": json.dumps(poster_files),
                             "title": db_title, 
-                            "reason": reason_html, 
-                            "op_action": "match"
+                            "reason": "적용 가능",
+                            "img_url": img_url,
+                            "op_action": "match",
+                            "raw_path": item.get('all_files', '').split('|||')[0]
                         })
                         
             task.log(f"  -> 영구 DB 이력 필터링으로 총 {skip_count:,}개의 아이템 처리를 스킵했습니다.")
@@ -1044,7 +1015,6 @@ def worker(task_data, core_api, start_index):
                     all_sync_files.update(p_list)
                 except: pass
             else:
-                # 단일 실행 등으로 파일 목록이 없으면 PID 기반 기본 파일명 유추
                 raw_pid = it.get('_raw_db_pid')
                 if raw_pid:
                     all_sync_files.add(f"{raw_pid}_p_user.jpg")
@@ -1053,13 +1023,14 @@ def worker(task_data, core_api, start_index):
         if all_sync_files:
             task.log(f"🖼️ [선행 작업] FF 로컬 메타 DB에 유저 이미지({len(all_sync_files):,}개 파일) 동기화 요청 중...")
             success, msg = update_ff_user_images(core_api['config'], list(all_sync_files))
-            if success:
-                task.log(f"   ✅ {msg}")
-            else:
+            
+            if not success:
                 task.log(f"   ❌ {msg}")
-                task.log("   🛑 FF 메타데이터 DB 동기화에 실패하여 안전을 위해 리매칭을 중단합니다.")
+                task.log("   🛑 FF 메타데이터 DB 동기화에 실패하여 안전을 위해 Plex 리매칭을 중단합니다.")
                 task.update_state('error')
                 return
+                
+            task.log(f"   ✅ {msg}")
 
     history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'jav_manager_poster_history.db')
 
