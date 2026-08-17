@@ -25,6 +25,32 @@ window.PmhUICore = {
         }
     },
 
+    showImageModal: function(url, title) {
+        let m = document.getElementById('pmh-image-modal');
+        if (m) m.remove();
+        
+        m = document.createElement('div');
+        m.id = 'pmh-image-modal';
+        m.style.cssText = 'position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.85); z-index:99999999; display:flex; justify-content:center; align-items:center; backdrop-filter:blur(5px); cursor:pointer; user-select:none;';
+        m.innerHTML = `
+            <div id="pmh-img-modal-card" style="background:#111; padding:15px; border-radius:8px; border:1px solid #444; max-width:90vw; max-height:90vh; display:flex; flex-direction:column; box-shadow:0 10px 30px rgba(0,0,0,0.9); cursor:pointer; box-sizing:border-box;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; width:100%; box-sizing:border-box;">
+                    <span id="pmh-img-modal-title" style="color:#e5a00d; font-weight:bold; font-size:13px; word-break:break-all; overflow-wrap:anywhere; line-height:1.4; width:100%;"></span>
+                </div>
+                <div style="flex-grow:1; display:flex; justify-content:center; align-items:center; min-height:120px; position:relative; overflow:hidden;">
+                    <i id="pmh-img-modal-spin" class="fas fa-spinner fa-spin" style="position:absolute; font-size:30px; color:#e5a00d;"></i>
+                    <img id="pmh-img-modal-img" src="" style="max-width:100%; max-height:72vh; object-fit:contain; border-radius:4px; opacity:0; transition:opacity 0.2s;" onload="this.style.opacity=1; document.getElementById('pmh-img-modal-spin').style.display='none'; const imgW = Math.max(280, this.getBoundingClientRect().width); document.getElementById('pmh-img-modal-card').style.width = (imgW + 30) + 'px';">
+                </div>
+                <div style="font-size:10px; color:#777; text-align:center; margin-top:8px;">화면 어디든 클릭하면 닫힙니다.</div>
+            </div>
+        `;
+        document.body.appendChild(m);
+        m.addEventListener('click', () => m.remove());
+        
+        document.getElementById('pmh-img-modal-title').innerText = title || '이미지 미리보기';
+        document.getElementById('pmh-img-modal-img').src = url;
+    },
+
     renderInputsHtml: function(inputs, savedOptions, currentSecId = "all") {
         if (!inputs || inputs.length === 0) return '';
         let html = '';
@@ -432,6 +458,13 @@ window.PmhUICore = {
 
         ctx.c.addEventListener('click', (e) => {
 
+            const imgBtn = e.target.closest('.pmh-image-preview-btn');
+            if (imgBtn) {
+                e.preventDefault(); e.stopPropagation();
+                PmhUICore.showImageModal(imgBtn.dataset.url, imgBtn.dataset.title);
+                return;
+            }
+
             const toggleBtn = e.target.closest(`#pmh_btn_toggle_form_${config.toolId}`);
             if (toggleBtn) {
                 e.preventDefault();
@@ -761,7 +794,12 @@ window.PmhUICore = {
                             const rawText = String(val).replace(/<[^>]*>?/gm, '').trim();
                             const safeTitle = rawText.replace(/"/g, '&quot;');
 
-                            if (col.type === 'link' && row[col.link_key]) {
+                            if (col.type === 'image_preview' && row[col.img_url_key || 'img_url']) {
+                                const imgUrl = row[col.img_url_key || 'img_url'];
+                                const itemTitle = String(row[col.title_key || 'title'] || row.title || row.name || val || '').replace(/"/g, '&quot;');
+                                displayHtml = `<a href="#" class="pmh-image-preview-btn" data-url="${imgUrl}" data-title="${itemTitle}" style="color:#2f96b4; text-decoration:none;"><i class="fas fa-image"></i> ${val} (미리보기)</a>`;
+                            }
+                            else if (col.type === 'link' && row[col.link_key]) {
                                 if (isMobileEnv) {
                                     displayHtml = `<span style="color:${isErr ? '#ff6b6b' : '#2f96b4'}; font-weight:bold;">${val}</span>`;
                                 } else {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.113
+// @version      0.8.114
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -5835,9 +5835,9 @@ GM_addStyle(`
                         </div>
 
                         <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(47, 150, 180, 0.4); padding: 10px; border-radius: 4px;">
-                            <label class="pmh-check-label" style="color:#2f96b4; font-weight:bold; cursor:pointer; display:flex; align-items:center; gap:8px;" title="깃허브 대신 무조건 로컬 서버에서 UI Core JS/CSS를 불러오며 캐시를 사용하지 않습니다.">
+                            <label class="pmh-check-label" style="color:#2f96b4; font-weight:bold; cursor:pointer; display:flex; align-items:center; gap:8px;" title="UI Core(JS/CSS)의 브라우저 캐싱을 끄고 새로고침(F5) 시마다 서버의 최신 소스를 실시간으로 읽어옵니다. (업데이트 확인 비활성화)">
                                 <input type="checkbox" id="pmh-set-dev-mode" style="width:16px; height:16px; cursor:pointer;" ${ClientSettings.devMode ? 'checked' : ''}>
-                                <i class="fas fa-laptop-code"></i> 프론트엔드 개발 모드 (Local Assets Only)
+                                <i class="fas fa-laptop-code"></i> 프론트엔드 개발 모드 (에셋 캐시 비활성화 & 실시간 동기화)
                             </label>
                         </div>
 
@@ -6216,66 +6216,40 @@ GM_addStyle(`
                 };
             });
 
-            let cachedCss = "";
-            let cachedJs = "";
+            const LOCAL_UI_CSS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.css?v=${CURRENT_VERSION}`;
+            const LOCAL_UI_JS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.js?v=${CURRENT_VERSION}`;
 
-            if (ClientSettings.devMode) {
-                infoLog(`[PMH Boot] 🛠️ DEV_MODE 켜짐! 로컬 서버에서 최신 UI Core 소스를 직접 가져옵니다...`);
-                const LOCAL_UI_CSS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.css?t=${Date.now()}`;
-                const LOCAL_UI_JS = `${ClientSettings.masterUrl}/api/client/pmh_ui_core.js?t=${Date.now()}`;
+            const savedVer = GM_getValue('pmh_ui_cache_version', '');
+            let cachedCss = GM_getValue('pmh_ui_core_css_cache', null);
+            let cachedJs = GM_getValue('pmh_ui_core_js_cache', null);
+
+            if (!cachedCss || !cachedJs || savedVer !== CURRENT_VERSION || ClientSettings.devMode) {
+                infoLog(`[PMH Boot] 로컬 마스터 서버(${ClientSettings.masterUrl})에서 UI Core 동기화 중...`);
 
                 cachedCss = await new Promise((resolve, reject) => {
                     GM_xmlhttpRequest({
                         method: "GET", url: LOCAL_UI_CSS, timeout: 5000,
-                        onload: (r) => r.status === 200 ? resolve(r.responseText) : reject(`Dev CSS 로드 실패 (${r.status})`),
-                        onerror: () => reject("Dev CSS 서버 접근 불가"), ontimeout: () => reject("Dev CSS 응답 지연")
+                        onload: (r) => r.status === 200 ? resolve(r.responseText) : reject(`로컬 UI CSS 로드 실패 (HTTP ${r.status})`),
+                        onerror: () => reject("로컬 PMH 마스터 서버 접근 불가"), 
+                        ontimeout: () => reject("로컬 PMH 서버 응답 지연")
                     });
                 });
 
                 cachedJs = await new Promise((resolve, reject) => {
                     GM_xmlhttpRequest({
                         method: "GET", url: LOCAL_UI_JS, timeout: 5000,
-                        onload: (r) => r.status === 200 ? resolve(r.responseText) : reject(`Dev JS 로드 실패 (${r.status})`),
-                        onerror: () => reject("Dev JS 서버 접근 불가"), ontimeout: () => reject("Dev JS 응답 지연")
+                        onload: (r) => r.status === 200 ? resolve(r.responseText) : reject(`로컬 UI JS 로드 실패 (HTTP ${r.status})`),
+                        onerror: () => reject("로컬 PMH 마스터 서버 접근 불가"), 
+                        ontimeout: () => reject("로컬 PMH 서버 응답 지연")
                     });
                 });
 
+                GM_setValue('pmh_ui_core_css_cache', cachedCss);
+                GM_setValue('pmh_ui_core_js_cache', cachedJs);
+                GM_setValue('pmh_ui_cache_version', CURRENT_VERSION);
+                infoLog(`[PMH Boot] UI Core (v${CURRENT_VERSION}) 로컬 캐시 동기화 완료!`);
             } else {
-                const GITHUB_UI_CSS = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.css";
-                const GITHUB_UI_JS = "https://raw.githubusercontent.com/golmog/plex_meta_helper/main/pmh_ui_core.js";
-
-                const latestVer = GM_getValue('pmh_latest_version', CURRENT_VERSION);
-                const savedVer = GM_getValue('pmh_ui_cache_version', '');
-
-                cachedCss = GM_getValue('pmh_ui_core_css_cache', null);
-                cachedJs = GM_getValue('pmh_ui_core_js_cache', null);
-
-                if (!cachedCss || !cachedJs || savedVer !== latestVer) {
-                    infoLog(`[PMH Boot] UI Core 캐시 없음 또는 버전 변경(${savedVer} -> ${latestVer}). GitHub에서 새로 다운로드합니다...`);
-
-                    cachedCss = await new Promise((resolve, reject) => {
-                        GM_xmlhttpRequest({
-                            method: "GET", url: `${GITHUB_UI_CSS}?t=${Date.now()}`, timeout: 10000,
-                            onload: (r) => r.status === 200 ? resolve(r.responseText) : reject(`CSS 로드 실패 (${r.status})`),
-                            onerror: () => reject("CSS 네트워크 오류"), ontimeout: () => reject("CSS 시간 초과")
-                        });
-                    });
-
-                    cachedJs = await new Promise((resolve, reject) => {
-                        GM_xmlhttpRequest({
-                            method: "GET", url: `${GITHUB_UI_JS}?t=${Date.now()}`, timeout: 10000,
-                            onload: (r) => r.status === 200 ? resolve(r.responseText) : reject(`JS 로드 실패 (${r.status})`),
-                            onerror: () => reject("JS 네트워크 오류"), ontimeout: () => reject("JS 시간 초과")
-                        });
-                    });
-
-                    GM_setValue('pmh_ui_core_css_cache', cachedCss);
-                    GM_setValue('pmh_ui_core_js_cache', cachedJs);
-                    GM_setValue('pmh_ui_cache_version', latestVer);
-                    infoLog(`[PMH Boot] UI Core (v${latestVer}) 로컬 캐시 저장 완료!`);
-                } else {
-                    infoLog(`[PMH Boot] ⚡ 네트워크 연결 생략: 로컬에 캐시된 UI Core (v${savedVer})를 즉시 렌더링합니다!`);
-                }
+                infoLog(`[PMH Boot] ⚡ 브라우저에 캐시된 UI Core (v${savedVer}) 즉시 렌더링`);
             }
 
             let styleEl = document.getElementById('pmh-shared-css-inline');
