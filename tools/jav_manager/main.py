@@ -243,7 +243,8 @@ def run(data, core_api):
                 'op_action': data.get('op_action', 'match'),
                 'section_name': data.get('section_name', ''),
                 '_raw_db_pid': data.get('_raw_db_pid', ''),
-                '_raw_sec_id': data.get('_raw_sec_id', '')
+                '_raw_sec_id': data.get('_raw_sec_id', ''),
+                '_poster_files': data.get('_poster_files', ''),
             }]
             task_data = data.copy()
             task_data['target_items'] = items
@@ -318,6 +319,43 @@ def _mark_poster_applied(db_path, section_id, pid):
             conn.execute("INSERT OR REPLACE INTO poster_history (section_id, pid) VALUES (?, ?)", (str(section_id), pid))
     except Exception as e:
         pass
+
+
+# =====================================================================
+# FF metadata 로컬 메타 DB 유저 이미지 동기화 헬퍼
+# =====================================================================
+def update_ff_user_images(global_config, files_list):
+    mate_url = global_config.get('mate_url', '')
+    mate_apikey = global_config.get('mate_apikey', '')
+    if not mate_url or not mate_apikey:
+        return False, "FF(Plex Mate) 연결 설정(BASE.FF_URL / BASE.FF_APIKEY) 누락"
+
+    url = f"{mate_url.rstrip('/')}/metadata/api/jav_censored/user_image_update?apikey={mate_apikey}"
+    headers = {'Content-Type': 'application/json'}
+    
+    CHUNK_SIZE = 500
+    total_updated = 0
+    total_skipped = 0
+    total_not_found = 0
+
+    try:
+        for i in range(0, len(files_list), CHUNK_SIZE):
+            chunk = files_list[i:i + CHUNK_SIZE]
+            payload = json.dumps({'files': chunk}).encode('utf-8')
+            req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                res_json = json.loads(resp.read().decode('utf-8'))
+                if res_json.get('ret') in ['success', 'warning']:
+                    total_updated += res_json.get('updated_count', 0)
+                    total_skipped += res_json.get('skipped_count', 0)
+                    total_not_found += res_json.get('not_found_count', 0)
+                else:
+                    return False, f"FF API 오류: {res_json.get('msg', '알 수 없는 응답')}"
+                    
+        return True, f"FF 로컬 메타 DB 동기화 성공 (갱신: {total_updated:,}건, 스킵: {total_skipped:,}건, 미등록: {total_not_found:,}건)"
+    except Exception as e:
+        return False, f"FF API 통신 실패: {e}"
+
 
 # ==============================================================================
 # 워커 쓰레드 로직 (백그라운드 처리)
@@ -681,7 +719,7 @@ def worker(task_data, core_api, start_index):
                 
             task.log(f"이미지 서버 경로({img_root}) 스캔 중...")
             
-            user_posters = {}
+            user_posters = defaultdict(lambda: {'preview': '', 'files': []})
             poster_regex = re.compile(r'^([a-zA-Z0-9\-]+)_(p|pl)_user\.jpg$', re.IGNORECASE)
             
             try:
@@ -691,11 +729,15 @@ def worker(task_data, core_api, start_index):
                         pid_match = poster_regex.match(f)
                         if pid_match:
                             raw_pid = pid_match.group(1).lower()
+                            rel_dir = os.path.relpath(root, img_root)
+                            rel_path = f if rel_dir == '.' else f"{rel_dir}/{f}".replace('\\', '/')
                             
-                            if raw_pid not in user_posters:
-                                rel_dir = os.path.relpath(root, img_root)
-                                rel_path = f if rel_dir == '.' else f"{rel_dir}/{f}".replace('\\', '/')
-                                user_posters[raw_pid] = rel_path
+                            if not user_posters[raw_pid]['preview']:
+                                user_posters[raw_pid]['preview'] = rel_path
+                                
+                            if f not in user_posters[raw_pid]['files']:
+                                user_posters[raw_pid]['files'].append(f)
+
             except Exception as e:
                 task.log(f"포스터 경로 스캔 오류: {e}")
                 task.update_state('error')
@@ -777,6 +819,7 @@ def worker(task_data, core_api, start_index):
                             "section_name": item['section_name'], 
                             "_raw_db_pid": db_pid,
                             "_raw_sec_id": sec_id,
+                            "_poster_files": json.dumps(user_posters[db_pid]['files']),
                             "title": db_title, 
                             "reason": reason_html, 
                             "op_action": "match"
@@ -973,6 +1016,31 @@ def worker(task_data, core_api, start_index):
         task.update_state('error')
         task.log(f"❌ Plex 서버 연결 실패: {str(e)}")
         return
+
+    # 유저 포스터 모드 시 FF 로컬 메타 DB 선행 동기화
+    if mode == "user_poster":
+        all_sync_files = set()
+        for it in pending_items:
+            raw_p_files = it.get('_poster_files')
+            if raw_p_files:
+                try:
+                    p_list = json.loads(raw_p_files) if isinstance(raw_p_files, str) else raw_p_files
+                    all_sync_files.update(p_list)
+                except: pass
+            else:
+                # 단일 실행 등으로 파일 목록이 없으면 PID 기반 기본 파일명 유추
+                raw_pid = it.get('_raw_db_pid')
+                if raw_pid:
+                    all_sync_files.add(f"{raw_pid}_p_user.jpg")
+                    all_sync_files.add(f"{raw_pid}_pl_user.jpg")
+
+        if all_sync_files:
+            task.log(f"🖼️ [선행 작업] FF 로컬 메타 DB에 유저 이미지({len(all_sync_files):,}개 파일) 동기화 요청 중...")
+            success, msg = update_ff_user_images(core_api['config'], list(all_sync_files))
+            if success:
+                task.log(f"   ✅ {msg}")
+            else:
+                task.log(f"   ⚠️ {msg} (리매칭을 계속 진행합니다)")
 
     history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'jav_manager_poster_history.db')
 
