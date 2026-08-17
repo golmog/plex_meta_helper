@@ -788,8 +788,16 @@ def worker(task_data, core_api, start_index):
                         continue
                     
                     if db_pid in user_posters:
-                        rel_path = user_posters[db_pid]
-                        safe_rel_path = urllib.parse.quote(rel_path, safe='/')
+                        poster_info = user_posters[db_pid]
+                        
+                        if isinstance(poster_info, dict):
+                            rel_path = poster_info.get('preview', '')
+                            poster_files = poster_info.get('files', [])
+                        else:
+                            rel_path = str(poster_info)
+                            poster_files = [os.path.basename(rel_path)]
+
+                        safe_rel_path = urllib.parse.quote(str(rel_path), safe='/')
                         img_url = f"{web_url_root}/{safe_rel_path}"
                         
                         safe_title = db_title.replace("'", " ").replace('"', ' ')
@@ -819,7 +827,7 @@ def worker(task_data, core_api, start_index):
                             "section_name": item['section_name'], 
                             "_raw_db_pid": db_pid,
                             "_raw_sec_id": sec_id,
-                            "_poster_files": json.dumps(user_posters[db_pid]['files']),
+                            "_poster_files": json.dumps(poster_files),
                             "title": db_title, 
                             "reason": reason_html, 
                             "op_action": "match"
