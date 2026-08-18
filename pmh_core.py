@@ -28,7 +28,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.114"
+__version__ = "0.8.115"
 
 logger = logging.getLogger("PMH")
 
@@ -2697,10 +2697,12 @@ def perform_smart_media_action(
 
                 for q_type, q_text in queries_to_try:
                     if is_western_av or is_custom_agent:
-                        search_params = { 'title': q_text, 'manual': manual_val, 'agent': target_agent, 'language': lang_code }
+                        search_params = { 'title': q_text, 'agent': target_agent, 'language': lang_code }
+                        if manual_match:
+                            search_params['manual'] = '1'
+                            
                         search_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
                         if task_logger: task_logger(f"📡 [Western/Custom] 직접 API 검색 시도... ({q_type}: '{q_text}')")
-                        matches = execute_plex_action_safe(lambda: _fetch_plex_api(search_url))
 
                         # 1차 검색 실패 시 날짜 도려내고 2차 검색 (서양 AV 전용 폴백)
                         if not matches:
