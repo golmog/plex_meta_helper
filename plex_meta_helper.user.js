@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.115
+// @version      0.8.116
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -918,7 +918,7 @@ GM_addStyle(`
             matchDoUnmatchFirst: false,
             matchSkipSimCheck: false,
             useCustomScore: false,
-            customAgentScore: 80,
+            customAgentScore: 95,
             manualMatch: false,
         };
         return { ...def, ...(GM_getValue(CLIENT_SETTINGS_KEY, {})) };
@@ -5742,6 +5742,9 @@ GM_addStyle(`
     function openClientSettingsModal() {
         if (document.getElementById('pmh-client-settings-modal')) return;
 
+        const toolDropdown = document.getElementById('pmh-tool-dropdown');
+        if (toolDropdown) toolDropdown.style.display = 'none';
+
         let mappingsHtml = '';
         if (ClientSettings.pathMappings && ClientSettings.pathMappings.length > 0) {
             ClientSettings.pathMappings.forEach((m) => {
@@ -5758,7 +5761,7 @@ GM_addStyle(`
         }
 
         const modalHtml = `
-            <div id="pmh-client-settings-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 999999; display: flex; justify-content: center; align-items: center; backdrop-filter: blur(5px);">
+            <div id="pmh-client-settings-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 10000000; display: flex; justify-content: center; align-items: center; backdrop-filter: blur(5px);">
                 <div class="pmh-modal-content" style="background: #1e2124; border: 1px solid #e5a00d; border-radius: 8px; width: 550px; max-width: 95vw; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.8); position: relative;">
                     <div style="background: #111; padding: 15px; border-bottom: 1px solid #333; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
                         <h2 style="margin: 0; color: #e5a00d; font-size: 16px;"><i class="fas fa-cogs"></i> PMH 프론트엔드 설정</h2>
@@ -6098,7 +6101,7 @@ GM_addStyle(`
                 matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked,
                 matchSkipSimCheck: document.getElementById('pmh-set-match-skip-sim').checked,
                 useCustomScore: document.getElementById('pmh-set-use-custom-score').checked,
-                customAgentScore: parseInt(document.getElementById('pmh-set-custom-score').value, 10) || 80,
+                customAgentScore: parseInt(document.getElementById('pmh-set-custom-score').value, 10) || 95,
             };
 
             GM_setValue(CLIENT_SETTINGS_KEY, ClientSettings);
