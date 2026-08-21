@@ -24,11 +24,14 @@ from contextlib import contextmanager
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
+from flask import Response
+from collections import deque
+from logging.handlers import RotatingFileHandler
 
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.9.117"
+__version__ = "0.9.118"
 
 logger = logging.getLogger("PMH")
 
@@ -240,7 +243,7 @@ def stop_scheduler_daemon():
         try:
             while not MEDIA_ACTION_QUEUE.empty():
                 try: MEDIA_ACTION_QUEUE.get_nowait()
-                except: break
+                except queue.Empty: break
             MEDIA_ACTION_STATUS.clear()
             MEDIA_ACTION_QUEUE.put({'task_id': 'KILL', 'item_id': 0, 'action': 'kill', 'plex_url': '', 'plex_token': '', 'data': {}})
         except Exception as e:
@@ -507,9 +510,9 @@ def get_db_connection(db_path):
     finally:
         if conn:
             try: conn.rollback()
-            except Exception as e:
-                logger.warning(f"DB Connection Rollback Error: {str(e)}")
-            conn.close()
+            except Exception: pass
+            try: conn.close()
+            except Exception: pass
 
 def is_season_folder(folder_name):
     name_lower = unicodedata.normalize('NFC', folder_name).lower().strip()
@@ -714,8 +717,7 @@ def handle_media_detail(rating_key, db_engine):
                         dur_res = cursor.fetchone()
                         
                         if dur_res and dur_res[0]: total_duration = int(dur_res[0])
-                    except Exception as e:
-                        logger.warning(f"[Scheduler] 총 재생 시간 계산 중 오류: {e}")
+                    except Exception: pass
 
                 elif m_type == 3:
                     query = f"""SELECT mp.file FROM metadata_items ep JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE ep.parent_id = {ph} AND ep.metadata_type = 4 ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC"""
@@ -735,8 +737,7 @@ def handle_media_detail(rating_key, db_engine):
                         dur_res = cursor.fetchone()
                         
                         if dur_res and dur_res[0]: total_duration = int(dur_res[0])
-                    except Exception as e:
-                        logger.warning(f"[Scheduler] 총 재생 시간 계산 중 오류: {e}")
+                    except Exception: pass
 
                 elif m_type == 8:
                     query = f"""SELECT DISTINCT mp.file FROM metadata_items track JOIN metadata_items album ON track.parent_id = album.id JOIN media_items m ON m.metadata_item_id = track.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE album.parent_id = {ph} AND track.metadata_type = 10"""
@@ -895,16 +896,59 @@ def handle_media_detail(rating_key, db_engine):
 # [코어 작업 관리자 (Task Manager)]
 # ==============================================================================
 class CoreTaskManager:
+    # 1. 툴별 인메모리 최근 로그 링버퍼 (RAM)
+    _MEMORY_LOGS = {}
+    _MEMORY_LOGS_LOCK = threading.Lock()
+
+    # 2. 툴별 10MB x 5 로테이션 파일 로거 풀 (Handler 누수 방지)
+    _TASK_FILE_LOGGERS = {}
+    _TASK_LOGGERS_LOCK = threading.Lock()
+
     def __init__(self, base_dir, tool_id, server_id="default"):
         self.base_dir = base_dir
         self.tool_id = tool_id
-        self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_task.db")
-        os.makedirs(os.path.dirname(self.db_file), exist_ok=True)
+        self.server_id = server_id
+        self.task_key = f"{tool_id}_{server_id}"
+        
+        task_dir = os.path.join(base_dir, 'task_logs')
+        os.makedirs(task_dir, exist_ok=True)
+        
+        self.db_file = os.path.join(task_dir, f"{self.task_key}_task.db")
+        self.log_file = os.path.join(task_dir, f"{self.task_key}.log")
         self._lock = threading.Lock()
+
+        # 메모리 버퍼 초기화
+        with CoreTaskManager._MEMORY_LOGS_LOCK:
+            if self.task_key not in CoreTaskManager._MEMORY_LOGS:
+                CoreTaskManager._MEMORY_LOGS[self.task_key] = deque(maxlen=60)
+
+    def _get_file_logger(self):
+        """10MB x 5 백업 파일 로테이션 전용 로거 반환 (스레드 안전)"""
+        with CoreTaskManager._TASK_LOGGERS_LOCK:
+            if self.task_key not in CoreTaskManager._TASK_FILE_LOGGERS:
+                logger_name = f"PMH_Task_{self.task_key}"
+                t_logger = logging.getLogger(logger_name)
+                t_logger.setLevel(logging.INFO)
+                t_logger.propagate = False
+                t_logger.handlers.clear()
+
+                fh = RotatingFileHandler(
+                    self.log_file,
+                    maxBytes=10 * 1024 * 1024,
+                    backupCount=5,
+                    encoding='utf-8'
+                )
+                formatter = logging.Formatter('%(message)s')
+                fh.setFormatter(formatter)
+                t_logger.addHandler(fh)
+
+                CoreTaskManager._TASK_FILE_LOGGERS[self.task_key] = t_logger
+
+            return CoreTaskManager._TASK_FILE_LOGGERS[self.task_key]
 
     @contextmanager
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_file, timeout=10.0)
+        conn = sqlite3.connect(self.db_file, timeout=5.0)
         conn.row_factory = sqlite3.Row
         try: yield conn
         finally: conn.commit(); conn.close()
@@ -913,36 +957,25 @@ class CoreTaskManager:
         with self._get_conn() as conn:
             c = conn.cursor()
             c.execute("CREATE TABLE IF NOT EXISTS task_info (state TEXT, progress INTEGER, total INTEGER, task_data TEXT)")
-            c.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, log_text TEXT)")
             c.execute("CREATE TABLE IF NOT EXISTS completed_items (item_id TEXT)")
             c.execute("SELECT count(*) FROM task_info")
             if c.fetchone()[0] == 0:
                 c.execute("INSERT INTO task_info (state, progress, total, task_data) VALUES ('completed', 0, 0, '{}')")
 
-    def push_completed_item(self, item_id):
-        with self._lock:
-            self._setup_db()
-            try:
-                with self._get_conn() as conn:
-                    conn.execute("INSERT INTO completed_items (item_id) VALUES (?)", (str(item_id),))
-            except Exception as e:
-                logger.debug(f"[TaskManager] 완료 항목 추가 실패 ({item_id}): {e}")
+    def log(self, msg):
+        stamp = datetime.now().strftime('%H:%M:%S')
+        log_line = f"[{stamp}] {msg}"
+        tool_name = get_tool_name(self.base_dir, self.tool_id)
+        logger.info(f"[{tool_name}] {msg}")
 
-    def pop_completed_items(self):
-        with self._lock:
-            if not os.path.exists(self.db_file): return []
-            try:
-                with self._get_conn() as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT DISTINCT item_id FROM completed_items")
-                    rows = c.fetchall()
-                    items = [r['item_id'] for r in rows]
-                    if items:
-                        c.execute("DELETE FROM completed_items")
-                    return items
-            except Exception as e:
-                logger.debug(f"[TaskManager] 완료 항목 추출 실패: {e}")
-                return []
+        with CoreTaskManager._MEMORY_LOGS_LOCK:
+            if self.task_key in CoreTaskManager._MEMORY_LOGS:
+                CoreTaskManager._MEMORY_LOGS[self.task_key].append(log_line)
+
+        try:
+            self._get_file_logger().info(log_line)
+        except Exception:
+            pass
 
     def load(self, include_target_items=False):
         with self._lock:
@@ -964,53 +997,34 @@ class CoreTaskManager:
                         "total": row['total'],
                         "task_data": raw_task_data
                     }
-                    c.execute("SELECT log_text FROM (SELECT id, log_text FROM logs ORDER BY id DESC LIMIT 50) sub ORDER BY id ASC")
-                    data['logs'] = [l['log_text'] for l in c.fetchall()]
+                    
+                    with CoreTaskManager._MEMORY_LOGS_LOCK:
+                        buf = CoreTaskManager._MEMORY_LOGS.get(self.task_key, [])
+                        data['logs'] = list(buf)
+                        
                     return data
             except Exception as e:
-                logger.debug(f"[TaskManager] 작업 데이터 로드 실패: {e}")
+                logger.debug(f"[TaskManager] 로드 실패: {e}")
                 return None
-
-    def save(self, data):
-        with self._lock:
-            self._setup_db()
-            try:
-                with self._get_conn() as conn:
-                    c = conn.cursor()
-                    task_data_str = json.dumps(data.get('task_data', {}), ensure_ascii=False)
-                    c.execute("UPDATE task_info SET state=?, progress=?, total=?, task_data=?", 
-                              (data.get('state', 'completed'), data.get('progress', 0), data.get('total', 0), task_data_str))
-            except Exception as e:
-                logger.warning(f"[TaskManager] 태스크 상태 저장 실패: {e}")
 
     def init_task(self, task_data):
         with self._lock:
             self._setup_db()
             with self._get_conn() as conn:
                 c = conn.cursor()
-                c.execute("DELETE FROM logs")
                 c.execute("DELETE FROM completed_items")
                 c.execute("UPDATE task_info SET state='running', progress=0, total=?, task_data=?", 
                           (task_data.get('total', 0), json.dumps(task_data, ensure_ascii=False)))
-                c.execute("INSERT INTO logs (log_text) VALUES ('작업을 시작합니다...')")
+                
+            with CoreTaskManager._MEMORY_LOGS_LOCK:
+                if self.task_key in CoreTaskManager._MEMORY_LOGS:
+                    CoreTaskManager._MEMORY_LOGS[self.task_key].clear()
 
-    def reset(self):
-        with self._lock:
-            if os.path.exists(self.db_file):
-                try: os.remove(self.db_file)
-                except Exception as e:
-                    logger.warning(f"[TaskManager] DB 파일 삭제 중 오류: {e}")
+            try:
+                self._get_file_logger().info(f"\n=== [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 작업 시작 ===")
+            except Exception: pass
 
-    def log(self, msg):
-        stamp = datetime.now().strftime('%H:%M:%S')
-        log_line = f"[{stamp}] {msg}"
-        tool_name = get_tool_name(self.base_dir, self.tool_id)
-        logger.info(f"[{tool_name}] {msg}")
-        with self._lock:
-            self._setup_db()
-            with self._get_conn() as conn:
-                c = conn.cursor()
-                c.execute("INSERT INTO logs (log_text) VALUES (?)", (log_line,))
+            self.log("작업을 시작합니다...")
 
     def update_state(self, state, progress=None, total=None):
         with self._lock:
@@ -1024,6 +1038,38 @@ class CoreTaskManager:
                 else:
                     c.execute("UPDATE task_info SET state=?", (state,))
 
+    def save(self, data):
+        with self._lock:
+            self._setup_db()
+            try:
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    task_data_str = json.dumps(data.get('task_data', {}), ensure_ascii=False)
+                    c.execute("UPDATE task_info SET state=?, progress=?, total=?, task_data=?", 
+                              (data.get('state', 'completed'), data.get('progress', 0), data.get('total', 0), task_data_str))
+            except Exception as e:
+                logger.debug(f"[TaskManager] 저장 실패: {e}")
+
+    def reset(self):
+        with self._lock:
+            if os.path.exists(self.db_file):
+                try: os.remove(self.db_file)
+                except Exception: pass
+                
+            for i in ["", ".1", ".2", ".3", ".4", ".5"]:
+                f_path = self.log_file + i
+                if os.path.exists(f_path):
+                    try: os.remove(f_path)
+                    except Exception: pass
+
+            with CoreTaskManager._MEMORY_LOGS_LOCK:
+                if self.task_key in CoreTaskManager._MEMORY_LOGS:
+                    CoreTaskManager._MEMORY_LOGS[self.task_key].clear()
+
+            with CoreTaskManager._TASK_LOGGERS_LOCK:
+                if self.task_key in CoreTaskManager._TASK_FILE_LOGGERS:
+                    del CoreTaskManager._TASK_FILE_LOGGERS[self.task_key]
+
     def is_cancelled(self):
         with self._lock:
             if not os.path.exists(self.db_file): return True
@@ -1033,9 +1079,31 @@ class CoreTaskManager:
                     c.execute("SELECT state FROM task_info LIMIT 1")
                     row = c.fetchone()
                     if row: return row['state'] in ['cancelled', 'error']
-            except Exception as e:
-                logger.warning(f"[TaskManager] 작업 상태 확인 중 오류: {e}")
+            except Exception: pass
             return True
+
+    def push_completed_item(self, item_id):
+        with self._lock:
+            self._setup_db()
+            try:
+                with self._get_conn() as conn:
+                    conn.execute("INSERT INTO completed_items (item_id) VALUES (?)", (str(item_id),))
+            except Exception: pass
+
+    def pop_completed_items(self):
+        with self._lock:
+            if not os.path.exists(self.db_file): return []
+            try:
+                with self._get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT DISTINCT item_id FROM completed_items")
+                    rows = c.fetchall()
+                    items = [r['item_id'] for r in rows]
+                    if items:
+                        c.execute("DELETE FROM completed_items")
+                    return items
+            except Exception: return []
+
 
 # ==============================================================================
 # [코어 데이터 캐시 관리자]
@@ -1195,8 +1263,7 @@ class CoreDataManager:
                     for k, v in row_dict.items():
                         if isinstance(v, str) and (v.startswith('[') or v.startswith('{')):
                             try: row_dict[k] = json.loads(v)
-                            except Exception as e:
-                                logger.warning(f"[Core] JSON 파싱 오류: {e}")
+                            except (json.JSONDecodeError, ValueError): pass
                     data_rows.append(row_dict)
                 
                 result['data'] = data_rows
@@ -1286,20 +1353,26 @@ class CoreOptionsManager:
         try: yield conn
         finally: conn.commit(); conn.close()
 
-    def load(self):
+    def load(self, include_target_items=False) -> dict:
+        """저장된 툴 옵션을 딕셔너리로 반환 (실패 시 빈 dict 보장)"""
         with self._lock:
-            if not os.path.exists(self.db_file): return {}
+            if not os.path.exists(self.db_file): 
+                return {}
             try:
                 with self._get_conn() as conn:
                     c = conn.cursor()
                     c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='options'")
-                    if c.fetchone()[0] == 0: return {}
+                    if c.fetchone()[0] == 0: 
+                        return {}
                     c.execute("SELECT payload FROM options LIMIT 1")
                     row = c.fetchone()
-                    if row and row[0]: return json.loads(row[0])
+                    if row and row[0]:
+                        parsed = json.loads(row[0])
+                        return parsed if isinstance(parsed, dict) else {}
             except Exception as e:
-                logger.debug(f"[OptionsManager] 옵션 불러오기 실패: {e}")
+                logger.debug(f"[OptionsManager] 로드 실패: {e}")
                 return {}
+            return {}
 
     def save(self, data):
         with self._lock:
@@ -1338,8 +1411,7 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, se
     finally:
         try:
             tool_lock.release()
-        except RuntimeError as e:
-            logger.warning(f"[Worker] 툴 잠금 해제 중 오류: {e}")
+        except RuntimeError: pass
 
 
 # ==============================================================================
@@ -1380,7 +1452,6 @@ class UniversalPlexDatabaseEngine:
                         logger.error(f"❌ 'psycopg2-binary' 자동 설치 실패: {pip_err}")
                         raise ImportError("PostgreSQL 모듈 자동 설치에 실패했습니다. 수동으로 'pip install psycopg2-binary'를 실행해 주세요.")
 
-                # 2. PostgreSQL 커넥션 풀 초기화
                 schema = self.pg_config.get("SCHEMA", "plex, public")
                 logger.info(f"🐘 PostgreSQL 커넥션 풀을 초기화합니다. (Host: {self.pg_config.get('HOST', '127.0.0.1')}, DB: {self.pg_config.get('DBNAME', 'plex')})")
                 
@@ -1752,12 +1823,10 @@ def dispatch_request(subpath, method, args, data, global_config):
             sub_endpoint = subpath.replace('ff_metadata/', '', 1)
             target_url = f"{ff_url.rstrip('/')}/metadata/{sub_endpoint}"
             
-            # 1. URL 쿼리스트링에 apikey 결합
             qs_dict = args.copy()
             qs_dict['apikey'] = ff_apikey
             target_url += f"?{urlencode(qs_dict)}"
             
-            # 2. 헤더에 apikey 다중 결합
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0',
                 'X-API-Key': ff_apikey,
@@ -1932,9 +2001,8 @@ def dispatch_request(subpath, method, args, data, global_config):
             server_id = args.get('server_id', data.get('_server_id', 'default')) if data else args.get('server_id', 'default')
             
             options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
-            current_opts = options_mgr.load()
+            current_opts = options_mgr.load() or {}
             
-            # 1. 전역 설정(PostgreSQL 설정 포함)과 툴 옵션 병합 (Pylance unbound 방지)
             merged_config = global_config.copy() if global_config else {}
 
             if not current_opts.get('db_path'):
@@ -1946,7 +2014,6 @@ def dispatch_request(subpath, method, args, data, global_config):
                     cfg_sqlite_bin = "/usr/lib/plexmediaserver/Plex SQLite"
                 current_opts['sqlite_bin'] = cfg_sqlite_bin
 
-            # 2. Plex URL/토큰 설정 합성
             cfg_plex_url = merged_config.get("plex_url", "")
             cfg_plex_token = merged_config.get("plex_token", "")
             
@@ -1958,7 +2025,6 @@ def dispatch_request(subpath, method, args, data, global_config):
             merged_config['plex_db_path'] = current_opts['db_path']
             merged_config['plex_sqlite_bin'] = current_opts['sqlite_bin']
 
-            # 3. Universal DB API 및 Task/Data 매니저 생성
             db_api = create_db_api(merged_config)
             
             task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
@@ -2152,7 +2218,80 @@ def dispatch_request(subpath, method, args, data, global_config):
                 if not status_data: return {"error": "Task not found"}, 404
                 
                 return status_data, 200
-                
+
+            elif action == 'stream' and method == 'GET':
+                tool_name = get_tool_name(base_dir, tool_id)
+                logger.info(f"[{tool_name}] 🟢 SSE 실시간 스트림 연결 수립됨 (ServerID: {server_id[:8]})")
+
+                def generate_sse_events():
+                    yield ": ping\n\n"
+                    
+                    last_log_count = 0
+                    last_progress = -1
+                    last_state = ""
+                    ticks = 0
+                    not_found_retries = 0
+
+                    try:
+                        while True:
+                            t_data = task_mgr.load(include_target_items=False)
+                            
+                            if not t_data:
+                                not_found_retries += 1
+                                if not_found_retries < 20:
+                                    time.sleep(0.3)
+                                    continue
+                                logger.warning(f"[{tool_name}] ⚠️ 태스크 데이터를 찾을 수 없어 스트림을 종료합니다.")
+                                yield f"data: {json.dumps({'state': 'not_found'})}\n\n"
+                                break
+                            
+                            not_found_retries = 0
+
+                            curr_state = t_data.get('state', 'unknown')
+                            curr_progress = t_data.get('progress', 0)
+                            curr_logs = t_data.get('logs', [])
+                            curr_log_count = len(curr_logs)
+
+                            if (curr_state != last_state or curr_progress != last_progress 
+                                    or curr_log_count != last_log_count or ticks == 0):
+                                last_state = curr_state
+                                last_progress = curr_progress
+                                last_log_count = curr_log_count
+
+                                payload = {
+                                    'state': curr_state,
+                                    'progress': curr_progress,
+                                    'total': t_data.get('total', 0),
+                                    'logs': curr_logs
+                                }
+                                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                            
+                            elif ticks % 60 == 0:
+                                yield ": keepalive\n\n"
+
+                            if curr_state in ['completed', 'error', 'cancelled']:
+                                logger.info(f"[{tool_name}] 🏁 작업 {curr_state.upper()} 도달. 스트림 정상 마감.")
+                                break
+
+                            time.sleep(0.25)
+                            ticks += 1
+
+                    except GeneratorExit:
+                        pass
+                    finally:
+                        logger.info(f"[{tool_name}] ⚪ SSE 실시간 스트림 연결 해제됨")
+
+                resp = Response(
+                    generate_sse_events(), 
+                    mimetype='text/event-stream',
+                    headers={
+                        'Cache-Control': 'no-cache, no-transform',
+                        'X-Accel-Buffering': 'no',
+                        'Connection': 'keep-alive'
+                    }
+                )
+                return resp, 200
+
             elif action == 'cancel' and method == 'POST':
                 saved_task = task_mgr.load(include_target_items=False)
                 if saved_task and saved_task.get('state') == 'running':
@@ -2796,8 +2935,7 @@ def perform_smart_media_action(
                         for fpath in set(files_to_delete):
                             if os.path.exists(fpath):
                                 try: os.remove(fpath)
-                                except Exception as e:
-                                    logger.warning(f"[Core] 파일 삭제 중 오류: {e}")
+                                except Exception: pass
                 except Exception as e:
                     logger.warning(f"[Core] 파일 삭제 중 오류: {e}")
 

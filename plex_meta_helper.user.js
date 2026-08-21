@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.117
+// @version      0.9.118
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -354,18 +354,13 @@ GM_addStyle(`
         } else {
             const rawG = targetElement.dataset.rawGuid || targetElement.textContent || '';
             const targetServerId = targetElement.dataset.sid || (ServerConfig.SERVERS[0]?.machineIdentifier);
-            
-            // 목록 상위 컨테이너에서 쇼/시즌 여부 판별
             const parentCont = targetElement.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]');
             const isShowCard = parentCont && (
                 parentCont.querySelector('[class*="ShowPosterCard"], [class*="SeasonPosterCard"], [class*="EpisodePosterCard"]') ||
                 parentCont.querySelector('a[href*="/children"], a[href*="folder=1"]')
             );
             const itemType = isShowCard ? 'show' : 'video';
-
-            // 💡 [수정] 인자 순서: rawGuid, sectionId, serverId, itemType
             const isAv = isAvMediaItem(rawG, '', targetServerId, itemType);
-
             const cropMenuItemHtml = isAv ? `
                 <div class="pmh-menu-item" data-action="crop_poster">
                     <div class="pmh-menu-icon-wrap"><i class="fas fa-crop-alt" style="color:#2f96b4;"></i></div>
@@ -433,7 +428,6 @@ GM_addStyle(`
         }, 100);
     }
 
-    // 마우스 이벤트 로직
     document.addEventListener('mouseover', (e) => {
         const target = e.target.closest('.plex-guid-list-box, .plex-path-scan-link');
         if (target) {
@@ -457,7 +451,6 @@ GM_addStyle(`
         }
     });
 
-    // 클릭 이벤트 로직
     document.addEventListener('click', (e) => {
         if (pmhActionMenu.style.visibility === 'visible') {
             const menuItem = e.target.closest('.pmh-menu-item');
@@ -499,7 +492,6 @@ GM_addStyle(`
         }
     });
 
-    // 스크롤 시 닫기
     function hideMenuOnScroll() {
         if (pmhActionMenu.style.visibility === 'visible') hideMenu(currentMenuSessionId); 
     }
@@ -1831,7 +1823,8 @@ GM_addStyle(`
                     cancel: async (taskId) => {
                         const r = await PmhToolAPI.cancel(toolId, targetSrv, taskId);
                         return JSON.parse(r.responseText);
-                    }
+                    },
+                    getSignature: async () => await generateSecureHeader(ClientSettings.masterApiKey)
                 },
 
                 toast: {
@@ -2040,6 +2033,9 @@ GM_addStyle(`
         const forceReRenderAll = () => {
             clearMemoryCache();
             if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear();
+
+            initViewportObserver();
+
             document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e=>e.remove());
             processList();
         };
@@ -3894,7 +3890,106 @@ GM_addStyle(`
         watchLoop();
     }
 
-    async function processList() {
+    let viewportObserver = null;
+    const visibleElementsSet = new Set();
+    let networkBatchTimer = null;
+
+    function initViewportObserver() {
+        if (viewportObserver) {
+            viewportObserver.disconnect();
+            viewportObserver = null;
+        }
+        visibleElementsSet.clear();
+
+        viewportObserver = new IntersectionObserver((entries) => {
+            let needsNetworkBatch = false;
+
+            entries.forEach(entry => {
+                const cont = entry.target;
+                if (entry.isIntersecting) {
+                    visibleElementsSet.add(cont);
+
+                    const rendered = tryInstantCacheRender(cont);
+                    if (!rendered) {
+                        needsNetworkBatch = true;
+                    }
+                } else {
+                    visibleElementsSet.delete(cont);
+                }
+            });
+
+            if (needsNetworkBatch || visibleElementsSet.size > 0) {
+                if (networkBatchTimer) clearTimeout(networkBatchTimer);
+                networkBatchTimer = setTimeout(() => {
+                    processServerBatchRevalidation();
+                }, 80);
+            }
+        }, {
+            root: null,
+            rootMargin: '400px 0px',
+            threshold: 0.01
+        });
+    }
+
+    function tryInstantCacheRender(cont) {
+        if (!cont.isConnected) return false;
+
+        let link = cont.querySelector('a.PosterCardLink-link-LozvMm, a[data-testid="metadataTitleLink"]');
+        if (!link) link = cont.querySelectorAll('a[href*="/metadata/"]')[0];
+        if (!link) return false;
+
+        const href = link.getAttribute('href'); if (!href) return false;
+        const sidMatch = href.match(/\/server\/([a-f0-9]+)\//); if (!sidMatch) return false;
+        const sid = sidMatch[1];
+
+        let iid = null;
+        try {
+            const keyParam = new URLSearchParams(href.split('?')[1]).get('key');
+            if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
+        } catch(e) {}
+
+        if (isIgnoredItem(href, iid, cont) || !sid || !iid) return false;
+
+        const srvConfig = getServerConfig(sid);
+        let cacheKey = srvConfig ? `L_${sid}_${iid}` : `F_${sid}_${iid}`;
+        let cData = getMemoryCache(cacheKey);
+
+        if (!cData && srvConfig) {
+            cData = getMemoryCache(`F_${sid}_${iid}`);
+        }
+
+        const marker = cont.querySelector('.pmh-render-marker');
+        if (marker && marker.getAttribute('data-iid') === iid && marker.getAttribute('data-stale') !== 'true') {
+            return true;
+        }
+
+        let poster = cont.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+        if (!poster && cont.classList.contains('ListItem-container')) poster = cont.firstElementChild;
+        if (!poster) return false;
+
+        const style = window.getComputedStyle(poster);
+        if (style.position === 'static') { poster.style.position = 'relative'; poster.style.overflow = 'hidden'; }
+
+        if (cData) {
+            if (cData.ignored) {
+                let m = poster.querySelector('.pmh-render-marker') || document.createElement('div');
+                m.className = 'pmh-render-marker'; m.style.display = 'none';
+                m.setAttribute('data-iid', iid); m.setAttribute('data-ignored', 'true');
+                poster.appendChild(m);
+                return true;
+            }
+            let displayData = { ...cData, tags: applyUserTags(cData.p, cData.tags) };
+            renderListBadges(cont, poster, link, displayData, srvConfig, iid);
+            return true;
+        } else if (!srvConfig) {
+            renderListBadges(cont, poster, link, { is_friend_pending: true }, srvConfig, iid);
+            return true;
+        }
+
+        return false;
+    }
+
+    async function processServerBatchRevalidation() {
         if (!state.listGuid && !state.listTag && !state.listPlay && !state.listMultiPath) return;
 
         if (globalFallbackQueue.length > 0) {
@@ -3902,26 +3997,21 @@ GM_addStyle(`
             globalFallbackQueue.length = 0;
         }
 
-        const itemWrappers = document.querySelectorAll(`
-            div[data-testid^="cellItem"],
-            div[class*="ListItem-container"],
-            div[class*="MetadataPosterCard-container"]
-        `);
-
-        if (itemWrappers.length === 0) return;
+        if (visibleElementsSet.size === 0) return;
 
         const session = currentRenderSession;
         const pendingItems = [];
         const itemsToRevalidate = [];
         const changedItems = new Set();
 
-        itemWrappers.forEach(cont => {
-            let link = cont.querySelector('a.PosterCardLink-link-LozvMm, a[data-testid="metadataTitleLink"]');
-
-            if (!link) {
-                const fallbackLinks = cont.querySelectorAll('a[href*="/metadata/"]');
-                link = fallbackLinks[0];
+        visibleElementsSet.forEach(cont => {
+            if (!cont.isConnected) {
+                visibleElementsSet.delete(cont);
+                return;
             }
+
+            let link = cont.querySelector('a.PosterCardLink-link-LozvMm, a[data-testid="metadataTitleLink"]');
+            if (!link) link = cont.querySelectorAll('a[href*="/metadata/"]')[0];
             if (!link) return;
 
             const href = link.getAttribute('href'); if (!href) return;
@@ -3934,8 +4024,7 @@ GM_addStyle(`
                 if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
             } catch(e) {}
 
-            if (isIgnoredItem(href, iid, cont)) return;
-            if (!sid || !iid) return;
+            if (isIgnoredItem(href, iid, cont) || !sid || !iid) return;
 
             itemsToRevalidate.push({ sid, iid, cont, link });
 
@@ -3948,7 +4037,6 @@ GM_addStyle(`
                 const isStale = marker.getAttribute('data-stale') === 'true';
 
                 if (isStale || (markerHash && currentStateHash && markerHash !== currentStateHash)) {
-                    log(`[List] UI State changed or marked stale for ID: ${iid}. Forcing bypass validation.`);
                     changedItems.add(iid);
                     sessionRevalidated.delete(iid);
                     isAlreadyRendered = false;
@@ -3961,7 +4049,6 @@ GM_addStyle(`
                         let badgeMissing = false;
 
                         if ((state.listTag || state.listPlay || isFriendPending) && !cont.querySelector('.pmh-top-right-wrapper')) badgeMissing = true;
-
                         if (!isFriendPending && (state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) badgeMissing = true;
 
                         if (!badgeMissing) isAlreadyRendered = true;
@@ -3985,14 +4072,8 @@ GM_addStyle(`
             }
         });
 
-        if (globalFallbackQueue.length > 0) {
-            infoLog(`[Queue] Screen changed. Nuking old queue (${globalFallbackQueue.length} items).`);
-            globalFallbackQueue.length = 0;
-        }
-
         if (pendingItems.length === 0 && itemsToRevalidate.length === 0) return;
 
-        let instantRenderCount = 0;
         pendingItems.forEach(item => {
             const srvConfig = getServerConfig(item.sid);
             let cacheKey = srvConfig ? `L_${item.sid}_${item.iid}` : `F_${item.sid}_${item.iid}`;
@@ -4000,25 +4081,17 @@ GM_addStyle(`
 
             if (!cData && srvConfig) {
                 cData = getMemoryCache(`F_${item.sid}_${item.iid}`);
-                if (cData) cacheKey = `F_${item.sid}_${item.iid}`;
             }
 
             if (cData) {
-                if (changedItems.has(item.iid)) {
-                    return;
-                }
+                if (changedItems.has(item.iid)) return;
 
                 if (cData.ignored) {
-                    let marker = item.poster.querySelector('.pmh-render-marker');
-                    if (!marker) {
-                        marker = document.createElement('div');
-                        marker.className = 'pmh-render-marker';
-                        marker.style.display = 'none';
-                        item.poster.appendChild(marker);
-                    }
-                    marker.setAttribute('data-iid', item.iid);
-                    marker.setAttribute('data-ignored', 'true');
+                    let marker = item.poster.querySelector('.pmh-render-marker') || document.createElement('div');
+                    marker.className = 'pmh-render-marker'; marker.style.display = 'none';
+                    marker.setAttribute('data-iid', item.iid); marker.setAttribute('data-ignored', 'true');
                     if (item.currentStateHash) marker.setAttribute('data-state-hash', item.currentStateHash);
+                    item.poster.appendChild(marker);
                     item.isRendered = true;
                     return;
                 }
@@ -4031,14 +4104,11 @@ GM_addStyle(`
                 let displayData = { ...cData, tags: applyUserTags(cData.p, cData.tags) };
                 renderListBadges(item.cont, item.poster, item.link, displayData, srvConfig, item.iid);
                 item.isRendered = true;
-                instantRenderCount++;
             } else if (!srvConfig) {
                 renderListBadges(item.cont, item.poster, item.link, { is_friend_pending: true }, srvConfig, item.iid);
                 item.isRendered = true;
             }
         });
-
-        if (instantRenderCount > 0) log(`[List] Fast rendered ${instantRenderCount} items instantly from memory cache.`);
 
         if (swrDebounceTimer) clearTimeout(swrDebounceTimer);
 
@@ -4046,7 +4116,7 @@ GM_addStyle(`
             if (session !== currentRenderSession) return;
 
             if (changedItems.size > 0) {
-                log(`[List] Metadata change detected! Pausing 500ms to allow Plex DB to sync...`);
+                log(`[List] Metadata change detected! Pausing 500ms for DB sync...`);
                 await new Promise(r => setTimeout(r, 500));
                 if (session !== currentRenderSession) return;
             }
@@ -4126,12 +4196,9 @@ GM_addStyle(`
                             if (!oldCache || !isDataEqual(oldCache, newData)) {
                                 setMemoryCache(`L_${serverId}_${id}`, newData);
 
-                                const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
-                                for (const live of liveWrappers) {
-                                    let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
-                                    if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                                visibleElementsSet.forEach(live => {
+                                    let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]') || live.querySelectorAll('a[href*="/metadata/"]')[0];
                                     if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
-
                                         let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
                                         if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
 
@@ -4144,7 +4211,7 @@ GM_addStyle(`
                                             renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
                                         }
                                     }
-                                }
+                                });
                             } else {
                                 pendingItems.filter(p => p.sid === serverId && p.iid === id && !p.isRendered).forEach(item => {
                                     item.poster.querySelector('.pmh-render-marker')?.remove();
@@ -4164,9 +4231,7 @@ GM_addStyle(`
                 const addedToNewQueue = new Set();
                 let queueCount = 0;
 
-                const isPostgresServer = srvConfig && srvConfig.is_postgres;
-
-                if (!isPostgresServer) {
+                if (!srvConfig.is_postgres) {
                     idsToFallbackBypass.forEach(id => {
                         if (addedToNewQueue.has(id)) return;
                         const existsInPending = pendingItems.some(p => p.iid === id && p.sid === serverId);
@@ -4193,13 +4258,11 @@ GM_addStyle(`
                                         }
                                     }
 
-                                    infoLog(`[List Fallback] DB WAL Delay Bypassed. Fetching fresh data directly from Plex API for [${logTitle}] (ID: ${id})`);
+                                    infoLog(`[List Fallback] DB WAL Delay Bypassed. Fetching directly from Plex API for [${logTitle}] (ID: ${id})`);
                                     let meta = await fetchPlexMetaFallback(id, plexSrv);
                                     if (!meta) return;
 
-                                    const fallbackTags = parsePlexFallbackTags(meta);
                                     const updatedInfo = convertPlexMetaToLocalData(meta, id);
-
                                     const oldCache = getMemoryCache(`L_${serverId}_${id}`);
                                     if (oldCache) {
                                         updatedInfo.analyze_count = oldCache.analyze_count || 0;
@@ -4237,22 +4300,18 @@ GM_addStyle(`
 
                                         let displayData = { ...updatedInfo, tags: applyUserTags(updatedInfo.p, updatedInfo.tags) };
 
-                                        const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
-                                        for (const live of liveWrappers) {
-                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
-                                            if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                                        visibleElementsSet.forEach(live => {
+                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]') || live.querySelectorAll('a[href*="/metadata/"]')[0];
                                             if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
                                                 let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
-                                                if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
                                                 if (livePoster) {
                                                     livePoster.querySelector('.pmh-render-marker')?.remove();
                                                     renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
-
                                                     const matchedPending = pendingItems.find(p => p.poster === livePoster);
                                                     if (matchedPending) matchedPending.isRendered = true;
                                                 }
                                             }
-                                        }
+                                        });
                                     }
                                 } catch (e) {
                                     errorLog(`[Fallback Task] Error fetching Plex API for ${id}:`, e);
@@ -4270,7 +4329,6 @@ GM_addStyle(`
                     if (!info || info.ignored) return;
 
                     const pItem = pendingItems.find(p => p.iid === item.iid && !p.isRendered);
-
                     if (pItem) {
                         let displayData = { ...info, tags: applyUserTags(info.p, info.tags) };
                         renderListBadges(item.cont, pItem.poster, item.link, displayData, srvConfig, item.iid);
@@ -4358,7 +4416,6 @@ GM_addStyle(`
 
                                 const latestCache = getMemoryCache(`L_${serverId}_${item.iid}`);
                                 const alreadyHasRes = latestCache && latestCache.tags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
-
                                 if (!dbStillNotSynced && latestCache && alreadyHasRes) return;
 
                                 await new Promise(r => setTimeout(r, 1000));
@@ -4383,7 +4440,6 @@ GM_addStyle(`
                                     if (!m || ((!m.width || m.width === 0) && !m.videoResolution)) {
                                         currentAnalyzeCount += 1;
                                         currentAnalyzeTime = Date.now();
-
                                         meta = await analyzeAndFetchPlexMeta(item.iid, plexSrv);
                                         if (meta) fallbackTags = parsePlexFallbackTags(meta);
                                     }
@@ -4398,7 +4454,6 @@ GM_addStyle(`
                                     };
 
                                     let needsUpdate = false;
-
                                     if (isUnanalyzed) needsUpdate = true;
 
                                     if (dbStillNotSynced && meta && meta.guid && meta.guid !== updatedInfo.raw_g) {
@@ -4406,7 +4461,6 @@ GM_addStyle(`
                                         updatedInfo.raw_g = meta.guid;
                                         needsUpdate = true;
                                     }
-
                                     if (dbStillNotSynced) needsUpdate = true;
 
                                     const newlyHasRes = fallbackTags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
@@ -4456,22 +4510,18 @@ GM_addStyle(`
                                         setMemoryCache(`L_${serverId}_${item.iid}`, updatedInfo);
                                         let displayData = { ...updatedInfo, tags: applyUserTags(updatedInfo.p, updatedInfo.tags) };
 
-                                        const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
-                                        for (const live of liveWrappers) {
-                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
-                                            if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                                        visibleElementsSet.forEach(live => {
+                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]') || live.querySelectorAll('a[href*="/metadata/"]')[0];
                                             if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(item.iid)) {
                                                 let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
-                                                if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
                                                 if (livePoster) {
                                                     livePoster.querySelector('.pmh-render-marker')?.remove();
                                                     renderListBadges(live, livePoster, liveLink, displayData, srvConfig, item.iid);
-
                                                     const matchedPending = pendingItems.find(p => p.poster === livePoster);
                                                     if (matchedPending) matchedPending.isRendered = true;
                                                 }
                                             }
-                                        }
+                                        });
                                     }
                                 } catch (e) {}
                             }
@@ -4482,6 +4532,22 @@ GM_addStyle(`
                 if (queueCount > 0) processGlobalFallbackQueue();
             }
         }, 500);
+    }
+
+    function processList() {
+        if (!state.listGuid && !state.listTag && !state.listPlay && !state.listMultiPath) return;
+        if (!viewportObserver) initViewportObserver();
+
+        const itemWrappers = document.querySelectorAll(`
+            div[data-testid^="cellItem"]:not([data-pmh-observed="true"]),
+            div[class*="ListItem-container"]:not([data-pmh-observed="true"]),
+            div[class*="MetadataPosterCard-container"]:not([data-pmh-observed="true"])
+        `);
+
+        itemWrappers.forEach(cont => {
+            cont.setAttribute('data-pmh-observed', 'true');
+            viewportObserver.observe(cont);
+        });
     }
 
     // ==========================================
@@ -5677,6 +5743,8 @@ GM_addStyle(`
     function checkUrlChange(force = false) {
         if (window.location.href !== currentUrl || force) {
             currentUrl = window.location.href;
+
+            initViewportObserver();
 
             isObserverLocked = true;
             globalAbortFlag = true;

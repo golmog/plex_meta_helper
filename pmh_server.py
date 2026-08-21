@@ -136,7 +136,6 @@ def apply_permissions(target_path):
     if not os.path.exists(target_path):
         return
 
-    # 1. PUID / PGID 소유권 적용
     if PUID != -1 and PGID != -1:
         try:
             os.chown(target_path, PUID, PGID)
@@ -145,7 +144,6 @@ def apply_permissions(target_path):
         except Exception as e:
             pmh_logger.debug(f"[Permission] 소유권 변경 실패 ({target_path}): {e}")
 
-    # 2. 리눅스/유닉스 환경일 경우 .py 파일에 실행 권한 (+x) 부여
     if os.name == 'posix' and target_path.endswith('.py'):
         try:
             st = os.stat(target_path)
@@ -374,9 +372,10 @@ def check_api_key():
         print(f"[PMH SECURITY] 🛑 다중 인증 실패로 차단된 IP의 접근 시도 거부: {client_ip}")
         return jsonify({"error": "Too Many Failed Attempts. Try again later."}), 429
         
-    signature = request.headers.get("X-PMH-Signature", "")
+    # 💡 [보완] 헤더는 물론 URL 쿼리 파라미터(?sig=)로 전달된 서명도 지원
+    signature = request.headers.get("X-PMH-Signature", "") or request.args.get("sig", "") or request.args.get("_sig", "")
     
-    legacy_key = request.headers.get("X-API-Key", "")
+    legacy_key = request.headers.get("X-API-Key", "") or request.args.get("apikey", "")
     if legacy_key and hmac.compare_digest(legacy_key, API_KEY):
         reset_failed_attempt(client_ip)
         return 
@@ -384,14 +383,15 @@ def check_api_key():
     if not verify_signature(signature, API_KEY):
         record_failed_attempt(client_ip)
         fail_count = len(FAILED_ATTEMPTS.get(client_ip, []))
-        print(f"[PMH SECURITY] 🚫 잘못된 서명 토큰 접근 시도. (IP: {client_ip}, 연속 실패: {fail_count}/{MAX_FAILURES})")
+        print(f"[PMH SECURITY] 🚫 잘못된 서명 토큰 접근 시도. (IP: {client_ip}, Path: {request.path}, 실패: {fail_count}/{MAX_FAILURES})")
         return jsonify({"error": "Unauthorized. Invalid Signature."}), 401
         
     reset_failed_attempt(client_ip)
 
 @app.after_request
 def add_header(response):
-    response.headers['Connection'] = 'close'
+    if response.mimetype != 'text/event-stream':
+        response.headers['Connection'] = 'close'
     return response
 
 # ==============================================================================
@@ -757,23 +757,60 @@ def relay_to_node(node_id, subpath):
     headers = { "X-PMH-Signature": generate_secure_header(node_info['apikey']) }
     content_type = request.headers.get("Content-Type")
     if content_type: headers["Content-Type"] = content_type
+    
+    accept_header = request.headers.get("Accept")
+    if accept_header: headers["Accept"] = accept_header
 
     req_data = raw_body if raw_body else None
     if req_data: headers['Content-Length'] = str(len(req_data))
 
-    is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('active_queues')
+    is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('active_queues') or subpath.endswith('/stream')
     if not is_silent:
         pmh_logger.debug(f"🚀 Relay [{request.method}] -> {node_info['name']} ({target_url})")
 
     try:
         req = urllib.request.Request(target_url, data=req_data, headers=headers, method=request.method)
-        req.add_header('Connection', 'close') 
-        with urllib.request.urlopen(req, timeout=120) as response:
+        if not subpath.endswith('/stream'):
+            req.add_header('Connection', 'close') 
+
+        stream_timeout = None if subpath.endswith('/stream') else 120
+        response = urllib.request.urlopen(req, timeout=stream_timeout)
+        resp_content_type = response.headers.get('Content-Type', '')
+        
+        # 워커 노드의 SSE 실시간 스트림 릴레이
+        if 'text/event-stream' in resp_content_type:
+            def stream_node_relay():
+                try:
+                    while True:
+                        line = response.readline()
+                        if not line: break
+                        yield line
+                except Exception:
+                    pass
+                finally:
+                    try: response.close()
+                    except Exception: pass
+
+            return Response(
+                stream_node_relay(), 
+                status=response.status, 
+                mimetype='text/event-stream', 
+                headers={
+                    'Cache-Control': 'no-cache, no-transform', 
+                    'X-Accel-Buffering': 'no',
+                    'Connection': 'keep-alive'
+                }
+            )
+
+        try:
             resp_data = response.read()
             resp_headers = {}
             if response.headers.get('Content-Type'):
                 resp_headers['Content-Type'] = response.headers.get('Content-Type')
             return Response(resp_data, status=response.status, headers=resp_headers)
+        finally:
+            try: response.close()
+            except Exception: pass
 
     except urllib.error.HTTPError as e:
         try:
@@ -808,11 +845,9 @@ def api_gateway(subpath):
     if request.method in ['POST', 'PUT'] and raw_body:
         import json
         try: json_data = json.loads(raw_body.decode('utf-8'))
-        except Exception as e:
-            pmh_logger.warning(f"JSON 파싱 실패: {e}")
-            return jsonify({"error": "Invalid JSON payload"}), 400
+        except Exception: pass
 
-    is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('active_queues')
+    is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/stream') or subpath.endswith('queue_status') or subpath.endswith('active_queues')
     if not is_silent:
         pmh_logger.debug(f"💻 API [{request.method}] /{subpath}")
         pmh_logger.debug(f"Payload: {json_data}")
@@ -822,9 +857,11 @@ def api_gateway(subpath):
         data=json_data, global_config=global_conf
     )
     
+    if isinstance(result, Response):
+        return result
+        
     resp = make_response(jsonify(result))
     resp.status_code = status_code
-    resp.headers['Connection'] = 'close'
     return resp
 
 if __name__ == '__main__':

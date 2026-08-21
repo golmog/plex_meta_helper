@@ -8,7 +8,7 @@ Flask 백엔드는 실시간으로 Plex DB와 연동하고 프론트엔드의 �
 
 ## 업데이트
 
-v0.9.117 (2026-08-22)
+v0.9.118 (2026-08-22)
 - Plex DB 처리를 기존 sqlite3 외에 추가로 postgresql을 지원: 아직 알파 테스트 단계이므로 사용 주의
   - postgres 사용시 백엔드 추가 설정 필요(`pmh_config.master_sample.yaml` 참고)
   - 툴 개발시 가급적 표준 ANSI SQL 쿼리 작성 필요
@@ -17,6 +17,9 @@ v0.9.117 (2026-08-22)
   - FF metadata 이용시(AV) '이미지 서버' 사용 필수
   - 백엔드 노드(BASE) 설정에 `AV_IMAGE_SERVER_USE: true` 설정 필요
   - 프로세스 흐름: FF metadata 플러그인 로컬 메타 DB $\rightarrow$ (API) $\rightarrow$ 이미지 로딩 $\rightarrow$ 크롭 좌표 획득/저장 $\rightarrow$ (API) $\rightarrow$ DB/이미지 업데이트 $\rightarrow$ 리매칭
+- Plex 목록 페이지 뱃지 렌더링에 Viewport 적용
+- 툴 패널 로깅에 실시간 로깅(SSE) 적용
+- 툴 로깅시 기존 DB에 저장되던 로그를 별도 로그로(.log 로테이션) 분리
 
 v0.9.x
 - PostgreSQL 지원(번들 툴 포함): [plex-postgresql](https://github.com/cgnl/plex-postgresql) 대응

@@ -299,8 +299,6 @@ window.PmhUICore = {
         const uniqToggleBtnId = `pmh_btn_toggle_form_${config.toolId}`;
 
         const isPwaEnv = !!document.getElementById('screen-portal');
-        
-        // PWA 환경일 경우에만 삽입할 '홈으로' 헤더 HTML
         const pwaHeaderHtml = isPwaEnv ? `
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; width:100% !important;">
                 <button onclick="document.getElementById('pmh-panel-close')?.click(); showScreen('screen-portal');" style="background:#333; color:#fff; border:none; width:auto; padding:6px 12px; font-size:12px; border-radius:6px; cursor:pointer; font-weight:bold;">
@@ -1038,6 +1036,7 @@ window.PmhUICore = {
         const startPolling = async () => {
             if (ctx.isDestroyed) return;
             if (ctx.pollTimer) clearTimeout(ctx.pollTimer);
+            if (ctx.streamAbortController) ctx.streamAbortController.abort();
 
             updateFormTabButtons(true);
             ctx.pollCount = 0;
@@ -1049,48 +1048,126 @@ window.PmhUICore = {
             const cancelBtn = ctx.c.querySelector('#pmh_btn_cancel');
 
             cancelBtn.style.display = 'block'; cancelBtn.disabled = false; cancelBtn.innerHTML = '<i class="fas fa-stop"></i> 작업 중단';
-            cancelBtn.onclick = async () => { cancelBtn.disabled=true; cancelBtn.innerHTML='중단 중...'; ctx.isCancelling=true; await config.apiAdapter.cancel(config.toolId); };
-
-            const poll = async () => {
-                if (ctx.isDestroyed || !document.body.contains(ctx.c)) return;
-                try {
-                    const s = await config.apiAdapter.status(config.toolId);
-                    let percent = s.total > 0 ? Math.floor((s.progress/s.total)*100) : (s.state==='completed'?100:0);
-                    progEl.innerText = `${s.progress} / ${s.total} (${percent}%)`;
-                    barEl.style.width = `${percent}%`;
-                    logBox.innerHTML = s.logs ? s.logs.join('<br>') : '';
-                    logBox.scrollTop = logBox.scrollHeight;
-
-                    if (['completed','error','cancelled'].includes(s.state)) {
-                        cancelBtn.style.display = 'none';
-                        stateEl.innerHTML = s.state==='completed' ? '작업 완료' : `종료됨 (${s.state})`;
-                        stateEl.style.color = s.state==='completed' ? '#51a351' : '#bd362f';
-                        barEl.style.background = s.state==='completed' ? '#51a351' : '#bd362f';
-                        ctx.isCancelling = false;
-
-                        updateFormTabButtons(false);
-
-                        if(ctx.autoRefresh) {
-                            setTimeout(() => {
-                                loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true);
-                                if(s.state==='completed') switchTab('pmh_tab_form');
-                            }, 1000);
-                        }
-                    } else {
-                        stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; 
-                        stateEl.style.color = '#e5a00d';
-                        barEl.style.background = '#e5a00d';
-
-                        ctx.pollCount++;
-                        if (ctx.autoRefresh && ctx.pollCount % 2 === 0) {
-                            loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true);
-                        }
-
-                        ctx.pollTimer = setTimeout(poll, 1500);
-                    }
-                } catch(e) { ctx.pollTimer = setTimeout(poll, 2000); }
+            cancelBtn.onclick = async () => { 
+                cancelBtn.disabled = true; 
+                cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 중단 중...'; 
+                ctx.isCancelling = true; 
+                if (ctx.streamAbortController) ctx.streamAbortController.abort();
+                await config.apiAdapter.cancel(config.toolId); 
             };
-            poll();
+
+            const updateUIWithData = (s) => {
+                if (!s || s.state === 'not_found') return false;
+
+                let percent = s.total > 0 ? Math.floor((s.progress / s.total) * 100) : (s.state === 'completed' ? 100 : 0);
+                progEl.innerText = `${s.progress} / ${s.total} (${percent}%)`;
+                barEl.style.width = `${percent}%`;
+                logBox.innerHTML = s.logs ? s.logs.join('<br>') : '';
+                logBox.scrollTop = logBox.scrollHeight;
+
+                if (['completed', 'error', 'cancelled'].includes(s.state)) {
+                    cancelBtn.style.display = 'none';
+                    stateEl.innerHTML = s.state === 'completed' ? '<i class="fas fa-check-circle"></i> 작업 완료' : `<i class="fas fa-times-circle"></i> 종료됨 (${s.state})`;
+                    stateEl.style.color = s.state === 'completed' ? '#51a351' : '#bd362f';
+                    barEl.style.background = s.state === 'completed' ? '#51a351' : '#bd362f';
+                    ctx.isCancelling = false;
+                    updateFormTabButtons(false);
+
+                    if (ctx.autoRefresh) {
+                        setTimeout(() => {
+                            loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true);
+                            if (s.state === 'completed') switchTab('pmh_tab_form');
+                        }, 800);
+                    }
+                    return true;
+                } else {
+                    stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; 
+                    stateEl.style.color = '#e5a00d';
+                    barEl.style.background = '#e5a00d';
+                    return false;
+                }
+            };
+
+            try {
+                ctx.streamAbortController = new AbortController();
+                const targetServerNode = config.servers[config.activeServerIdx] || {};
+                const srvRelay = targetServerNode.relayUrl || `/api/relay/${targetServerNode.id || 'master_node'}`;
+                
+                let secureToken = "";
+                if (config.apiAdapter && typeof config.apiAdapter.getSignature === 'function') {
+                    secureToken = await config.apiAdapter.getSignature();
+                }
+
+                const activeSrvId = ctx.srvId || targetServerNode.machineIdentifier || targetServerNode.machine_id || 'default';
+                const streamUrl = `${srvRelay}/tool/${config.toolId}/stream?server_id=${encodeURIComponent(activeSrvId)}&sig=${encodeURIComponent(secureToken)}&_t=${Date.now()}`;
+                
+                const authHeaders = { 
+                    'Accept': 'text/event-stream',
+                    'X-PMH-Signature': secureToken
+                };
+
+                console.log(`[PMH UI] [SSE] 📡 실시간 로그 스트리밍 연결 시도 (ServerID: ${activeSrvId}) ➔ ${streamUrl}`);
+
+                fetch(streamUrl, {
+                    headers: authHeaders,
+                    signal: ctx.streamAbortController.signal
+                }).then(async (response) => {
+                    if (!response.ok || !response.body) {
+                        throw new Error(`HTTP ${response.status} 응답`);
+                    }
+
+                    console.log(`[PMH UI] [SSE] 🟢 실시간 스트림 파이프라인 연결 완료!`);
+                    
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let buffer = '';
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        
+                        const lines = buffer.split('\n\n');
+                        buffer = lines.pop() || '';
+
+                        for (const block of lines) {
+                            if (block.startsWith(':')) continue;
+                            const match = block.match(/data:\s*(.+)/);
+                            if (match) {
+                                try {
+                                    const parsed = JSON.parse(match[1]);
+                                    console.log(`[PMH UI] [SSE] 📥 실시간 로그 수신 ➔ ${parsed.progress}/${parsed.total} (${parsed.state})`);
+                                    const isDone = updateUIWithData(parsed);
+                                    if (isDone) return;
+                                } catch(e) {}
+                            }
+                        }
+                    }
+                }).catch((streamErr) => {
+                    if (ctx.streamAbortController.signal.aborted) return;
+                    console.warn(`[PMH UI] [SSE] 🔴 스트리밍 실패 (${streamErr.message}) ➔ 1.5초 폴링으로 자동 전환`);
+                    startClassicPollingFallback();
+                });
+            } catch(e) {
+                console.warn(`[PMH UI] [SSE] 🔴 초기화 실패 (${e.message}) ➔ 폴링으로 전환`);
+                startClassicPollingFallback();
+            }
+
+            function startClassicPollingFallback() {
+                const poll = async () => {
+                    if (ctx.isDestroyed || !document.body.contains(ctx.c)) return;
+                    try {
+                        const s = await config.apiAdapter.status(config.toolId);
+                        const isDone = updateUIWithData(s);
+                        if (!isDone) {
+                            ctx.pollTimer = setTimeout(poll, 1500);
+                        }
+                    } catch(e) { 
+                        ctx.pollTimer = setTimeout(poll, 2000); 
+                    }
+                };
+                poll();
+            }
         };
 
         if (ctx.ui.active_task && ctx.ui.active_task.state === 'running') {
