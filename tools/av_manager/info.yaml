@@ -1,0 +1,9 @@
+id: "av_manager"
+name: "AV 매니저"
+description: "AV 전용 관리 도구입니다."
+version: "0.9.23"
+icon: "fas fa-heart"
+entry_file: "main.py"
+legacy_ids:
+  - "jav_manager"
+  - "golmog_jav_manager"
