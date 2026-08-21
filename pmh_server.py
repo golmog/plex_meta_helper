@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
+import stat
 import sys
 import logging
 from logging.handlers import RotatingFileHandler
@@ -29,7 +31,8 @@ def is_server_restart_required():
         current_mtime = os.path.getmtime(SERVER_FILE_PATH)
         if current_mtime > BOOT_FILE_MTIME:
             return True
-    except Exception: pass
+    except Exception as e:
+        pmh_logger.warning(f"[Restart Check] 서버 파일 수정 시간 확인 실패: {e}")
     return False
 
 # ==============================================================================
@@ -62,6 +65,10 @@ BASE:
   PLEX_URL: "http://plex:32400"
   PLEX_TOKEN: "YOUR_PLEX_TOKEN"
   PLEX_MACHINE_IDENTIFIER: "YOUR_PLEX_MACHINE_ID_HERE"
+
+  # [Plex DB 엔진 설정] (sqlite3 또는 postgres)
+  # 기본값: "sqlite3" (postgres 선택시 자세한 설정은 pmh_config.master_sample.yaml 참고)
+  PLEX_DB_TYPE: "sqlite3"
   
   # Plex 메인 DB 파일 경로 및 SQLite 바이너리 경로
   PLEX_DB_PATH: "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
@@ -125,12 +132,26 @@ if TZ_STR:
         time.tzset()
 
 def apply_permissions(target_path):
-    """지정된 PUID/PGID가 있다면 파일/폴더의 소유권을 강제합니다."""
-    if PUID != -1 and PGID != -1 and os.path.exists(target_path):
+    """지정된 PUID/PGID 소유권을 맞추고, 리눅스 환경에서 .py 파일에 실행 권한(+x)을 부여합니다."""
+    if not os.path.exists(target_path):
+        return
+
+    # 1. PUID / PGID 소유권 적용
+    if PUID != -1 and PGID != -1:
         try:
             os.chown(target_path, PUID, PGID)
-        except Exception:
-            pass
+        except PermissionError:
+            pmh_logger.debug(f"[Permission] 권한 부족으로 소유권 변경 건너뜀 (Path: {target_path})")
+        except Exception as e:
+            pmh_logger.debug(f"[Permission] 소유권 변경 실패 ({target_path}): {e}")
+
+    # 2. 리눅스/유닉스 환경일 경우 .py 파일에 실행 권한 (+x) 부여
+    if os.name == 'posix' and target_path.endswith('.py'):
+        try:
+            st = os.stat(target_path)
+            os.chmod(target_path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        except Exception as e:
+            pmh_logger.debug(f"[Permission] 실행 권한(+x) 부여 실패 ({target_path}): {e}")
 
 pmh_logger = logging.getLogger("PMH")
 pmh_logger.propagate = False
@@ -171,10 +192,12 @@ global_conf = {
     "base_dir": BASE_DIR,
     "puid": PUID,
     "pgid": PGID,
+    "plex_db_type": str(BASE_CFG.get("PLEX_DB_TYPE", "sqlite3")).lower(),
     "plex_db_path": BASE_CFG.get("PLEX_DB_PATH", ""),
+    "plex_sqlite_bin": BASE_CFG.get("PLEX_SQLITE_BIN", ""),
+    "plex_pg_config": BASE_CFG.get("PLEX_PG_CONFIG", {}),
     "plex_url": BASE_CFG.get("PLEX_URL", ""),
     "plex_token": BASE_CFG.get("PLEX_TOKEN", ""),
-    "plex_sqlite_bin": BASE_CFG.get("PLEX_SQLITE_BIN", ""),
     "mate_apikey": BASE_CFG.get("FF_APIKEY", ""),
     "mate_url": BASE_CFG.get("FF_URL", ""),
     "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
@@ -183,6 +206,7 @@ global_conf = {
     "IGNORE_RES_SECTION": str(BASE_CFG.get("IGNORE_RES_SECTION", "")),
     "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
     "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
+    "AV_IMAGE_SERVER_USE": bool(BASE_CFG.get("AV_IMAGE_SERVER_USE", False)),
     "JAV_MIN_SCORE": int(BASE_CFG.get("JAV_MIN_SCORE", 95)),
     "WESTERN_MIN_SCORE": int(BASE_CFG.get("WESTERN_MIN_SCORE", 95)),
     "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
@@ -318,7 +342,8 @@ def verify_signature(signature, api_key):
         payload = f"{api_key}:{req_ts}".encode('utf-8')
         expected_hash = hashlib.sha256(payload).hexdigest()
         return hmac.compare_digest(req_hash, expected_hash)
-    except Exception:
+    except Exception as e:
+        pmh_logger.warning(f"[API Security] 서명 검증 실패: {e}")
         return False
 
 # ==============================================================================
@@ -444,8 +469,9 @@ def background_update_task():
         try:
             with open(SERVER_FILE_PATH, 'r', encoding='utf-8') as f:
                 old_server_code = f.read()
-        except Exception:
+        except Exception as e:
             old_server_code = ""
+            pmh_logger.warning(f"[Server Update] 기존 서버 코드 읽기 실패: {e}")
 
         req_svr = urllib.request.Request(f"{SERVER_URL}?t={int(time.time())}", headers={'Cache-Control': 'no-cache'})
         with urllib.request.urlopen(req_svr, timeout=10) as response_svr:
@@ -511,10 +537,12 @@ def api_admin_reload_core():
 
             global_conf.update({
                 "puid": PUID, "pgid": PGID,
+                "plex_db_type": str(BASE_CFG.get("PLEX_DB_TYPE", "sqlite3")).lower(),
                 "plex_db_path": BASE_CFG.get("PLEX_DB_PATH", ""),
+                "plex_sqlite_bin": BASE_CFG.get("PLEX_SQLITE_BIN", ""),
+                "plex_pg_config": BASE_CFG.get("PLEX_PG_CONFIG", {}),
                 "plex_url": BASE_CFG.get("PLEX_URL", ""),
                 "plex_token": BASE_CFG.get("PLEX_TOKEN", ""),
-                "plex_sqlite_bin": BASE_CFG.get("PLEX_SQLITE_BIN", ""),
                 "mate_apikey": BASE_CFG.get("FF_APIKEY", ""),
                 "mate_url": BASE_CFG.get("FF_URL", ""),
                 "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
@@ -523,6 +551,7 @@ def api_admin_reload_core():
                 "IGNORE_RES_SECTION": str(BASE_CFG.get("IGNORE_RES_SECTION", "")),
                 "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
                 "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
+                "AV_IMAGE_SERVER_USE": bool(BASE_CFG.get("AV_IMAGE_SERVER_USE", False)),
                 "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
                 "is_master": IS_MASTER
             })
@@ -586,12 +615,34 @@ NODE_INFO_CACHE = {}
 def get_client_config():
     if not IS_MASTER: return jsonify({"error": "Master 노드가 아닙니다."}), 400
     
-    servers = [{"id": "master_node", "name": "1.MAIN (Master)", "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", "")}]
+    master_db_type = str(BASE_CFG.get("PLEX_DB_TYPE", "sqlite3")).lower()
+    master_av_img = bool(BASE_CFG.get("AV_IMAGE_SERVER_USE", False))
+    master_jav_sec = str(BASE_CFG.get("JAV_SECTION", ""))
+    master_west_sec = str(BASE_CFG.get("WESTERN_AV_SECTION", ""))
+
+    servers = [{
+        "id": "master_node", 
+        "name": "1.MAIN (Master)", 
+        "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
+        "db_type": master_db_type,
+        "is_postgres": master_db_type == "postgres",
+        "av_image_server_use": master_av_img,
+        "jav_section": master_jav_sec,
+        "western_av_section": master_west_sec
+    }]
     nodes = MASTER_CFG.get("NODES") or []
     
     for node in nodes:
         node_id = node.get("id", "")
-        plex_machine_id = NODE_INFO_CACHE.get(node_id, "")
+        cached_node = NODE_INFO_CACHE.get(node_id)
+        if not isinstance(cached_node, dict):
+            cached_node = {}
+        
+        plex_machine_id = cached_node.get("machine_id", "")
+        node_db_type = cached_node.get("db_type", "sqlite3")
+        node_av_img = cached_node.get("av_image_server_use", False)
+        node_jav_sec = cached_node.get("jav_section", "")
+        node_west_sec = cached_node.get("western_av_section", "")
         
         if not plex_machine_id:
             try:
@@ -600,11 +651,31 @@ def get_client_config():
                 with urllib.request.urlopen(req, timeout=3) as response:
                     data = json.loads(response.read().decode('utf-8'))
                     plex_machine_id = data.get("machine_id", "")
-                    NODE_INFO_CACHE[node_id] = plex_machine_id
+                    node_db_type = data.get("db_type", "sqlite3")
+                    node_av_img = bool(data.get("av_image_server_use", False))
+                    node_jav_sec = str(data.get("jav_section", ""))
+                    node_west_sec = str(data.get("western_av_section", ""))
+                    
+                    NODE_INFO_CACHE[node_id] = {
+                        "machine_id": plex_machine_id,
+                        "db_type": node_db_type,
+                        "av_image_server_use": node_av_img,
+                        "jav_section": node_jav_sec,
+                        "western_av_section": node_west_sec
+                    }
             except Exception as e:
                 pmh_logger.debug(f"워커({node.get('name')}) 핑 실패: {e}")
         
-        servers.append({"id": node_id, "name": node.get("name", ""), "machine_id": plex_machine_id})
+        servers.append({
+            "id": node_id, 
+            "name": node.get("name", ""), 
+            "machine_id": plex_machine_id,
+            "db_type": node_db_type,
+            "is_postgres": node_db_type == "postgres",
+            "av_image_server_use": node_av_img,
+            "jav_section": node_jav_sec,
+            "western_av_section": node_west_sec
+        })
 
     return jsonify({
         "status": "success",
@@ -643,7 +714,9 @@ def check_update_from_github():
                 b_req = urllib.request.Request(f"{b_url}?t={int(now)}", headers={'Cache-Control': 'no-cache'})
                 with urllib.request.urlopen(b_req, timeout=5) as b_resp:
                     b_meta = yaml.safe_load(b_resp.read().decode('utf-8'))
-            except Exception: pass
+            except Exception as e:
+                pmh_logger.warning(f"번들 메타 파싱 실패 ({b_id}): {e}")
+                b_meta = {"error": f"메타 파싱 실패: {e}"}
 
             parsed_bundles.append({"id": b_id, "url": b_url, "meta": b_meta})
 
@@ -735,7 +808,9 @@ def api_gateway(subpath):
     if request.method in ['POST', 'PUT'] and raw_body:
         import json
         try: json_data = json.loads(raw_body.decode('utf-8'))
-        except Exception: pass
+        except Exception as e:
+            pmh_logger.warning(f"JSON 파싱 실패: {e}")
+            return jsonify({"error": "Invalid JSON payload"}), 400
 
     is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('active_queues')
     if not is_silent:

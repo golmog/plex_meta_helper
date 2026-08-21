@@ -16,6 +16,8 @@ BASE:
   PLEX_TOKEN: "WORKER_PLEX_TOKEN"
   PLEX_MACHINE_IDENTIFIER: "YOUR_PLEX_MACHINE_ID_HERE"
 
+  PLEX_DB_TYPE: "sqlite3"
+
   PLEX_DB_PATH: "/volume1/Plex/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
   PLEX_SQLITE_BIN: "/usr/lib/plexmediaserver/Plex SQLite"
 

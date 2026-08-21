@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.8.116
+// @version      0.9.117
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -146,6 +146,54 @@ GM_addStyle(`
     .pmh-menu-item:hover { background-color: rgba(255,255,255,0.1); }
     .pmh-menu-icon-wrap { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex-shrink: 0; }
     .pmh-force-hover { color: #f0ad4e !important; text-decoration: underline !important; text-shadow: 0 0 2px rgba(255,255,255,0.5); }
+
+    /* 포스터 크롭 에디터 모달 */
+    #pmh-crop-modal {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background: rgba(0, 0, 0, 0.85); z-index: 10000002;
+        display: none; justify-content: center; align-items: center;
+        backdrop-filter: blur(8px); user-select: none;
+    }
+    .pmh-crop-card {
+        background: #14171a; border: 1px solid #e5a00d; border-radius: 8px;
+        width: 880px; max-width: 95vw; max-height: 94vh;
+        display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,0.9);
+        overflow: hidden; box-sizing: border-box;
+    }
+    .pmh-crop-header {
+        padding: 10px 15px; background: #0a0a0c; border-bottom: 1px solid #333;
+        display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+    }
+    .pmh-crop-toolbar {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 8px 12px; background: #1a1d21; border-bottom: 1px solid #2a2d32;
+        gap: 8px; flex-wrap: nowrap; flex-shrink: 0; overflow-x: auto;
+    }
+    .pmh-crop-btn {
+        height: 28px !important; min-height: 28px !important; line-height: 26px !important;
+        padding: 0 10px !important; font-size: 11.5px !important; font-weight: bold !important;
+        border-radius: 4px !important; cursor: pointer !important; border: 1px solid #444 !important;
+        background: #222 !important; color: #ccc !important; transition: all 0.2s !important;
+        display: inline-flex !important; align-items: center !important; justify-content: center !important;
+        gap: 5px !important; white-space: nowrap !important; box-sizing: border-box !important;
+        margin: 0 !important; text-decoration: none !important; flex-shrink: 0 !important;
+    }
+    .pmh-crop-btn:hover { background: #333 !important; color: #fff !important; border-color: #666 !important; }
+    .pmh-crop-btn-active { background: #e5a00d !important; color: #111 !important; border-color: #e5a00d !important; font-weight: bold !important; }
+    .pmh-crop-btn-primary { background: #2f96b4 !important; color: #fff !important; border-color: #2f96b4 !important; }
+    .pmh-crop-btn-primary:hover { background: #257991 !important; color: #fff !important; }
+    .pmh-crop-btn-success { background: #51a351 !important; color: #fff !important; border-color: #51a351 !important; }
+    .pmh-crop-btn-success:hover { background: #418541 !important; color: #fff !important; }
+
+    .pmh-crop-view {
+        width: 100%; height: 500px; max-height: 58vh; background: #050505;
+        display: flex; justify-content: center; align-items: center;
+        position: relative; overflow: hidden; flex-grow: 1; min-height: 250px;
+    }
+    .pmh-crop-footer {
+        padding: 10px 15px; background: #0a0a0c; border-top: 1px solid #333;
+        display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+    }
 
 `);
 
@@ -304,6 +352,26 @@ GM_addStyle(`
                 </div>
             `;
         } else {
+            const rawG = targetElement.dataset.rawGuid || targetElement.textContent || '';
+            const targetServerId = targetElement.dataset.sid || (ServerConfig.SERVERS[0]?.machineIdentifier);
+            
+            // 목록 상위 컨테이너에서 쇼/시즌 여부 판별
+            const parentCont = targetElement.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]');
+            const isShowCard = parentCont && (
+                parentCont.querySelector('[class*="ShowPosterCard"], [class*="SeasonPosterCard"], [class*="EpisodePosterCard"]') ||
+                parentCont.querySelector('a[href*="/children"], a[href*="folder=1"]')
+            );
+            const itemType = isShowCard ? 'show' : 'video';
+
+            // 💡 [수정] 인자 순서: rawGuid, sectionId, serverId, itemType
+            const isAv = isAvMediaItem(rawG, '', targetServerId, itemType);
+
+            const cropMenuItemHtml = isAv ? `
+                <div class="pmh-menu-item" data-action="crop_poster">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-crop-alt" style="color:#2f96b4;"></i></div>
+                    포스터 편집
+                </div>` : '';
+
             pmhActionMenu.innerHTML = `
                 <div class="pmh-menu-item" data-action="refresh">
                     <div class="pmh-menu-icon-wrap"><i class="fas fa-bolt" style="color:#2f96b4;"></i></div>
@@ -317,6 +385,7 @@ GM_addStyle(`
                     <div class="pmh-menu-icon-wrap"><i class="fas fa-broom" style="color:#f89406;"></i></div>
                     클린 리매칭
                 </div>
+                ${cropMenuItemHtml}
             `;
         }
 
@@ -396,6 +465,26 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 const actionType = menuItem.dataset.action;
                 
+                if (actionType === 'crop_poster') {
+                    const targetGBox = currentHoverTarget;
+                    const iid = targetGBox.dataset.iid;
+                    const sid = targetGBox.dataset.sid || (ServerConfig.SERVERS[0]?.machineIdentifier);
+                    const rawG = targetGBox.dataset.rawGuid || targetGBox.textContent;
+                    
+                    const parentCont = targetGBox.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+                    const titleText = parentCont ? (parentCont.querySelector('[class*="Title"], a[aria-label]')?.textContent?.trim()) : '';
+
+                    infoLog(`[List Menu] 🎬 포스터 편집 실행 -> Item ID: ${iid}, Server ID: ${sid}, Code: ${rawG}`);
+                    hideMenu(currentMenuSessionId);
+                    
+                    if (iid && sid) {
+                        openPosterCropModal(iid, sid, rawG, titleText);
+                    } else {
+                        toastr.error("아이템 정보(ID/Server)를 찾을 수 없습니다.");
+                    }
+                    return;
+                }
+
                 const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
                 clickEvent.pmhMenuAction = actionType; 
                 currentHoverTarget.dispatchEvent(clickEvent);
@@ -541,8 +630,13 @@ GM_addStyle(`
                                 const jsonRes = JSON.parse(res.responseText);
                                 const ver = jsonRes.version || "0.0.0";
                                 results[srv.machineIdentifier] = { 
-                                    status: 'ok', version: ver, name: srv.name, 
-                                    ignore_res_section: jsonRes.ignore_res_section || "" 
+                                    status: 'ok', 
+                                    version: ver, 
+                                    name: srv.name, 
+                                    ignore_res_section: jsonRes.ignore_res_section || "",
+                                    jav_section: jsonRes.jav_section || "",
+                                    western_av_section: jsonRes.western_av_section || "",
+                                    av_image_server_use: !!jsonRes.av_image_server_use,
                                 };
                             } catch(e) {
                                 results[srv.machineIdentifier] = { status: 'error', msg: 'JSON 파싱 오류', name: srv.name };
@@ -1219,7 +1313,8 @@ GM_addStyle(`
                                 resolve(parsed);
                             }
                         } catch(e) {
-                            reject(new Error("JSON Parse Error: 서버 응답을 해석할 수 없습니다."));
+                            errorLog("[API Parse Error] 서버 원본 응답:", r.responseText);
+                            reject(new Error(`서버 응답 파싱 실패 (HTTP ${r.status}): ${r.responseText?.substring(0, 100) || ''}`));
                         }
                     } else {
                         try {
@@ -2948,6 +3043,8 @@ GM_addStyle(`
     }
 
     function renderListBadges(cont, poster, link, info, srvConfig, id) {
+        const targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
+
         poster.querySelector('.pmh-render-marker')?.remove();
         poster.querySelector('.pmh-top-right-wrapper')?.remove();
         cont.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
@@ -3102,6 +3199,11 @@ GM_addStyle(`
             gBox.className = 'plex-guid-list-box';
             gBox.style.cssText = "font-size: 11px; font-weight: normal; cursor: pointer; display: inline-block; vertical-align: top;";
 
+            gBox.dataset.iid = id;
+            gBox.dataset.sid = targetServerId;
+            const originalRawG = info.raw_g || info.g || '';
+            gBox.dataset.rawGuid = originalRawG;
+
             const queueInfo = window._pmh_media_queues && window._pmh_media_queues[id];
 
             if (queueInfo) {
@@ -3121,13 +3223,12 @@ GM_addStyle(`
                 gBox.textContent = short;
                 gBox.title = `${info.g} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
 
-                const rawG = (info.raw_g || info.g || '').toLowerCase();
-                const isUnmatched = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
+                const lowerRawG = originalRawG.toLowerCase();
+                const isUnmatched = !lowerRawG || lowerRawG === '-' || lowerRawG.includes('local://') || lowerRawG.includes('none://');
 
                 if (isUnmatched) gBox.style.color = '#a68241';
 
                 gBox.dataset.unmatched = isUnmatched ? 'true' : 'false';
-                gBox.dataset.rawGuid = rawG;
             } else {
                 gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>로딩 중...`;
                 gBox.style.color = '#adb5bd';
@@ -3211,6 +3312,11 @@ GM_addStyle(`
                     actionName = '메타 새로고침'; apiAction = 'refresh';
                 }
                 else return;
+
+                if (menuAction === 'crop_poster') {
+                    openPosterCropModal(id, targetServerId, info.g);
+                    return;
+                }
 
                 let itemDisplayName = "알 수 없는 항목";
                 if (info.p) {
@@ -4058,99 +4164,103 @@ GM_addStyle(`
                 const addedToNewQueue = new Set();
                 let queueCount = 0;
 
-                idsToFallbackBypass.forEach(id => {
-                    if (addedToNewQueue.has(id)) return;
-                    const existsInPending = pendingItems.some(p => p.iid === id && p.sid === serverId);
-                    if (!existsInPending) return;
+                const isPostgresServer = srvConfig && srvConfig.is_postgres;
 
-                    addedToNewQueue.add(id);
-                    queueCount++;
+                if (!isPostgresServer) {
+                    idsToFallbackBypass.forEach(id => {
+                        if (addedToNewQueue.has(id)) return;
+                        const existsInPending = pendingItems.some(p => p.iid === id && p.sid === serverId);
+                        if (!existsInPending) return;
 
-                    globalFallbackQueue.push({
-                        id: id,
-                        session: session,
-                        task: async () => {
-                            if (session !== currentRenderSession) return;
-                            try {
-                                let logTitle = "Unknown Title";
-                                const representativeItem = itemsToRevalidate.find(p => p.iid === id);
-                                if (representativeItem) {
-                                    if (representativeItem.currentStateHash) {
-                                        const hashParts = representativeItem.currentStateHash.split('|');
-                                        logTitle = hashParts.find(p => p && isNaN(p)) || "Unknown Title";
+                        addedToNewQueue.add(id);
+                        queueCount++;
+
+                        globalFallbackQueue.push({
+                            id: id,
+                            session: session,
+                            task: async () => {
+                                if (session !== currentRenderSession) return;
+                                try {
+                                    let logTitle = "Unknown Title";
+                                    const representativeItem = itemsToRevalidate.find(p => p.iid === id);
+                                    if (representativeItem) {
+                                        if (representativeItem.currentStateHash) {
+                                            const hashParts = representativeItem.currentStateHash.split('|');
+                                            logTitle = hashParts.find(p => p && isNaN(p)) || "Unknown Title";
+                                        }
+                                        if (logTitle === "Unknown Title" && representativeItem.link) {
+                                            logTitle = representativeItem.link.getAttribute('aria-label') || representativeItem.link.title || representativeItem.link.textContent.trim() || "Unknown Title";
+                                        }
                                     }
-                                    if (logTitle === "Unknown Title" && representativeItem.link) {
-                                        logTitle = representativeItem.link.getAttribute('aria-label') || representativeItem.link.title || representativeItem.link.textContent.trim() || "Unknown Title";
+
+                                    infoLog(`[List Fallback] DB WAL Delay Bypassed. Fetching fresh data directly from Plex API for [${logTitle}] (ID: ${id})`);
+                                    let meta = await fetchPlexMetaFallback(id, plexSrv);
+                                    if (!meta) return;
+
+                                    const fallbackTags = parsePlexFallbackTags(meta);
+                                    const updatedInfo = convertPlexMetaToLocalData(meta, id);
+
+                                    const oldCache = getMemoryCache(`L_${serverId}_${id}`);
+                                    if (oldCache) {
+                                        updatedInfo.analyze_count = oldCache.analyze_count || 0;
+                                        updatedInfo.last_analyze_time = oldCache.last_analyze_time || 0;
+                                        updatedInfo.corrupt_logged = oldCache.corrupt_logged || false;
+                                        updatedInfo.last_cooldown_log = oldCache.last_cooldown_log || 0;
                                     }
-                                }
 
-                                infoLog(`[List Fallback] DB WAL Delay Bypassed. Fetching fresh data directly from Plex API for [${logTitle}] (ID: ${id})`);
-                                let meta = await fetchPlexMetaFallback(id, plexSrv);
-                                if (!meta) return;
-
-                                const fallbackTags = parsePlexFallbackTags(meta);
-                                const updatedInfo = convertPlexMetaToLocalData(meta, id);
-
-                                const oldCache = getMemoryCache(`L_${serverId}_${id}`);
-                                if (oldCache) {
-                                    updatedInfo.analyze_count = oldCache.analyze_count || 0;
-                                    updatedInfo.last_analyze_time = oldCache.last_analyze_time || 0;
-                                    updatedInfo.corrupt_logged = oldCache.corrupt_logged || false;
-                                    updatedInfo.last_cooldown_log = oldCache.last_cooldown_log || 0;
-                                }
-
-                                if (meta && meta.Media && meta.Media.length > 0) {
-                                    const topMedia = meta.Media.sort((a, b) => (b.width || 0) - (a.width || 0))[0];
-                                    if (topMedia.Part && topMedia.Part[0] && topMedia.Part[0].Stream) {
-                                        const korSubs = topMedia.Part[0].Stream.filter(s => s.streamType === 3 && (s.languageCode === 'kor' || s.languageCode === 'ko'));
-                                        if (korSubs.length > 0) {
-                                            korSubs.sort((a, b) => {
-                                                let sA = 0, sB = 0;
-                                                if(a.key && a.key.trim() !== '') sA+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(a.codec)) sA+=50;
-                                                if(b.key && b.key.trim() !== '') sB+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(b.codec)) sB+=50;
-                                                return sB - sA;
-                                            });
-                                            if (korSubs[0].key && korSubs[0].key !== updatedInfo.sub_url) {
-                                                updatedInfo.sub_id = korSubs[0].id;
-                                                updatedInfo.sub_url = korSubs[0].key;
+                                    if (meta && meta.Media && meta.Media.length > 0) {
+                                        const topMedia = meta.Media.sort((a, b) => (b.width || 0) - (a.width || 0))[0];
+                                        if (topMedia.Part && topMedia.Part[0] && topMedia.Part[0].Stream) {
+                                            const korSubs = topMedia.Part[0].Stream.filter(s => s.streamType === 3 && (s.languageCode === 'kor' || s.languageCode === 'ko'));
+                                            if (korSubs.length > 0) {
+                                                korSubs.sort((a, b) => {
+                                                    let sA = 0, sB = 0;
+                                                    if(a.key && a.key.trim() !== '') sA+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(a.codec)) sA+=50;
+                                                    if(b.key && b.key.trim() !== '') sB+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(b.codec)) sB+=50;
+                                                    return sB - sA;
+                                                });
+                                                if (korSubs[0].key && korSubs[0].key !== updatedInfo.sub_url) {
+                                                    updatedInfo.sub_id = korSubs[0].id;
+                                                    updatedInfo.sub_url = korSubs[0].key;
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                if (representativeItem && representativeItem.currentStateHash) {
-                                    updatedInfo.saved_state_hash = representativeItem.currentStateHash;
-                                }
+                                    if (representativeItem && representativeItem.currentStateHash) {
+                                        updatedInfo.saved_state_hash = representativeItem.currentStateHash;
+                                    }
 
-                                if (session === currentRenderSession) {
-                                    setMemoryCache(`L_${serverId}_${id}`, updatedInfo);
-                                    sessionRevalidated.add(id);
+                                    if (session === currentRenderSession) {
+                                        setMemoryCache(`L_${serverId}_${id}`, updatedInfo);
+                                        sessionRevalidated.add(id);
 
-                                    let displayData = { ...updatedInfo, tags: applyUserTags(updatedInfo.p, updatedInfo.tags) };
+                                        let displayData = { ...updatedInfo, tags: applyUserTags(updatedInfo.p, updatedInfo.tags) };
 
-                                    const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
-                                    for (const live of liveWrappers) {
-                                        let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
-                                        if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
-                                        if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
-                                            let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
-                                            if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
-                                            if (livePoster) {
-                                                livePoster.querySelector('.pmh-render-marker')?.remove();
-                                                renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
+                                        const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
+                                        for (const live of liveWrappers) {
+                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
+                                            if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
+                                            if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
+                                                let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+                                                if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+                                                if (livePoster) {
+                                                    livePoster.querySelector('.pmh-render-marker')?.remove();
+                                                    renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
 
-                                                const matchedPending = pendingItems.find(p => p.poster === livePoster);
-                                                if (matchedPending) matchedPending.isRendered = true;
+                                                    const matchedPending = pendingItems.find(p => p.poster === livePoster);
+                                                    if (matchedPending) matchedPending.isRendered = true;
+                                                }
                                             }
                                         }
                                     }
+                                } catch (e) {
+                                    errorLog(`[Fallback Task] Error fetching Plex API for ${id}:`, e);
                                 }
-                            } catch (e) {
-                                errorLog(`[Fallback Task] Error fetching Plex API for ${id}:`, e);
                             }
-                        }
+                        });
                     });
-                });
+                }
 
                 itemsToRevalidate.filter(p => p.sid === serverId).forEach(item => {
                     if (changedItems.has(item.iid) || addedToNewQueue.has(item.iid)) return;
@@ -4869,6 +4979,13 @@ GM_addStyle(`
             }
         }
 
+        const isAvDetail = isAvMediaItem(data.guid, data.librarySectionID, serverId, data.type);
+
+        const cropPosterBtnHtml = isAvDetail ? `
+            <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
+            <a href="#" id="pmh-btn-crop-poster" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="FF 가로 커버(_pl)를 불러와 원하는 영역으로 크롭하여 세로 포스터(_p_user)로 저장합니다." onmouseover="this.style.color='#2f96b4'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-crop-alt" style="font-size: 10px; margin-right: 2px;"></i>포스터 편집</a>
+        ` : '';
+
         const refreshMetaBtnHtml = srvConfig ? `
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
             <a href="#" id="pmh-btn-refresh-meta" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 메타 새로고침을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-bolt" style="font-size: 10px; margin-right: 2px;"></i>메타 새로고침</a>
@@ -4878,6 +4995,7 @@ GM_addStyle(`
             <a href="#" id="pmh-btn-clean-match" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="현재 메타데이터를 언매치 후 클린 리매칭합니다." onmouseover="this.style.color='#f89406'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-broom" style="font-size: 10px; margin-right: 2px;"></i>클린 리매칭</a>
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
             <a href="#" id="pmh-btn-analyze" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 미디어 분석을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-search-plus" style="font-size: 10px; margin-right: 2px;"></i>미디어 분석</a>
+            ${cropPosterBtnHtml}
         ` : '';
 
         const boxHtml = `
@@ -5434,6 +5552,16 @@ GM_addStyle(`
                 });
             });
         });
+
+        const btnCropPoster = document.getElementById('pmh-btn-crop-poster');
+        if (btnCropPoster) {
+            btnCropPoster.addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                // 💡 제목과 GUID를 함께 넘겨 코드를 안전하게 추출
+                const itemTitle = document.querySelector('h1[data-testid="metadata-title"], [class*="MetadataTitle"]')?.textContent?.trim() || '';
+                openPosterCropModal(data.itemId, serverId, data.guid, itemTitle);
+            });
+        }
 
         if (!srvConfig) return;
 
@@ -6142,6 +6270,530 @@ GM_addStyle(`
         };
     }
 
+    // =========================================================================
+    // 포스터 크롭 에디터 (FF 연동 & Cropper.js)
+    // =========================================================================
+    let cropperInstance = null;
+    let customUploadPayload = null; 
+    let currentCropItemData = null; 
+
+    // 1. GUID 또는 텍스트에서 식별 코드 추출
+    function extractSjvaAgentCode(rawGuid) {
+        if (!rawGuid) return null;
+        let str = String(rawGuid).trim();
+        if (str.includes('://')) str = str.split('://')[1];
+        if (str.includes('?')) str = str.split('?')[0];
+        str = str.trim();
+
+        if (!str || str === '-' || str.startsWith('local') || str.startsWith('none')) {
+            return null;
+        }
+        return str;
+    }
+
+    // 2. 첫 글자로 FF API 모듈 매핑 (C: 유모, E: 노모, W: 서양)
+    function getFfModuleFromCode(cleanCode) {
+        if (!cleanCode) return null;
+        const firstChar = cleanCode.charAt(0).toUpperCase();
+        if (firstChar === 'C') return 'jav_censored';
+        if (firstChar === 'E') return 'jav_uncensored';
+        if (firstChar === 'W') return 'western';
+        return null;
+    }
+
+    // 3. AV 미디어 판별 헬퍼 (단일 영화 + 이미지서버 On + C/E/W 코드)
+    function isAvMediaItem(rawGuid, sectionId = '', serverId = '', itemType = 'video') {
+        if (itemType === 'directory' || itemType === 'show' || itemType === 'season' || itemType === 'episode' || itemType === 'album' || itemType === 'audio') {
+            return false;
+        }
+
+        let srv = getServerConfig(serverId);
+        if (!srv && ServerConfig.SERVERS && ServerConfig.SERVERS.length > 0) {
+            srv = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId) || ServerConfig.SERVERS[0];
+        }
+        if (!srv || !srv.av_image_server_use) {
+            return false;
+        }
+
+        if (sectionId && srv) {
+            const secStr = String(sectionId).trim();
+            const javSecs = (srv.jav_section || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+            const westSecs = (srv.western_av_section || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+            if (javSecs.length > 0 || westSecs.length > 0) {
+                const isJavSec = javSecs.includes('all') || javSecs.includes(secStr);
+                const isWestSec = westSecs.includes('all') || westSecs.includes(secStr);
+                if (!isJavSec && !isWestSec) return false;
+            }
+        }
+
+        const code = extractSjvaAgentCode(rawGuid);
+        if (!code) return false;
+
+        const moduleName = getFfModuleFromCode(code);
+        return moduleName !== null;
+    }
+
+    // 4. Cropper 생성자 획득 헬퍼 (샌드박스 / 메인 컨텍스트 호환)
+    function getCropperClass() {
+        if (typeof Cropper !== 'undefined') return Cropper;
+        if (window.Cropper) return window.Cropper;
+        if (typeof unsafeWindow !== 'undefined' && unsafeWindow.Cropper) return unsafeWindow.Cropper;
+        return null;
+    }
+
+    // 5. Cropper.js 및 CSS 동적 로더
+    async function ensureCropperLoaded() {
+        return new Promise((resolve) => {
+            const ExistingCropper = getCropperClass();
+            if (ExistingCropper) return resolve(ExistingCropper);
+
+            if (!document.getElementById('pmh-cropper-css')) {
+                const link = document.createElement('link');
+                link.id = 'pmh-cropper-css'; link.rel = 'stylesheet';
+                link.href = 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css';
+                document.head.appendChild(link);
+            }
+
+            if (!document.getElementById('pmh-cropper-js')) {
+                const script = document.createElement('script');
+                script.id = 'pmh-cropper-js';
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js';
+                script.onload = () => {
+                    infoLog("[Crop Modal] Cropper.js 로드 완료");
+                    resolve(getCropperClass());
+                };
+                script.onerror = () => {
+                    errorLog("[Crop Modal] Cropper.js 로드 실패");
+                    resolve(null);
+                };
+                document.head.appendChild(script);
+            } else {
+                let checkCount = 0;
+                const waitInt = setInterval(() => {
+                    checkCount++;
+                    const CC = getCropperClass();
+                    if (CC || checkCount > 20) {
+                        clearInterval(waitInt);
+                        resolve(CC);
+                    }
+                }, 50);
+            }
+        });
+    }
+
+    // 6. 모달 DOM 생성 및 초기화 (PL / P 스위칭 버튼 추가)
+    let pmhCropModal = document.getElementById('pmh-crop-modal');
+    if (!pmhCropModal) {
+        pmhCropModal = document.createElement('div');
+        pmhCropModal.id = 'pmh-crop-modal';
+        pmhCropModal.innerHTML = `
+            <div class="pmh-crop-card">
+                <div class="pmh-crop-header">
+                    <span id="pmh-crop-title" style="color:#e5a00d; font-weight:bold; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:10px;">포스터 크롭 에디터</span>
+                    <button type="button" id="pmh-btn-crop-close" style="background:transparent; border:none; color:#aaa; font-size:16px; cursor:pointer; padding:4px; display:flex; align-items:center; justify-content:center; transition:color 0.2s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#aaa'">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                
+                <div class="pmh-crop-toolbar">
+                    <div style="display:flex; gap:4px; align-items:center;">
+                        <!-- 원본 소스 스위칭 (PL / P) -->
+                        <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;">
+                            <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-src-pl" title="기본 가로 커버(_pl)를 불러옵니다."><i class="fas fa-image"></i> 가로(PL)</button>
+                            <button class="pmh-crop-btn" id="pmh-crop-src-p" title="기본 세로 포스터(_p)를 불러옵니다."><i class="fas fa-portrait"></i> 세로(P)</button>
+                        </div>
+
+                        <!-- 크롭 비율 (1:1.42 / 자유) -->
+                        <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;">
+                            <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-ratio-lock" title="Plex 포스터 표준 비율 (1:1.4225)"><i class="fas fa-lock"></i> 1:1.42</button>
+                            <button class="pmh-crop-btn" id="pmh-crop-ratio-free" title="비율 제한 없이 자유롭게 자르기"><i class="fas fa-expand"></i> 자유</button>
+                        </div>
+
+                        <!-- 회전 및 리셋 -->
+                        <button class="pmh-crop-btn" id="pmh-crop-rotate-l" title="좌로 90도 회전"><i class="fas fa-undo"></i> 90°</button>
+                        <button class="pmh-crop-btn" id="pmh-crop-rotate-r" title="우로 90도 회전"><i class="fas fa-redo"></i> 90°</button>
+                        <button class="pmh-crop-btn" id="pmh-crop-reset" style="color:#f89406 !important;" title="영역 및 회전 초기화"><i class="fas fa-sync-alt"></i></button>
+                    </div>
+
+                    <!-- 파일 수동 교체/등록 버튼 -->
+                    <div style="display:flex; gap:5px; align-items:center;">
+                        <label class="pmh-crop-btn pmh-crop-btn-primary" style="cursor:pointer;" title="새 가로 원본 이미지를 불러옵니다. (가로 _pl_user와 크롭된 _p_user 동시 저장)">
+                            <i class="fas fa-folder-open"></i> 가로(PL) 교체
+                            <input type="file" id="pmh-upload-pl" accept="image/*" style="display:none;">
+                        </label>
+                        <label class="pmh-crop-btn pmh-crop-btn-success" style="cursor:pointer;" title="이미 완성된 세로형 포스터를 직접 등록합니다. (_p_user 단독 교체)">
+                            <i class="fas fa-file-image"></i> 세로(P) 등록
+                            <input type="file" id="pmh-upload-p" accept="image/*" style="display:none;">
+                        </label>
+                    </div>
+                </div>
+
+                <div class="pmh-crop-view">
+                    <i class="fas fa-spinner fa-spin" id="pmh-crop-spinner" style="position:absolute; font-size:32px; color:#e5a00d; display:none; z-index:5;"></i>
+                    <img id="pmh-cropper-target-img" style="display:block; max-width:100%; opacity:0;" alt="Crop Source">
+                </div>
+
+                <div class="pmh-crop-footer">
+                    <span style="font-size:11px; color:#777;">※ 저장 시 <code>_p_user.jpg</code>로 생성되며 Plex 클린 리매칭이 자동 수행됩니다.</span>
+                    <div style="display:flex; gap:8px;">
+                        <button class="pmh-crop-btn" id="pmh-btn-crop-cancel">취소</button>
+                        <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-btn-crop-save" style="padding:0 15px !important;"><i class="fas fa-save"></i> 저장 및 리매칭</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(pmhCropModal);
+    }
+
+    // 7. 모달 닫기 함수
+    function closeCropModal() {
+        if (cropperInstance) { 
+            cropperInstance.destroy(); 
+            cropperInstance = null; 
+        }
+        const imgEl = document.getElementById('pmh-cropper-target-img');
+        if (imgEl) {
+            imgEl.onload = null;
+            imgEl.onerror = null;
+            if (imgEl.src && imgEl.src.startsWith('blob:')) {
+                URL.revokeObjectURL(imgEl.src);
+            }
+            imgEl.className = '';
+            imgEl.style.cssText = 'display: block; max-width: 100%; opacity: 0;';
+            imgEl.src = '';
+        }
+        const plInp = document.getElementById('pmh-upload-pl'); if (plInp) plInp.value = '';
+        const pInp = document.getElementById('pmh-upload-p'); if (pInp) pInp.value = '';
+        if (pmhCropModal) pmhCropModal.style.display = 'none';
+        customUploadPayload = null;
+        currentCropItemData = null;
+    }
+
+    // 8. 이미지 바이너리 로드 및 Cropper 인스턴스화 모듈
+    function loadCropImage(targetUrl) {
+        if (!targetUrl) return;
+
+        const imgEl = document.getElementById('pmh-cropper-target-img');
+        const spinner = document.getElementById('pmh-crop-spinner');
+        if (!imgEl || !spinner) return;
+
+        spinner.style.display = 'block';
+        imgEl.style.opacity = '0';
+
+        infoLog(`[Crop Modal] 🚀 이미지 로드 시작: ${targetUrl}`);
+
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: targetUrl,
+            responseType: "blob",
+            headers: { "Referer": "" },
+            timeout: 30000,
+            onload: (blobRes) => {
+                if (blobRes.status >= 200 && blobRes.status < 300 && blobRes.response) {
+                    const blobUrl = URL.createObjectURL(blobRes.response);
+
+                    const initCropper = () => {
+                        spinner.style.display = 'none';
+                        imgEl.style.opacity = '1';
+
+                        if (cropperInstance) {
+                            cropperInstance.destroy();
+                            cropperInstance = null;
+                        }
+
+                        const TargetCropper = getCropperClass();
+                        cropperInstance = new TargetCropper(imgEl, {
+                            aspectRatio: 1 / 1.4225,
+                            viewMode: 1,
+                            autoCropArea: 1.0,
+                            responsive: true,
+                            restore: false,
+                            checkCrossOrigin: false,
+                            zoomable: true,
+                            rotatable: true,
+                            scalable: true,
+                            wheelZoomRatio: 0.08
+                        });
+                    };
+
+                    imgEl.onload = initCropper;
+                    imgEl.onerror = () => {
+                        spinner.style.display = 'none';
+                        errorLog("[Crop Modal] ❌ Blob 이미지 렌더링 실패");
+                        toastr.error("이미지를 불러오지 못했습니다.");
+                    };
+                    imgEl.src = blobUrl;
+
+                    if (imgEl.complete) initCropper();
+
+                } else {
+                    spinner.style.display = 'none';
+                    errorLog("[Crop Modal] ❌ 이미지 응답 오류:", blobRes.status);
+                    toastr.error(`이미지 다운로드 실패 (HTTP ${blobRes.status})`);
+                }
+            },
+            onerror: (err) => {
+                spinner.style.display = 'none';
+                errorLog("[Crop Modal] ❌ 네트워크 오류:", err);
+                toastr.error("이미지 서버에 연결할 수 없습니다.");
+            },
+            ontimeout: () => {
+                spinner.style.display = 'none';
+                errorLog("[Crop Modal] ❌ 요청 시간 초과");
+                toastr.error("이미지 로딩 시간이 초과되었습니다.");
+            }
+        });
+    }
+
+    // 9. 모달 열기 및 크롭 에디터 구동 (PL & P URL 동시 수집)
+    async function openPosterCropModal(itemId, serverId, rawGuid, optTitle = '') {
+        infoLog(`[Crop Modal] 🎬 포스터 편집 진입 -> Item ID: ${itemId}, Server ID: ${serverId}, Raw GUID: ${rawGuid}`);
+
+        const srvConfig = getServerConfig(serverId);
+        if (!srvConfig) {
+            errorLog("[Crop Modal] ❌ srvConfig 조회 실패 (Server ID:", serverId, ")");
+            return toastr.error("서버 설정을 찾을 수 없습니다.");
+        }
+
+        const cleanCode = extractSjvaAgentCode(rawGuid);
+        if (!cleanCode) {
+            warnLog("[Crop Modal] ⚠️ sjva_agent 기반 GUID가 아닙니다:", rawGuid);
+            return toastr.warning("sjva_agent 기반의 메타데이터만 포스터 편집을 지원합니다.");
+        }
+
+        const moduleName = getFfModuleFromCode(cleanCode);
+        if (!moduleName) {
+            warnLog("[Crop Modal] ⚠️ 지원하지 않는 AV 코드 접두사:", cleanCode);
+            return toastr.warning("지원하지 않는 AV 코드 형식입니다. (C, E, W만 지원)");
+        }
+
+        infoLog(`[Crop Modal] 🔍 식별 코드: '${cleanCode}', 대상 모듈: '${moduleName}'`);
+        toastr.info(`[${cleanCode}] FF에서 커버 이미지를 가져옵니다...`, "에디터 로드 중");
+
+        try {
+            const CropperConstructor = await ensureCropperLoaded();
+            if (!CropperConstructor) {
+                throw new Error("Cropper.js 라이브러리를 초기화하지 못했습니다.");
+            }
+
+            const reqUrl = `${srvConfig.relayUrl}/ff_metadata/api/${moduleName}/info?code=${encodeURIComponent(cleanCode)}&call=plex`;
+            infoLog(`[Crop Modal] 📡 FF info API 요청: ${reqUrl}`);
+
+            const infoRes = await makeRequest(reqUrl, 'GET', null, ClientSettings.masterApiKey);
+            infoLog(`[Crop Modal] ✅ FF info 응답 수신:`, infoRes);
+
+            // 1) 가로 커버 (PL) URL 추출
+            let plUrl = '';
+            if (infoRes.thumb) {
+                for (const t of infoRes.thumb) {
+                    if (t.aspect === 'landscape') { plUrl = t.value; break; }
+                }
+            }
+            if (!plUrl && infoRes.fanart && infoRes.fanart.length > 0) plUrl = infoRes.fanart[0];
+            if (!plUrl) plUrl = infoRes.poster_url;
+
+            // 2) 세로 포스터 (P) URL 추출
+            let pUrl = infoRes.poster_url || '';
+            if (!pUrl && infoRes.thumb) {
+                for (const t of infoRes.thumb) {
+                    if (t.aspect === 'poster') { pUrl = t.value; break; }
+                }
+            }
+            if (!pUrl && plUrl) pUrl = plUrl;
+
+            infoLog(`[Crop Modal] 🖼️ PL(가로): '${plUrl}' | P(세로): '${pUrl}'`);
+            if (!plUrl && !pUrl) throw new Error("편집할 원본 이미지 주소를 찾을 수 없습니다.");
+
+            // 상태 저장 (기본 소스는 PL)
+            currentCropItemData = { 
+                itemId, serverId, code: cleanCode, module: moduleName, 
+                plUrl: plUrl || pUrl, 
+                pUrl: pUrl || plUrl,
+                currentSource: 'pl'
+            };
+            customUploadPayload = null;
+
+            document.getElementById('pmh-crop-title').innerText = `[${cleanCode}] ${infoRes.title || optTitle} - 포스터 크롭 에디터`;
+            
+            // 소스 버튼 UI 초기화 (PL 활성화)
+            const btnSrcPl = document.getElementById('pmh-crop-src-pl');
+            const btnSrcP = document.getElementById('pmh-crop-src-p');
+            if (btnSrcPl) btnSrcPl.classList.add('pmh-crop-btn-active');
+            if (btnSrcP) btnSrcP.classList.remove('pmh-crop-btn-active');
+
+            // 모달 노출 및 기본 PL 이미지 로드
+            pmhCropModal.style.display = 'flex';
+            loadCropImage(currentCropItemData.plUrl);
+
+        } catch (err) {
+            errorLog("[Crop Modal] ❌ 모달 로드 예외 발생:", err);
+            toastr.error(`이미지 로드 실패: ${err.message || err}`);
+            closeCropModal();
+        }
+    }
+
+    // 10. 툴바 및 모달 이벤트 바인딩
+    pmhCropModal.onclick = (e) => { 
+        if (e.target === pmhCropModal || e.target.closest('#pmh-btn-crop-close') || e.target.closest('#pmh-btn-crop-cancel')) {
+            closeCropModal(); 
+        }
+    };
+
+    // [원본 스위칭] 가로(PL) 버튼 클릭
+    const btnSrcPl = document.getElementById('pmh-crop-src-pl');
+    if (btnSrcPl) {
+        btnSrcPl.onclick = function() {
+            if (!currentCropItemData || currentCropItemData.currentSource === 'pl') return;
+            currentCropItemData.currentSource = 'pl';
+            customUploadPayload = null;
+
+            this.classList.add('pmh-crop-btn-active');
+            const btnSrcP = document.getElementById('pmh-crop-src-p');
+            if (btnSrcP) btnSrcP.classList.remove('pmh-crop-btn-active');
+
+            loadCropImage(currentCropItemData.plUrl);
+        };
+    }
+
+    // [원본 스위칭] 세로(P) 버튼 클릭
+    const btnSrcP = document.getElementById('pmh-crop-src-p');
+    if (btnSrcP) {
+        btnSrcP.onclick = function() {
+            if (!currentCropItemData || currentCropItemData.currentSource === 'p') return;
+            currentCropItemData.currentSource = 'p';
+            customUploadPayload = null;
+
+            this.classList.add('pmh-crop-btn-active');
+            const btnSrcPl = document.getElementById('pmh-crop-src-pl');
+            if (btnSrcPl) btnSrcPl.classList.remove('pmh-crop-btn-active');
+
+            loadCropImage(currentCropItemData.pUrl);
+        };
+    }
+
+    // [비율] 고정 / 자유 토글
+    const btnRatioLock = document.getElementById('pmh-crop-ratio-lock');
+    const btnRatioFree = document.getElementById('pmh-crop-ratio-free');
+    if (btnRatioLock) {
+        btnRatioLock.onclick = function() {
+            if (cropperInstance) cropperInstance.setAspectRatio(1 / 1.4225);
+            this.classList.add('pmh-crop-btn-active');
+            if (btnRatioFree) btnRatioFree.classList.remove('pmh-crop-btn-active');
+        };
+    }
+    if (btnRatioFree) {
+        btnRatioFree.onclick = function() {
+            if (cropperInstance) cropperInstance.setAspectRatio(NaN);
+            this.classList.add('pmh-crop-btn-active');
+            if (btnRatioLock) btnRatioLock.classList.remove('pmh-crop-btn-active');
+        };
+    }
+
+    // [회전 및 리셋]
+    const btnRotateL = document.getElementById('pmh-crop-rotate-l');
+    if (btnRotateL) btnRotateL.onclick = () => { if (cropperInstance) cropperInstance.rotate(-90); };
+
+    const btnRotateR = document.getElementById('pmh-crop-rotate-r');
+    if (btnRotateR) btnRotateR.onclick = () => { if (cropperInstance) cropperInstance.rotate(90); };
+
+    const btnReset = document.getElementById('pmh-crop-reset');
+    if (btnReset) {
+        btnReset.onclick = () => {
+            if (cropperInstance) {
+                cropperInstance.reset();
+                cropperInstance.setAspectRatio(1 / 1.4225);
+                if (btnRatioLock) btnRatioLock.classList.add('pmh-crop-btn-active');
+                if (btnRatioFree) btnRatioFree.classList.remove('pmh-crop-btn-active');
+            }
+        };
+    }
+
+    // [로컬 파일 업로드] 가로(PL) / 세로(P)
+    const uploadPl = document.getElementById('pmh-upload-pl');
+    if (uploadPl) {
+        uploadPl.onchange = function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    customUploadPayload = { type: 'pl', data: evt.target.result };
+                    if (cropperInstance) cropperInstance.replace(evt.target.result);
+                };
+                reader.readAsDataURL(file);
+            }
+        };
+    }
+
+    const uploadP = document.getElementById('pmh-upload-p');
+    if (uploadP) {
+        uploadP.onchange = function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    customUploadPayload = { type: 'p', data: evt.target.result };
+                    if (cropperInstance) cropperInstance.replace(evt.target.result);
+                };
+                reader.readAsDataURL(file);
+            }
+        };
+    }
+
+    // [저장 및 리매칭]
+    const btnCropSave = document.getElementById('pmh-btn-crop-save');
+    if (btnCropSave) {
+        btnCropSave.onclick = async function() {
+            if (!cropperInstance || !currentCropItemData) return;
+
+            const { itemId, serverId, code, module } = currentCropItemData;
+            const srvConfig = getServerConfig(serverId);
+            const btn = this;
+
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> FF 저장 중...`;
+
+            try {
+                const cropData = cropperInstance.getData(true);
+                const payload = { 
+                    code: code, 
+                    crop_data: cropData,
+                    source_type: currentCropItemData.currentSource || 'pl'
+                };
+
+                if (customUploadPayload) {
+                    if (customUploadPayload.type === 'pl') payload.pl_base64 = customUploadPayload.data;
+                    else if (customUploadPayload.type === 'p') payload.p_base64 = customUploadPayload.data;
+                }
+
+                infoLog(`[Crop Modal] 💾 FF crop_save 요청 전송:`, payload);
+
+                const saveRes = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/api/${module}/crop_save`, 'POST', payload, ClientSettings.masterApiKey);
+                infoLog(`[Crop Modal] ✅ FF crop_save 응답:`, saveRes);
+                
+                if (saveRes.ret !== 'success') {
+                    throw new Error(saveRes.msg || "FF 포스터 저장 실패");
+                }
+
+                toastr.success("포스터 저장 성공! Plex 클린 리매칭을 시작합니다.", "FF 저장 완료");
+                closeCropModal();
+
+                triggerPlexMediaAction(itemId, 'match', extractPlexServerInfo(serverId), srvConfig, {
+                    _try_refresh_first: false,
+                    _do_unmatch_first: true,
+                    _skip_sim_check: true
+                });
+
+            } catch (err) {
+                errorLog("[Crop Modal] ❌ 포스터 저장 실패:", err);
+                toastr.error(`저장 실패: ${err.message || err}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fas fa-save"></i> 저장 및 리매칭`;
+            }
+        };
+    }
+
     let isProcessingMatchModal = false;
 
     function processMatchModal() {
@@ -6214,7 +6866,12 @@ GM_addStyle(`
             ServerConfig.DISPLAY_PATH_PREFIXES_TO_REMOVE = res.DISPLAY_PATH_PREFIXES_TO_REMOVE || [];
             ServerConfig.SERVERS = (res.SERVERS || []).map(srv => {
                 return {
-                    id: srv.id, name: srv.name, machineIdentifier: srv.machine_id,
+                    id: srv.id, 
+                    name: srv.name, 
+                    machineIdentifier: srv.machine_id,
+                    jav_section: srv.jav_section || "",
+                    western_av_section: srv.western_av_section || "",
+                    av_image_server_use: !!srv.av_image_server_use,
                     relayUrl: `${ClientSettings.masterUrl}/api/relay/${srv.id}`
                 };
             });

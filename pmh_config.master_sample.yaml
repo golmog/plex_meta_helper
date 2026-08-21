@@ -21,6 +21,12 @@ BASE:
   PLEX_TOKEN: "YOUR_PLEX_TOKEN"
   PLEX_MACHINE_IDENTIFIER: "YOUR_PLEX_MACHINE_ID_HERE"
 
+  # [Plex DB 엔진 설정] (sqlite3 또는 postgres)
+  # 기본값: "sqlite3" (Plex 순정 상태)
+  # plex-postgresql(https://github.com/cgnl/plex-postgresql) 적용 시 "postgres"로 변경
+  PLEX_DB_TYPE: "sqlite3"
+
+  # 1) sqlite3 모드 사용 시 필수 경로 (순정 Plex)
   # Plex 메인 DB 파일 경로 (sqlite3 접근용)
   # 예시:
   #   Windows: "C:\\Users\\Username\\AppData\\Local\\Plex Media Server\\Plug-in Support\\Databases\\com.plexapp.plugins.library.db"
@@ -28,6 +34,16 @@ BASE:
   PLEX_DB_PATH: "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
   # Plex SQLite 바이너리 파일 경로 (DB 수정 쿼리 우회용)
   PLEX_SQLITE_BIN: "/usr/lib/plexmediaserver/Plex SQLite"
+
+  # 2) postgres 모드 사용 시 필수 접속 정보 (plex-postgresql 적용 시)
+  # PLEX_DB_TYPE이 "postgres"일 때만 작동하며, pip install psycopg2-binary 가 필요합니다.
+  PLEX_PG_CONFIG:
+    HOST: "postgres"              # PostgreSQL 서버 주소 (도커 환경일 경우 컨테이너명 또는 호스트 IP)
+    PORT: 5432                    # PostgreSQL 포트
+    DBNAME: "plex"                # 데이터베이스 이름
+    USER: "plex"                  # DB 사용자 계정
+    PASSWORD: "YOUR_PG_PASSWORD"  # DB 비밀번호
+    SCHEMA: "plex, public"        # plex-postgresql 기본 스키마 검색 경로
 
   # FF 연결 정보
   FF_URL: "http://localhost:9999"
@@ -64,9 +80,12 @@ BASE:
   # Western AV 전용 로직을 적용할 라이브러리 섹션 ID 목록 (콤마로 구분)
   WESTERN_AV_SECTION: "6, 7"
 
+  # 로컬 AV 이미지 서버 사용 여부 (포스터 크롭 편집 기능 활성화)
+  AV_IMAGE_SERVER_USE: false
+
   # 에이전트 매칭 시 기본 합격 점수 커트라인
   JAV_MIN_SCORE: 95
-  WESTERN_MIN_SCORE: 80
+  WESTERN_MIN_SCORE: 95
 
   # JAV 매칭 시 적용할 정규식 패턴: 기본 정규식 패턴은 PMH에 내장되어 있으므로, 직접 수정이 필요한 경우가 아니라면 삭제 가능.
   JAV_PARSING_RULES:

@@ -1,15 +1,26 @@
 # Plex Meta Helper (PMH)
 
-Plex Web UI의 관리 기능을 강화하는 Tampermonkey 유저스크립트 및 백엔드 툴 관리 시스템입니다.
-Plex 컨텐츠의 상세 메타 정보를 표시하고, 캐시 관리, 외부 플레이어 연동 및 서버 툴 관리 등 다양한 편의 기능을 제공합니다.
+Plex Web UI의 고급 관리 기능을 강화를 위한 프로젝트입니다.
+웹 프론트엔드([Tampermonkey](https://www.tampermonkey.net/) 기반)에서는 Plex Web UI에서 컨텐츠 정보를 더 풍성하게 보여주고, 특정 기능들을 쉽게 실행할 수 있도록 하는데 촛점이 맞춰져 있습니다.
+Flask 백엔드는 실시간으로 Plex DB와 연동하고 프론트엔드의 요청을 처리하거나, 개별 툴들의 백그라운드 실행을 관리합니다.
+툴은 번들 외에도 사용자가 직접 개발하고 깃헙 주소를 공유함으로써 유저 툴을 추가 설치할 수 있습니다.
+
 
 ## 업데이트
 
-v0.8.116 (2026-08-19)
-- FF/Plex 에이전트 Western 관련 로직 변경 대응
-- 스캔 로직 개선
-- Western/Custom 매칭 스코어 기본값 상향: 80 -> 95
-- 기타 수정
+v0.9.117 (2026-08-22)
+- Plex DB 처리를 기존 sqlite3 외에 추가로 postgresql을 지원: 아직 알파 테스트 단계이므로 사용 주의
+  - postgres 사용시 백엔드 추가 설정 필요(`pmh_config.master_sample.yaml` 참고)
+  - 툴 개발시 가급적 표준 ANSI SQL 쿼리 작성 필요
+  - 번들 툴 전체 적용
+- AV용 이미지 편집 모달 추가(FF 연동)
+  - FF metadata 이용시(AV) '이미지 서버' 사용 필수
+  - 백엔드 노드(BASE) 설정에 `AV_IMAGE_SERVER_USE: true` 설정 필요
+  - 프로세스 흐름: FF metadata 플러그인 로컬 메타 DB $\rightarrow$ (API) $\rightarrow$ 이미지 로딩 $\rightarrow$ 크롭 좌표 획득/저장 $\rightarrow$ (API) $\rightarrow$ DB/이미지 업데이트 $\rightarrow$ 리매칭
+
+v0.9.x
+- PostgreSQL 지원(번들 툴 포함): [plex-postgresql](https://github.com/cgnl/plex-postgresql) 대응
+- AV용 이미지 편집 모달 추가(FF 연동)
 
 v0.8.x
 - **서버 마스터/노드 아키텍처 도입**: 프론트엔드는 마스터 노드(Gateway)에만 접속하며, 마스터가 각 워커 노드로 API를 릴레이(Relay).
@@ -55,18 +66,30 @@ v0.6.x
 
 ## 설치 및 설정 방법
 
-### 1. 백엔드 서버 (`pmh_server.py`) 구동
-1. `pmh_config.master_sample.yaml`, `pmh_config.node_sample.yaml` 중 마스터/노드 서버에 해당하는 샘플 파일을 `pmh_config.yaml`로 복사하고 내용을 서버 환경에 맞게 수정합니다.(설정 파일이 없으면 노드 기본 설정으로 자동 생성되며, 생성 후 수정-마스터일 경우 마스터 설정 추가- 필요)
-  - JAV 라이브러리가 없으면 해당 설정 부분을 다 제거하시고, 파싱 규칙(패턴) 설정은 직접 수정하실 게 아니라면 기본 파싱 규칙이 내장되어 있으니 삭제하셔도 됩니다.
-2. `pmh_server.py`를 서버에서 실행합니다.(서버 환경에 따라 파이썬 라이브러리 설치가 필요할 수 있음)
+### 1. pmh 다운로드(의존성 패키지 포함)
+PMH 백엔드 서버를 설치할 상위 경로로 이동 후 아래 커맨드를 실행합니다.
+```bash
+curl -fsSL https://raw.githubusercontent.com/golmog/plex_meta_helper/main/install.sh | bash
+```
+설치 스크립트를 실행하면 의존성 패키지를 설치하고 `./pmh` 경로에 서버(pmh_server.py)가 다운로드 되고, 설치 경로(`./pmh`) 내에 `pmh_config.yaml`이 없을 경우 마스터 설정(`pmh_config.master_sample.yaml`)이 `pmh_config.yaml`로 저장됩니다. .
+
+### 2. 백엔드 서버 (`pmh_server.py`) 구동
+1. 반드시 서버 실행 전 본인 환경에 맞게 `pmh_config.yaml`을 수정하시기 바랍니다.
+  - 워커 노드의 경우는 설정 파일 내에서 마스터 설정 부분만 삭제하시면 됩니다.
+  - 서버 실행시 설정 파일이 아예 없으면 마스터가 아닌 노드 기본 설정으로 자동 생성되며, 역시 샘플 기본값이기 때문에 본인 환경에 맞게 수정해야 합니다.
+  - AV 라이브러리가 없으면 해당 설정 부분을 다 제거하시면 됩니다.
+  - AV 라이브러리가 있더라도 파싱 규칙(`JAV_PARSING_RULES`)은 직접 수정하실 게 아니라면 기본값이 내장되어 있으니 삭제하셔도 됩니다.
+2. `pmh_server.py`를 실행합니다.
+  - 첫 실행이면 나머지 필수 에셋들을 자동으로 다운로드 하게 됩니다.
 3. 서버 환경에 따라 클라이언트가 PMH 서버에 접근할 수 있도록 포트를 개방하거나, 리버스 프록시 설정 등이 필요합니다.
 
-### 2. 프론트엔드 (PC 브라우저) 설정
+### 3. 프론트엔드 (PC 브라우저) 설정
 1. 브라우저에 [Tampermonkey 스크립트 설치](https://raw.githubusercontent.com/golmog/plex_meta_helper/main/plex_meta_helper.user.js) 링크를 클릭하여 설치합니다.
-2. Plex Web UI에 접속 후 상단 메뉴의 톱니바퀴(<i class="fas fa-cog"></i>) 아이콘(PMH 클라이언트 설정)을 클릭합니다.(첫 접속시 자동 팝)
+2. Plex Web UI에 접속 후 상단 메뉴의 톱니바퀴(<i class="fas fa-cog"></i>) 아이콘(PMH 클라이언트 설정)을 클릭합니다.(첫 접속시 자동 팝업)
 3. `마스터 서버 주소`와 `접속 키(APIKEY)`를 입력하고 연결을 테스트한 후 저장합니다.
 
-### 3. 모바일 PWA 접속 (선택)
+### 4. 모바일 PWA 접속 (선택)
+PMH 
 1. 스마트폰이나 태블릿의 브라우저에서 마스터 서버 주소(예: `http://192.168.x.x:8899`)로 접속합니다.
 2. 설정 탭에서 API Key를 입력하여 로그인합니다.
 3. 브라우저 메뉴에서 **[홈 화면에 추가]**를 선택하여 전체 화면 앱(PWA) 모드로 쾌적하게 사용하세요.

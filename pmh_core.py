@@ -28,7 +28,7 @@ from urllib.error import HTTPError, URLError
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.8.116"
+__version__ = "0.9.117"
 
 logger = logging.getLogger("PMH")
 
@@ -76,9 +76,9 @@ def get_tool_name(base_dir, tool_id):
                 name = info_data.get('name', tool_id)
                 _TOOL_NAME_CACHE[tool_id] = name
                 return name
-    except Exception:
-        pass
-    
+    except Exception as e:
+        logger.warning(f"툴 이름 조회 실패 ({tool_id}): {e}")
+
     _TOOL_NAME_CACHE[tool_id] = tool_id
     return tool_id
 
@@ -216,7 +216,8 @@ def match_cron(cron_expr, dt):
                     start, end = map(int, p.split('-'))
                     if start <= val <= end: return True
                 elif int(p) == val: return True
-        except: pass
+        except Exception as e:
+            logger.warning(f"[Scheduler] 크론 표현식 매칭 중 오류: {e}")
         return False
 
     return (match_part(parts[0], dt.minute) and
@@ -242,8 +243,8 @@ def stop_scheduler_daemon():
                 except: break
             MEDIA_ACTION_STATUS.clear()
             MEDIA_ACTION_QUEUE.put({'task_id': 'KILL', 'item_id': 0, 'action': 'kill', 'plex_url': '', 'plex_token': '', 'data': {}})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[Scheduler] 스케줄러 종료 중 오류: {e}")
 
 def start_scheduler_daemon(global_config):
     thread_name = "PMH_Cron_Scheduler"
@@ -273,8 +274,9 @@ def start_scheduler_daemon(global_config):
                                 
                                 ghost_count += 1
                                 conn.commit()
-                    except Exception: pass
-                    
+                    except Exception as e:
+                        logger.warning(f"[Scheduler] 유령 작업 정리 중 오류: {e}")
+
             if ghost_count > 0:
                 logger.info(f"총 {ghost_count}개의 툴에서 중단된 유령 작업(Ghost Tasks)을 정리했습니다.")
     except Exception as cleanup_err:
@@ -306,7 +308,7 @@ def start_scheduler_daemon(global_config):
                     _update_dashboard_cache(tools_dir, task_logs_dir, base_dir)
                     last_cache_update = current_time
                 except Exception as e:
-                    pass
+                    logger.error(f"Dashboard Cache Update Error: {e}")
                     
             time.sleep(0.5)
 
@@ -333,40 +335,43 @@ def _update_dashboard_cache(tools_dir, task_logs_dir, base_dir):
     running_list = []
     cron_list = []
     
-    for f_name in os.listdir(task_logs_dir):
-        if f_name.endswith('_task.db'):
-            parts = f_name[:-8].rsplit('_', 1)
-            if len(parts) == 2:
-                t_id, s_id = parts
-                mgr = CoreTaskManager(base_dir, t_id, s_id)
-                t_state = mgr.load(include_target_items=False)
-                if t_state and t_state.get('state') == 'running':
-                    running_list.append({
-                        "tool_id": t_id, "server_id": s_id,
-                        "progress": t_state.get('progress', 0), "total": t_state.get('total', 0)
-                    })
-                    
-                popped = mgr.pop_completed_items()
-                if popped:
-                    if "completed_items" not in GLOBAL_DASHBOARD_CACHE:
-                        GLOBAL_DASHBOARD_CACHE["completed_items"] = {}
-                    if s_id not in GLOBAL_DASHBOARD_CACHE["completed_items"]:
-                        GLOBAL_DASHBOARD_CACHE["completed_items"][s_id] = []
-                    
-                    for p in popped:
-                        if p not in GLOBAL_DASHBOARD_CACHE["completed_items"][s_id]:
-                            GLOBAL_DASHBOARD_CACHE["completed_items"][s_id].append(p)
+    try:
+        for f_name in os.listdir(task_logs_dir):
+            if f_name.endswith('_task.db'):
+                parts = f_name[:-8].rsplit('_', 1)
+                if len(parts) == 2:
+                    t_id, s_id = parts
+                    mgr = CoreTaskManager(base_dir, t_id, s_id)
+                    t_state = mgr.load(include_target_items=False)
+                    if t_state and t_state.get('state') == 'running':
+                        running_list.append({
+                            "tool_id": t_id, "server_id": s_id,
+                            "progress": t_state.get('progress', 0), "total": t_state.get('total', 0)
+                        })
+                        
+                    popped = mgr.pop_completed_items()
+                    if popped:
+                        if "completed_items" not in GLOBAL_DASHBOARD_CACHE:
+                            GLOBAL_DASHBOARD_CACHE["completed_items"] = {}
+                        if s_id not in GLOBAL_DASHBOARD_CACHE["completed_items"]:
+                            GLOBAL_DASHBOARD_CACHE["completed_items"][s_id] = []
+                        
+                        for p in popped:
+                            if p not in GLOBAL_DASHBOARD_CACHE["completed_items"][s_id]:
+                                GLOBAL_DASHBOARD_CACHE["completed_items"][s_id].append(p)
 
-        elif f_name.endswith('_options.db'):
-            parts = f_name[:-11].rsplit('_', 1)
-            if len(parts) == 2:
-                t_id, s_id = parts
-                mgr = CoreOptionsManager(base_dir, t_id, s_id)
-                opts = mgr.load()
-                if opts.get('cron_enable') and opts.get('cron_expr'):
-                    cron_list.append({
-                        "tool_id": t_id, "server_id": s_id, "expr": opts.get('cron_expr')
-                    })
+            elif f_name.endswith('_options.db'):
+                parts = f_name[:-11].rsplit('_', 1)
+                if len(parts) == 2:
+                    t_id, s_id = parts
+                    mgr = CoreOptionsManager(base_dir, t_id, s_id)
+                    opts = mgr.load()
+                    if opts.get('cron_enable') and opts.get('cron_expr'):
+                        cron_list.append({
+                            "tool_id": t_id, "server_id": s_id, "expr": opts.get('cron_expr')
+                        })
+    except Exception as cache_err:
+        logger.debug(f"[Dashboard] 캐시 갱신 중 예외: {cache_err}")
                     
     GLOBAL_DASHBOARD_CACHE["running"] = running_list
     GLOBAL_DASHBOARD_CACHE["cron"] = cron_list
@@ -432,7 +437,7 @@ def _execute_scheduled_tasks(global_config, now):
                 
                 data_mgr = CoreDataManager(base_dir, tool_id, server_id, task_mgr=task_mgr)
                 
-                db_api = create_db_api(db_path, sqlite_bin)
+                db_api = create_db_api(global_config)
                 
                 def get_plex_instance():
                     from plexapi.server import PlexServer
@@ -502,7 +507,8 @@ def get_db_connection(db_path):
     finally:
         if conn:
             try: conn.rollback()
-            except: pass
+            except Exception as e:
+                logger.warning(f"DB Connection Rollback Error: {str(e)}")
             conn.close()
 
 def is_season_folder(folder_name):
@@ -515,19 +521,21 @@ def is_season_folder(folder_name):
 def natural_sort_key(s):
     return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
 
-def _get_unique_show_folder_count(cursor, rating_key):
+
+def _get_unique_show_folder_count(cursor, rating_key, db_type="sqlite3"):
     seen_paths = set()
     root_paths = set()
     
-    query = """
+    ph = "%s" if db_type == "postgres" else "?"
+    query = f"""
         SELECT mp.file 
         FROM metadata_items ep 
         JOIN metadata_items sea ON ep.parent_id = sea.id 
         JOIN media_items m ON m.metadata_item_id = ep.id 
         JOIN media_parts mp ON mp.media_item_id = m.id 
-        WHERE sea.parent_id = ? AND ep.metadata_type = 4
+        WHERE sea.parent_id = {ph} AND ep.metadata_type = 4
     """
-    cursor.execute(query, (rating_key,))
+    cursor.execute(query, (int(rating_key) if db_type == "postgres" else rating_key,))
     for row in cursor.fetchall():
         if row and row[0]:
             raw_file = unicodedata.normalize('NFC', row[0])
@@ -553,325 +561,324 @@ def _get_unique_show_folder_count(cursor, rating_key):
             
     return len(root_paths)
 
-def handle_library_batch(data, max_batch_size, db_path):
+
+def handle_library_batch(data, max_batch_size, db_engine):
     if not data or 'ids' not in data:
         return {"error": "Invalid request"}, 400
         
-    raw_ids = [str(i) for i in data['ids'] if str(i).isdigit()]
+    raw_ids = [int(i) for i in data['ids'] if str(i).isdigit()]
     ids = list(set(raw_ids))[:max_batch_size]
     if not ids: return {}, 200
     
     check_multi_path = data.get('check_multi_path', False)
-    placeholders = ','.join('?' for _ in ids)
+    placeholders = ','.join(['%s' if db_engine.db_type == 'postgres' else '?'] * len(ids))
     
     try:
-        with get_db_connection(db_path) as conn:
-            cursor = conn.cursor()
-            try:
-                meta_types = {}
-                if check_multi_path:
-                    cursor.execute(f"SELECT id, metadata_type FROM metadata_items WHERE id IN ({placeholders})", ids)
-                    for r_id, m_type in cursor.fetchall():
-                        meta_types[str(r_id)] = m_type
-
-                query = f"""
-                SELECT mi.id, m.width,
-                    (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 1) as raw_stream_data,
-                    (SELECT group_concat(ms.id || '|' || IFNULL(ms.language, 'und') || '|' || IFNULL(ms.codec, '') || '|' || IFNULL(ms.url, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 3) as sub_data,
-                    mi.guid, mp.file, mp.id
-                FROM metadata_items mi
-                LEFT JOIN media_items m ON m.metadata_item_id = mi.id
-                LEFT JOIN media_parts mp ON mp.media_item_id = m.id
-                WHERE mi.id IN ({placeholders}) ORDER BY m.width DESC, m.bitrate DESC
-                """
-                cursor.execute(query, ids)
-                result_map = {}
-                for rk, width, raw_data, sub_data, guid, filepath, part_id in cursor.fetchall():
-                    rk = str(rk)
-                    if filepath: filepath = unicodedata.normalize('NFC', filepath)
-                    
-                    path_count = 1
-                    if check_multi_path and rk not in result_map and meta_types.get(rk) == 2:
-                        path_count = _get_unique_show_folder_count(cursor, rk)
-
-                    if rk not in result_map:
-                        clean_guid = guid.split("://")[1].split("?")[0] if guid and "://" in guid else (guid or "")
-                        if not filepath:
-                            result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None, "sub_id": "", "sub_url": "", "path_count": path_count }
-                            continue
-                            
-                        tags, res_tag = [], None
-                        width = width if width else 0
-                        
-                        if width > 0:
-                            if width >= 7000: res_tag = "8K"
-                            elif width >= 5000: res_tag = "6K"
-                            elif width >= 3400: res_tag = "4K"
-                            elif width >= 1900: res_tag = "FHD"
-                            elif width >= 1200: res_tag = "HD"
-                            else: res_tag = "SD"
-                        
-                        hdr_badges = set()
-                        if raw_data:
-                            raw_upper = raw_data.upper()
-                            if 'DOVI' in raw_upper or 'DOLBY' in raw_upper: hdr_badges.add('DV')
-                            if 'BT2020' in raw_upper or 'SMPTE2084' in raw_upper or 'HLG' in raw_upper or 'HDR10' in raw_upper: hdr_badges.add('HDR')
-
-                        video_badge = res_tag if res_tag else ""
-                        if hdr_badges:
-                            sorted_badges = sorted(list(hdr_badges), key=lambda x: 0 if x=='DV' else 1)
-                            video_badge = video_badge + " " + "/".join(sorted_badges) if video_badge else "/".join(sorted_badges)
-                        if video_badge: tags.append(video_badge)
-                        
-                        has_sub = False
-                        best_sub_id, best_sub_url = "", ""
-
-                        if sub_data:
-                            streams = sub_data.split(';;')
-                            kor_subs = []
-                            for s in streams:
-                                parts = s.split('|')
-                                if len(parts) >= 4:
-                                    s_id, s_lang, s_codec, s_url = parts[0], parts[1].lower(), parts[2].lower(), parts[3]
-                                    if s_lang.startswith('kor') or s_lang.startswith('ko'):
-                                        has_sub = True
-                                        score = 0
-                                        if s_url: score += 100
-                                        if s_codec in ['srt', 'ass', 'smi', 'vtt', 'ssa', 'sub', 'sup']: score += 50
-                                        kor_subs.append((score, s_id, s_url))
-                            
-                            if kor_subs:
-                                kor_subs.sort(key=lambda x: x[0], reverse=True)
-                                best_sub_id, best_sub_url = kor_subs[0][1], kor_subs[0][2]
-
-                        if has_sub: tags.append("SUB")
-                        elif filepath and re.search(r'(?i)(kor-?sub|자체자막)', filepath): tags.append("SUBBED")
-
-                        result_map[rk] = { 
-                            "tags": tags, "g": clean_guid, "raw_g": guid or "", 
-                            "p": filepath, "part_id": part_id,
-                            "sub_id": best_sub_id, "sub_url": best_sub_url,
-                            "path_count": path_count
-                        }
-            finally:
-                cursor.close()
-
-        return result_map, 200
-    except Exception as e:
-        logger.error(f"Batch processing failed: {e}")
-        return {"error": str(e)}, 500
-
-def handle_media_detail(rating_key, db_path):
-    if not rating_key.isdigit(): 
-        return {"error": "Invalid rating_key"}, 400
-
-    total_duration = 0
-    try:
-        with get_db_connection(db_path) as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("SELECT metadata_type, guid, library_section_id FROM metadata_items WHERE id = ?", (rating_key,))
-                meta_row = cursor.fetchone()
-                if not meta_row: 
-                    return {"error": "Item not found"}, 404
-                m_type, guid, lib_section_id = meta_row
-                
-                if m_type in (2, 3, 8):
-                    folder_paths, seen_paths = [], set()
-                    
-                    if m_type == 2:
-                        query = """SELECT mp.file FROM metadata_items ep JOIN metadata_items sea ON ep.parent_id = sea.id JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE sea.parent_id = ? AND ep.metadata_type = 4 ORDER BY m.width DESC, m.bitrate DESC"""
-                        cursor.execute(query, (rating_key,))
-                        
-                        dur_query = """
-                            SELECT SUM(dur) FROM (
-                                SELECT MAX(m.duration) as dur
-                                FROM metadata_items ep
-                                JOIN metadata_items sea ON ep.parent_id = sea.id
-                                JOIN media_items m ON m.metadata_item_id = ep.id
-                                WHERE sea.parent_id = ? AND ep.metadata_type = 4
-                                  AND sea."index" = (
-                                      SELECT MIN("index")
-                                      FROM metadata_items
-                                      WHERE parent_id = sea.parent_id AND metadata_type = 3
-                                        AND ("index" % 100) = (sea."index" % 100)
-                                  )
-                                GROUP BY ep.id
-                            )
-                        """
-                        try:
-                            dur_c = conn.cursor()
-                            dur_c.execute(dur_query, (rating_key,))
-                            dur_res = dur_c.fetchone()
-                            if dur_res and dur_res[0]: total_duration = dur_res[0]
-                            dur_c.close()
-                        except: pass
-
-                    elif m_type == 3:
-                        query = """SELECT mp.file FROM metadata_items ep JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE ep.parent_id = ? AND ep.metadata_type = 4 ORDER BY m.width DESC, m.bitrate DESC"""
-                        cursor.execute(query, (rating_key,))
-                        
-                        dur_query = """
-                            SELECT SUM(dur) FROM (
-                                SELECT MAX(m.duration) as dur
-                                FROM metadata_items ep
-                                JOIN media_items m ON m.metadata_item_id = ep.id
-                                WHERE ep.parent_id = ? AND ep.metadata_type = 4
-                                GROUP BY ep.id
-                            )
-                        """
-                        try:
-                            dur_c = conn.cursor()
-                            dur_c.execute(dur_query, (rating_key,))
-                            dur_res = dur_c.fetchone()
-                            if dur_res and dur_res[0]: total_duration = dur_res[0]
-                            dur_c.close()
-                        except: pass
-
-                    elif m_type == 8:
-                        query = """SELECT mp.file FROM metadata_items track JOIN metadata_items album ON track.parent_id = album.id JOIN media_items m ON m.metadata_item_id = track.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE album.parent_id = ? AND track.metadata_type = 10 GROUP BY album.id"""
-                        cursor.execute(query, (rating_key,))
-
-                    for row in cursor.fetchall():
-                        if row and row[0]:
-                            raw_file = unicodedata.normalize('NFC', row[0])
-                            
-                            if m_type == 8:
-                                album_dir = os.path.dirname(raw_file)
-                                artist_dir = os.path.dirname(album_dir)
-                                if re.match(r'^cd\s*\d+', os.path.basename(album_dir).lower()):
-                                    artist_dir = os.path.dirname(artist_dir)
-                                target_dir = artist_dir
-                            else:
-                                target_dir = os.path.dirname(raw_file)
-                                
-                            dir_key = os.path.normpath(target_dir).replace('\\', '/').lower()
-                            
-                            if dir_key not in seen_paths:
-                                seen_paths.add(dir_key)
-                                folder_paths.append(target_dir)
-                                
-                            if m_type in (2, 3) and is_season_folder(os.path.basename(target_dir)):
-                                parent_path_original = os.path.dirname(target_dir)
-                                parent_key = os.path.normpath(parent_path_original).replace('\\', '/').lower()
-                                if parent_key not in seen_paths:
-                                    seen_paths.add(parent_key)
-                                    folder_paths.append(parent_path_original)
-
-                    folder_paths.sort(key=natural_sort_key)
-                    versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
-                    
-                    return { 
-                        "type": "directory", 
-                        "itemId": rating_key, 
-                        "guid": guid, 
-                        "duration": total_duration,
-                        "librarySectionID": lib_section_id, 
-                        "versions": versions 
-                    }, 200
-
-                if m_type == 9:
-                    tracks = []
-                    
-                    query = """
-                        SELECT 
-                            track.id as t_id, 
-                            track."index" as t_num, 
-                            track.title as t_title,
-                            m.audio_codec, 
-                            (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate,
-                            mp.file,
-                            mp.id as part_id,
-                            (SELECT COUNT(*) FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 3) as has_lyric,
-                            (SELECT "index" FROM metadata_items WHERE id = track.parent_id) as disc_num
-                        FROM metadata_items track 
-                        JOIN media_items m ON m.metadata_item_id = track.id 
-                        JOIN media_parts mp ON mp.media_item_id = m.id 
-                        WHERE track.metadata_type = 10 AND (
-                            track.parent_id = ? OR 
-                            track.parent_id IN (SELECT id FROM metadata_items WHERE parent_id = ? AND metadata_type = 9)
-                        )
-                        ORDER BY disc_num ASC, track."index" ASC
-                    """
-                    cursor.execute(query, (rating_key, rating_key))
-                    
-                    folder_paths, seen_paths = [], set()
-                    for row in cursor.fetchall():
-                        t_id, t_num, t_title, a_codec, a_bitrate, f_path, part_id, has_lyric, disc_num = row
-                        
-                        if f_path:
-                            raw_file = unicodedata.normalize('NFC', f_path)
-                            dir_path_original = os.path.dirname(raw_file)
-                            dir_key = os.path.normpath(dir_path_original).replace('\\', '/').lower()
-                            if dir_key not in seen_paths:
-                                seen_paths.add(dir_key)
-                                folder_paths.append(dir_path_original)
-                        
-                        track_display_num = f"{disc_num}-{t_num}" if disc_num and disc_num > 1 else str(t_num or 0)
-                        
-                        tracks.append({
-                            "t_id": t_id, "t_num": track_display_num, "t_title": t_title or "Unknown Track",
-                            "a_codec": (a_codec or "").upper(), "a_bitrate": a_bitrate or 0,
-                            "file": f_path or "", "part_id": part_id, "has_lyric": has_lyric > 0
-                        })
-                        
-                    folder_paths.sort(key=natural_sort_key)
-                    versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
-                    
-                    return { "type": "album", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions, "tracks": tracks }, 200
-
-                query_media = """
-                    SELECT m.id, m.width, m.height, 
-                           (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 1 LIMIT 1) as v_bitrate, 
-                           (SELECT group_concat(ms.codec || '|' || IFNULL(ms.extra_data, ''), ';;') FROM media_streams ms WHERE media_item_id = m.id AND stream_type_id = 1) as raw_stream_data, 
-                           m.video_codec, 
-                           IFNULL(NULLIF(m.audio_codec, ''), (SELECT codec FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1)) as audio_codec, 
-                           m.duration,
-                           (SELECT channels FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as audio_ch, 
-                           (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate, 
-                           mp.id, mp.file 
-                    FROM media_items m 
-                    LEFT JOIN media_parts mp ON mp.media_item_id = m.id 
-                    WHERE m.metadata_item_id = ? 
-                    ORDER BY m.width DESC, m.bitrate DESC
-                """
-                cursor.execute(query_media, (rating_key,))
-                versions, duration = [], 0
-                seen_files = set() 
-
+        with db_engine.get_cursor() as cursor:
+            meta_types = {}
+            if check_multi_path:
+                cursor.execute(f"SELECT id, metadata_type FROM metadata_items WHERE id IN ({placeholders})", ids)
                 for row in cursor.fetchall():
-                    m_id, width, height, v_bitrate, raw_data, v_codec, a_codec, dur, a_ch, a_bitrate, part_id, file_path = row
-                    
-                    if file_path:
-                        file_path = unicodedata.normalize('NFC', file_path)
-                        file_key = os.path.normpath(file_path).replace('\\', '/').lower()
-                        if file_key in seen_files: continue
-                        seen_files.add(file_key)
+                    meta_types[str(row[0])] = row[1]
+
+            group_fn = "string_agg" if db_engine.db_type == "postgres" else "group_concat"
+
+            query = f"""
+            SELECT mi.id, m.width,
+                (SELECT {group_fn}(ms.codec || '|' || COALESCE(ms.extra_data, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 1) as raw_stream_data,
+                (SELECT {group_fn}(ms.id || '|' || COALESCE(ms.language, 'und') || '|' || COALESCE(ms.codec, '') || '|' || COALESCE(ms.url, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 3) as sub_data,
+                mi.guid, mp.file, mp.id
+            FROM metadata_items mi
+            LEFT JOIN media_items m ON m.metadata_item_id = mi.id
+            LEFT JOIN media_parts mp ON mp.media_item_id = m.id
+            WHERE mi.id IN ({placeholders}) ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC
+            """
+            cursor.execute(query, ids)
+            result_map = {}
+            for row in cursor.fetchall():
+                rk = str(row[0])
+                width, raw_data, sub_data, guid, filepath, part_id = row[1], row[2], row[3], row[4], row[5], row[6]
+                if filepath: filepath = unicodedata.normalize('NFC', filepath)
+                
+                path_count = 1
+                if check_multi_path and rk not in result_map and meta_types.get(rk) == 2:
+                    path_count = _get_unique_show_folder_count(cursor, rk, db_engine.db_type)
+
+                if rk not in result_map:
+                    clean_guid = guid.split("://")[1].split("?")[0] if guid and "://" in guid else (guid or "")
+                    if not filepath:
+                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None, "sub_id": "", "sub_url": "", "path_count": path_count }
+                        continue
                         
-                    if dur: duration = dur
+                    tags, res_tag = [], None
+                    width = width if width else 0
+                    
+                    if width > 0:
+                        if width >= 7000: res_tag = "8K"
+                        elif width >= 5000: res_tag = "6K"
+                        elif width >= 3400: res_tag = "4K"
+                        elif width >= 1900: res_tag = "FHD"
+                        elif width >= 1200: res_tag = "HD"
+                        else: res_tag = "SD"
                     
                     hdr_badges = set()
                     if raw_data:
                         raw_upper = raw_data.upper()
                         if 'DOVI' in raw_upper or 'DOLBY' in raw_upper: hdr_badges.add('DV')
                         if 'BT2020' in raw_upper or 'SMPTE2084' in raw_upper or 'HLG' in raw_upper or 'HDR10' in raw_upper: hdr_badges.add('HDR')
-                    video_extra = " " + "/".join(sorted(list(hdr_badges), key=lambda x: 0 if x=='DV' else 1)) if hdr_badges else ""
 
-                    cursor.execute("SELECT id, language, codec, url FROM media_streams WHERE media_part_id = ? AND stream_type_id = 3", (part_id,))
-                    subs = [{"id": s[0], "languageCode": (s[1] or "und").lower()[:3], "codec": s[2] or "unknown", "key": s[3], "format": s[2] or "unknown"} for s in cursor.fetchall()]
+                    video_badge = res_tag if res_tag else ""
+                    if hdr_badges:
+                        sorted_badges = sorted(list(hdr_badges), key=lambda x: 0 if x=='DV' else 1)
+                        video_badge = video_badge + " " + "/".join(sorted_badges) if video_badge else "/".join(sorted_badges)
+                    if video_badge: tags.append(video_badge)
                     
-                    versions.append({
-                        "part_id": part_id, "file": file_path, "width": width or 0, "v_bitrate": v_bitrate or 0, 
-                        "video_extra": video_extra, "v_codec": v_codec or "", "a_codec": a_codec or "", 
-                        "a_ch": a_ch or "", "a_bitrate": a_bitrate or 0, "subs": subs, "parts": [{"id": part_id, "path": file_path}],
-                        "m_type": m_type
-                    })
-                
-                cursor.execute("SELECT text, time_offset, end_time_offset FROM taggings WHERE metadata_item_id = ? AND text IN ('intro', 'credits')", (rating_key,))
-                markers = {tag_text: {"start": start_offset, "end": end_offset} for tag_text, start_offset, end_offset in cursor.fetchall() if tag_text and start_offset is not None and end_offset is not None}
+                    has_sub = False
+                    best_sub_id, best_sub_url = "", ""
+
+                    if sub_data:
+                        streams = sub_data.split(';;')
+                        kor_subs = []
+                        for s in streams:
+                            parts = s.split('|')
+                            if len(parts) >= 4:
+                                s_id, s_lang, s_codec, s_url = parts[0], parts[1].lower(), parts[2].lower(), parts[3]
+                                if s_lang.startswith('kor') or s_lang.startswith('ko'):
+                                    has_sub = True
+                                    score = 0
+                                    if s_url: score += 100
+                                    if s_codec in ['srt', 'ass', 'smi', 'vtt', 'ssa', 'sub', 'sup']: score += 50
+                                    kor_subs.append((score, s_id, s_url))
+                        
+                        if kor_subs:
+                            kor_subs.sort(key=lambda x: x[0], reverse=True)
+                            best_sub_id, best_sub_url = kor_subs[0][1], kor_subs[0][2]
+
+                    if has_sub: tags.append("SUB")
+                    elif filepath and re.search(r'(?i)(kor-?sub|자체자막)', filepath): tags.append("SUBBED")
+
+                    result_map[rk] = { 
+                        "tags": tags, "g": clean_guid, "raw_g": guid or "", 
+                        "p": filepath, "part_id": part_id,
+                        "sub_id": best_sub_id, "sub_url": best_sub_url,
+                        "path_count": path_count
+                    }
+
+        return result_map, 200
+    except Exception as e:
+        logger.error(f"Batch processing failed: {e}")
+        return {"error": str(e)}, 500
+
+
+def handle_media_detail(rating_key, db_engine):
+    if not str(rating_key).isdigit(): 
+        return {"error": "Invalid rating_key"}, 400
+
+    rk_val = int(rating_key) if db_engine.db_type == "postgres" else rating_key
+    ph = "%s" if db_engine.db_type == "postgres" else "?"
+
+    total_duration = 0
+    try:
+        with db_engine.get_cursor() as cursor:
+            cursor.execute(f"SELECT metadata_type, guid, library_section_id FROM metadata_items WHERE id = {ph}", (rk_val,))
+            meta_row = cursor.fetchone()
+            if not meta_row: 
+                return {"error": "Item not found"}, 404
+            m_type, guid, lib_section_id = meta_row[0], meta_row[1], meta_row[2]
             
-            finally:
-                cursor.close()
+            if m_type in (2, 3, 8):
+                folder_paths, seen_paths = [], set()
+                
+                if m_type == 2:
+                    query = f"""SELECT mp.file FROM metadata_items ep JOIN metadata_items sea ON ep.parent_id = sea.id JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE sea.parent_id = {ph} AND ep.metadata_type = 4 ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC"""
+                    cursor.execute(query, (rk_val,))
+                    
+                    dur_query = f"""
+                        SELECT SUM(dur) FROM (
+                            SELECT MAX(m.duration) as dur
+                            FROM metadata_items ep
+                            JOIN metadata_items sea ON ep.parent_id = sea.id
+                            JOIN media_items m ON m.metadata_item_id = ep.id
+                            WHERE sea.parent_id = {ph} AND ep.metadata_type = 4
+                              AND sea."index" = (
+                                  SELECT MIN("index")
+                                  FROM metadata_items
+                                  WHERE parent_id = sea.parent_id AND metadata_type = 3
+                                    AND ("index" % 100) = (sea."index" % 100)
+                              )
+                            GROUP BY ep.id
+                        ) sub
+                    """
+                    try:
+                        cursor.execute(dur_query, (rk_val,))
+                        dur_res = cursor.fetchone()
+                        
+                        if dur_res and dur_res[0]: total_duration = int(dur_res[0])
+                    except Exception as e:
+                        logger.warning(f"[Scheduler] 총 재생 시간 계산 중 오류: {e}")
+
+                elif m_type == 3:
+                    query = f"""SELECT mp.file FROM metadata_items ep JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE ep.parent_id = {ph} AND ep.metadata_type = 4 ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC"""
+                    cursor.execute(query, (rk_val,))
+                    
+                    dur_query = f"""
+                        SELECT SUM(dur) FROM (
+                            SELECT MAX(m.duration) as dur
+                            FROM metadata_items ep
+                            JOIN media_items m ON m.metadata_item_id = ep.id
+                            WHERE ep.parent_id = {ph} AND ep.metadata_type = 4
+                            GROUP BY ep.id
+                        ) sub
+                    """
+                    try:
+                        cursor.execute(dur_query, (rk_val,))
+                        dur_res = cursor.fetchone()
+                        
+                        if dur_res and dur_res[0]: total_duration = int(dur_res[0])
+                    except Exception as e:
+                        logger.warning(f"[Scheduler] 총 재생 시간 계산 중 오류: {e}")
+
+                elif m_type == 8:
+                    query = f"""SELECT DISTINCT mp.file FROM metadata_items track JOIN metadata_items album ON track.parent_id = album.id JOIN media_items m ON m.metadata_item_id = track.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE album.parent_id = {ph} AND track.metadata_type = 10"""
+                    cursor.execute(query, (rk_val,))
+
+                for row in cursor.fetchall():
+                    if row and row[0]:
+                        raw_file = unicodedata.normalize('NFC', row[0])
+                        
+                        if m_type == 8:
+                            album_dir = os.path.dirname(raw_file)
+                            artist_dir = os.path.dirname(album_dir)
+                            if re.match(r'^cd\s*\d+', os.path.basename(album_dir).lower()):
+                                artist_dir = os.path.dirname(artist_dir)
+                            target_dir = artist_dir
+                        else:
+                            target_dir = os.path.dirname(raw_file)
+                            
+                        dir_key = os.path.normpath(target_dir).replace('\\', '/').lower()
+                        
+                        if dir_key not in seen_paths:
+                            seen_paths.add(dir_key)
+                            folder_paths.append(target_dir)
+                            
+                        if m_type in (2, 3) and is_season_folder(os.path.basename(target_dir)):
+                            parent_path_original = os.path.dirname(target_dir)
+                            parent_key = os.path.normpath(parent_path_original).replace('\\', '/').lower()
+                            if parent_key not in seen_paths:
+                                seen_paths.add(parent_key)
+                                folder_paths.append(parent_path_original)
+
+                folder_paths.sort(key=natural_sort_key)
+                versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
+                
+                return { 
+                    "type": "directory", 
+                    "itemId": rating_key, 
+                    "guid": guid, 
+                    "duration": total_duration,
+                    "librarySectionID": lib_section_id, 
+                    "versions": versions 
+                }, 200
+
+            if m_type == 9:
+                tracks = []
+                query = f"""
+                    SELECT 
+                        track.id as t_id, 
+                        track."index" as t_num, 
+                        track.title as t_title,
+                        m.audio_codec, 
+                        (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate,
+                        mp.file,
+                        mp.id as part_id,
+                        (SELECT COUNT(*) FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 3) as has_lyric,
+                        (SELECT "index" FROM metadata_items WHERE id = track.parent_id) as disc_num
+                    FROM metadata_items track 
+                    JOIN media_items m ON m.metadata_item_id = track.id 
+                    JOIN media_parts mp ON mp.media_item_id = m.id 
+                    WHERE track.metadata_type = 10 AND (
+                        track.parent_id = {ph} OR 
+                        track.parent_id IN (SELECT id FROM metadata_items WHERE parent_id = {ph} AND metadata_type = 9)
+                    )
+                    ORDER BY disc_num ASC, track."index" ASC
+                """
+                cursor.execute(query, (rk_val, rk_val))
+                
+                folder_paths, seen_paths = [], set()
+                for row in cursor.fetchall():
+                    t_id, t_num, t_title, a_codec, a_bitrate, f_path, part_id, has_lyric, disc_num = row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8]
+                    
+                    if f_path:
+                        raw_file = unicodedata.normalize('NFC', f_path)
+                        dir_path_original = os.path.dirname(raw_file)
+                        dir_key = os.path.normpath(dir_path_original).replace('\\', '/').lower()
+                        if dir_key not in seen_paths:
+                            seen_paths.add(dir_key)
+                            folder_paths.append(dir_path_original)
+                    
+                    track_display_num = f"{disc_num}-{t_num}" if disc_num and disc_num > 1 else str(t_num or 0)
+                    
+                    tracks.append({
+                        "t_id": t_id, "t_num": track_display_num, "t_title": t_title or "Unknown Track",
+                        "a_codec": (a_codec or "").upper(), "a_bitrate": a_bitrate or 0,
+                        "file": f_path or "", "part_id": part_id, "has_lyric": has_lyric > 0
+                    })
+                    
+                folder_paths.sort(key=natural_sort_key)
+                versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
+                
+                return { "type": "album", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions, "tracks": tracks }, 200
+
+            group_fn = "string_agg" if db_engine.db_type == "postgres" else "group_concat"
+            query_media = f"""
+                SELECT m.id, m.width, m.height, 
+                       (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 1 LIMIT 1) as v_bitrate, 
+                       (SELECT {group_fn}(ms.codec || '|' || COALESCE(ms.extra_data, ''), ';;') FROM media_streams ms WHERE media_item_id = m.id AND stream_type_id = 1) as raw_stream_data, 
+                       m.video_codec, 
+                       COALESCE(NULLIF(m.audio_codec, ''), (SELECT codec FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1)) as audio_codec, 
+                       m.duration,
+                       (SELECT channels FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as audio_ch, 
+                       (SELECT bitrate FROM media_streams WHERE media_item_id = m.id AND stream_type_id = 2 LIMIT 1) as a_bitrate, 
+                       mp.id, mp.file 
+                FROM media_items m 
+                LEFT JOIN media_parts mp ON mp.media_item_id = m.id 
+                WHERE m.metadata_item_id = {ph} 
+                ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC
+            """
+            cursor.execute(query_media, (rk_val,))
+            versions, duration = [], 0
+            seen_files = set() 
+
+            for row in cursor.fetchall():
+                m_id, width, height, v_bitrate, raw_data, v_codec, a_codec, dur, a_ch, a_bitrate, part_id, file_path = row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11]
+                
+                if file_path:
+                    file_path = unicodedata.normalize('NFC', file_path)
+                    file_key = os.path.normpath(file_path).replace('\\', '/').lower()
+                    if file_key in seen_files: continue
+                    seen_files.add(file_key)
+                    
+                if dur: duration = dur
+                
+                hdr_badges = set()
+                if raw_data:
+                    raw_upper = raw_data.upper()
+                    if 'DOVI' in raw_upper or 'DOLBY' in raw_upper: hdr_badges.add('DV')
+                    if 'BT2020' in raw_upper or 'SMPTE2084' in raw_upper or 'HLG' in raw_upper or 'HDR10' in raw_upper: hdr_badges.add('HDR')
+                video_extra = " " + "/".join(sorted(list(hdr_badges), key=lambda x: 0 if x=='DV' else 1)) if hdr_badges else ""
+
+                cursor.execute(f"SELECT id, language, codec, url FROM media_streams WHERE media_part_id = {ph} AND stream_type_id = 3", (part_id,))
+                subs = [{"id": s[0], "languageCode": (s[1] or "und").lower()[:3], "codec": s[2] or "unknown", "key": s[3], "format": s[2] or "unknown"} for s in cursor.fetchall()]
+                
+                versions.append({
+                    "part_id": part_id, "file": file_path, "width": width or 0, "v_bitrate": v_bitrate or 0, 
+                    "video_extra": video_extra, "v_codec": v_codec or "", "a_codec": a_codec or "", 
+                    "a_ch": a_ch or "", "a_bitrate": a_bitrate or 0, "subs": subs, "parts": [{"id": part_id, "path": file_path}],
+                    "m_type": m_type
+                })
+            
+            cursor.execute(f"SELECT text, time_offset, end_time_offset FROM taggings WHERE metadata_item_id = {ph} AND text IN ('intro', 'credits')", (rk_val,))
+            markers = {tag_text: {"start": start_offset, "end": end_offset} for tag_text, start_offset, end_offset in cursor.fetchall() if tag_text and start_offset is not None and end_offset is not None}
                 
         return { 
             "type": "directory" if m_type in (2, 3) else "album" if m_type == 8 else "audio" if m_type == 10 else "video", 
@@ -882,6 +889,7 @@ def handle_media_detail(rating_key, db_path):
     except Exception as e:
         logger.error(f"Failed processing item {rating_key}: {e}")
         return {"error": str(e)}, 500
+
 
 # ==============================================================================
 # [코어 작업 관리자 (Task Manager)]
@@ -917,7 +925,8 @@ class CoreTaskManager:
             try:
                 with self._get_conn() as conn:
                     conn.execute("INSERT INTO completed_items (item_id) VALUES (?)", (str(item_id),))
-            except: pass
+            except Exception as e:
+                logger.debug(f"[TaskManager] 완료 항목 추가 실패 ({item_id}): {e}")
 
     def pop_completed_items(self):
         with self._lock:
@@ -931,7 +940,9 @@ class CoreTaskManager:
                     if items:
                         c.execute("DELETE FROM completed_items")
                     return items
-            except: return []
+            except Exception as e:
+                logger.debug(f"[TaskManager] 완료 항목 추출 실패: {e}")
+                return []
 
     def load(self, include_target_items=False):
         with self._lock:
@@ -956,7 +967,8 @@ class CoreTaskManager:
                     c.execute("SELECT log_text FROM (SELECT id, log_text FROM logs ORDER BY id DESC LIMIT 50) sub ORDER BY id ASC")
                     data['logs'] = [l['log_text'] for l in c.fetchall()]
                     return data
-            except: 
+            except Exception as e:
+                logger.debug(f"[TaskManager] 작업 데이터 로드 실패: {e}")
                 return None
 
     def save(self, data):
@@ -968,7 +980,8 @@ class CoreTaskManager:
                     task_data_str = json.dumps(data.get('task_data', {}), ensure_ascii=False)
                     c.execute("UPDATE task_info SET state=?, progress=?, total=?, task_data=?", 
                               (data.get('state', 'completed'), data.get('progress', 0), data.get('total', 0), task_data_str))
-            except: pass
+            except Exception as e:
+                logger.warning(f"[TaskManager] 태스크 상태 저장 실패: {e}")
 
     def init_task(self, task_data):
         with self._lock:
@@ -985,7 +998,8 @@ class CoreTaskManager:
         with self._lock:
             if os.path.exists(self.db_file):
                 try: os.remove(self.db_file)
-                except: pass
+                except Exception as e:
+                    logger.warning(f"[TaskManager] DB 파일 삭제 중 오류: {e}")
 
     def log(self, msg):
         stamp = datetime.now().strftime('%H:%M:%S')
@@ -1019,7 +1033,8 @@ class CoreTaskManager:
                     c.execute("SELECT state FROM task_info LIMIT 1")
                     row = c.fetchone()
                     if row: return row['state'] in ['cancelled', 'error']
-            except: pass
+            except Exception as e:
+                logger.warning(f"[TaskManager] 작업 상태 확인 중 오류: {e}")
             return True
 
 # ==============================================================================
@@ -1045,7 +1060,8 @@ class CoreDataManager:
         with self._lock:
             if os.path.exists(self.db_file):
                 try: os.remove(self.db_file)
-                except: pass
+                except Exception as e:
+                    logger.warning(f"[CoreDataManager] DB 파일 삭제 중 오류: {e}")
 
     @contextmanager
     def transaction_session(self):
@@ -1179,7 +1195,8 @@ class CoreDataManager:
                     for k, v in row_dict.items():
                         if isinstance(v, str) and (v.startswith('[') or v.startswith('{')):
                             try: row_dict[k] = json.loads(v)
-                            except: pass
+                            except Exception as e:
+                                logger.warning(f"[Core] JSON 파싱 오류: {e}")
                     data_rows.append(row_dict)
                 
                 result['data'] = data_rows
@@ -1221,7 +1238,8 @@ class CoreDataManager:
                     c.execute("SELECT payload FROM meta LIMIT 1")
                     row = c.fetchone()
                     if row and row[0]: return json.loads(row[0])
-            except: pass
+            except Exception as e:
+                logger.warning(f"[Core] Dashboard 로드 중 오류: {e}")
             return None
 
     def mark_keys_as_done(self, key_column, keys_list):
@@ -1247,6 +1265,7 @@ class CoreDataManager:
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
                 if c.fetchone()[0] == 1:
                     c.execute("UPDATE data SET pmh_status = 'done' WHERE pmh_id = ?", (pmh_id,))
+
 
 # ==============================================================================
 # [코어 UI 옵션 캐시 관리자 (Options Manager)]
@@ -1278,8 +1297,9 @@ class CoreOptionsManager:
                     c.execute("SELECT payload FROM options LIMIT 1")
                     row = c.fetchone()
                     if row and row[0]: return json.loads(row[0])
-            except: pass
-            return {}
+            except Exception as e:
+                logger.debug(f"[OptionsManager] 옵션 불러오기 실패: {e}")
+                return {}
 
     def save(self, data):
         with self._lock:
@@ -1289,13 +1309,15 @@ class CoreOptionsManager:
                     c.execute("CREATE TABLE IF NOT EXISTS options (payload TEXT)")
                     c.execute("DELETE FROM options")
                     c.execute("INSERT INTO options (payload) VALUES (?)", (json.dumps(data, ensure_ascii=False),))
-            except: pass
+            except Exception as e:
+                logger.warning(f"[OptionsManager] 옵션 저장 실패: {e}")
 
     def reset(self):
         with self._lock:
             if os.path.exists(self.db_file):
                 try: os.remove(self.db_file)
-                except: pass
+                except Exception as e:
+                    logger.warning(f"[CoreOptionsManager] DB 파일 삭제 중 오류: {e}")
 
 def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, server_id="default"):
     threading.current_thread().name = f"Worker_{tool_id}_{server_id}"
@@ -1316,71 +1338,192 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, se
     finally:
         try:
             tool_lock.release()
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            logger.warning(f"[Worker] 툴 잠금 해제 중 오류: {e}")
 
-def create_db_api(db_path, sqlite_bin=None):
-    def _run_cli_query(query, params=(), is_select=False):
-        if not sqlite_bin or not os.path.exists(sqlite_bin):
-            raise FileNotFoundError(f"Plex SQLite 바이너리를 찾을 수 없습니다. (경로: {sqlite_bin})\npmh_config.yaml의 PLEX_SQLITE_BIN 경로를 확인하세요.")
-        
+
+# ==============================================================================
+# [Universal Plex Database Engine (SQLite3 / PostgreSQL Dual Engine)]
+# ==============================================================================
+class UniversalPlexDatabaseEngine:
+    _pg_pool = None
+    _pg_pool_lock = threading.Lock()
+
+    def __init__(self, global_config):
+        self.config = global_config or {}
+        self.db_type = str(self.config.get("plex_db_type", "sqlite3")).lower()
+        self.sqlite_path = self.config.get("plex_db_path", "")
+        self.sqlite_bin = self.config.get("plex_sqlite_bin", "")
+        self.pg_config = self.config.get("plex_pg_config", {})
+
+        if self.db_type == "postgres":
+            self._init_pg_pool()
+
+    def _init_pg_pool(self):
+        with UniversalPlexDatabaseEngine._pg_pool_lock:
+            if UniversalPlexDatabaseEngine._pg_pool is None:
+                try:
+                    import psycopg2
+                    from psycopg2 import pool
+                except ImportError:
+                    logger.info("📦 PostgreSQL 모듈(psycopg2-binary)이 감지되지 않아 자동 설치를 시작합니다...")
+                    try:
+                        cmd = [sys.executable, "-m", "pip", "install", "psycopg2-binary"]
+                        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                        if res.returncode == 0:
+                            logger.info("✅ 'psycopg2-binary' 자동 설치 완료!")
+                            import psycopg2
+                            from psycopg2 import pool
+                        else:
+                            raise Exception(res.stderr)
+                    except Exception as pip_err:
+                        logger.error(f"❌ 'psycopg2-binary' 자동 설치 실패: {pip_err}")
+                        raise ImportError("PostgreSQL 모듈 자동 설치에 실패했습니다. 수동으로 'pip install psycopg2-binary'를 실행해 주세요.")
+
+                # 2. PostgreSQL 커넥션 풀 초기화
+                schema = self.pg_config.get("SCHEMA", "plex, public")
+                logger.info(f"🐘 PostgreSQL 커넥션 풀을 초기화합니다. (Host: {self.pg_config.get('HOST', '127.0.0.1')}, DB: {self.pg_config.get('DBNAME', 'plex')})")
+                
+                UniversalPlexDatabaseEngine._pg_pool = pool.ThreadedConnectionPool(
+                    minconn=1,
+                    maxconn=10,
+                    host=self.pg_config.get("HOST", "127.0.0.1"),
+                    port=int(self.pg_config.get("PORT", 5432)),
+                    dbname=self.pg_config.get("DBNAME", "plex"),
+                    user=self.pg_config.get("USER", "plex"),
+                    password=self.pg_config.get("PASSWORD", ""),
+                    options=f"-c search_path={schema}"
+                )
+
+    @contextmanager
+    def get_cursor(self):
+        """SQLite / PostgreSQL 공용 커서 컨텍스트 매니저 (Dict-like row 반환)"""
+        if self.db_type == "postgres":
+            from psycopg2.extras import DictCursor
+            conn = UniversalPlexDatabaseEngine._pg_pool.getconn()
+            try:
+                with conn.cursor(cursor_factory=DictCursor) as cur:
+                    yield cur
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise e
+            finally:
+                UniversalPlexDatabaseEngine._pg_pool.putconn(conn)
+        else:
+            if not os.path.exists(self.sqlite_path):
+                raise FileNotFoundError(f"Plex DB 파일을 찾을 수 없습니다: {self.sqlite_path}")
+            conn = sqlite3.connect(f'file:{self.sqlite_path}?mode=ro', uri=True, timeout=10.0, isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            try:
+                yield cur
+            finally:
+                cur.close()
+                conn.close()
+
+    def translate_query(self, query):
+        """SQLite 쿼리를 PostgreSQL 표준 SQL로 자동 번역"""
+        if self.db_type == "postgres":
+            q = query
+            # 1. 파라미터 기호 치환 (? -> %s)
+            q = q.replace('?', '%s')
+            # 2. group_concat -> string_agg 치환
+            q = re.sub(r'(?i)group_concat\((.*?),\s*(\'.*?\')\)', r'string_agg(\1, \2)', q)
+            # 3. IFNULL -> COALESCE 치환
+            q = re.sub(r'(?i)\bIFNULL\b', 'COALESCE', q)
+            # 4. LIKE -> ILIKE 치환 (대소문자 무시 호환)
+            q = re.sub(r'(?i)\bLIKE\b', 'ILIKE', q)
+            # 5. LIMIT -1 OFFSET X -> OFFSET X 치환 (SQLite 전용 LIMIT -1 보정)
+            q = re.sub(r'(?i)\bLIMIT\s+-1\s+OFFSET\s+', 'OFFSET ', q)
+            # 6. DATETIME('now') / DATE('now') 시간 함수 치환
+            q = re.sub(r"(?i)\bDATETIME\s*\(\s*'now'\s*\)", "CURRENT_TIMESTAMP", q)
+            q = re.sub(r"(?i)\bDATE\s*\(\s*'now'\s*\)", "CURRENT_DATE", q)
+            # 7. INSTR(str, substr) -> POSITION(substr IN str) 치환
+            q = re.sub(r"(?i)\bINSTR\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)", r"POSITION(\2 IN \1)", q)
+            return q
+        return query
+
+    def query(self, query, params=()):
+        """SELECT 전용 스마트 쿼리 인터페이스"""
+        if not query.strip().upper().startswith("SELECT"):
+            raise ValueError("Security Error: 'query' API는 SELECT 문만 허용합니다.")
+
+        if self.db_type == "postgres":
+            sql = self.translate_query(query)
+            with self.get_cursor() as cur:
+                cur.execute(sql, params)
+                return [dict(row) for row in cur.fetchall()]
+        else:
+            wal_path = f"{self.sqlite_path}-wal"
+            if os.path.exists(wal_path):
+                with self.get_cursor() as cur:
+                    cur.execute(query, params)
+                    return [dict(row) for row in cur.fetchall()]
+            else:
+                logger.warning("[DB] Plex 서버 종료 감지. Plex SQLite 바이너리로 우회 실행합니다.")
+                return self._run_sqlite_cli(query, params, is_select=True)
+
+    def execute(self, query, params=()):
+        """UPDATE / INSERT / DELETE 전용 쓰기 인터페이스"""
+        if self.db_type == "postgres":
+            sql = self.translate_query(query)
+            with self.get_cursor() as cur:
+                cur.execute(sql, params)
+            return True, "PG Execute Success"
+        else:
+            return self._run_sqlite_cli(query, params, is_select=False)
+
+    def _run_sqlite_cli(self, query, params=(), is_select=False):
+        if not self.sqlite_bin or not os.path.exists(self.sqlite_bin):
+            raise FileNotFoundError(f"Plex SQLite 바이너리를 찾을 수 없습니다: {self.sqlite_bin}")
+
         formatted_query = query
         for p in params:
-            if p is None:
-                val = "NULL"
-            elif isinstance(p, (int, float)):
-                val = str(p)
-            else:
-                val = "'" + str(p).replace("'", "''") + "'"
+            if p is None: val = "NULL"
+            elif isinstance(p, (int, float)): val = str(p)
+            else: val = "'" + str(p).replace("'", "''") + "'"
             formatted_query = formatted_query.replace('?', val, 1)
 
-        if is_select:
-            final_script = f".mode csv\n.header on\n{formatted_query};\n"
-        else:
-            final_script = f"BEGIN IMMEDIATE;\n{formatted_query};\nCOMMIT;\n"
-        
-        cmd = [sqlite_bin, db_path]
+        final_script = f".mode csv\n.header on\n{formatted_query};\n" if is_select else f"BEGIN IMMEDIATE;\n{formatted_query};\nCOMMIT;\n"
+        cmd = [self.sqlite_bin, self.sqlite_path]
         try:
             result = subprocess.run(cmd, input=final_script.encode('utf-8'), capture_output=True, check=True, timeout=15)
             output = result.stdout.decode('utf-8').strip()
-            
             if is_select:
                 if not output: return []
                 reader = csv.DictReader(io.StringIO(output))
                 return [dict(row) for row in reader]
-            else:
-                return True, output
-                
+            return True, output
         except subprocess.TimeoutExpired:
             raise Exception("Plex SQLite 실행 시간 초과 (15초). DB Lock 의심.")
         except subprocess.CalledProcessError as e:
-            error_msg = e.stderr.decode('utf-8')
-            raise Exception(f"Plex SQLite 실행 실패: {error_msg}")
+            raise Exception(f"Plex SQLite 실행 실패: {e.stderr.decode('utf-8')}")
 
-    def smart_query(query, params=()):
-        if not query.strip().upper().startswith("SELECT"):
-            raise ValueError("Security Error: 'query' API는 SELECT 문만 허용합니다. 쓰기 작업은 'execute'를 사용하세요.")
-            
-        wal_path = f"{db_path}-wal"
-        
-        if os.path.exists(wal_path):
-            with get_db_connection(db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, params)
-                columns = [col[0] for col in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
-                
-        else:
-            logger.warning("[DB] Plex 서버 종료 감지. 안전을 위해 Plex SQLite 바이너리로 SELECT 쿼리를 우회 실행합니다.")
-            return _run_cli_query(query, params, is_select=True)
+    @classmethod
+    def close_pool(cls):
+        """서버 리로드 시 커넥션 풀 완전 정리"""
+        with cls._pg_pool_lock:
+            if cls._pg_pool is not None:
+                try:
+                    cls._pg_pool.closeall()
+                    logger.info("🐘 기존 PostgreSQL 커넥션 풀을 안전하게 종료했습니다.")
+                except Exception as e:
+                    logger.debug(f"풀 종료 중 예외: {e}")
+                cls._pg_pool = None
 
-    def execute_via_bin(query, params=()):
-        """쓰기(UPDATE/INSERT/DELETE) 작업 전용 API (항상 Plex SQLite 바이너리 사용)"""
-        return _run_cli_query(query, params, is_select=False)
+
+def create_db_api(global_config_or_path, sqlite_bin=None):
+    if isinstance(global_config_or_path, dict):
+        engine = UniversalPlexDatabaseEngine(global_config_or_path)
+    else:
+        cfg = {"plex_db_type": "sqlite3", "plex_db_path": global_config_or_path, "plex_sqlite_bin": sqlite_bin}
+        engine = UniversalPlexDatabaseEngine(cfg)
 
     return {
-        "query": smart_query, 
-        "execute": execute_via_bin
+        "query": engine.query,
+        "execute": engine.execute,
+        "engine": engine
     }
 
 # ==============================================================================
@@ -1467,15 +1610,31 @@ def dispatch_request(subpath, method, args, data, global_config):
     tools_dir = os.path.join(base_dir, 'tools')
     os.makedirs(tools_dir, exist_ok=True)
 
+    db_engine = UniversalPlexDatabaseEngine(global_config)
+
     try:
         if subpath == 'ping' and method == 'GET':
             machine_id = global_config.get("machine_id", "")
             ignore_res = global_config.get("IGNORE_RES_SECTION", "")
-            return {"status": "ok", "version": __version__, "machine_id": machine_id, "ignore_res_section": ignore_res}, 200
+            av_img_use = bool(global_config.get("AV_IMAGE_SERVER_USE", False))
+            jav_sec = str(global_config.get("JAV_SECTION", ""))
+            west_sec = str(global_config.get("WESTERN_AV_SECTION", ""))
+            db_type = global_config.get("plex_db_type", "sqlite3")
+            return {
+                "status": "ok", 
+                "version": __version__, 
+                "machine_id": machine_id, 
+                "db_type": db_type,
+                "is_postgres": db_type == "postgres",
+                "ignore_res_section": ignore_res,
+                "av_image_server_use": av_img_use,
+                "jav_section": jav_sec,
+                "western_av_section": west_sec
+            }, 200
 
         elif subpath == 'library/batch' and method == 'POST':
-            return handle_library_batch(data, max_batch_size, db_path)
-            
+            return handle_library_batch(data, max_batch_size, db_engine)
+
         elif subpath == 'media/queue_status' and method == 'POST':
             task_ids = data.get('task_ids', [])
             if isinstance(task_ids, str): 
@@ -1508,7 +1667,7 @@ def dispatch_request(subpath, method, args, data, global_config):
 
         elif subpath.startswith('media/') and method == 'GET':
             rating_key = subpath.split('/')[1]
-            return handle_media_detail(rating_key, db_path)
+            return handle_media_detail(rating_key, db_engine)
 
         elif subpath.startswith('media/') and method == 'POST':
             parts = subpath.split('/')
@@ -1583,6 +1742,64 @@ def dispatch_request(subpath, method, args, data, global_config):
                 logger.error(f"FF Network Error: {e}")
                 return {"ret": "error", "msg": f"FF 서버 통신 실패: {str(e)}"}, 502
 
+        elif subpath.startswith('ff_metadata/') and method in ['GET', 'POST']:
+            ff_url = global_config.get("mate_url")
+            ff_apikey = global_config.get("mate_apikey")
+            if not ff_url or not ff_apikey:
+                logger.error("[FF Relay] ❌ BASE.FF_URL 또는 BASE.FF_APIKEY 설정이 누락되었습니다.")
+                return {"ret": "error", "msg": "FF(Plex Mate) 설정 누락"}, 400
+            
+            sub_endpoint = subpath.replace('ff_metadata/', '', 1)
+            target_url = f"{ff_url.rstrip('/')}/metadata/{sub_endpoint}"
+            
+            # 1. URL 쿼리스트링에 apikey 결합
+            qs_dict = args.copy()
+            qs_dict['apikey'] = ff_apikey
+            target_url += f"?{urlencode(qs_dict)}"
+            
+            # 2. 헤더에 apikey 다중 결합
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 PlexMetaHelper/1.0',
+                'X-API-Key': ff_apikey,
+                'apikey': ff_apikey
+            }
+            
+            req_data = None
+            if method == 'POST':
+                headers['Content-Type'] = 'application/json'
+                body_data = data.copy() if isinstance(data, dict) else {}
+                body_data['apikey'] = ff_apikey
+                req_data = json.dumps(body_data).encode('utf-8')
+            
+            log_url = re.sub(r'apikey=[^&]+', 'apikey=****', target_url)
+            if method == 'POST' and isinstance(data, dict):
+                safe_log_data = data.copy()
+                if 'apikey' in safe_log_data: safe_log_data['apikey'] = '****'
+                if 'p_base64' in safe_log_data: safe_log_data['p_base64'] = '<BASE64_IMAGE_DATA>'
+                if 'pl_base64' in safe_log_data: safe_log_data['pl_base64'] = '<BASE64_IMAGE_DATA>'
+                log_payload = f"Body: {safe_log_data}"
+            else:
+                safe_args = args.copy()
+                if 'apikey' in safe_args: safe_args['apikey'] = '****'
+                log_payload = f"Args: {safe_args}"
+                
+            logger.info(f"🚀 [FF Relay] [{method}] {log_url} | {log_payload}")
+                
+            try:
+                req = Request(target_url, data=req_data, headers=headers, method=method)
+                with urlopen(req, timeout=120) as response:
+                    resp_body = response.read().decode('utf-8')
+                    logger.info(f"   ✅ [FF Relay 응답 ({response.status})]: {resp_body[:120]}...")
+                    try: return json.loads(resp_body), response.status
+                    except: return {"ret": "success", "raw": resp_body}, response.status
+            except HTTPError as e:
+                err_body = e.read().decode('utf-8')
+                logger.error(f"   ❌ [FF Relay HTTP {e.code} 에러]: {err_body}")
+                return {"ret": "error", "msg": f"FF HTTP 오류 ({e.code})", "detail": err_body}, e.code
+            except Exception as e:
+                logger.error(f"   ❌ [FF Relay 통신 실패]: {str(e)}")
+                return {"ret": "error", "msg": f"FF 통신 실패: {str(e)}"}, 502
+
         elif subpath == 'tools' and method == 'GET':
             installed_tools = []
             for item in os.listdir(tools_dir):
@@ -1623,7 +1840,9 @@ def dispatch_request(subpath, method, args, data, global_config):
             tool_info = yaml.safe_load(yaml_content)
             original_id = tool_info.get('id')
             entry_file = tool_info.get('entry_file', 'main.py')
-            
+            legacy_ids = tool_info.get('legacy_ids', [])
+            if isinstance(legacy_ids, str): legacy_ids = [legacy_ids]
+
             if not original_id: return {"error": "잘못된 info.yaml 구조입니다. ('id' 필드 누락)"}, 400
 
             if target_id: safe_tool_id = target_id
@@ -1632,13 +1851,39 @@ def dispatch_request(subpath, method, args, data, global_config):
             tool_info['id'] = safe_tool_id
             if not tool_info.get('update_url'): tool_info['update_url'] = yaml_url
 
+            tool_path = os.path.join(tools_dir, safe_tool_id)
+            logs_dir = os.path.join(base_dir, 'task_logs')
+
+            if not os.path.exists(tool_path) and legacy_ids:
+                all_legacy_candidates = []
+                for lid in legacy_ids:
+                    all_legacy_candidates.append(lid)
+                    if prefix and not lid.startswith(prefix + "_"):
+                        all_legacy_candidates.append(f"{prefix}_{lid}")
+
+                for old_id in set(all_legacy_candidates):
+                    old_path = os.path.join(tools_dir, old_id)
+                    if os.path.exists(old_path):
+                        try:
+                            os.rename(old_path, tool_path)
+                            logger.info(f"🔄 레거시 툴 디렉토리 마이그레이션 완료: {old_id} ➜ {safe_tool_id}")
+                            
+                            if os.path.exists(logs_dir):
+                                for f_name in os.listdir(logs_dir):
+                                    if f_name.startswith(f"{old_id}_"):
+                                        new_f_name = f_name.replace(f"{old_id}_", f"{safe_tool_id}_", 1)
+                                        os.rename(os.path.join(logs_dir, f_name), os.path.join(logs_dir, new_f_name))
+                                        logger.info(f"   └─ 💾 이력 DB 승계: {f_name} ➜ {new_f_name}")
+                            break
+                        except Exception as mig_err:
+                            logger.warning(f"마이그레이션 실패 ({old_id}): {mig_err}")
+
             base_url = yaml_url.rsplit('/', 1)[0]
             py_url = f"{base_url}/{entry_file}?t={ts}"
             py_req = Request(py_url, headers={'Cache-Control': 'no-cache'})
             with urlopen(py_req, timeout=10) as py_response:
                 py_content = py_response.read().decode('utf-8')
 
-            tool_path = os.path.join(tools_dir, safe_tool_id)
             os.makedirs(tool_path, exist_ok=True)
             
             with open(os.path.join(tool_path, 'info.yaml'), 'w', encoding='utf-8') as f:
@@ -1656,7 +1901,8 @@ def dispatch_request(subpath, method, args, data, global_config):
                 for f_name in os.listdir(logs_dir):
                     if f_name.startswith(f"{tool_id}_") or f_name == f"{tool_id}.json":
                         try: os.remove(os.path.join(logs_dir, f_name))
-                        except: pass
+                        except Exception as e:
+                            logger.warning(f"[Core] 로그 파일 삭제 중 오류: {e}")
 
             if os.path.exists(tool_path):
                 shutil.rmtree(tool_path)
@@ -1670,59 +1916,58 @@ def dispatch_request(subpath, method, args, data, global_config):
             action = parts[2]
 
             info_path = os.path.join(tools_dir, tool_id, 'info.yaml')
-            if not os.path.exists(info_path): return {"error": "해당 툴이 로컬에 설치되어 있지 않습니다."}, 404
+            if not os.path.exists(info_path): 
+                return {"error": "해당 툴이 로컬에 설치되어 있지 않습니다."}, 404
             
             with open(info_path, 'r', encoding='utf-8') as f:
                 entry_file = yaml.safe_load(f).get('entry_file', 'main.py')
 
-            try: module = _load_tool_module(tools_dir, tool_id, entry_file)
-            except Exception as load_err: return {"error": f"툴 로드 실패: {load_err}"}, 500
+            try: 
+                module = _load_tool_module(tools_dir, tool_id, entry_file)
+            except Exception as load_err: 
+                return {"error": f"툴 로드 실패: {load_err}"}, 500
 
-            if data is None: data = {}
+            if data is None: 
+                data = {}
             server_id = args.get('server_id', data.get('_server_id', 'default')) if data else args.get('server_id', 'default')
             
             options_mgr = CoreOptionsManager(base_dir, tool_id, server_id)
             current_opts = options_mgr.load()
             
+            # 1. 전역 설정(PostgreSQL 설정 포함)과 툴 옵션 병합 (Pylance unbound 방지)
+            merged_config = global_config.copy() if global_config else {}
+
             if not current_opts.get('db_path'):
-                current_opts['db_path'] = db_path
+                current_opts['db_path'] = merged_config.get('plex_db_path', db_path)
                 
             if not current_opts.get('sqlite_bin'):
-                cfg_sqlite_bin = global_config.get('plex_sqlite_bin') if global_config else None
+                cfg_sqlite_bin = merged_config.get('plex_sqlite_bin')
                 if not cfg_sqlite_bin:
                     cfg_sqlite_bin = "/usr/lib/plexmediaserver/Plex SQLite"
                 current_opts['sqlite_bin'] = cfg_sqlite_bin
 
-            if not current_opts.get('uid_gid'):
-                try:
-                    target_for_stat = current_opts['db_path']
-                    if not os.path.exists(target_for_stat):
-                        target_for_stat = os.path.dirname(target_for_stat)
-                    
-                    if os.path.exists(target_for_stat):
-                        stat_info = os.stat(target_for_stat)
-                        current_opts['uid_gid'] = f"{stat_info.st_uid}:{stat_info.st_gid}"
-                except Exception as e:
-                    logger.error(f"UID:GID 자동 감지 실패: {e}")
-
-            db_api = create_db_api(current_opts['db_path'], current_opts['sqlite_bin'])
-            
-            task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
-            data_mgr = CoreDataManager(base_dir, tool_id, server_id, task_mgr=task_mgr)
-
-            cfg_plex_url = global_config.get("plex_url", "")
-            cfg_plex_token = global_config.get("plex_token", "")
+            # 2. Plex URL/토큰 설정 합성
+            cfg_plex_url = merged_config.get("plex_url", "")
+            cfg_plex_token = merged_config.get("plex_token", "")
             
             final_url = cfg_plex_url if str(cfg_plex_url).strip() else data.get('_plex_url', '')
             final_token = cfg_plex_token if str(cfg_plex_token).strip() else data.get('_plex_token', '')
             
-            merged_config = global_config.copy() if global_config else {}
             merged_config['PLEX_URL'] = final_url
             merged_config['PLEX_TOKEN'] = final_token
+            merged_config['plex_db_path'] = current_opts['db_path']
+            merged_config['plex_sqlite_bin'] = current_opts['sqlite_bin']
+
+            # 3. Universal DB API 및 Task/Data 매니저 생성
+            db_api = create_db_api(merged_config)
+            
+            task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
+            data_mgr = CoreDataManager(base_dir, tool_id, server_id, task_mgr=task_mgr)
 
             def get_plex_instance():
                 from plexapi.server import PlexServer
-                if not final_url or not final_token: raise ValueError("Plex 서버 정보가 누락되었습니다.")
+                if not final_url or not final_token: 
+                    raise ValueError("Plex 서버 정보가 누락되었습니다.")
                 plex = PlexServer(final_url, final_token, timeout=120)
                 orig_fetchItem = plex.fetchItem
                 def safe_fetchItem(ekey, *args, **kwargs):
@@ -2190,13 +2435,15 @@ def media_action_worker_loop(global_config):
                     elif item.type == 'episode':
                         idx = int(getattr(item, 'parentIndex', 0) or 0)
                         if 100 <= idx <= 999: is_3digit_season = True
-                except: pass
+                except Exception as e:
+                    logger.warning(f"[Core] 시즌 인덱스 확인 중 오류: {e}")
 
                 target_item = item
                 if item.type in ['episode', 'season']:
                     try:
                         target_item = execute_plex_action_safe(lambda: plex.fetchItem(item.grandparentRatingKey if item.type == 'episode' else item.parentRatingKey))
-                    except Exception: pass
+                    except Exception as e:
+                        logger.warning(f"[Core] 타겟 아이템 로드 중 오류: {e}")
                         
                 target_id = target_item.ratingKey
 
@@ -2457,7 +2704,8 @@ def perform_smart_media_action(
             try:
                 for loc in target_item.section().locations:
                     if os.path.normpath(parent_dir) == os.path.normpath(loc): is_root_dir = True; break
-            except Exception: pass
+            except Exception as e:
+                logger.warning(f"[Core] 루트 디렉토리 확인 중 오류: {e}")
 
             if is_root_dir: 
                 raw_folder_name = os.path.splitext(raw_file_name)[0]
@@ -2548,8 +2796,10 @@ def perform_smart_media_action(
                         for fpath in set(files_to_delete):
                             if os.path.exists(fpath):
                                 try: os.remove(fpath)
-                                except Exception: pass
-                except Exception: pass
+                                except Exception as e:
+                                    logger.warning(f"[Core] 파일 삭제 중 오류: {e}")
+                except Exception as e:
+                    logger.warning(f"[Core] 파일 삭제 중 오류: {e}")
 
                 temp_guid = (target_item.guid or '').lower()
                 if not temp_guid or 'local://' in temp_guid or 'none://' in temp_guid or temp_guid == '-':
@@ -2616,9 +2866,9 @@ def perform_smart_media_action(
                 try:
                     sect_lang = target_item.section().language
                     if sect_lang: lang_code = str(sect_lang).lower()
-                except Exception: pass
+                except Exception as e:
+                    logger.warning(f"[Core] 섹션 언어 확인 중 오류: {e}")
 
-            # 💡 [핵심 보완] media_path 및 path 파라미터를 쿼리스트링에 명시적으로 추가
             def _build_search_params(title_str, year_str=None, file_path_str=None):
                 p = {
                     'title': title_str, 
@@ -2753,7 +3003,7 @@ def perform_smart_media_action(
                     score_msg = f"설정 기준값({threshold_score}점)"
 
                 tag_label = "Western AV" if is_western_av else ("JAV" if is_jav else "SJVA/AV")
-                if task_logger: task_logger(f"💡 [{tag_label} 모드] 점수 기반 선별 시작 ({score_msg}, 연도검증: {'스킵(OFF)' if skip_sim_check else '검사(ON)'})")
+                if task_logger: task_logger(f"💡 [{tag_label} 모드] 순수 점수 기반 선별 ({score_msg})")
 
                 # 점수 내림차순 정렬
                 matches.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)
@@ -2763,12 +3013,7 @@ def perform_smart_media_action(
                     if 'collection://' in cand_guid_val: continue
                     
                     cand_name = _get_val(cand, 'name', '') or _get_val(cand, 'title', '')
-                    cand_year = str(_get_val(cand, 'year', ''))
                     cand_score = int(_get_val(cand, 'score', 0))
-
-                    if not skip_sim_check and item_year and cand_year and item_year != cand_year:
-                        if task_logger: task_logger(f"   📋 [후보 {idx+1}] '{cand_name}' (점수: {cand_score}) ❌ 연도 불일치 (목표: {item_year}, 후보: {cand_year})")
-                        continue
 
                     if cand_score >= threshold_score:
                         best_match = cand
@@ -2793,7 +3038,6 @@ def perform_smart_media_action(
                     if task_logger: task_logger(f"💡 [일반 모드] 제목/연도 검증 스킵 -> 1순위 '{cand_name}' 수용")
                 else:
                     if task_logger: task_logger(f"💡 [텍스트 유사도 모드] 텍스트 유사도 검증(커트라인 90%)을 진행합니다.")
-                    import difflib
                     norm_pattern = r'[^\w\s]|_'
                     norm_folder_q = re.sub(norm_pattern, '', folder_query.lower())
                     norm_file_q = re.sub(norm_pattern, '', file_query.lower())
@@ -2804,7 +3048,8 @@ def perform_smart_media_action(
                         cand_year = str(_get_val(cand, 'year', ''))
                         cand_score = int(_get_val(cand, 'score', 0))
 
-                        if item_year and cand_year and item_year != cand_year:
+                        if item_year and cand_year and str(item_year).strip() != cand_year:
+                            if task_logger: task_logger(f"   📋 [후보 {idx+1}] '{cand_name}' ❌ 연도 불일치 (목표: {item_year}, 후보: {cand_year})")
                             continue
 
                         clean_cand_name = cand_name.split('|')[0].strip() if '|' in cand_name else cand_name
