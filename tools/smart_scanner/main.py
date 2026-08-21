@@ -7,12 +7,9 @@
 
 import os
 import re
-import urllib.request
-import urllib.parse
 import time
 import unicodedata
 import json
-import sqlite3
 import pmh_core
 
 # =====================================================================
@@ -64,15 +61,6 @@ def translate_path(plex_path, mappings):
         p_path, s_path = p_path.strip().replace('\\', '/'), s_path.strip().replace('\\', '/')
         if p_path and plex_path.startswith(p_path): return s_path + plex_path[len(p_path):]
     return plex_path
-
-def call_plexmate_refresh(mate_url, apikey, rating_key):
-    url = f"{mate_url.rstrip('/')}/plex_mate/api/scan/manual_refresh"
-    data = urllib.parse.urlencode({'apikey': apikey, 'metadata_item_id': rating_key}).encode('utf-8')
-    req = urllib.request.Request(url, data=data, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.loads(response.read()).get('ret') == 'success'
-    except: return False
 
 # =====================================================================
 # 1. UI 스키마
@@ -189,7 +177,6 @@ def get_target_issues(req_data, core_api, task=None):
     fixed_filter_exclude_raw = req_data.get('fixed_filter_exclude', '')
     is_cron_run = req_data.get('_is_cron', False)
 
-    # 텍스트 파싱 헬퍼 (다중 라인/단일 라인 모두 지원)
     def _parse_filter_text(raw_text):
         rules = []
         for line in str(raw_text).splitlines():
@@ -239,9 +226,11 @@ def get_target_issues(req_data, core_api, task=None):
     sec_query = "SELECT id, name FROM library_sections"
     sec_params = []
     if target_sections and 'all' not in target_sections:
-        placeholders = ",".join("?" for _ in target_sections)
-        sec_query += f" WHERE id IN ({placeholders})"
-        sec_params.extend(target_sections)
+        clean_sec_ids = [int(s) for s in target_sections if str(s).isdigit()]
+        if clean_sec_ids:
+            placeholders = ",".join("?" for _ in clean_sec_ids)
+            sec_query += f" WHERE id IN ({placeholders})"
+            sec_params.extend(clean_sec_ids)
     
     try:
         target_libs = core_api['query'](sec_query, tuple(sec_params))
@@ -272,14 +261,15 @@ def get_target_issues(req_data, core_api, task=None):
         if file_path: targets[target_rk]["files"].add(file_path)
         if parent_rk: assigned_grandparents.add(parent_rk)
 
+    # 💡 [ANSI 표준화] IFNULL -> COALESCE 교체
     base_from = f"""
         SELECT
             mi.id, mi.metadata_type, mi.title, 
             (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) as file,
             mi.year, mi.parent_id, mi.guid, mi.library_section_id,
             (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
-            (SELECT title FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
-            (SELECT year FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
+            (SELECT title FROM metadata_items WHERE id = COALESCE((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
+            (SELECT year FROM metadata_items WHERE id = COALESCE((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
             (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
             mi."index" as e_idx
         FROM metadata_items mi
@@ -287,29 +277,29 @@ def get_target_issues(req_data, core_api, task=None):
     """
 
     def format_title(r, is_episode=False, is_parent=False):
-        m_type = r[1]
-        raw_title = r[2]
+        m_type = r.get('metadata_type')
+        raw_title = r.get('title')
         
         if is_parent:
             if m_type == 3:
-                s_title = r[9] or "Unknown Show"
-                s_num = f"시즌 {int(r[12])}" if r[12] is not None else "Unknown Season"
+                s_title = r.get('show_title') or "Unknown Show"
+                s_num = f"시즌 {int(r.get('e_idx'))}" if r.get('e_idx') is not None else "Unknown Season"
                 return f"{s_title} / {s_num}"
                 
-            base_title = r[9] if m_type in (8, 10) else raw_title
-            year = r[10] if m_type in (8, 10) else r[4]
+            base_title = r.get('show_title') if m_type in (8, 10) else raw_title
+            year = r.get('show_year') if m_type in (8, 10) else r.get('year')
         elif is_episode:
-            s_title = r[9] or "Unknown Show"
+            s_title = r.get('show_title') or "Unknown Show"
             if m_type == 10:
-                s_num = f"Disc {int(r[11]):02d}" if r[11] is not None else "Disc 01"
-                e_num = f"Track {int(r[12]):02d}" if r[12] is not None else "Track 01"
+                s_num = f"Disc {int(r.get('s_idx')):02d}" if r.get('s_idx') is not None else "Disc 01"
+                e_num = f"Track {int(r.get('e_idx')):02d}" if r.get('e_idx') is not None else "Track 01"
             else:
-                s_num = f"S{int(r[11]):02d}" if r[11] is not None else "S01"
-                e_num = f"E{int(r[12]):02d}" if r[12] is not None else "E01"
+                s_num = f"S{int(r.get('s_idx')):02d}" if r.get('s_idx') is not None else "S01"
+                e_num = f"E{int(r.get('e_idx')):02d}" if r.get('e_idx') is not None else "E01"
             return f"{s_title} / {s_num} / {e_num} - {raw_title or 'Unknown Episode'}"
         else:
             base_title = raw_title
-            year = r[4]
+            year = r.get('year')
             
         if not base_title: 
             base_title = raw_title
@@ -330,13 +320,7 @@ def get_target_issues(req_data, core_api, task=None):
         if task: task.log("⚠️ 선택된 복구 옵션이 없습니다.")
         return targets, total_scanned
 
-    plex_db_path = core_api['config'].get('plex_db_path', '')
-
-    plex_conn = None
     try:
-        plex_conn = sqlite3.connect(f'file:{plex_db_path}?mode=ro', uri=True, timeout=10.0)
-        plex_c = plex_conn.cursor()
-        
         for step_idx, (fix_type, msg) in enumerate(tasks_to_run, 1):
             if task and task.is_cancelled(): break
             
@@ -422,83 +406,81 @@ def get_target_issues(req_data, core_api, task=None):
                 """
 
             if query:
-                plex_c.execute(query)
-                while True:
-                    rows = plex_c.fetchmany(10000)
-                    if not rows: break
+                rows = core_api['query'](query)
+                for r in rows:
                     if task and task.is_cancelled(): break
-                    
-                    for r in rows:
-                        rk, m_type, title, f_path, parent_id, grandparent_id = r[0], r[1], r[2], r[3], r[5], r[8]
-                        sec_name = lib_map.get(str(r[7]), 'Unknown')
-                        guid_val = str(r[6] or "")
-                        f_path_val = str(f_path or "")
 
-                        display_title = ""
-                        if m_type == 1: display_title = format_title(r)
-                        elif m_type in (2, 3, 8, 9): display_title = format_title(r, is_parent=True)
-                        elif m_type in (4, 10): display_title = format_title(r, is_episode=True)
+                    rk = r.get('id')
+                    m_type = r.get('metadata_type')
+                    title = r.get('title')
+                    f_path = r.get('file')
+                    parent_id = r.get('parent_id')
+                    grandparent_id = r.get('grandparent_id')
+                    sec_name = lib_map.get(str(r.get('library_section_id')), 'Unknown')
+                    guid_val = str(r.get('guid') or "")
+                    f_path_val = str(f_path or "")
 
-                        # [필터 로직] - 고정 필터(Settings)와 임시 필터(Inputs) 각각 독립 적용
-                        def _get_texts(fields):
-                            texts = []
-                            if 'guid' in fields and guid_val: texts.append(guid_val)
-                            if 'title' in fields and display_title: texts.append(display_title)
-                            if 'path' in fields and f_path_val: texts.append(f_path_val)
-                            return texts
+                    display_title = ""
+                    if m_type == 1: display_title = format_title(r)
+                    elif m_type in (2, 3, 8, 9): display_title = format_title(r, is_parent=True)
+                    elif m_type in (4, 10): display_title = format_title(r, is_episode=True)
 
-                        def _is_match(rules, texts):
-                            for rule in rules:
-                                if rule['is_regex']:
-                                    if any(rule['pattern'].search(txt) for txt in texts): return True
-                                else:
-                                    if any(rule['pattern'] in txt.lower() for txt in texts): return True
-                            return False
+                    # [필터 로직] - 고정 필터(Settings)와 임시 필터(Inputs) 각각 독립 적용
+                    def _get_texts(fields):
+                        texts = []
+                        if 'guid' in fields and guid_val: texts.append(guid_val)
+                        if 'title' in fields and display_title: texts.append(display_title)
+                        if 'path' in fields and f_path_val: texts.append(f_path_val)
+                        return texts
 
-                        skip_item = False
-                        
-                        # 1. 고정 필터 검사 (적용 대상일 때만)
-                        if apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules):
-                            fixed_texts = _get_texts(fixed_filter_fields)
-                            if fixed_inc_rules and not _is_match(fixed_inc_rules, fixed_texts): skip_item = True
-                            if fixed_exc_rules and _is_match(fixed_exc_rules, fixed_texts): skip_item = True
-
-                        if skip_item: continue
-
-                        # 2. 수동 임시 필터 검사
-                        if ui_inc_rules or ui_exc_rules:
-                            ui_texts = _get_texts(ui_filter_fields)
-                            if ui_inc_rules and not _is_match(ui_inc_rules, ui_texts): skip_item = True
-                            if ui_exc_rules and _is_match(ui_exc_rules, ui_texts): skip_item = True
-                            
-                        if skip_item: continue
-                        
-                        # 대상 추가
-                        if m_type == 1:
-                            display_title = format_title(r)
-                            add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk)
-                        elif m_type in (2, 3, 8, 9):
-                            display_title = format_title(r, is_parent=True)
-                            add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk)
-                        elif m_type in (4, 10): 
-                            actual_parent = grandparent_id or parent_id
-                            if fix_type in ['match', 'refresh', 'yaml_season', 'yaml_marker'] and actual_parent:
-                                s_title = r[9] or ("Unknown Show" if m_type == 4 else "Unknown Album")
-                                s_year = r[10]
-                                display_title = f"{s_title} ({s_year})" if s_year else s_title
+                    def _is_match(rules, texts):
+                        for rule in rules:
+                            if rule['is_regex']:
+                                if any(rule['pattern'].search(txt) for txt in texts): return True
                             else:
-                                display_title = format_title(r, is_episode=True)
-                                
-                            add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
+                                if any(rule['pattern'] in txt.lower() for txt in texts): return True
+                        return False
+
+                    skip_item = False
+                    
+                    # 1. 고정 필터 검사
+                    if apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules):
+                        fixed_texts = _get_texts(fixed_filter_fields)
+                        if fixed_inc_rules and not _is_match(fixed_inc_rules, fixed_texts): skip_item = True
+                        if fixed_exc_rules and _is_match(fixed_exc_rules, fixed_texts): skip_item = True
+
+                    if skip_item: continue
+
+                    # 2. 수동 임시 필터 검사
+                    if ui_inc_rules or ui_exc_rules:
+                        ui_texts = _get_texts(ui_filter_fields)
+                        if ui_inc_rules and not _is_match(ui_inc_rules, ui_texts): skip_item = True
+                        if ui_exc_rules and _is_match(ui_exc_rules, ui_texts): skip_item = True
+                        
+                    if skip_item: continue
+                    
+                    # 복구 대상 맵에 추가
+                    if m_type == 1:
+                        display_title = format_title(r)
+                        add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk)
+                    elif m_type in (2, 3, 8, 9):
+                        display_title = format_title(r, is_parent=True)
+                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk)
+                    elif m_type in (4, 10): 
+                        actual_parent = grandparent_id or parent_id
+                        if fix_type in ['match', 'refresh', 'yaml_season', 'yaml_marker'] and actual_parent:
+                            s_title = r.get('show_title') or ("Unknown Show" if m_type == 4 else "Unknown Album")
+                            s_year = r.get('show_year')
+                            display_title = f"{s_title} ({s_year})" if s_year else s_title
+                        else:
+                            display_title = format_title(r, is_episode=True)
                             
+                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
+                        
             if task: task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
 
     except Exception as e:
         if task: task.log(f"❌ Plex DB 연결 또는 쿼리 실패: {e}")
-    finally:
-        if plex_conn:
-            try: plex_conn.close()
-            except: pass
 
     for rk in list(targets.keys()): 
         if not targets[rk]['title'] or targets[rk]['title'].strip() == "":
@@ -674,10 +656,8 @@ def worker(task_data, core_api, start_index):
             "data": table_data
         }
         
-        # 캐시에 UI 테이블 저장
         core_api['cache'].save(res_payload)
         
-        # Preview 모드면 여기서 종료
         if action == 'preview':
             task.update_state('completed', progress=100, total=100)
             if total_issues > 0:
@@ -686,7 +666,7 @@ def worker(task_data, core_api, start_index):
             else:
                 task.log("✅ 라이브러리 검사 완료. 모든 항목이 정상입니다! (복구 대상 없음)")
             return
-        else: # cron_run 모드일 경우 즉시 실행으로 전환
+        else:
             if total_issues == 0:
                 task.update_state('completed', progress=100, total=100)
                 task.log("✅ [자동 실행] 복구가 필요한 항목이 없어 작업을 종료합니다.")
@@ -908,9 +888,9 @@ def worker(task_data, core_api, start_index):
                             except: pass
 
                             if not is_sjva and show_rk:
-                                check_q = f"SELECT 1 FROM metadata_items WHERE parent_id = {show_rk} AND metadata_type = 3 AND \"index\" BETWEEN 100 AND 999 LIMIT 1"
+                                check_q = f"SELECT 1 FROM metadata_items WHERE parent_id = {int(show_rk)} AND metadata_type = 3 AND \"index\" BETWEEN 100 AND 999 LIMIT 1"
                                 try:
-                                    has_3digit = core_api['query'](check_q)
+                                    has_3digit = bool(core_api['query'](check_q))
                                 except: has_3digit = False
                                 
                                 if has_3digit:
@@ -964,7 +944,7 @@ def worker(task_data, core_api, start_index):
         # [4] 모든 작업 종료 후 검증 및 통계 알림 (단일 실행이 아닐 때만)
         # -----------------------------------------------------------------
         if not task_data.get('_is_single'):
-            analyze_rks = [str(i['rating_key']) for i in items if i['fix_type'] == 'analyze']
+            analyze_rks = [int(i['rating_key']) for i in items if i['fix_type'] == 'analyze' and str(i['rating_key']).isdigit()]
             if analyze_rks:
                 task.log("🔍 분석 작업 완료. Plex DB 갱신 상태를 일괄 검증합니다...")
                 time.sleep(2) 
@@ -985,7 +965,7 @@ def worker(task_data, core_api, start_index):
                             )
                         """
                         for r in core_api['query'](check_q, tuple(chunk)):
-                            fail_rk_str = str(r['id'])
+                            fail_rk_str = str(r.get('id'))
                             fail_title = f"Unknown Title (ID:{fail_rk_str})"
                             for it in items:
                                 if str(it['rating_key']) == fail_rk_str:
