@@ -144,9 +144,11 @@ def worker(task_data, core_api, start_index):
         sec_params = []
         
         if target_sections and 'all' not in target_sections:
-            placeholders = ",".join("?" for _ in target_sections)
-            sec_query += f" WHERE id IN ({placeholders})"
-            sec_params.extend(target_sections)
+            clean_sec_ids = [int(s) for s in target_sections if str(s).isdigit()]
+            if clean_sec_ids:
+                placeholders = ",".join("?" for _ in clean_sec_ids)
+                sec_query += f" WHERE id IN ({placeholders})"
+                sec_params.extend(clean_sec_ids)
         
         target_libs = core_api['query'](sec_query, tuple(sec_params))
         if not target_libs:
@@ -186,15 +188,16 @@ def worker(task_data, core_api, start_index):
             for row in core_api['query'](m_query):
                 if task.is_cancelled(): return
                 
-                rk = row['id']
-                # [수정점] 영화의 경우 제목 폴백 처리
-                title_map[rk] = row['title'] or os.path.basename(row['file']) or f"Unknown Movie (ID: {rk})"
-                sec_id_map[rk] = row['library_section_id']
+                rk = row.get('id')
+                f_path = row.get('file') or ""
+                title_map[rk] = row.get('title') or (os.path.basename(f_path) if f_path else f"Unknown Movie (ID: {rk})")
+                sec_id_map[rk] = row.get('library_section_id')
                 
-                paths_map[rk].add(get_unique_root_path(unicodedata.normalize('NFC', row['file'])))
+                if f_path:
+                    paths_map[rk].add(get_unique_root_path(unicodedata.normalize('NFC', f_path)))
 
         # -----------------------------------------------------------------
-        # STEP 3: 가벼운 쿼리로 TV 쇼 라이브러리 일괄 조회
+        # STEP 3: 가벼운 쿼리로 TV 쇼 라이브러리 일괄 조회 (COALESCE 적용)
         # -----------------------------------------------------------------
         if show_lib_ids:
             task.log("📺 TV 쇼 라이브러리 파일 경로를 분석 중입니다...")
@@ -203,7 +206,7 @@ def worker(task_data, core_api, start_index):
             s_ids_str = ",".join(show_lib_ids)
             s_query = f"""
                 SELECT 
-                    IFNULL(
+                    COALESCE(
                         (SELECT parent_id FROM metadata_items WHERE id = ep.parent_id), 
                         ep.parent_id
                     ) as show_id,
@@ -216,9 +219,10 @@ def worker(task_data, core_api, start_index):
             for row in core_api['query'](s_query):
                 if task.is_cancelled(): return
                 
-                show_id = row['show_id']
-                if show_id:
-                    paths_map[show_id].add(get_unique_root_path(unicodedata.normalize('NFC', row['file'])))
+                show_id = row.get('show_id')
+                f_path = row.get('file') or ""
+                if show_id and f_path:
+                    paths_map[show_id].add(get_unique_root_path(unicodedata.normalize('NFC', f_path)))
 
         # -----------------------------------------------------------------
         # STEP 4: 다중 경로 항목 필터링 및 부족한 정보(TV 쇼) 획득
@@ -241,27 +245,29 @@ def worker(task_data, core_api, start_index):
                         "raw_count": path_count
                     })
                 else:
-                    error_show_ids.append(str(rk_id))
+                    error_show_ids.append(rk_id)
 
         if error_show_ids:
             task.log("🔍 의심되는 TV 쇼 항목의 상세 정보를 가져옵니다...")
             for i in range(0, len(error_show_ids), 500):
                 chunk = error_show_ids[i:i+500]
-                placeholders = ",".join("?" for _ in chunk)
-                q = f"SELECT id, title, library_section_id FROM metadata_items WHERE id IN ({placeholders})"
-                for r in core_api['query'](q, tuple(chunk)):
-                    rk_id = r['id']
-                    path_count = len(paths_map[rk_id])
-                    
-                    fallback_title = r['title'] or f"Unknown Show (ID: {rk_id})"
-                    
-                    results.append({
-                        "rating_key": str(rk_id), 
-                        "section": lib_name_map.get(str(r['library_section_id']), 'Unknown'), 
-                        "title": fallback_title,
-                        "count_html": f"<span style='color:#e5a00d; font-weight:bold;'>{path_count}</span>", 
-                        "raw_count": path_count
-                    })
+                int_chunk = tuple(int(x) for x in chunk if str(x).isdigit())
+                if int_chunk:
+                    placeholders = ",".join("?" for _ in int_chunk)
+                    q = f"SELECT id, title, library_section_id FROM metadata_items WHERE id IN ({placeholders})"
+                    for r in core_api['query'](q, int_chunk):
+                        rk_id = r.get('id')
+                        path_count = len(paths_map.get(rk_id, []))
+                        
+                        fallback_title = r.get('title') or f"Unknown Show (ID: {rk_id})"
+                        
+                        results.append({
+                            "rating_key": str(rk_id), 
+                            "section": lib_name_map.get(str(r.get('library_section_id')), 'Unknown'), 
+                            "title": fallback_title,
+                            "count_html": f"<span style='color:#e5a00d; font-weight:bold;'>{path_count}</span>", 
+                            "raw_count": path_count
+                        })
 
         sort_rules = [
             {"key": "section", "dir": "asc"},
@@ -318,4 +324,5 @@ def worker(task_data, core_api, start_index):
         
     except Exception as e:
         task.log(f"❌ 처리 중 오류 발생: {str(e)}")
-        task.update_state('error'); return
+        task.update_state('error')
+        return
