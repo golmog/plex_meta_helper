@@ -9,10 +9,7 @@ import time
 import os
 import re
 import unicodedata
-import urllib.request
-import urllib.parse
 import json
-import sqlite3
 import pmh_core
 
 # =====================================================================
@@ -94,7 +91,6 @@ def get_ui(core_api):
                 {"value": "file", "text": "파일명 우선 (AV 등 단일 파일 권장)"}
             ], "default": "auto", "show_if": {"mode": "rematch"}},
             {"id": "retry_errors", "type": "checkbox", "label": "이전에 실패(Error)한 항목 다시 시도", "default": False}
-
         ],
         "settings_inputs": [
             {"id": "s_h_filter", "type": "header", "label": "<i class='fas fa-filter'></i> 전역 필터링 설정 (filters.yaml 대체)"},
@@ -160,7 +156,6 @@ def get_target_items(req_data, core_api, task=None):
     fixed_filter_exclude_raw = req_data.get('fixed_filter_exclude', '')
     is_cron_run = req_data.get('_is_cron', False)
 
-    # 텍스트 파싱 헬퍼
     def _parse_filter_text(raw_text):
         rules = []
         for line in str(raw_text).splitlines():
@@ -205,9 +200,11 @@ def get_target_items(req_data, core_api, task=None):
     sec_params = []
 
     if target_sections and 'all' not in target_sections:
-        placeholders = ",".join("?" for _ in target_sections)
-        sec_query += f" WHERE id IN ({placeholders})"
-        sec_params.extend(target_sections)
+        clean_sec_ids = [int(s) for s in target_sections if str(s).isdigit()]
+        if clean_sec_ids:
+            placeholders = ",".join("?" for _ in clean_sec_ids)
+            sec_query += f" WHERE id IN ({placeholders})"
+            sec_params.extend(clean_sec_ids)
 
     try:
         target_libs = core_api['query'](sec_query, tuple(sec_params))
@@ -232,10 +229,15 @@ def get_target_items(req_data, core_api, task=None):
 
         path_set = set()
         loc_q = f"SELECT library_section_id, root_path FROM section_locations WHERE library_section_id IN ({lib_ids_str})"
-
         path_mappings = core_api['config'].get('path_mappings', [])
 
-        for loc in core_api['query'](loc_q):
+        try:
+            locations = core_api['query'](loc_q)
+        except Exception as e:
+            if task: task.log(f"❌ 섹션 경로 조회 실패: {e}")
+            locations = []
+
+        for loc in locations:
             if task and task.is_cancelled(): return items, total_scanned
             root = loc['root_path']
             sec_id = loc['library_section_id']
@@ -289,13 +291,10 @@ def get_target_items(req_data, core_api, task=None):
             mi.library_section_id IN ({lib_ids_str}) 
             AND mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != '' AND mi.guid != '-'
             AND (
-                -- 1. 영화, 쇼, 아티스트 (제한 없음)
                 (mi.metadata_type IN (1, 2, 9) AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url = 'upload://' OR mi.user_thumb_url = 'metadata://' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                 OR
-                -- 2. 앨범 (음악은 3자리 시즌 개념이 없으므로 제한 삭제)
                 (mi.metadata_type = 8 AND (mi.user_thumb_url = '' OR mi.user_thumb_url IS NULL OR mi.user_thumb_url = 'upload://' OR mi.user_thumb_url = 'metadata://' OR mi.user_thumb_url LIKE '%discord%attachments%'))
                 OR
-                -- 3. 에피소드
                 (mi.metadata_type = 4
                  AND mi.parent_id IN (SELECT id FROM metadata_items WHERE metadata_type = 3 AND NOT ("index" BETWEEN 100 AND 999))
                  AND (SELECT COUNT(*) FROM metadata_items WHERE parent_id = (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) AND metadata_type = 3 AND NOT ("index" BETWEEN 100 AND 999)) > 1
@@ -320,8 +319,8 @@ def get_target_items(req_data, core_api, task=None):
             (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) as file,
             mi.year, mi.parent_id, mi.guid, mi.library_section_id,
             (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
-            (SELECT title FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
-            (SELECT year FROM metadata_items WHERE id = IFNULL((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
+            (SELECT title FROM metadata_items WHERE id = COALESCE((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
+            (SELECT year FROM metadata_items WHERE id = COALESCE((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
             (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
             mi."index" as e_idx
         FROM metadata_items mi
@@ -333,24 +332,18 @@ def get_target_items(req_data, core_api, task=None):
         task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 개별 미디어 대상 {filter_msg}을(를) 조회 및 부모 병합 중입니다...")
         task.update_state('running', progress=10, total=100)
 
-    plex_db_path = core_api['config'].get('plex_db_path', '')
-    if not os.path.exists(plex_db_path):
-        if task: task.log("❌ Plex DB 경로를 찾을 수 없습니다.")
-        return items, total_scanned
-
-    plex_conn = None
     targets = {}
 
     def format_title(r, is_parent=False):
-        m_type = r[1]
-        raw_title = r[2]
+        m_type = r.get('metadata_type')
+        raw_title = r.get('title')
         
         if is_parent:
-            base_title = r[9] if m_type in (3, 4, 8, 10) else raw_title
-            year = r[10] if m_type in (3, 4, 8, 10) else r[4]
+            base_title = r.get('show_title') if m_type in (3, 4, 8, 10) else raw_title
+            year = r.get('show_year') if m_type in (3, 4, 8, 10) else r.get('year')
         else:
             base_title = raw_title
-            year = r[4]
+            year = r.get('year')
             
         if not base_title: 
             base_title = raw_title
@@ -360,89 +353,80 @@ def get_target_items(req_data, core_api, task=None):
         return ""
 
     try:
-        plex_conn = sqlite3.connect(f'file:{plex_db_path}?mode=ro', uri=True, timeout=10.0)
-        plex_c = plex_conn.cursor()
-        plex_c.execute(base_select)
+        rows = core_api['query'](base_select)
 
-        while True:
-            rows = plex_c.fetchmany(10000)
-            if not rows: break
+        for r in rows:
             if task and task.is_cancelled(): break
 
-            for r in rows:
-                rk = r[0]
-                m_type = r[1]
-                title = r[2]
-                f_path = r[3]
-                guid_val = str(r[6] or "")
-                lib_sec_id = r[7]
-                parent_id = r[5]
-                grandparent_id = r[8]
+            rk = r.get('id')
+            m_type = r.get('metadata_type')
+            title = r.get('title')
+            f_path = r.get('file')
+            guid_val = str(r.get('guid') or "")
+            lib_sec_id = r.get('library_section_id')
+            parent_id = r.get('parent_id')
+            grandparent_id = r.get('grandparent_id')
 
-                clean_guid = '-'
-                if guid_val:
-                    clean_guid = guid_val.replace("com.plexapp.agents.", "").replace("tv.plex.agents.", "")
-                    if "?" in clean_guid: clean_guid = clean_guid.split("?")[0]
+            clean_guid = '-'
+            if guid_val:
+                clean_guid = guid_val.replace("com.plexapp.agents.", "").replace("tv.plex.agents.", "")
+                if "?" in clean_guid: clean_guid = clean_guid.split("?")[0]
 
-                actual_parent = grandparent_id or parent_id
-                target_rk = actual_parent if actual_parent and mode in ['refresh', 'rematch'] else rk
+            actual_parent = grandparent_id or parent_id
+            target_rk = actual_parent if actual_parent and mode in ['refresh', 'rematch'] else rk
 
-                display_title = format_title(r, is_parent=(mode in ['refresh', 'rematch'] and m_type in (4, 8, 10)))
-                if m_type not in (1, 2, 3, 4, 8, 9, 10):
-                    display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
-                lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
-                f_path_val = str(f_path or "")
+            display_title = format_title(r, is_parent=(mode in ['refresh', 'rematch'] and m_type in (4, 8, 10)))
+            if m_type not in (1, 2, 3, 4, 8, 9, 10):
+                display_title = title or (os.path.basename(f_path) if f_path else "Unknown Title")
+            lib_name = lib_map.get(str(lib_sec_id), 'Unknown')
+            f_path_val = str(f_path or "")
 
-                # [필터 로직] - 고정 필터(Settings)와 임시 필터(Inputs) 독립 적용
-                if mode in ['refresh', 'rematch']:
-                    def _get_texts(fields):
-                        texts = []
-                        if 'guid' in fields and guid_val: texts.append(guid_val)
-                        if 'title' in fields and display_title: texts.append(display_title)
-                        if 'path' in fields and f_path_val: texts.append(f_path_val)
-                        return texts
+            # [필터 로직] - 고정 필터(Settings)와 임시 필터(Inputs) 독립 적용
+            if mode in ['refresh', 'rematch']:
+                def _get_texts(fields):
+                    texts = []
+                    if 'guid' in fields and guid_val: texts.append(guid_val)
+                    if 'title' in fields and display_title: texts.append(display_title)
+                    if 'path' in fields and f_path_val: texts.append(f_path_val)
+                    return texts
 
-                    def _is_match(rules, texts):
-                        for rule in rules:
-                            if rule['is_regex']:
-                                if any(rule['pattern'].search(txt) for txt in texts): return True
-                            else:
-                                if any(rule['pattern'] in txt.lower() for txt in texts): return True
-                        return False
+                def _is_match(rules, texts):
+                    for rule in rules:
+                        if rule['is_regex']:
+                            if any(rule['pattern'].search(txt) for txt in texts): return True
+                        else:
+                            if any(rule['pattern'] in txt.lower() for txt in texts): return True
+                    return False
 
-                    skip_item = False
+                skip_item = False
+                
+                # 1. 고정 전역 필터 검사
+                if apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules):
+                    fixed_texts = _get_texts(fixed_filter_fields)
+                    if fixed_inc_rules and not _is_match(fixed_inc_rules, fixed_texts): skip_item = True
+                    if fixed_exc_rules and _is_match(fixed_exc_rules, fixed_texts): skip_item = True
+
+                if skip_item: continue
+
+                # 2. 수동 임시 필터 검사
+                if ui_inc_rules or ui_exc_rules:
+                    ui_texts = _get_texts(ui_filter_fields)
+                    if ui_inc_rules and not _is_match(ui_inc_rules, ui_texts): skip_item = True
+                    if ui_exc_rules and _is_match(ui_exc_rules, ui_texts): skip_item = True
                     
-                    # 1. 고정 전역 필터 검사
-                    if apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules):
-                        fixed_texts = _get_texts(fixed_filter_fields)
-                        if fixed_inc_rules and not _is_match(fixed_inc_rules, fixed_texts): skip_item = True
-                        if fixed_exc_rules and _is_match(fixed_exc_rules, fixed_texts): skip_item = True
+                if skip_item: continue
 
-                    if skip_item: continue
-
-                    # 2. 수동 임시 필터 검사
-                    if ui_inc_rules or ui_exc_rules:
-                        ui_texts = _get_texts(ui_filter_fields)
-                        if ui_inc_rules and not _is_match(ui_inc_rules, ui_texts): skip_item = True
-                        if ui_exc_rules and _is_match(ui_exc_rules, ui_texts): skip_item = True
-                        
-                    if skip_item: continue
-
-                if target_rk not in targets:
-                    targets[target_rk] = {
-                        'id': str(target_rk),
-                        'section': lib_name,
-                        'title': display_title,
-                        'guid': clean_guid,
-                        'f_path': f_path
-                    }
+            if target_rk not in targets:
+                targets[target_rk] = {
+                    'id': str(target_rk),
+                    'section': lib_name,
+                    'title': display_title,
+                    'guid': clean_guid,
+                    'f_path': f_path
+                }
 
     except Exception as e:
         if task: task.log(f"❌ 쿼리 실행 중 오류 발생: {e}")
-    finally:
-        if plex_conn:
-            try: plex_conn.close()
-            except: pass
 
     for rk in list(targets.keys()): 
         if not targets[rk]['title'] or targets[rk]['title'].strip() == "":
@@ -589,7 +573,6 @@ def worker(task_data, core_api, start_index):
             "data": table_data
         }
 
-        # UI 표를 그리기 위한 DB 저장
         core_api['cache'].save(res_payload)
         
         if action == 'preview':
