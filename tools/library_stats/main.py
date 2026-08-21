@@ -5,6 +5,10 @@
 ====================================================================================
 """
 
+import os
+import time
+import pmh_core
+
 # =====================================================================
 # 디스코드 알림 기본 템플릿
 # =====================================================================
@@ -24,16 +28,23 @@ DEFAULT_DISCORD_TEMPLATE = """**📊 라이브러리 요약**
 def format_size(bytes_size):
     """바이트(Bytes)를 사람이 보기 좋은 단위로 변환"""
     if not bytes_size: return "0 B"
+    try:
+        b_size = float(bytes_size)
+    except: return "0 B"
+    
     for unit in ['B', 'KB', 'MB', 'GB', 'TB', 'PB']:
-        if bytes_size < 1024.0:
-            return f"{bytes_size:.1f} {unit}"
-        bytes_size /= 1024.0
-    return f"{bytes_size:.1f} PB"
+        if b_size < 1024.0:
+            return f"{b_size:.1f} {unit}"
+        b_size /= 1024.0
+    return f"{b_size:.1f} PB"
 
 def format_duration(ms):
     """밀리초(ms)를 일(Days), 시간(Hours)으로 변환"""
     if not ms: return "0 시간"
-    hours = ms / (1000 * 60 * 60)
+    try:
+        hours = float(ms) / (1000 * 60 * 60)
+    except: return "0 시간"
+    
     if hours > 24:
         return f"{hours / 24:,.1f} 일"
     return f"{int(hours):,} 시간"
@@ -147,13 +158,15 @@ def worker(task_data, core_api, start_index):
     sec_params = []
     
     if target_sections and 'all' not in target_sections:
-        placeholders = ",".join("?" for _ in target_sections)
-        sec_query += f" WHERE id IN ({placeholders})"
-        sec_params.extend(target_sections)
+        clean_sec_ids = [int(s) for s in target_sections if str(s).isdigit()]
+        if clean_sec_ids:
+            placeholders = ",".join("?" for _ in clean_sec_ids)
+            sec_query += f" WHERE id IN ({placeholders})"
+            sec_params.extend(clean_sec_ids)
     
     try: 
         target_libs = core_api['query'](sec_query, tuple(sec_params))
-        lib_ids_str = ",".join([str(r['id']) for r in target_libs])
+        lib_ids_str = ",".join([str(r.get('id')) for r in target_libs])
     except Exception as e:
         task.log(f"❌ DB 접근 오류: {str(e)}")
         task.update_state('error'); return
@@ -185,7 +198,7 @@ def worker(task_data, core_api, start_index):
                 mi.metadata_type, 
                 (SELECT duration FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) as duration,
                 (SELECT SUM(size) FROM media_parts WHERE media_item_id IN (SELECT id FROM media_items WHERE metadata_item_id = mi.id)) as total_size,
-                (SELECT width FROM media_items WHERE metadata_item_id = mi.id ORDER BY width DESC LIMIT 1) as max_width
+                (SELECT width FROM media_items WHERE metadata_item_id = mi.id ORDER BY COALESCE(width, 0) DESC LIMIT 1) as max_width
             FROM metadata_items mi 
             {base_where}
         """
@@ -193,13 +206,20 @@ def worker(task_data, core_api, start_index):
         for row in core_api['query'](q_basic):
             if task.is_cancelled(): return
             
-            m_type = row['metadata_type']
+            m_type = row.get('metadata_type')
             if m_type in counts_map: counts_map[m_type] += 1
             
-            if row['duration']: total_duration += row['duration']
-            if row['total_size']: total_size += row['total_size']
+            dur_val = row.get('duration')
+            if dur_val:
+                try: total_duration += int(dur_val)
+                except: pass
+                
+            size_val = row.get('total_size')
+            if size_val:
+                try: total_size += int(size_val)
+                except: pass
             
-            w = row['max_width']
+            w = row.get('max_width')
             if w and w > 0:
                 total_res_count += 1
                 if w >= 7000: res_dict["8K"] += 1
@@ -227,8 +247,13 @@ def worker(task_data, core_api, start_index):
         for row in core_api['query'](q_codec):
             if task.is_cancelled(): return
             
-            c_name, cnt = str(row['codec']).upper(), row['cnt']
-            s_type = row['stream_type_id']
+            raw_codec = row.get('codec')
+            if not raw_codec: continue
+            
+            c_name = str(raw_codec).upper()
+            cnt = int(row.get('cnt', 0))
+            s_type = row.get('stream_type_id')
+            
             if s_type == 1: 
                 v_codecs[c_name] = v_codecs.get(c_name, 0) + cnt
                 total_v += cnt
