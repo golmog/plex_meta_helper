@@ -10,6 +10,10 @@ window.PmhUICore = {
         if (this.activeInstance) {
             this.activeInstance.isDestroyed = true;
             if (this.activeInstance.pollTimer) clearTimeout(this.activeInstance.pollTimer);
+            if (this.activeInstance.streamAbortController) {
+                this.activeInstance.streamAbortController.abort();
+                this.activeInstance.streamAbortController = null;
+            }
             if (this.activeInstance.resizeObserver) this.activeInstance.resizeObserver.disconnect();
             if (this.activeInstance.mobileResizeHandler) window.removeEventListener('resize', this.activeInstance.mobileResizeHandler);
             if (this.activeInstance.c) {
@@ -20,7 +24,6 @@ window.PmhUICore = {
                     this.activeInstance.c = newContainer;
                 }
             }
-            
             this.activeInstance = null;
         }
     },
@@ -782,8 +785,9 @@ window.PmhUICore = {
                         const isErr = row._pmh_status === 'error';
                         const rowStyle = isErr ? `background:rgba(189,54,47,0.15); border-bottom:1px solid #bd362f;` : `border-bottom:1px solid #333;`;
                         const errTitle = isErr ? `title="이전에 실패한 항목"` : '';
+                        const rowItemId = String(row.rating_key || row.id || row.pmh_id || '');
 
-                        html += `       <tr style="${rowStyle}" class="pmh-dt-row" ${errTitle}>`;
+                        html += `       <tr style="${rowStyle}" class="pmh-dt-row" data-item-id="${rowItemId}" ${errTitle}>`;
                         res.columns.forEach(col => {
                             let val = row[col.key] !== undefined && row[col.key] !== null ? row[col.key] : '-';
                             let displayHtml = val;
@@ -919,12 +923,9 @@ window.PmhUICore = {
 
             if (!isMobileEnv) setTimeout(applyMaxHeight, 50);
 
-            resEl.querySelectorAll('.pmh-tbl-global-cancel').forEach(b => b.onclick = async (e) => {
+            resEl.querySelectorAll('.pmh-tbl-global-cancel').forEach(b => b.onclick = (e) => {
                 e.preventDefault();
-                b.disabled = true;
-                b.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 중단 중...';
-                ctx.isCancelling = true;
-                await config.apiAdapter.cancel(config.toolId);
+                cancelActiveTask();
             });
 
             resEl.querySelectorAll('.pmh-page-btn').forEach(b => b.onclick = () => loadPage(parseInt(b.dataset.p), ctx.sortKey, ctx.sortDir));
@@ -1033,6 +1034,57 @@ window.PmhUICore = {
             });
         };
 
+        const PmhLogger = {
+            getTime: function() {
+                const d = new Date();
+                const p = v => String(v).padStart(2, '0');
+                const ms = String(d.getMilliseconds()).padStart(3, '0');
+                return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${ms}`;
+            },
+            isDebug: function() {
+                const lvl = (config.logLevel || window.ClientSettings?.logLevel || window.AppState?.logLevel || 'INFO').toUpperCase();
+                return lvl === 'DEBUG';
+            },
+            debug: function(...args) {
+                if (this.isDebug()) console.log(`[PMH][${this.getTime()}][DEBUG]`, ...args);
+            },
+            info: function(...args) {
+                console.info(`[PMH][${this.getTime()}][INFO]`, ...args);
+            },
+            warn: function(...args) {
+                console.warn(`[PMH][${this.getTime()}][WARN]`, ...args);
+            },
+            error: function(...args) {
+                console.error(`[PMH][${this.getTime()}][ERROR]`, ...args);
+            }
+        };
+
+        const cancelActiveTask = async () => {
+            if (ctx.isCancelling) return;
+            ctx.isCancelling = true;
+
+            PmhLogger.info(`[PMH UI] 🛑 작업 중단 요청을 전송합니다. (Tool: ${config.toolId})`);
+
+            ctx.c.querySelectorAll('#pmh_btn_cancel, .pmh-tbl-global-cancel').forEach(btn => {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 중단 중...';
+            });
+
+            try {
+                await config.apiAdapter.cancel(config.toolId);
+                config.toast.info("작업 중단 요청이 전달되었습니다. 진행 중인 항목까지만 처리하고 안전하게 종료됩니다.");
+            } catch(e) {
+                PmhLogger.warn(`[PMH UI] 작업 중단 API 호출 실패: ${e}`);
+            }
+
+            setTimeout(() => {
+                if (ctx.isRunning) {
+                    if (ctx.streamAbortController) ctx.streamAbortController.abort();
+                    updateFormTabButtons(false);
+                }
+            }, 3000);
+        };
+
         const startPolling = async () => {
             if (ctx.isDestroyed) return;
             if (ctx.pollTimer) clearTimeout(ctx.pollTimer);
@@ -1047,15 +1099,49 @@ window.PmhUICore = {
             const logBox = ctx.c.querySelector('#pmh_mon_logs');
             const cancelBtn = ctx.c.querySelector('#pmh_btn_cancel');
 
-            cancelBtn.style.display = 'block'; cancelBtn.disabled = false; cancelBtn.innerHTML = '<i class="fas fa-stop"></i> 작업 중단';
-            cancelBtn.onclick = async () => { 
-                cancelBtn.disabled = true; 
-                cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 중단 중...'; 
-                ctx.isCancelling = true; 
-                if (ctx.streamAbortController) ctx.streamAbortController.abort();
-                await config.apiAdapter.cancel(config.toolId); 
+            cancelBtn.style.display = 'block'; 
+            cancelBtn.disabled = false; 
+            cancelBtn.innerHTML = '<i class="fas fa-stop"></i> 작업 중단';
+            cancelBtn.onclick = cancelActiveTask;
+
+            let pageReloadTimer = null;
+            let isPageLoading = false;
+
+            const triggerDebouncedPageReload = (isFinal = false) => {
+                if (!ctx.autoRefresh && !isFinal) return;
+
+                if (isFinal) {
+                    if (pageReloadTimer) clearTimeout(pageReloadTimer);
+                    pageReloadTimer = null;
+                    if (!isPageLoading) {
+                        isPageLoading = true;
+                        loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true)
+                            .finally(() => { isPageLoading = false; });
+                    }
+                    return;
+                }
+
+                if (pageReloadTimer) return;
+
+                pageReloadTimer = setTimeout(async () => {
+                    pageReloadTimer = null;
+                    if (isPageLoading) {
+                        triggerDebouncedPageReload(false);
+                        return;
+                    }
+
+                    isPageLoading = true;
+                    try {
+                        await loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true);
+                    } catch (err) {
+                        PmhLogger.debug(`[PMH UI] 실시간 목록 갱신 지연: ${err}`);
+                    } finally {
+                        isPageLoading = false;
+                    }
+                }, 600);
             };
 
+            // [SSE 실시간 데이터 수신 핸들러]
             const updateUIWithData = (s) => {
                 if (!s || s.state === 'not_found') return false;
 
@@ -1065,20 +1151,32 @@ window.PmhUICore = {
                 logBox.innerHTML = s.logs ? s.logs.join('<br>') : '';
                 logBox.scrollTop = logBox.scrollHeight;
 
+                const hasProgress = (s.completed_items && s.completed_items.length > 0) || (s.state === 'running');
+                if (hasProgress && ctx.autoRefresh) {
+                    triggerDebouncedPageReload(false);
+                }
+
                 if (['completed', 'error', 'cancelled'].includes(s.state)) {
                     cancelBtn.style.display = 'none';
-                    stateEl.innerHTML = s.state === 'completed' ? '<i class="fas fa-check-circle"></i> 작업 완료' : `<i class="fas fa-times-circle"></i> 종료됨 (${s.state})`;
+                    stateEl.innerHTML = s.state === 'completed' ? '<i class="fas fa-check-circle"></i> 작업 완료' : 
+                                        s.state === 'cancelled' ? '<i class="fas fa-stop-circle"></i> 작업 중단됨' : 
+                                        `<i class="fas fa-times-circle"></i> 종료됨 (${s.state})`;
+                                        
                     stateEl.style.color = s.state === 'completed' ? '#51a351' : '#bd362f';
                     barEl.style.background = s.state === 'completed' ? '#51a351' : '#bd362f';
                     ctx.isCancelling = false;
                     updateFormTabButtons(false);
 
-                    if (ctx.autoRefresh) {
-                        setTimeout(() => {
-                            loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir, null, true);
-                            if (s.state === 'completed') switchTab('pmh_tab_form');
-                        }, 800);
+                    if (ctx.streamAbortController) {
+                        ctx.streamAbortController.abort();
+                        ctx.streamAbortController = null;
                     }
+
+                    setTimeout(() => {
+                        triggerDebouncedPageReload(true);
+                        if (s.state === 'completed' && ctx.autoRefresh) switchTab('pmh_tab_form');
+                    }, 400);
+                    
                     return true;
                 } else {
                     stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; 
@@ -1106,7 +1204,7 @@ window.PmhUICore = {
                     'X-PMH-Signature': secureToken
                 };
 
-                console.log(`[PMH UI] [SSE] 📡 실시간 로그 스트리밍 연결 시도 (ServerID: ${activeSrvId}) ➔ ${streamUrl}`);
+                PmhLogger.debug(`[SSE] 📡 실시간 로그 스트리밍 연결 시도 (ServerID: ${activeSrvId.substring(0,8)}) ➔ ${streamUrl}`);
 
                 fetch(streamUrl, {
                     headers: authHeaders,
@@ -1116,7 +1214,7 @@ window.PmhUICore = {
                         throw new Error(`HTTP ${response.status} 응답`);
                     }
 
-                    console.log(`[PMH UI] [SSE] 🟢 실시간 스트림 파이프라인 연결 완료!`);
+                    PmhLogger.info(`[SSE] 🟢 실시간 스트림 파이프라인 연결 완료!`);
                     
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder('utf-8');
@@ -1136,7 +1234,7 @@ window.PmhUICore = {
                             if (match) {
                                 try {
                                     const parsed = JSON.parse(match[1]);
-                                    console.log(`[PMH UI] [SSE] 📥 실시간 로그 수신 ➔ ${parsed.progress}/${parsed.total} (${parsed.state})`);
+                                    PmhLogger.debug(`[SSE] 📥 실시간 수신 ➔ ${parsed.progress}/${parsed.total} (${parsed.state})`);
                                     const isDone = updateUIWithData(parsed);
                                     if (isDone) return;
                                 } catch(e) {}
@@ -1144,12 +1242,12 @@ window.PmhUICore = {
                         }
                     }
                 }).catch((streamErr) => {
-                    if (ctx.streamAbortController.signal.aborted) return;
-                    console.warn(`[PMH UI] [SSE] 🔴 스트리밍 실패 (${streamErr.message}) ➔ 1.5초 폴링으로 자동 전환`);
+                    if (ctx.streamAbortController && ctx.streamAbortController.signal.aborted) return;
+                    PmhLogger.warn(`[SSE] 🔴 스트리밍 연결 해제 (${streamErr.message}) ➔ 1.5초 폴링으로 자동 전환`);
                     startClassicPollingFallback();
                 });
             } catch(e) {
-                console.warn(`[PMH UI] [SSE] 🔴 초기화 실패 (${e.message}) ➔ 폴링으로 전환`);
+                PmhLogger.warn(`[SSE] 🔴 스트리밍 초기화 실패 (${e.message}) ➔ 폴링으로 전환`);
                 startClassicPollingFallback();
             }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.118
+// @version      0.9.119
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -948,40 +948,26 @@ GM_addStyle(`
             showStatusMsg(`${spinner}번들 툴 버전 확인 및 동기화 중...`, '#2f96b4', 0);
             const bundlePromises = targetServers.map(async (srv) => {
                 try {
-                    const toolsRes = await new Promise(r => {
-                        GM_xmlhttpRequest({
-                            method: "GET", url: `${srv.relayUrl}/tools`,
-                            headers: { "X-PMH-Signature": secureToken },
-                            timeout: 15000,
-                            onload: r, onerror: r, ontimeout: r
-                        });
-                    });
+                    const installPromises = [];
 
-                    if (toolsRes && toolsRes.status === 200) {
-                        const installedTools = JSON.parse(toolsRes.responseText).tools || [];
-                        const installPromises = [];
+                    for (const bundle of bundledTools) {
+                        const namespaceMatch = bundle.url.match(/raw\.githubusercontent\.com\/([^\/]+)\//);
+                        const namespace = namespaceMatch ? namespaceMatch[1].replace(/[^a-zA-Z0-9]/g, '').toLowerCase() : '';
+                        const expectedId = namespace && !bundle.id.startsWith(namespace + '_') ? `${namespace}_${bundle.id}` : bundle.id;
 
-                        for (const bundle of bundledTools) {
-                            const namespaceMatch = bundle.url.match(/raw\.githubusercontent\.com\/([^\/]+)\//);
-                            const namespace = namespaceMatch ? namespaceMatch[1].replace(/[^a-zA-Z0-9]/g, '').toLowerCase() : '';
-                            const expectedId = namespace && !bundle.id.startsWith(namespace + '_') ? `${namespace}_${bundle.id}` : bundle.id;
-
-                            const isInstalled = installedTools.some(t => t.id === expectedId);
-
-                            if (isInstalled && bundle.url) {
-                                installPromises.push(new Promise(r => {
-                                    GM_xmlhttpRequest({
-                                        method: "POST", url: `${srv.relayUrl}/tools/install`,
-                                        headers: { "Content-Type": "application/json", "X-PMH-Signature": secureToken },
-                                        data: JSON.stringify({ url: bundle.url, target_id: expectedId }),
-                                        timeout: 20000,
-                                        onload: r, onerror: r, ontimeout: r
-                                    });
-                                }));
-                            }
+                        if (bundle.url) {
+                            installPromises.push(new Promise(r => {
+                                GM_xmlhttpRequest({
+                                    method: "POST", url: `${srv.relayUrl}/tools/install`,
+                                    headers: { "Content-Type": "application/json", "X-PMH-Signature": secureToken },
+                                    data: JSON.stringify({ url: bundle.url, target_id: expectedId }),
+                                    timeout: 20000,
+                                    onload: r, onerror: r, ontimeout: r
+                                });
+                            }));
                         }
-                        if (installPromises.length > 0) await Promise.all(installPromises);
                     }
+                    if (installPromises.length > 0) await Promise.all(installPromises);
                 } catch(e) {}
             });
             await Promise.all(bundlePromises);
@@ -1810,6 +1796,7 @@ GM_addStyle(`
                 availableServerIndices: availableServerIndices,
                 activeServerIdx: srvIdx,
                 pathMappings: ClientSettings.pathMappings,
+                logLevel: ClientSettings.logLevel,
 
                 apiAdapter: {
                     run: async (data) => {
@@ -2280,15 +2267,15 @@ GM_addStyle(`
             let html = `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
                     <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
-                    <div style="display:flex; gap:12px; font-size:13px;">
-                        <span id="pmh-tool-check-update-btn" class="pmh-action-icon" title="전체 툴 업데이트 확인" style="cursor:pointer; color:#aaa; transition:color 0.2s;" onmouseover="this.style.color='#2f96b4'" onmouseout="this.style.color='#aaa'">
-                            <i class="fas fa-cloud-download-alt"></i>
+                    <div style="display:flex; gap:12px; font-size:13px; align-items:center;">
+                        <span id="pmh-tool-check-update-btn" class="pmh-action-icon" title="툴 업데이트 및 노드 동기화 확인" style="cursor:pointer; color:#aaa; transition:all 0.2s;" onmouseover="this.style.color='#2f96b4'" onmouseout="if(!this.dataset.pendingBatch) this.style.color='#aaa'">
+                            <i class="fas fa-sync-alt pmh-tool-header-sync-icon"></i>
                         </span>
                         <span id="pmh-tool-install-btn" class="pmh-action-icon" title="신규 등록 (전체 서버에 설치)" style="cursor:pointer; color:#51a351; transition:0.2s;">
                             <i class="fas fa-plus"></i>
                         </span>
                         <span id="pmh-tool-refresh-btn" class="pmh-action-icon" title="새로고침" style="cursor:pointer; color:#aaa; transition:0.2s;">
-                            <i class="fas fa-sync-alt"></i>
+                            <i class="fas fa-redo"></i>
                         </span>
                     </div>
                 </div>
@@ -2393,12 +2380,12 @@ GM_addStyle(`
                     const myCron = dashboard.cron.filter(c => c.tool_id === tool.id);
 
                     const isRunning = myRunning.length > 0;
-
                     const bgStyle = isRunning ? 'background-color: rgba(229,160,13,0.05); border-left: 3px solid #e5a00d;' : 'background-color: transparent; border-left: 3px solid transparent;';
                     const nameColor = isRunning ? '#e5a00d' : '#ccc';
                     const statusIcon = isRunning ? `<i class="fas fa-spinner fa-spin" style="color:#e5a00d; margin-left:6px; font-size:12px;" title="현재 작업 진행 중"></i>` : '';
-
                     const runningClass = isRunning ? 'pmh-running-tool' : '';
+
+                    const installedServerIndices = window._pmh_tool_server_map[tool.id] || [];
 
                     let serverBadgesHtml = '';
                     myCron.forEach(c => {
@@ -2416,18 +2403,20 @@ GM_addStyle(`
                             <div class="pmh-tool-run-btn" data-id="${tool.id}" style="display:flex; align-items:flex-start; gap:8px; flex-grow:1; min-width:0; cursor:pointer;">
                                 <i class="${tool.icon || 'fas fa-wrench'}" style="color:${nameColor}; margin-top:2px; flex-shrink:0;"></i>
                                 <div style="display:flex; flex-direction:column; min-width:0; width:100%;">
-                                    <span style="color:${nameColor}; font-weight:${isRunning ? 'bold' : 'normal'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
-                                        ${tool.name || tool.id}
-                                        <span style="color:#777; font-size:10px; font-weight:normal;">v${tool.version || '1.0'}</span>
+                                    <div style="display:flex; align-items:center; flex-wrap:wrap;">
+                                        <span style="color:${nameColor}; font-weight:${isRunning ? 'bold' : 'normal'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                                            ${tool.name || tool.id}
+                                        </span>
+                                        <span style="color:#777; font-size:10px; font-weight:normal; margin-left:4px;">v${tool.version || '1.0'}</span>
                                         ${statusIcon}
-                                    </span>
+                                    </div>
                                     <div style="display:flex; flex-wrap:wrap;">
                                         ${serverBadgesHtml}
                                     </div>
                                 </div>
                             </div>
                             <div style="display:flex; align-items:center; padding-left:10px; flex-shrink:0;">
-                                <span class="pmh-tool-update-btn" data-id="${tool.id}" data-url="${tool.update_url || ''}" style="display:none; color:#51a351; font-size:11px; font-weight:bold; cursor:pointer; margin-right:10px;" title="클릭하여 업데이트 진행"></span>
+                                <span class="pmh-tool-update-btn" data-id="${tool.id}" data-url="${tool.update_url || ''}" style="display:none; font-size:11px; font-weight:bold; cursor:pointer; margin-right:10px; padding:2px 6px; border-radius:3px; transition:0.2s;" title="단독 업데이트/동기화"></span>
                                 <i class="fas fa-trash-alt pmh-tool-delete-btn" data-id="${tool.id}" data-name="${tool.name || tool.id}" style="cursor:pointer; font-size:13px; color:rgba(255,255,255,0.4);" title="전체 서버에서 삭제"></i>
                             </div>
                         </div>`;
@@ -2479,46 +2468,9 @@ GM_addStyle(`
             if (e.target.closest('#pmh-tool-refresh-btn')) {
                 e.preventDefault(); e.stopPropagation();
                 const refBtn = document.getElementById('pmh-tool-refresh-btn');
-                if(refBtn) refBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                if (refBtn) refBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 pmhToolListCache = null;
                 fetchTools();
-                return;
-            }
-
-            const bundleInstallBtn = e.target.closest('.pmh-tool-install-bundle-btn');
-            if (bundleInstallBtn) {
-                e.preventDefault(); e.stopPropagation();
-                if (bundleInstallBtn.dataset.updating) return;
-
-                const targetId = bundleInstallBtn.dataset.id;
-                const updateUrl = bundleInstallBtn.dataset.url;
-
-                bundleInstallBtn.dataset.updating = "true";
-                bundleInstallBtn.style.opacity = '1';
-                bundleInstallBtn.style.color = '#e5a00d';
-                bundleInstallBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-
-                let successCount = 0;
-                await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
-                    try {
-                        const r = await PmhToolAPI.call(srv, `/tools/install`, "POST", { url: updateUrl, target_id: targetId });
-                        if(r.status === 200) successCount++;
-                        res();
-                    } catch(err) { res(); }
-                })));
-
-                if (successCount > 0) {
-                    toastr.success(`'${targetId}' 설치 완료!`);
-                    pmhToolListCache = null;
-
-                    await checkUpdate(true);
-                    fetchTools();
-                } else {
-                    toastr.error("설치에 실패했습니다.");
-                    bundleInstallBtn.style.color = '#bd362f';
-                    bundleInstallBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
-                    delete bundleInstallBtn.dataset.updating;
-                }
                 return;
             }
 
@@ -2527,19 +2479,72 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 if (updateCheckBtn.innerHTML.includes('fa-spin')) return;
 
-                updateCheckBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-                updateCheckBtn.style.color = '#2f96b4';
+                if (updateCheckBtn.dataset.pendingBatch) {
+                    const batchList = JSON.parse(updateCheckBtn.dataset.pendingBatch);
+                    if (!batchList || batchList.length === 0) return;
+
+                    updateCheckBtn.innerHTML = '<i class="fas fa-spinner fa-spin" style="color:#e5a00d;"></i>';
+                    updateCheckBtn.style.pointerEvents = 'none';
+
+                    batchList.forEach(item => {
+                        const targetBtn = dropdown.querySelector(`.pmh-tool-item[data-id="${item.toolId}"] .pmh-tool-update-btn`);
+                        if (targetBtn) {
+                            targetBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 처리 중...';
+                            targetBtn.style.pointerEvents = 'none';
+                        }
+                    });
+
+                    toastr.info(`총 ${batchList.length}개 툴에 대해 전체 서버 일괄 동기화를 시작합니다...`, "일괄 처리 시작");
+
+                    let successToolCount = 0;
+
+                    for (const item of batchList) {
+                        let toolSuccess = 0;
+                        await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
+                            try {
+                                const r = await PmhToolAPI.call(srv, `/tools/install`, "POST", { url: item.updateUrl, target_id: item.toolId });
+                                if (r.status === 200) toolSuccess++;
+                                res();
+                            } catch(err) { res(); }
+                        })));
+
+                        if (toolSuccess > 0) successToolCount++;
+                    }
+
+                    toastr.success(`총 ${successToolCount}개 툴의 일괄 업데이트 및 노드 동기화가 완료되었습니다!`, "성공");
+                    pmhToolListCache = null;
+                    fetchTools();
+                    return;
+                }
+
+                updateCheckBtn.innerHTML = '<i class="fas fa-sync-alt fa-spin" style="color:#2f96b4;"></i>';
 
                 const toolItems = dropdown.querySelectorAll('.pmh-tool-item');
-                let checkCount = 0; let updateAvailableCount = 0; let hasUrlToCheck = false;
+                let checkCount = 0;
+                let pendingBatchList = [];
                 const startTime = Date.now();
+                const totalServers = ServerConfig.SERVERS.length;
 
                 const finishCheck = () => {
                     const elapsedTime = Date.now() - startTime;
                     const doFinish = () => {
-                        if (updateCheckBtn) { updateCheckBtn.innerHTML = '<i class="fas fa-cloud-download-alt"></i>'; updateCheckBtn.style.color = '#aaa'; }
-                        if (updateAvailableCount > 0) toastr.info(`${updateAvailableCount}개의 업데이트가 발견되었습니다.`);
-                        else toastr.success("모든 툴이 최신 버전입니다.");
+                        if (pendingBatchList.length > 0) {
+                            updateCheckBtn.innerHTML = `<i class="fas fa-cloud-download-alt" style="color:#51a351;"></i>`;
+                            updateCheckBtn.style.color = '#51a351';
+                            updateCheckBtn.title = `총 ${pendingBatchList.length}개 툴 원클릭 일괄 업데이트/동기화 실행 (클릭 시 전체 적용)`;
+                            updateCheckBtn.dataset.pendingBatch = JSON.stringify(pendingBatchList);
+
+                            toastr.info(
+                                `총 ${pendingBatchList.length}개의 업데이트/동기화 대상이 발견되었습니다.<br><b>상단 초록색 구름 아이콘</b>을 누르면 한 번에 일괄 적용됩니다.`,
+                                "업데이트 발견",
+                                { timeOut: 7000 }
+                            );
+                        } else {
+                            updateCheckBtn.innerHTML = '<i class="fas fa-sync-alt"></i>';
+                            updateCheckBtn.style.color = '#aaa';
+                            delete updateCheckBtn.dataset.pendingBatch;
+                            toastr.success("모든 노드의 툴이 최신 상태로 동기화되어 있습니다.");
+                        }
                     };
                     if (elapsedTime < 500) setTimeout(doFinish, 500 - elapsedTime);
                     else doFinish();
@@ -2550,26 +2555,57 @@ GM_addStyle(`
                     const updateUrl = item.dataset.url;
                     const currentVer = item.dataset.ver;
                     const updateBtn = item.querySelector('.pmh-tool-update-btn');
+                    const installedIndices = window._pmh_tool_server_map[toolId] || [];
+
+                    let isMissingNodes = (totalServers > 1 && installedIndices.length < totalServers);
 
                     if (updateUrl && updateUrl !== 'undefined') {
-                        hasUrlToCheck = true; checkCount++;
+                        checkCount++;
 
                         GM_xmlhttpRequest({
                             method: "GET", url: `${updateUrl}?t=${Date.now()}`,
                             timeout: 5000,
                             onload: (res) => {
+                                let hasNewVersion = false;
+                                let remoteVer = currentVer;
+
                                 if (res.status === 200) {
                                     const match = res.responseText.match(/version:\s*['"]?([^'"\r\n]+)['"]?/);
                                     if (match) {
-                                        const remoteVer = match[1];
-                                        if (isNewerVersion(currentVer, remoteVer)) {
-                                            updateBtn.style.display = 'inline-block';
-                                            updateBtn.innerHTML = `<i class="fas fa-arrow-circle-up"></i> v${remoteVer}`;
-                                            updateBtn.dataset.targetVer = remoteVer;
-                                            updateAvailableCount++;
-                                        } else { updateBtn.style.display = 'none'; }
+                                        remoteVer = match[1];
+                                        hasNewVersion = isNewerVersion(currentVer, remoteVer);
                                     }
                                 }
+
+                                if (hasNewVersion || isMissingNodes) {
+                                    updateBtn.style.display = 'inline-block';
+
+                                    if (hasNewVersion && isMissingNodes) {
+                                        updateBtn.innerHTML = `<i class="fas fa-arrow-circle-up"></i> v${remoteVer} (${installedIndices.length}/${totalServers})`;
+                                        updateBtn.style.color = '#51a351';
+                                        updateBtn.style.background = 'rgba(81,163,81,0.15)';
+                                        updateBtn.style.border = '1px solid #51a351';
+                                    } else if (hasNewVersion) {
+                                        updateBtn.innerHTML = `<i class="fas fa-arrow-circle-up"></i> v${remoteVer}`;
+                                        updateBtn.style.color = '#51a351';
+                                        updateBtn.style.background = 'rgba(81,163,81,0.15)';
+                                        updateBtn.style.border = '1px solid #51a351';
+                                    } else {
+                                        updateBtn.innerHTML = `<i class="fas fa-server"></i> 동기화 (${installedIndices.length}/${totalServers})`;
+                                        updateBtn.style.color = '#2f96b4';
+                                        updateBtn.style.background = 'rgba(47,150,180,0.15)';
+                                        updateBtn.style.border = '1px solid #2f96b4';
+                                    }
+
+                                    pendingBatchList.push({
+                                        toolId: toolId,
+                                        updateUrl: updateUrl,
+                                        targetVer: remoteVer
+                                    });
+                                } else {
+                                    updateBtn.style.display = 'none';
+                                }
+
                                 checkCount--; if (checkCount === 0) finishCheck();
                             },
                             onerror: () => { checkCount--; if (checkCount === 0) finishCheck(); },
@@ -2577,49 +2613,56 @@ GM_addStyle(`
                         });
                     }
                 });
-                if (!hasUrlToCheck || checkCount === 0) finishCheck();
+
+                if (checkCount === 0) finishCheck();
                 return;
             }
 
-            const doUpdateBtn = e.target.closest('.pmh-tool-update-btn');
-            if (doUpdateBtn) {
+            const doSingleUpdateBtn = e.target.closest('.pmh-tool-update-btn');
+            if (doSingleUpdateBtn) {
                 e.preventDefault(); e.stopPropagation();
-                if (doUpdateBtn.dataset.updating) return;
+                if (doSingleUpdateBtn.dataset.updating) return;
 
-                const targetId = doUpdateBtn.dataset.id;
-                const updateUrl = doUpdateBtn.dataset.url;
-                const newVer = doUpdateBtn.dataset.targetVer || "최신";
+                const targetId = doSingleUpdateBtn.dataset.id;
+                const updateUrl = doSingleUpdateBtn.dataset.url;
 
-                doUpdateBtn.dataset.updating = "true";
-                doUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`;
+                doSingleUpdateBtn.dataset.updating = "true";
+                const originalHtml = doSingleUpdateBtn.innerHTML;
+                doSingleUpdateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`;
+                doSingleUpdateBtn.style.pointerEvents = 'none';
 
                 let successCount = 0;
                 await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
                     try {
                         const r = await PmhToolAPI.call(srv, `/tools/install`, "POST", { url: updateUrl, target_id: targetId });
-                        if(r.status === 200) successCount++;
+                        if (r.status === 200) successCount++;
                         res();
                     } catch(err) { res(); }
                 })));
 
                 if (successCount > 0) {
-                    toastr.success(`'${targetId}' 업데이트 완료!`);
-                    delete doUpdateBtn.dataset.updating;
-                    doUpdateBtn.style.display = 'none';
-                    const parentItem = doUpdateBtn.closest('.pmh-tool-item');
-                    if (parentItem) {
-                        parentItem.dataset.ver = newVer;
-                        const titleSpan = parentItem.querySelector('.pmh-tool-run-btn span span');
-                        if (titleSpan) titleSpan.innerText = `v${newVer}`;
-                        parentItem.style.backgroundColor = "rgba(81, 163, 81, 0.2)";
-                        setTimeout(() => parentItem.style.backgroundColor = "transparent", 1000);
-                        pmhToolListCache = null;
+                    toastr.success(`'${targetId}' 업데이트 및 노드 동기화 완료!`);
+                    doSingleUpdateBtn.innerHTML = `<i class="fas fa-check"></i> 완료`;
+                    doSingleUpdateBtn.style.color = '#51a351';
+                    doSingleUpdateBtn.style.borderColor = '#51a351';
+
+                    if (updateCheckBtn && updateCheckBtn.dataset.pendingBatch) {
+                        let batch = JSON.parse(updateCheckBtn.dataset.pendingBatch);
+                        batch = batch.filter(b => b.toolId !== targetId);
+                        if (batch.length > 0) {
+                            updateCheckBtn.dataset.pendingBatch = JSON.stringify(batch);
+                            updateCheckBtn.title = `총 ${batch.length}개 툴 일괄 적용 대기 중`;
+                        } else {
+                            delete updateCheckBtn.dataset.pendingBatch;
+                            updateCheckBtn.innerHTML = '<i class="fas fa-sync-alt"></i>';
+                            updateCheckBtn.style.color = '#aaa';
+                        }
                     }
-                    checkUpdate(true);
                 } else {
-                    toastr.error("업데이트에 실패했습니다.");
-                    delete doUpdateBtn.dataset.updating;
-                    doUpdateBtn.innerHTML = `<i class="fas fa-exclamation-triangle"></i> 오류`;
+                    toastr.error("업데이트 실패");
+                    doSingleUpdateBtn.innerHTML = originalHtml;
+                    delete doSingleUpdateBtn.dataset.updating;
+                    doSingleUpdateBtn.style.pointerEvents = 'auto';
                 }
                 return;
             }
@@ -5967,7 +6010,10 @@ GM_addStyle(`
                     <div style="padding: 20px; overflow-y: auto; max-height: 70vh;">
                         <div class="pmh-form-group">
                             <label class="pmh-form-label"><i class="fas fa-server"></i> 마스터 서버 주소 (Master URL)</label>
-                            <input type="text" id="pmh-set-master-url" class="pmh-input-text" value="${ClientSettings.masterUrl}" placeholder="http://127.0.0.1:8899">
+                            <div style="display:flex; gap:10px;">
+                                <input type="text" id="pmh-set-master-url" class="pmh-input-text" value="${ClientSettings.masterUrl}" placeholder="http://127.0.0.1:8899" style="flex:1;">
+                                <button id="pmh-settings-test" style="background:#2f96b4; color:#fff; border:none; border-radius:4px; padding:8px 14px; cursor:pointer; font-weight:bold; font-size:12px; white-space:nowrap; display:flex; align-items:center; gap:6px; transition:0.2s;" title="입력된 주소와 키로 마스터 서버 연결을 테스트합니다." onmouseover="this.style.background='#257991'" onmouseout="this.style.background='#2f96b4'"><i class="fas fa-plug"></i> 연결 테스트</button>
+                            </div>
                         </div>
 
                         <div class="pmh-form-group">
@@ -5976,6 +6022,8 @@ GM_addStyle(`
                                 <input type="password" id="pmh-set-api-key" class="pmh-input-text" value="${ClientSettings.masterApiKey}" placeholder="마스터 서버의 BASE.APIKEY 입력" style="flex:1;">
                                 <button id="pmh-settings-copy-key" style="display:flex; justify-content:center; align-items:center; width:45px; background:#333; color:#aaa; border:1px solid #444; border-radius:4px; cursor:pointer; font-size:16px; transition:all 0.2s ease;" title="API Key를 클립보드에 복사합니다." onmouseover="this.style.color='#fff'; this.style.borderColor='#e5a00d'; this.style.background='rgba(229,160,13,0.1)';" onmouseout="this.style.color='#aaa'; this.style.borderColor='#444'; this.style.background='#333';"><i class="fas fa-copy"></i></button>
                             </div>
+                            
+                            <div id="pmh-settings-test-msg" style="margin-top:8px; padding:8px 12px; border-radius:4px; font-size:12px; line-height:1.4; display:none; background:rgba(0,0,0,0.3); border:1px solid #333;"></div>
                         </div>
 
                         <div style="display:flex; gap:15px;">
@@ -6064,8 +6112,7 @@ GM_addStyle(`
                             <button id="pmh-settings-clear-cache" style="padding: 8px 15px; background: #e5a00d; color: #1f1f1f; font-weight:bold; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;" title="메모리 캐시를 초기화하고 서버 코어 모듈을 재시작합니다."><i class="fas fa-broom"></i> 캐시 초기화</button>
                         </div>
                         <div>
-                            <button id="pmh-settings-test" style="padding: 8px 15px; background: #2f96b4; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-right: 8px;"><i class="fas fa-plug"></i> 연결 테스트</button>
-                            <button id="pmh-settings-save" style="padding: 8px 20px; background: #51a351; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight:bold;"><i class="fas fa-save"></i> 저장 및 재시작</button>
+                            <button id="pmh-settings-save" style="padding: 8px 22px; background: #51a351; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight:bold; font-size:13px; transition:0.2s;" onmouseover="this.style.background='#418541'" onmouseout="this.style.background='#51a351'"><i class="fas fa-save"></i> 저장 및 재시작</button>
                         </div>
                     </div>
                 </div>
@@ -6073,7 +6120,22 @@ GM_addStyle(`
         `;
 
         document.body.insertAdjacentHTML('beforeend', modalHtml);
-        document.getElementById('pmh-settings-close').onclick = () => document.getElementById('pmh-client-settings-modal').remove();
+        const settingsModal = document.getElementById('pmh-client-settings-modal');
+        const settingsCloseBtn = document.getElementById('pmh-settings-close');
+
+        const closeSettingsModal = () => {
+            if (settingsModal) settingsModal.remove();
+        };
+
+        if (settingsCloseBtn) settingsCloseBtn.onclick = closeSettingsModal;
+
+        if (settingsModal) {
+            settingsModal.onclick = (e) => {
+                if (e.target === settingsModal) {
+                    closeSettingsModal();
+                }
+            };
+        }
 
         document.getElementById('pmh-settings-copy-key').onclick = (e) => {
             e.preventDefault();
@@ -6191,9 +6253,9 @@ GM_addStyle(`
         };
 
         document.getElementById('pmh-settings-clear-cache').onclick = async () => {
-            if (confirm("브라우저/메모리 캐시를 초기화하고 서버 코어 모듈을 재시작하시겠습니까?\n(설정은 유지됩니다.)")) {
+            if (confirm("브라우저/메모리 캐시를 초기화하고 서버 코어 모듈을 재시작하시겠습니까?\n(설정은 유지되며, 완료 후 페이지가 자동으로 새로고침됩니다.)")) {
                 const btn = document.getElementById('pmh-settings-clear-cache');
-                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 처리 중...';
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 초기화 중...';
                 btn.disabled = true;
 
                 if (window.PmhUICore && window.PmhUICore.destroyActiveInstance) {
@@ -6219,15 +6281,9 @@ GM_addStyle(`
 
                 clearMemoryCache(); 
                 if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.clear();
-                document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e=>e.remove());
-                if (typeof processList === 'function') processList();
+                document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e => e.remove());
 
-                if (document.getElementById('plex-guid-box')) { 
-                    currentDisplayedItemId = null; 
-                    if (typeof processDetail === 'function') processDetail(true); 
-                }
-
-                toastr.info("캐시 초기화 및 코어 리로딩 중...", "처리 중", {timeOut: 3000});
+                toastr.info("서버 코어 모듈 리로딩 중...", "처리 중", {timeOut: 2000});
 
                 try {
                     const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
@@ -6246,34 +6302,196 @@ GM_addStyle(`
                     errorLog("[Core Reload] Server Sync Error:", e);
                 }
 
-                bootstrapPMH().then(() => {
-                    toastr.success("로컬 캐시 초기화 및 서버 코어 리로딩이 완료되었습니다.");
-                    document.getElementById('pmh-client-settings-modal').remove();
-                }).catch(() => {
-                    toastr.error("코어 리로딩 중 일부 통신에 실패했습니다.");
-                    btn.innerHTML = '<i class="fas fa-broom"></i> 캐시 초기화';
-                    btn.disabled = false;
-                });
+                toastr.success("캐시 초기화 및 코어 리로드 완료!<br>페이지를 새로고침합니다...", "완료", {timeOut: 1500});
+                
+                setTimeout(() => {
+                    location.reload();
+                }, 800);
             }
         };
 
-        document.getElementById('pmh-settings-test').onclick = async () => {
+        const testBtn = document.getElementById('pmh-settings-test');
+        const testMsgEl = document.getElementById('pmh-settings-test-msg');
+
+        const clearTestMsg = () => {
+            if (testMsgEl) testMsgEl.style.display = 'none';
+        };
+        document.getElementById('pmh-set-master-url').addEventListener('input', clearTestMsg);
+        document.getElementById('pmh-set-api-key').addEventListener('input', clearTestMsg);
+
+        testBtn.onclick = async (e) => {
+            e.preventDefault();
             const url = document.getElementById('pmh-set-master-url').value.trim().replace(/\/$/, '');
             const key = document.getElementById('pmh-set-api-key').value.trim();
-            if(!url || !key) return toastr.warning("URL과 API Key를 입력하세요.");
 
-            const btn = document.getElementById('pmh-settings-test');
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 확인 중...';
+            testMsgEl.style.display = 'block';
+
+            if (!url || !key) {
+                testMsgEl.style.borderColor = '#bd362f';
+                testMsgEl.innerHTML = '<span style="color:#bd362f; font-weight:bold;"><i class="fas fa-exclamation-circle"></i> 마스터 서버 URL과 접속 키(API Key)를 모두 입력하세요.</span>';
+                return;
+            }
+
+            testBtn.disabled = true;
+            testBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 전체 노드 검사 중...';
+            testMsgEl.style.borderColor = '#2f96b4';
+            testMsgEl.innerHTML = '<span style="color:#2f96b4;"><i class="fas fa-spinner fa-spin"></i> 마스터 서버 및 등록된 워커 노드들의 상태를 조회하고 있습니다...</span>';
+
             const secureToken = await generateSecureHeader(key);
 
             GM_xmlhttpRequest({
-                method: "GET", url: `${url}/api/ping`, headers: { "X-PMH-Signature": secureToken }, timeout: 5000,
-                onload: (r) => {
-                    btn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트';
-                    if(r.status === 200) toastr.success("마스터 서버 연결 성공!");
-                    else toastr.error(`연결 실패 (HTTP ${r.status})`);
+                method: "GET",
+                url: `${url}/api/client/config`,
+                headers: { "X-PMH-Signature": secureToken },
+                timeout: 6000,
+                onload: async (configRes) => {
+                    if (configRes.status === 401) {
+                        testBtn.disabled = false;
+                        testBtn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트';
+                        testMsgEl.style.borderColor = '#bd362f';
+                        testMsgEl.innerHTML = '<span style="color:#bd362f; font-weight:bold;"><i class="fas fa-times-circle"></i> 마스터 서버 인증 실패: API Key가 일치하지 않습니다. (HTTP 401)</span>';
+                        return;
+                    }
+
+                    if (configRes.status !== 200) {
+                        testBtn.disabled = false;
+                        testBtn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트';
+                        testMsgEl.style.borderColor = '#bd362f';
+                        testMsgEl.innerHTML = `<span style="color:#bd362f; font-weight:bold;"><i class="fas fa-exclamation-triangle"></i> 마스터 서버 응답 오류 (HTTP ${configRes.status})</span>`;
+                        return;
+                    }
+
+                    let serverList = [];
+                    try {
+                        const configJson = JSON.parse(configRes.responseText);
+                        serverList = configJson.SERVERS || [{ id: 'master_node', name: '1.MAIN (Master)' }];
+                    } catch (e) {
+                        serverList = [{ id: 'master_node', name: '1.MAIN (Master)' }];
+                    }
+
+                    const pingPromises = serverList.map(srv => {
+                        const isMaster = (srv.id === 'master_node' || srv.id === 'self');
+                        const pingUrl = isMaster ? `${url}/api/ping` : `${url}/api/relay/${srv.id}/ping`;
+
+                        return new Promise((resolve) => {
+                            GM_xmlhttpRequest({
+                                method: "GET",
+                                url: pingUrl,
+                                headers: { "X-PMH-Signature": secureToken },
+                                timeout: 4000,
+                                onload: (pingRes) => {
+                                    if (pingRes.status === 200) {
+                                        try {
+                                            const pData = JSON.parse(pingRes.responseText);
+                                            const isDbOk = pData.db_connected !== false;
+                                            
+                                            resolve({
+                                                id: srv.id,
+                                                name: srv.name || (isMaster ? 'Master Node' : srv.id),
+                                                isMaster: isMaster,
+                                                status: isDbOk ? 'ok' : 'db_error',
+                                                dbError: pData.db_error || 'DB 연결 실패',
+                                                version: pData.version || '0.0.0',
+                                                dbType: (pData.db_type || 'sqlite3').toUpperCase()
+                                            });
+                                        } catch (e) {
+                                            resolve({ id: srv.id, name: srv.name, isMaster, status: 'error', msg: 'JSON 오류' });
+                                        }
+                                    } else if (pingRes.status === 426) {
+                                        resolve({ id: srv.id, name: srv.name, isMaster, status: 'restart', msg: '재시작 필요' });
+                                    } else if (pingRes.status === 401) {
+                                        resolve({ id: srv.id, name: srv.name, isMaster, status: 'error', msg: '키 불일치 (401)' });
+                                    } else {
+                                        resolve({ id: srv.id, name: srv.name, isMaster, status: 'error', msg: `HTTP ${pingRes.status}` });
+                                    }
+                                },
+                                onerror: () => resolve({ id: srv.id, name: srv.name, isMaster, status: 'error', msg: '연결 실패' }),
+                                ontimeout: () => resolve({ id: srv.id, name: srv.name, isMaster, status: 'error', msg: '시간 초과' })
+                            });
+                        });
+                    });
+
+                    const nodeResults = await Promise.all(pingPromises);
+                    testBtn.disabled = false;
+                    testBtn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트';
+
+                    const hasError = nodeResults.some(n => n.status === 'error');
+                    const hasRestart = nodeResults.some(n => n.status === 'restart');
+
+                    let summaryTitleHtml = '';
+                    if (hasError) {
+                        testMsgEl.style.borderColor = '#bd362f';
+                        summaryTitleHtml = `<div style="color:#bd362f; font-weight:bold; margin-bottom:6px;"><i class="fas fa-exclamation-triangle"></i> 일부 노드 연결 실패 (총 ${nodeResults.length}대 중)</div>`;
+                    } else if (hasRestart) {
+                        testMsgEl.style.borderColor = '#f89406';
+                        summaryTitleHtml = `<div style="color:#f89406; font-weight:bold; margin-bottom:6px;"><i class="fas fa-power-off"></i> 서버 재시작 필요 (총 ${nodeResults.length}대)</div>`;
+                    } else {
+                        testMsgEl.style.borderColor = '#51a351';
+                        summaryTitleHtml = `<div style="color:#51a351; font-weight:bold; margin-bottom:6px;"><i class="fas fa-check-circle"></i> 전체 노드 클러스터 연결 정상 (총 ${nodeResults.length}대)</div>`;
+                    }
+
+                    let nodeRowsHtml = nodeResults.map(node => {
+                        const iconClass = node.isMaster ? 'fa-server' : 'fa-network-wired';
+                        const iconColor = node.isMaster ? '#e5a00d' : '#2f96b4';
+
+                        if (node.status === 'ok') {
+                            const dbBadgeColor = node.dbType === 'POSTGRES' ? '#51a351' : '#2f96b4';
+                            return `
+                                <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:4px 8px; border-radius:4px; border:1px solid #333;">
+                                    <span style="color:#ddd; font-weight:bold;"><i class="fas ${iconClass}" style="color:${iconColor}; margin-right:6px;"></i>${node.name}</span>
+                                    <div style="display:flex; align-items:center; gap:6px; font-family:monospace; font-size:11px;">
+                                        <span style="color:#aaa;">v${node.version}</span>
+                                        <span style="color:${dbBadgeColor}; font-weight:bold; background:rgba(0,0,0,0.3); padding:1px 4px; border-radius:3px; border:1px solid ${dbBadgeColor};">[${node.dbType}]</span>
+                                        <span style="color:#51a351; font-weight:bold;"><i class="fas fa-check"></i> 정상</span>
+                                    </div>
+                                </div>
+                            `;
+                        } else if (node.status === 'restart') {
+                            return `
+                                <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(248,148,6,0.1); padding:4px 8px; border-radius:4px; border:1px solid #f89406;">
+                                    <span style="color:#ddd; font-weight:bold;"><i class="fas ${iconClass}" style="color:${iconColor}; margin-right:6px;"></i>${node.name}</span>
+                                    <span style="color:#f89406; font-weight:bold; font-size:11px;"><i class="fas fa-power-off"></i> 재시작 필요</span>
+                                </div>
+                            `;
+                        } else if (node.status === 'db_error') {
+                            return `
+                                <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(248,148,6,0.15); border:1px solid #f89406; padding:4px 8px; border-radius:4px;">
+                                    <span style="color:#ddd; font-weight:bold;"><i class="fas ${iconClass}" style="color:${iconColor}; margin-right:6px;"></i>${node.name}</span>
+                                    <div style="display:flex; align-items:center; gap:6px; font-family:monospace; font-size:11px;">
+                                        <span style="color:#f89406; font-weight:bold;">[${node.dbType} 연결 오류]</span>
+                                        <span style="color:#aaa; font-size:10px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${node.dbError}">${node.dbError}</span>
+                                    </div>
+                                </div>
+                            `;
+                        } else {
+                            return `
+                                <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(189,54,47,0.15); padding:4px 8px; border-radius:4px; border:1px solid #bd362f;">
+                                    <span style="color:#ddd; font-weight:bold;"><i class="fas ${iconClass}" style="color:${iconColor}; margin-right:6px;"></i>${node.name}</span>
+                                    <span style="color:#bd362f; font-weight:bold; font-size:11px;"><i class="fas fa-times-circle"></i> ${node.msg}</span>
+                                </div>
+                            `;
+                        }
+                    }).join('');
+
+                    testMsgEl.innerHTML = `
+                        ${summaryTitleHtml}
+                        <div style="display:flex; flex-direction:column; gap:4px; margin-top:4px;">
+                            ${nodeRowsHtml}
+                        </div>
+                    `;
                 },
-                onerror: () => { btn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트'; toastr.error("네트워크 오류"); }
+                onerror: () => {
+                    testBtn.disabled = false;
+                    testBtn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트';
+                    testMsgEl.style.borderColor = '#bd362f';
+                    testMsgEl.innerHTML = '<span style="color:#bd362f; font-weight:bold;"><i class="fas fa-wifi"></i> 마스터 서버에 연결할 수 없습니다. (URL 및 포트 확인)</span>';
+                },
+                ontimeout: () => {
+                    testBtn.disabled = false;
+                    testBtn.innerHTML = '<i class="fas fa-plug"></i> 연결 테스트';
+                    testMsgEl.style.borderColor = '#bd362f';
+                    testMsgEl.innerHTML = '<span style="color:#bd362f; font-weight:bold;"><i class="fas fa-clock"></i> 응답 시간 초과 (6초): 마스터 서버가 켜져 있는지 확인하세요.</span>';
+                }
             });
         };
 

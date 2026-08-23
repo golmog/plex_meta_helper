@@ -560,6 +560,9 @@ def api_admin_reload_core():
             pmh_logger.warning(f"설정 갱신 실패 (기존 유지): {cfg_err}")
 
         pmh_logger.info("2. 모듈 리로드 시작...")
+        if hasattr(pmh_core, 'UniversalPlexDatabaseEngine'):
+            pmh_core.UniversalPlexDatabaseEngine.close_pool()
+
         if hasattr(pmh_core, 'stop_scheduler_daemon'):
             pmh_core.stop_scheduler_daemon()
             time.sleep(1.0)
@@ -643,7 +646,7 @@ def get_client_config():
         node_av_img = cached_node.get("av_image_server_use", False)
         node_jav_sec = cached_node.get("jav_section", "")
         node_west_sec = cached_node.get("western_av_section", "")
-        
+
         if not plex_machine_id:
             try:
                 import json

@@ -31,7 +31,7 @@ from logging.handlers import RotatingFileHandler
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.9.118"
+__version__ = "0.9.119"
 
 logger = logging.getLogger("PMH")
 
@@ -896,13 +896,12 @@ def handle_media_detail(rating_key, db_engine):
 # [코어 작업 관리자 (Task Manager)]
 # ==============================================================================
 class CoreTaskManager:
-    # 1. 툴별 인메모리 최근 로그 링버퍼 (RAM)
     _MEMORY_LOGS = {}
     _MEMORY_LOGS_LOCK = threading.Lock()
-
-    # 2. 툴별 10MB x 5 로테이션 파일 로거 풀 (Handler 누수 방지)
     _TASK_FILE_LOGGERS = {}
     _TASK_LOGGERS_LOCK = threading.Lock()
+    _COMPLETED_BUFFER = {}
+    _COMPLETED_LOCK = threading.Lock()
 
     def __init__(self, base_dir, tool_id, server_id="default"):
         self.base_dir = base_dir
@@ -917,10 +916,13 @@ class CoreTaskManager:
         self.log_file = os.path.join(task_dir, f"{self.task_key}.log")
         self._lock = threading.Lock()
 
-        # 메모리 버퍼 초기화
         with CoreTaskManager._MEMORY_LOGS_LOCK:
             if self.task_key not in CoreTaskManager._MEMORY_LOGS:
                 CoreTaskManager._MEMORY_LOGS[self.task_key] = deque(maxlen=60)
+
+        with CoreTaskManager._COMPLETED_LOCK:
+            if self.task_key not in CoreTaskManager._COMPLETED_BUFFER:
+                CoreTaskManager._COMPLETED_BUFFER[self.task_key] = []
 
     def _get_file_logger(self):
         """10MB x 5 백업 파일 로테이션 전용 로거 반환 (스레드 안전)"""
@@ -1083,26 +1085,15 @@ class CoreTaskManager:
             return True
 
     def push_completed_item(self, item_id):
-        with self._lock:
-            self._setup_db()
-            try:
-                with self._get_conn() as conn:
-                    conn.execute("INSERT INTO completed_items (item_id) VALUES (?)", (str(item_id),))
-            except Exception: pass
+        with CoreTaskManager._COMPLETED_LOCK:
+            if self.task_key in CoreTaskManager._COMPLETED_BUFFER:
+                CoreTaskManager._COMPLETED_BUFFER[self.task_key].append(str(item_id))
 
     def pop_completed_items(self):
-        with self._lock:
-            if not os.path.exists(self.db_file): return []
-            try:
-                with self._get_conn() as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT DISTINCT item_id FROM completed_items")
-                    rows = c.fetchall()
-                    items = [r['item_id'] for r in rows]
-                    if items:
-                        c.execute("DELETE FROM completed_items")
-                    return items
-            except Exception: return []
+        with CoreTaskManager._COMPLETED_LOCK:
+            items = CoreTaskManager._COMPLETED_BUFFER.get(self.task_key, [])
+            CoreTaskManager._COMPLETED_BUFFER[self.task_key] = []
+            return items
 
 
 # ==============================================================================
@@ -1420,6 +1411,7 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, se
 class UniversalPlexDatabaseEngine:
     _pg_pool = None
     _pg_pool_lock = threading.Lock()
+    _pg_init_error = None
 
     def __init__(self, global_config):
         self.config = global_config or {}
@@ -1427,49 +1419,89 @@ class UniversalPlexDatabaseEngine:
         self.sqlite_path = self.config.get("plex_db_path", "")
         self.sqlite_bin = self.config.get("plex_sqlite_bin", "")
         self.pg_config = self.config.get("plex_pg_config", {})
+        self.pg_error = UniversalPlexDatabaseEngine._pg_init_error
 
         if self.db_type == "postgres":
-            self._init_pg_pool()
+            self._init_pg_pool_safe()
 
-    def _init_pg_pool(self):
+    def _init_pg_pool_safe(self):
         with UniversalPlexDatabaseEngine._pg_pool_lock:
-            if UniversalPlexDatabaseEngine._pg_pool is None:
+            if UniversalPlexDatabaseEngine._pg_pool is not None:
+                return
+            
+            try:
+                import psycopg2
+                from psycopg2 import pool
+            except ImportError:
+                logger.info("📦 PostgreSQL 모듈(psycopg2-binary)이 감지되지 않아 자동 설치를 시작합니다...")
                 try:
-                    import psycopg2
-                    from psycopg2 import pool
-                except ImportError:
-                    logger.info("📦 PostgreSQL 모듈(psycopg2-binary)이 감지되지 않아 자동 설치를 시작합니다...")
-                    try:
-                        cmd = [sys.executable, "-m", "pip", "install", "psycopg2-binary"]
-                        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                        if res.returncode == 0:
-                            logger.info("✅ 'psycopg2-binary' 자동 설치 완료!")
-                            import psycopg2
-                            from psycopg2 import pool
-                        else:
-                            raise Exception(res.stderr)
-                    except Exception as pip_err:
-                        logger.error(f"❌ 'psycopg2-binary' 자동 설치 실패: {pip_err}")
-                        raise ImportError("PostgreSQL 모듈 자동 설치에 실패했습니다. 수동으로 'pip install psycopg2-binary'를 실행해 주세요.")
+                    cmd = [sys.executable, "-m", "pip", "install", "psycopg2-binary"]
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    if res.returncode == 0:
+                        logger.info("✅ 'psycopg2-binary' 자동 설치 완료!")
+                        import psycopg2
+                        from psycopg2 import pool
+                    else:
+                        err_msg = f"psycopg2-binary 설치 실패: {res.stderr[:100]}"
+                        UniversalPlexDatabaseEngine._pg_init_error = err_msg
+                        self.pg_error = err_msg
+                        return
+                except Exception as pip_err:
+                    err_msg = f"psycopg2-binary 설치 예외: {pip_err}"
+                    UniversalPlexDatabaseEngine._pg_init_error = err_msg
+                    self.pg_error = err_msg
+                    return
 
-                schema = self.pg_config.get("SCHEMA", "plex, public")
-                logger.info(f"🐘 PostgreSQL 커넥션 풀을 초기화합니다. (Host: {self.pg_config.get('HOST', '127.0.0.1')}, DB: {self.pg_config.get('DBNAME', 'plex')})")
-                
+            host = self.pg_config.get("HOST", "127.0.0.1")
+            port = int(self.pg_config.get("PORT", 5432))
+            dbname = self.pg_config.get("DBNAME", "plex")
+            user = self.pg_config.get("USER", "plex")
+            password = self.pg_config.get("PASSWORD", "")
+            schema = str(self.pg_config.get("SCHEMA", "plex")).strip() or "plex"
+
+            logger.info(f"🐘 PostgreSQL 커넥션 풀 초기화 시도... (Host: {host}, DB: {dbname}, Schema: {schema})")
+            
+            try:
                 UniversalPlexDatabaseEngine._pg_pool = pool.ThreadedConnectionPool(
                     minconn=1,
                     maxconn=10,
-                    host=self.pg_config.get("HOST", "127.0.0.1"),
-                    port=int(self.pg_config.get("PORT", 5432)),
-                    dbname=self.pg_config.get("DBNAME", "plex"),
-                    user=self.pg_config.get("USER", "plex"),
-                    password=self.pg_config.get("PASSWORD", ""),
+                    host=host,
+                    port=port,
+                    dbname=dbname,
+                    user=user,
+                    password=password,
                     options=f"-c search_path={schema}"
                 )
+                UniversalPlexDatabaseEngine._pg_init_error = None
+                self.pg_error = None
+                logger.info("🐘 PostgreSQL 커넥션 풀 연결 성공!")
+            except Exception as conn_err:
+                err_msg = f"{conn_err}".strip().replace("\n", " ")
+                logger.error(f"❌ PostgreSQL 연결 실패: {err_msg}")
+                logger.warning("   ⚠️ PMH 웹서버는 안전 모드로 계속 실행됩니다. 브라우저 설정에서 YAML을 수정하세요.")
+                UniversalPlexDatabaseEngine._pg_init_error = err_msg
+                self.pg_error = err_msg
+
+    @classmethod
+    def close_pool(cls):
+        """서버 리로드 시 커넥션 풀 및 에러 상태 초기화"""
+        with cls._pg_pool_lock:
+            if cls._pg_pool is not None:
+                try:
+                    cls._pg_pool.closeall()
+                    logger.info("🐘 기존 PostgreSQL 커넥션 풀을 안전하게 종료했습니다.")
+                except Exception: pass
+                cls._pg_pool = None
+            cls._pg_init_error = None
 
     @contextmanager
     def get_cursor(self):
-        """SQLite / PostgreSQL 공용 커서 컨텍스트 매니저 (Dict-like row 반환)"""
+        """커서 요청 시에만 지연 에러 발생 (웹서버 라우팅 보호)"""
         if self.db_type == "postgres":
+            if UniversalPlexDatabaseEngine._pg_pool is None:
+                err = self.pg_error or UniversalPlexDatabaseEngine._pg_init_error or "DB 연결 실패"
+                raise ConnectionError(f"PostgreSQL 연결 불가: {err}. pmh_config.yaml 설정을 확인하세요.")
+
             from psycopg2.extras import DictCursor
             conn = UniversalPlexDatabaseEngine._pg_pool.getconn()
             try:
@@ -1487,11 +1519,8 @@ class UniversalPlexDatabaseEngine:
             conn = sqlite3.connect(f'file:{self.sqlite_path}?mode=ro', uri=True, timeout=10.0, isolation_level=None)
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            try:
-                yield cur
-            finally:
-                cur.close()
-                conn.close()
+            try: yield cur
+            finally: cur.close(); conn.close()
 
     def translate_query(self, query):
         """SQLite 쿼리를 PostgreSQL 표준 SQL로 자동 번역"""
@@ -1570,18 +1599,6 @@ class UniversalPlexDatabaseEngine:
             raise Exception("Plex SQLite 실행 시간 초과 (15초). DB Lock 의심.")
         except subprocess.CalledProcessError as e:
             raise Exception(f"Plex SQLite 실행 실패: {e.stderr.decode('utf-8')}")
-
-    @classmethod
-    def close_pool(cls):
-        """서버 리로드 시 커넥션 풀 완전 정리"""
-        with cls._pg_pool_lock:
-            if cls._pg_pool is not None:
-                try:
-                    cls._pg_pool.closeall()
-                    logger.info("🐘 기존 PostgreSQL 커넥션 풀을 안전하게 종료했습니다.")
-                except Exception as e:
-                    logger.debug(f"풀 종료 중 예외: {e}")
-                cls._pg_pool = None
 
 
 def create_db_api(global_config_or_path, sqlite_bin=None):
@@ -1691,12 +1708,21 @@ def dispatch_request(subpath, method, args, data, global_config):
             jav_sec = str(global_config.get("JAV_SECTION", ""))
             west_sec = str(global_config.get("WESTERN_AV_SECTION", ""))
             db_type = global_config.get("plex_db_type", "sqlite3")
+            
+            db_ok = True
+            db_err_msg = ""
+            if db_type == "postgres" and db_engine.pg_error:
+                db_ok = False
+                db_err_msg = db_engine.pg_error
+
             return {
                 "status": "ok", 
                 "version": __version__, 
                 "machine_id": machine_id, 
                 "db_type": db_type,
                 "is_postgres": db_type == "postgres",
+                "db_connected": db_ok,
+                "db_error": db_err_msg,
                 "ignore_res_section": ignore_res,
                 "av_image_server_use": av_img_use,
                 "jav_section": jav_sec,
@@ -2251,9 +2277,11 @@ def dispatch_request(subpath, method, args, data, global_config):
                             curr_progress = t_data.get('progress', 0)
                             curr_logs = t_data.get('logs', [])
                             curr_log_count = len(curr_logs)
+                            
+                            completed_ids = task_mgr.pop_completed_items()
 
                             if (curr_state != last_state or curr_progress != last_progress 
-                                    or curr_log_count != last_log_count or ticks == 0):
+                                    or curr_log_count != last_log_count or len(completed_ids) > 0 or ticks == 0):
                                 last_state = curr_state
                                 last_progress = curr_progress
                                 last_log_count = curr_log_count
@@ -2262,7 +2290,8 @@ def dispatch_request(subpath, method, args, data, global_config):
                                     'state': curr_state,
                                     'progress': curr_progress,
                                     'total': t_data.get('total', 0),
-                                    'logs': curr_logs
+                                    'logs': curr_logs,
+                                    'completed_items': completed_ids
                                 }
                                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                             
@@ -2273,7 +2302,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                                 logger.info(f"[{tool_name}] 🏁 작업 {curr_state.upper()} 도달. 스트림 정상 마감.")
                                 break
 
-                            time.sleep(0.25)
+                            time.sleep(0.2)
                             ticks += 1
 
                     except GeneratorExit:

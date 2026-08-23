@@ -43,7 +43,7 @@ BASE:
     DBNAME: "plex"                # 데이터베이스 이름
     USER: "plex"                  # DB 사용자 계정
     PASSWORD: "YOUR_PG_PASSWORD"  # DB 비밀번호
-    SCHEMA: "plex, public"        # plex-postgresql 기본 스키마 검색 경로
+    SCHEMA: "plex"                # plex-postgresql 기본 스키마
 
   # FF 연결 정보
   FF_URL: "http://localhost:9999"
