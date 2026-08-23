@@ -41,7 +41,7 @@ GM_addStyle(`
     .toast-close-button { position: relative; right: -.3em; top: -.3em; float: right; font-size: 20px; font-weight: 700; color: #fff; text-shadow: #000 0 1px 0; opacity: .8; }
     .toast-close-button:focus, .toast-close-button:hover { color: #000; text-decoration: none; cursor: pointer; opacity: .4; }
     button.toast-close-button { padding: 0; cursor: pointer; background: 0 0; border: 0; -webkit-appearance: none; }
-    #toast-container { position: fixed; z-index: 999999; pointer-events: none; }
+    #toast-container { position: fixed; z-index: 999999999; pointer-events: none; }
     #toast-container * { box-sizing: border-box; }
     #toast-container > div {
         position: relative; pointer-events: auto; overflow: hidden; margin: 0 0 6px;
@@ -6137,19 +6137,41 @@ GM_addStyle(`
             };
         }
 
-        document.getElementById('pmh-settings-copy-key').onclick = (e) => {
+        const copyBtn = document.getElementById('pmh-settings-copy-key');
+        copyBtn.onclick = (e) => {
             e.preventDefault();
             const keyInput = document.getElementById('pmh-set-api-key');
-            if (!keyInput.value) { toastr.warning("복사할 API Key가 없습니다."); return; }
+            if (!keyInput.value) { 
+                toastr.warning("복사할 API Key가 없습니다."); 
+                return; 
+            }
+
+            const showCopySuccess = () => {
+                toastr.success("API Key가 클립보드에 복사되었습니다!");
+                const origHtml = copyBtn.innerHTML;
+                copyBtn.innerHTML = '<i class="fas fa-check" style="color:#51a351;"></i>';
+                copyBtn.style.borderColor = '#51a351';
+                setTimeout(() => {
+                    copyBtn.innerHTML = origHtml;
+                    copyBtn.style.borderColor = '#444';
+                }, 1500);
+            };
 
             if (navigator.clipboard && window.isSecureContext) {
-                navigator.clipboard.writeText(keyInput.value).then(() => { toastr.success("API Key가 클립보드에 복사되었습니다!"); })
-                .catch(err => { toastr.error("복사 실패. 브라우저 권한을 확인하세요."); });
+                navigator.clipboard.writeText(keyInput.value)
+                    .then(showCopySuccess)
+                    .catch(err => { toastr.error("복사 실패. 브라우저 권한을 확인하세요."); });
             } else {
-                keyInput.type = "text"; keyInput.select();
-                try { document.execCommand("copy"); toastr.success("API Key가 클립보드에 복사되었습니다!"); } 
-                catch (err) { toastr.error("복사 실패. 수동으로 복사해주세요."); }
-                keyInput.type = "password"; window.getSelection().removeAllRanges();
+                keyInput.type = "text"; 
+                keyInput.select();
+                try { 
+                    document.execCommand("copy"); 
+                    showCopySuccess();
+                } catch (err) { 
+                    toastr.error("복사 실패. 수동으로 복사해주세요."); 
+                }
+                keyInput.type = "password"; 
+                window.getSelection().removeAllRanges();
             }
         };
 
