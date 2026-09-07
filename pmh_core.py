@@ -28,10 +28,12 @@ from flask import Response
 from collections import deque
 from logging.handlers import RotatingFileHandler
 
+
 # ==============================================================================
 # [코어 모듈 버전]
 # ==============================================================================
-__version__ = "0.9.119"
+
+__version__ = "0.9.120"
 
 logger = logging.getLogger("PMH")
 
@@ -48,9 +50,11 @@ def apply_permissions(filepath, config):
         except Exception as e:
             logger.debug(f"권한 설정 실패 ({filepath}): {e}")
 
+
 # ==============================================================================
 # [전역 캐시 및 상태 변수]
 # ==============================================================================
+
 GLOBAL_DASHBOARD_CACHE = {
     "running": [],
     "cron": [],
@@ -65,6 +69,7 @@ MEDIA_ACTION_QUEUE = queue.Queue()
 MEDIA_ACTION_STATUS = {}
 
 _TOOL_NAME_CACHE = {}
+
 
 def get_tool_name(base_dir, tool_id):
     """tool_id를 기반으로 info.yaml을 읽어 실제 툴 이름(name)을 반환 (메모리 캐싱)"""
@@ -85,6 +90,7 @@ def get_tool_name(base_dir, tool_id):
     _TOOL_NAME_CACHE[tool_id] = tool_id
     return tool_id
 
+
 def get_tool_lock(tool_id, server_id):
     lock_key = f"{tool_id}_{server_id}"
     with _TOOL_SERVER_LOCKS_GUARD:
@@ -92,12 +98,14 @@ def get_tool_lock(tool_id, server_id):
             _TOOL_SERVER_LOCKS[lock_key] = threading.Lock()
         return _TOOL_SERVER_LOCKS[lock_key]
 
+
 def generate_secure_header(api_key):
     if not api_key: return ""
     timestamp = int(time.time() / 10) * 10
     payload = f"{api_key}:{timestamp}".encode('utf-8')
     hash_hex = hashlib.sha256(payload).hexdigest()
     return f"{timestamp}.{hash_hex}"
+
 
 def execute_plex_action_safe(action_func, max_retries=5, wait_sec=5.0):
     last_err = None
@@ -114,9 +122,55 @@ def execute_plex_action_safe(action_func, max_retries=5, wait_sec=5.0):
                 raise e
     raise last_err
 
+
+# ==============================================================================
+# [인메모리 툴 레지스트리 캐시 (RAM)]
+# ==============================================================================
+
+_INSTALLED_TOOLS_CACHE = None
+_INSTALLED_TOOLS_LOCK = threading.Lock()
+
+def get_installed_tools(tools_dir, force_refresh=False):
+    """설치된 툴 목록을 RAM에서 0.0001초 만에 반환 (설치/삭제 시에만 디스크 스캔)"""
+    global _INSTALLED_TOOLS_CACHE
+    with _INSTALLED_TOOLS_LOCK:
+        if _INSTALLED_TOOLS_CACHE is not None and not force_refresh:
+            return _INSTALLED_TOOLS_CACHE.copy()
+
+        if not os.path.exists(tools_dir):
+            _INSTALLED_TOOLS_CACHE = []
+            return []
+
+        tools_list = []
+        for item in os.listdir(tools_dir):
+            tool_folder = os.path.join(tools_dir, item)
+            info_path = os.path.join(tool_folder, 'info.yaml')
+            if os.path.isdir(tool_folder) and os.path.exists(info_path):
+                try:
+                    with open(info_path, 'r', encoding='utf-8') as f:
+                        tool_info = yaml.safe_load(f)
+                        if isinstance(tool_info, dict):
+                            tool_info['id'] = item
+                            tools_list.append(tool_info)
+                            _TOOL_NAME_CACHE[item] = tool_info.get('name', item)
+                except Exception as e:
+                    logger.error(f"info.yaml 파싱 실패 {info_path}: {e}")
+
+        _INSTALLED_TOOLS_CACHE = tools_list
+        return _INSTALLED_TOOLS_CACHE.copy()
+
+
+def invalidate_tools_cache():
+    """툴 설치, 삭제, 업데이트 시 RAM 캐시 무효화"""
+    global _INSTALLED_TOOLS_CACHE
+    with _INSTALLED_TOOLS_LOCK:
+        _INSTALLED_TOOLS_CACHE = None
+
+
 # ==============================================================================
 # [유틸리티 함수]
 # ==============================================================================
+
 def core_natural_sort(data_list, default_sort):
     if not data_list or not default_sort: return data_list
     def n_key(s): return [text.zfill(10) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
@@ -128,12 +182,49 @@ def core_natural_sort(data_list, default_sort):
         data_list.sort(key=lambda x: n_key(str(x.get(k, ''))), reverse=(d == 'desc'))
     return data_list
 
+
+def match_section_ids(section_config_str, target_section_id):
+    if not section_config_str or target_section_id is None:
+        return False
+    cfg_str = str(section_config_str).strip().lower()
+    if not cfg_str:
+        return False
+    if cfg_str == 'all':
+        return True
+
+    try:
+        target_id = int(target_section_id)
+    except (ValueError, TypeError):
+        return False
+
+    for part in cfg_str.split(','):
+        part = part.strip()
+        if not part: continue
+        
+        if '-' in part:
+            try:
+                start_s, end_s = part.split('-', 1)
+                start_id = int(start_s.strip())
+                end_id = int(end_s.strip())
+                if start_id <= target_id <= end_id:
+                    return True
+            except ValueError:
+                continue
+        else:
+            try:
+                if int(part) == target_id:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
 # ==============================================================================
 # [디스코드 통합 알림 팩토리]
 # ==============================================================================
+
 def create_discord_notifier(base_dir, tool_id, server_id, global_config):
-    """실행 컨텍스트(스케줄러/UI)와 무관하게 동일한 알림 로직을 생성합니다."""
-    
+
     def send_discord_notify(title, message="", color_hex="#51a351", tool_vars=None):
         if tool_vars is None: tool_vars = {}
         
@@ -201,9 +292,11 @@ def create_discord_notifier(base_dir, tool_id, server_id, global_config):
             
     return send_discord_notify
 
+
 # ==============================================================================
 # [코어 경량 크론 스케줄러 (Daemon)]
 # ==============================================================================
+
 def match_cron(cron_expr, dt):
     parts = str(cron_expr).strip().split()
     if len(parts) != 5: return False
@@ -231,6 +324,7 @@ def match_cron(cron_expr, dt):
 
 _SCHEDULER_STATES = {}
 
+
 def stop_scheduler_daemon():
     thread_name = "PMH_Cron_Scheduler"
     worker_name = "PMH_Media_Worker"
@@ -249,46 +343,18 @@ def stop_scheduler_daemon():
         except Exception as e:
             logger.warning(f"[Scheduler] 스케줄러 종료 중 오류: {e}")
 
+
 def start_scheduler_daemon(global_config):
     thread_name = "PMH_Cron_Scheduler"
     worker_name = "PMH_Media_Worker"
     
     base_dir = global_config.get("base_dir")
-    
     _SCHEDULER_STATES[thread_name] = False
     _SCHEDULER_STATES[worker_name] = False
-    
-    try:
-        task_logs_dir = os.path.join(base_dir, 'task_logs')
-        if os.path.exists(task_logs_dir):
-            ghost_count = 0
-            for f_name in os.listdir(task_logs_dir):
-                if f_name.endswith('_task.db'):
-                    db_file = os.path.join(task_logs_dir, f_name)
-                    try:
-                        with sqlite3.connect(db_file, timeout=2.0) as conn:
-                            c = conn.cursor()
-                            c.execute("SELECT count(*) FROM task_info WHERE state IN ('running', 'pending')")
-                            if c.fetchone()[0] > 0:
-                                c.execute("UPDATE task_info SET state='error' WHERE state IN ('running', 'pending')")
-                                
-                                stamp = datetime.now().strftime('%H:%M:%S')
-                                c.execute("INSERT INTO logs (log_text) VALUES (?)", (f"[{stamp}] [System] 서버 강제 종료(재시작)가 감지되어 이전 작업을 중단 상태(Error)로 변경했습니다.",))
-                                
-                                ghost_count += 1
-                                conn.commit()
-                    except Exception as e:
-                        logger.warning(f"[Scheduler] 유령 작업 정리 중 오류: {e}")
-
-            if ghost_count > 0:
-                logger.info(f"총 {ghost_count}개의 툴에서 중단된 유령 작업(Ghost Tasks)을 정리했습니다.")
-    except Exception as cleanup_err:
-        logger.error(f"유령 작업 정리 중 오류: {cleanup_err}")
 
     def scheduler_loop():
         tz_info = time.strftime('%z (%Z)')
         logger.info(f"자동 실행 스케줄러 시작. (현재 타임존: {tz_info})")
-
         _SCHEDULER_STATES[thread_name] = True
         
         tools_dir = os.path.join(base_dir, 'tools')
@@ -310,75 +376,67 @@ def start_scheduler_daemon(global_config):
                 try:
                     _update_dashboard_cache(tools_dir, task_logs_dir, base_dir)
                     last_cache_update = current_time
-                except Exception as e:
-                    logger.error(f"Dashboard Cache Update Error: {e}")
+                except Exception as e: pass
                     
             time.sleep(0.5)
 
-    if any(t.name == thread_name and t.is_alive() for t in threading.enumerate()):
-        logger.warning(f"⚠️ 기존 스케줄러 데몬이 아직 살아있습니다. 중복 생성을 방지합니다.")
-    else:
+    if not any(t.name == thread_name and t.is_alive() for t in threading.enumerate()):
         st = threading.Thread(target=scheduler_loop, name=thread_name)
         st.daemon = True
         st.start()
 
-    if any(t.name == worker_name and t.is_alive() for t in threading.enumerate()):
-        logger.warning(f"⚠️ 기존 큐 워커가 아직 살아있습니다. 중복 생성을 방지합니다.")
-        _SCHEDULER_STATES[worker_name] = True
-    else:
+    if not any(t.name == worker_name and t.is_alive() for t in threading.enumerate()):
         _SCHEDULER_STATES[worker_name] = True
         media_thread = threading.Thread(target=media_action_worker_loop, args=(global_config,), name=worker_name)
         media_thread.daemon = True
         media_thread.start()
 
+
 def _update_dashboard_cache(tools_dir, task_logs_dir, base_dir):
     global GLOBAL_DASHBOARD_CACHE
-    if not os.path.exists(tools_dir) or not os.path.exists(task_logs_dir): return
+    if not os.path.exists(tools_dir): return
     
     running_list = []
     cron_list = []
     
-    try:
-        for f_name in os.listdir(task_logs_dir):
-            if f_name.endswith('_task.db'):
-                parts = f_name[:-8].rsplit('_', 1)
+    active_worker_threads = {t.name for t in threading.enumerate() if t.is_alive()}
+    
+    with CoreTaskManager._TASK_STATES_LOCK:
+        for task_key, t_state in CoreTaskManager._TASK_STATES.items():
+            if t_state.get('state') == 'running':
+                parts = task_key.rsplit('_', 1)
                 if len(parts) == 2:
                     t_id, s_id = parts
-                    mgr = CoreTaskManager(base_dir, t_id, s_id)
-                    t_state = mgr.load(include_target_items=False)
-                    if t_state and t_state.get('state') == 'running':
+                    expected_thread_name = f"Worker_{t_id}_{s_id}"
+                    
+                    if expected_thread_name in active_worker_threads:
                         running_list.append({
                             "tool_id": t_id, "server_id": s_id,
                             "progress": t_state.get('progress', 0), "total": t_state.get('total', 0)
                         })
-                        
-                    popped = mgr.pop_completed_items()
-                    if popped:
-                        if "completed_items" not in GLOBAL_DASHBOARD_CACHE:
-                            GLOBAL_DASHBOARD_CACHE["completed_items"] = {}
-                        if s_id not in GLOBAL_DASHBOARD_CACHE["completed_items"]:
-                            GLOBAL_DASHBOARD_CACHE["completed_items"][s_id] = []
-                        
-                        for p in popped:
-                            if p not in GLOBAL_DASHBOARD_CACHE["completed_items"][s_id]:
-                                GLOBAL_DASHBOARD_CACHE["completed_items"][s_id].append(p)
+                    else:
+                        t_state['state'] = 'error'
 
-            elif f_name.endswith('_options.db'):
-                parts = f_name[:-11].rsplit('_', 1)
-                if len(parts) == 2:
-                    t_id, s_id = parts
-                    mgr = CoreOptionsManager(base_dir, t_id, s_id)
-                    opts = mgr.load()
-                    if opts.get('cron_enable') and opts.get('cron_expr'):
-                        cron_list.append({
-                            "tool_id": t_id, "server_id": s_id, "expr": opts.get('cron_expr')
-                        })
-    except Exception as cache_err:
-        logger.debug(f"[Dashboard] 캐시 갱신 중 예외: {cache_err}")
-                    
+    if os.path.exists(task_logs_dir):
+        try:
+            for f_name in os.listdir(task_logs_dir):
+                if f_name.endswith('_options.db'):
+                    parts = f_name[:-11].rsplit('_', 1)
+                    if len(parts) == 2:
+                        t_id, s_id = parts
+                        mgr = CoreOptionsManager(base_dir, t_id, s_id)
+                        opts = mgr.load() or {}
+                        if opts.get('cron_enable') and opts.get('cron_expr'):
+                            cron_list.append({
+                                "tool_id": t_id, "server_id": s_id, "expr": opts.get('cron_expr')
+                            })
+        except Exception as cache_err:
+            logger.debug(f"[Dashboard] 크론 옵션 갱신 중 예외: {cache_err}")
+                        
     GLOBAL_DASHBOARD_CACHE["running"] = running_list
     GLOBAL_DASHBOARD_CACHE["cron"] = cron_list
     GLOBAL_DASHBOARD_CACHE["last_updated"] = time.time()
+
 
 def _execute_scheduled_tasks(global_config, now):
     base_dir = global_config.get("base_dir")
@@ -490,9 +548,11 @@ def _execute_scheduled_tasks(global_config, now):
             except Exception as e:
                 logger.error(f"Scheduler Error: Tool {tool_id} execution failed: {e}")
 
+
 # ==============================================================================
 # [DB 헬퍼 함수]
 # ==============================================================================
+
 @contextmanager
 def get_db_connection(db_path):
     if not os.path.exists(db_path):
@@ -516,8 +576,8 @@ def get_db_connection(db_path):
 
 def is_season_folder(folder_name):
     name_lower = unicodedata.normalize('NFC', folder_name).lower().strip()
-    if re.match(r'^(season|시즌|series|s)\s*\d+\b', name_lower): return True
-    if re.match(r'^(specials?|스페셜|extras?|특집|ova|ost)(\s*\d+)?$', name_lower): return True
+    if re.match(r'^(season|시즌|series|s)[\s._-]*\d+\b', name_lower): return True
+    if re.match(r'^(specials?|스페셜|extras?|특집|ova|ost)[\s._-]*(\d+)?$', name_lower): return True
     if name_lower.isdigit(): return True
     return False
 
@@ -691,10 +751,21 @@ def handle_media_detail(rating_key, db_engine):
             
             if m_type in (2, 3, 8):
                 folder_paths, seen_paths = [], set()
+                file_rows = []
                 
+                # 쇼 대표 페이지 (m_type == 2)
                 if m_type == 2:
-                    query = f"""SELECT mp.file FROM metadata_items ep JOIN metadata_items sea ON ep.parent_id = sea.id JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE sea.parent_id = {ph} AND ep.metadata_type = 4 ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC"""
-                    cursor.execute(query, (rk_val,))
+                    query = f"""
+                        SELECT mp.file 
+                        FROM metadata_items ep 
+                        LEFT JOIN metadata_items sea ON ep.parent_id = sea.id 
+                        JOIN media_items m ON m.metadata_item_id = ep.id 
+                        JOIN media_parts mp ON mp.media_item_id = m.id 
+                        WHERE (sea.parent_id = {ph} OR ep.parent_id = {ph}) AND ep.metadata_type = 4 
+                        ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC
+                    """
+                    cursor.execute(query, (rk_val, rk_val))
+                    file_rows = cursor.fetchall()
                     
                     dur_query = f"""
                         SELECT SUM(dur) FROM (
@@ -715,13 +786,21 @@ def handle_media_detail(rating_key, db_engine):
                     try:
                         cursor.execute(dur_query, (rk_val,))
                         dur_res = cursor.fetchone()
-                        
                         if dur_res and dur_res[0]: total_duration = int(dur_res[0])
                     except Exception: pass
 
+                # 시즌 페이지 (m_type == 3)
                 elif m_type == 3:
-                    query = f"""SELECT mp.file FROM metadata_items ep JOIN media_items m ON m.metadata_item_id = ep.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE ep.parent_id = {ph} AND ep.metadata_type = 4 ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC"""
+                    query = f"""
+                        SELECT mp.file 
+                        FROM metadata_items ep 
+                        JOIN media_items m ON m.metadata_item_id = ep.id 
+                        JOIN media_parts mp ON mp.media_item_id = m.id 
+                        WHERE ep.parent_id = {ph} AND ep.metadata_type = 4 
+                        ORDER BY COALESCE(m.width, 0) DESC, COALESCE(m.bitrate, 0) DESC
+                    """
                     cursor.execute(query, (rk_val,))
+                    file_rows = cursor.fetchall()
                     
                     dur_query = f"""
                         SELECT SUM(dur) FROM (
@@ -735,39 +814,60 @@ def handle_media_detail(rating_key, db_engine):
                     try:
                         cursor.execute(dur_query, (rk_val,))
                         dur_res = cursor.fetchone()
-                        
                         if dur_res and dur_res[0]: total_duration = int(dur_res[0])
                     except Exception: pass
 
+                # 음악 아티스트 (m_type == 8)
                 elif m_type == 8:
-                    query = f"""SELECT DISTINCT mp.file FROM metadata_items track JOIN metadata_items album ON track.parent_id = album.id JOIN media_items m ON m.metadata_item_id = track.id JOIN media_parts mp ON mp.media_item_id = m.id WHERE album.parent_id = {ph} AND track.metadata_type = 10"""
+                    query = f"""
+                        SELECT DISTINCT mp.file 
+                        FROM metadata_items track 
+                        JOIN metadata_items album ON track.parent_id = album.id 
+                        JOIN media_items m ON m.metadata_item_id = track.id 
+                        JOIN media_parts mp ON mp.media_item_id = m.id 
+                        WHERE album.parent_id = {ph} AND track.metadata_type = 10
+                    """
                     cursor.execute(query, (rk_val,))
+                    file_rows = cursor.fetchall()
 
-                for row in cursor.fetchall():
-                    if row and row[0]:
-                        raw_file = unicodedata.normalize('NFC', row[0])
+                # 상황별 최적 디렉토리 추출
+                for row in file_rows:
+                    if not row or not row[0]: continue
+                    raw_file = unicodedata.normalize('NFC', row[0])
+                    
+                    if m_type == 8:
+                        # 아티스트 폴더
+                        album_dir = os.path.dirname(raw_file)
+                        artist_dir = os.path.dirname(album_dir)
+                        if re.match(r'^cd\s*\d+', os.path.basename(album_dir).lower()):
+                            artist_dir = os.path.dirname(artist_dir)
+                        target_dir = artist_dir
                         
-                        if m_type == 8:
-                            album_dir = os.path.dirname(raw_file)
-                            artist_dir = os.path.dirname(album_dir)
-                            if re.match(r'^cd\s*\d+', os.path.basename(album_dir).lower()):
-                                artist_dir = os.path.dirname(artist_dir)
-                            target_dir = artist_dir
-                        else:
-                            target_dir = os.path.dirname(raw_file)
-                            
-                        dir_key = os.path.normpath(target_dir).replace('\\', '/').lower()
+                    elif m_type == 2:
+                        # 쇼 대표 페이지
+                        target_dir = os.path.dirname(raw_file)
+                        while True:
+                            base_name = os.path.basename(target_dir)
+                            if not base_name: break
+                            if is_season_folder(base_name):
+                                parent_path = os.path.dirname(target_dir)
+                                if parent_path == target_dir: break
+                                target_dir = parent_path
+                            else:
+                                break
+                                
+                    elif m_type == 3:
+                        # 시즌 페이지
+                        target_dir = os.path.dirname(raw_file)
+                        if re.match(r'^(cd|disc|part)\s*\d+', os.path.basename(target_dir).lower()):
+                            target_dir = os.path.dirname(target_dir)
+                    else:
+                        target_dir = os.path.dirname(raw_file)
                         
-                        if dir_key not in seen_paths:
-                            seen_paths.add(dir_key)
-                            folder_paths.append(target_dir)
-                            
-                        if m_type in (2, 3) and is_season_folder(os.path.basename(target_dir)):
-                            parent_path_original = os.path.dirname(target_dir)
-                            parent_key = os.path.normpath(parent_path_original).replace('\\', '/').lower()
-                            if parent_key not in seen_paths:
-                                seen_paths.add(parent_key)
-                                folder_paths.append(parent_path_original)
+                    dir_key = os.path.normpath(target_dir).replace('\\', '/').lower()
+                    if dir_key not in seen_paths:
+                        seen_paths.add(dir_key)
+                        folder_paths.append(target_dir)
 
                 folder_paths.sort(key=natural_sort_key)
                 versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
@@ -895,13 +995,23 @@ def handle_media_detail(rating_key, db_engine):
 # ==============================================================================
 # [코어 작업 관리자 (Task Manager)]
 # ==============================================================================
+
 class CoreTaskManager:
+    # 툴별 런타임 실행 상태 딕셔너리 (RAM)
+    _TASK_STATES = {}
+    _TASK_STATES_LOCK = threading.Lock()
+
+    # 툴별 최근 로그 링버퍼 (RAM)
     _MEMORY_LOGS = {}
     _MEMORY_LOGS_LOCK = threading.Lock()
-    _TASK_FILE_LOGGERS = {}
-    _TASK_LOGGERS_LOCK = threading.Lock()
+
+    # 툴별 실시간 SSE 전송용 완료 아이템 큐 (RAM)
     _COMPLETED_BUFFER = {}
     _COMPLETED_LOCK = threading.Lock()
+
+    # 툴별 10MB x 5 로테이션 파일 로거 풀 (Handler 누수 방지)
+    _TASK_FILE_LOGGERS = {}
+    _TASK_LOGGERS_LOCK = threading.Lock()
 
     def __init__(self, base_dir, tool_id, server_id="default"):
         self.base_dir = base_dir
@@ -911,10 +1021,17 @@ class CoreTaskManager:
         
         task_dir = os.path.join(base_dir, 'task_logs')
         os.makedirs(task_dir, exist_ok=True)
-        
-        self.db_file = os.path.join(task_dir, f"{self.task_key}_task.db")
         self.log_file = os.path.join(task_dir, f"{self.task_key}.log")
-        self._lock = threading.Lock()
+
+        # 인메모리 초기화
+        with CoreTaskManager._TASK_STATES_LOCK:
+            if self.task_key not in CoreTaskManager._TASK_STATES:
+                CoreTaskManager._TASK_STATES[self.task_key] = {
+                    "state": "completed",
+                    "progress": 0,
+                    "total": 0,
+                    "task_data": {}
+                }
 
         with CoreTaskManager._MEMORY_LOGS_LOCK:
             if self.task_key not in CoreTaskManager._MEMORY_LOGS:
@@ -925,7 +1042,6 @@ class CoreTaskManager:
                 CoreTaskManager._COMPLETED_BUFFER[self.task_key] = []
 
     def _get_file_logger(self):
-        """10MB x 5 백업 파일 로테이션 전용 로거 반환 (스레드 안전)"""
         with CoreTaskManager._TASK_LOGGERS_LOCK:
             if self.task_key not in CoreTaskManager._TASK_FILE_LOGGERS:
                 logger_name = f"PMH_Task_{self.task_key}"
@@ -943,26 +1059,9 @@ class CoreTaskManager:
                 formatter = logging.Formatter('%(message)s')
                 fh.setFormatter(formatter)
                 t_logger.addHandler(fh)
-
                 CoreTaskManager._TASK_FILE_LOGGERS[self.task_key] = t_logger
 
             return CoreTaskManager._TASK_FILE_LOGGERS[self.task_key]
-
-    @contextmanager
-    def _get_conn(self):
-        conn = sqlite3.connect(self.db_file, timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        try: yield conn
-        finally: conn.commit(); conn.close()
-
-    def _setup_db(self):
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute("CREATE TABLE IF NOT EXISTS task_info (state TEXT, progress INTEGER, total INTEGER, task_data TEXT)")
-            c.execute("CREATE TABLE IF NOT EXISTS completed_items (item_id TEXT)")
-            c.execute("SELECT count(*) FROM task_info")
-            if c.fetchone()[0] == 0:
-                c.execute("INSERT INTO task_info (state, progress, total, task_data) VALUES ('completed', 0, 0, '{}')")
 
     def log(self, msg):
         stamp = datetime.now().strftime('%H:%M:%S')
@@ -976,113 +1075,92 @@ class CoreTaskManager:
 
         try:
             self._get_file_logger().info(log_line)
-        except Exception:
-            pass
-
-    def load(self, include_target_items=False):
-        with self._lock:
-            if not os.path.exists(self.db_file): return None
-            try:
-                with self._get_conn() as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT state, progress, total, task_data FROM task_info LIMIT 1")
-                    row = c.fetchone()
-                    if not row: return None
-                    
-                    raw_task_data = json.loads(row['task_data'] or '{}')
-                    if not include_target_items and 'target_items' in raw_task_data:
-                        del raw_task_data['target_items']
-
-                    data = {
-                        "state": row['state'],
-                        "progress": row['progress'],
-                        "total": row['total'],
-                        "task_data": raw_task_data
-                    }
-                    
-                    with CoreTaskManager._MEMORY_LOGS_LOCK:
-                        buf = CoreTaskManager._MEMORY_LOGS.get(self.task_key, [])
-                        data['logs'] = list(buf)
-                        
-                    return data
-            except Exception as e:
-                logger.debug(f"[TaskManager] 로드 실패: {e}")
-                return None
+        except Exception: pass
 
     def init_task(self, task_data):
-        with self._lock:
-            self._setup_db()
-            with self._get_conn() as conn:
-                c = conn.cursor()
-                c.execute("DELETE FROM completed_items")
-                c.execute("UPDATE task_info SET state='running', progress=0, total=?, task_data=?", 
-                          (task_data.get('total', 0), json.dumps(task_data, ensure_ascii=False)))
-                
-            with CoreTaskManager._MEMORY_LOGS_LOCK:
-                if self.task_key in CoreTaskManager._MEMORY_LOGS:
-                    CoreTaskManager._MEMORY_LOGS[self.task_key].clear()
+        with CoreTaskManager._TASK_STATES_LOCK:
+            CoreTaskManager._TASK_STATES[self.task_key] = {
+                "state": "running",
+                "progress": 0,
+                "total": task_data.get('total', 0),
+                "task_data": task_data
+            }
 
-            try:
-                self._get_file_logger().info(f"\n=== [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 작업 시작 ===")
-            except Exception: pass
+        with CoreTaskManager._MEMORY_LOGS_LOCK:
+            if self.task_key in CoreTaskManager._MEMORY_LOGS:
+                CoreTaskManager._MEMORY_LOGS[self.task_key].clear()
 
-            self.log("작업을 시작합니다...")
+        with CoreTaskManager._COMPLETED_LOCK:
+            CoreTaskManager._COMPLETED_BUFFER[self.task_key] = []
+
+        try:
+            self._get_file_logger().info(f"\n=== [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 작업 시작 ===")
+        except Exception: pass
+
+        self.log("작업을 시작합니다...")
 
     def update_state(self, state, progress=None, total=None):
-        with self._lock:
-            self._setup_db()
-            with self._get_conn() as conn:
-                c = conn.cursor()
-                if progress is not None and total is not None:
-                    c.execute("UPDATE task_info SET state=?, progress=?, total=?", (state, progress, total))
-                elif progress is not None:
-                    c.execute("UPDATE task_info SET state=?, progress=?", (state, progress))
-                else:
-                    c.execute("UPDATE task_info SET state=?", (state,))
+        with CoreTaskManager._TASK_STATES_LOCK:
+            if self.task_key in CoreTaskManager._TASK_STATES:
+                t = CoreTaskManager._TASK_STATES[self.task_key]
+                t["state"] = state
+                if progress is not None: t["progress"] = progress
+                if total is not None: t["total"] = total
+
+    def load(self, include_target_items=False):
+        with CoreTaskManager._TASK_STATES_LOCK:
+            raw_data = CoreTaskManager._TASK_STATES.get(self.task_key, {
+                "state": "completed", "progress": 0, "total": 0, "task_data": {}
+            })
+            
+            data = {
+                "state": raw_data["state"],
+                "progress": raw_data["progress"],
+                "total": raw_data["total"],
+                "task_data": raw_data["task_data"].copy() if isinstance(raw_data.get("task_data"), dict) else {}
+            }
+            if not include_target_items and "target_items" in data["task_data"]:
+                del data["task_data"]["target_items"]
+
+        with CoreTaskManager._MEMORY_LOGS_LOCK:
+            buf = CoreTaskManager._MEMORY_LOGS.get(self.task_key, [])
+            data['logs'] = list(buf)
+
+        return data
 
     def save(self, data):
-        with self._lock:
-            self._setup_db()
-            try:
-                with self._get_conn() as conn:
-                    c = conn.cursor()
-                    task_data_str = json.dumps(data.get('task_data', {}), ensure_ascii=False)
-                    c.execute("UPDATE task_info SET state=?, progress=?, total=?, task_data=?", 
-                              (data.get('state', 'completed'), data.get('progress', 0), data.get('total', 0), task_data_str))
-            except Exception as e:
-                logger.debug(f"[TaskManager] 저장 실패: {e}")
+        with CoreTaskManager._TASK_STATES_LOCK:
+            self._TASK_STATES[self.task_key] = {
+                "state": data.get("state", "completed"),
+                "progress": data.get("progress", 0),
+                "total": data.get("total", 0),
+                "task_data": data.get("task_data", {})
+            }
 
     def reset(self):
-        with self._lock:
-            if os.path.exists(self.db_file):
-                try: os.remove(self.db_file)
+        with CoreTaskManager._TASK_STATES_LOCK:
+            self._TASK_STATES[self.task_key] = {
+                "state": "completed", "progress": 0, "total": 0, "task_data": {}
+            }
+        with CoreTaskManager._MEMORY_LOGS_LOCK:
+            if self.task_key in CoreTaskManager._MEMORY_LOGS:
+                CoreTaskManager._MEMORY_LOGS[self.task_key].clear()
+        with CoreTaskManager._COMPLETED_LOCK:
+            CoreTaskManager._COMPLETED_BUFFER[self.task_key] = []
+        with CoreTaskManager._TASK_LOGGERS_LOCK:
+            if self.task_key in CoreTaskManager._TASK_FILE_LOGGERS:
+                del CoreTaskManager._TASK_FILE_LOGGERS[self.task_key]
+
+        for i in ["", ".1", ".2", ".3", ".4", ".5"]:
+            f_path = self.log_file + i
+            if os.path.exists(f_path):
+                try: os.remove(f_path)
                 except Exception: pass
-                
-            for i in ["", ".1", ".2", ".3", ".4", ".5"]:
-                f_path = self.log_file + i
-                if os.path.exists(f_path):
-                    try: os.remove(f_path)
-                    except Exception: pass
-
-            with CoreTaskManager._MEMORY_LOGS_LOCK:
-                if self.task_key in CoreTaskManager._MEMORY_LOGS:
-                    CoreTaskManager._MEMORY_LOGS[self.task_key].clear()
-
-            with CoreTaskManager._TASK_LOGGERS_LOCK:
-                if self.task_key in CoreTaskManager._TASK_FILE_LOGGERS:
-                    del CoreTaskManager._TASK_FILE_LOGGERS[self.task_key]
 
     def is_cancelled(self):
-        with self._lock:
-            if not os.path.exists(self.db_file): return True
-            try:
-                with self._get_conn() as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT state FROM task_info LIMIT 1")
-                    row = c.fetchone()
-                    if row: return row['state'] in ['cancelled', 'error']
-            except Exception: pass
-            return True
+        with CoreTaskManager._TASK_STATES_LOCK:
+            state = CoreTaskManager._TASK_STATES.get(self.task_key, {}).get("state", "completed")
+            return state in ['cancelled', 'error']
 
     def push_completed_item(self, item_id):
         with CoreTaskManager._COMPLETED_LOCK:
@@ -1099,12 +1177,14 @@ class CoreTaskManager:
 # ==============================================================================
 # [코어 데이터 캐시 관리자]
 # ==============================================================================
+
 class CoreDataManager:
     def __init__(self, base_dir, tool_id, server_id="default", task_mgr=None):
         self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_cache.db")
         self.task_mgr = task_mgr
         os.makedirs(os.path.dirname(self.db_file), exist_ok=True)
         self._lock = threading.Lock()
+
 
     @contextmanager
     def _get_conn(self):
@@ -1115,12 +1195,14 @@ class CoreDataManager:
         try: yield conn
         finally: conn.commit(); conn.close()
 
+
     def reset_db(self):
         with self._lock:
             if os.path.exists(self.db_file):
                 try: os.remove(self.db_file)
                 except Exception as e:
                     logger.warning(f"[CoreDataManager] DB 파일 삭제 중 오류: {e}")
+
 
     @contextmanager
     def transaction_session(self):
@@ -1137,6 +1219,7 @@ class CoreDataManager:
                 raise e
             finally:
                 conn.close()
+
 
     def save(self, res_data):
         self.reset_db()
@@ -1188,6 +1271,7 @@ class CoreDataManager:
                 if buffer:
                     c.executemany(insert_sql, buffer)
                     conn.commit()
+
 
     def load_page(self, page, limit, sort_key=None, sort_dir='asc'):
         with self._lock:
@@ -1264,6 +1348,7 @@ class CoreDataManager:
                 
                 return result
 
+
     def mark_as_done(self, key_column, key_value):
         with self._lock:
             if not os.path.exists(self.db_file): return
@@ -1276,6 +1361,7 @@ class CoreDataManager:
         if getattr(self, 'task_mgr', None):
             self.task_mgr.push_completed_item(str(key_value))
 
+
     def mark_as_error(self, key_column, key_value):
         with self._lock:
             if not os.path.exists(self.db_file): return
@@ -1284,6 +1370,7 @@ class CoreDataManager:
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
                 if c.fetchone()[0] == 1:
                     c.execute(f"UPDATE data SET pmh_status = 'error' WHERE \"{key_column}\" = ?", (str(key_value),))
+
 
     def load_dashboard(self):
         with self._lock:
@@ -1300,6 +1387,7 @@ class CoreDataManager:
                 logger.warning(f"[Core] Dashboard 로드 중 오류: {e}")
             return None
 
+
     def mark_keys_as_done(self, key_column, keys_list):
         with self._lock:
             if not os.path.exists(self.db_file) or not keys_list: return
@@ -1315,6 +1403,7 @@ class CoreDataManager:
             for k in keys_list:
                 self.task_mgr.push_completed_item(k)
 
+
     def remove_item_by_pmh_id(self, pmh_id):
         with self._lock:
             if not os.path.exists(self.db_file): return
@@ -1328,24 +1417,37 @@ class CoreDataManager:
 # ==============================================================================
 # [코어 UI 옵션 캐시 관리자 (Options Manager)]
 # ==============================================================================
+
 class CoreOptionsManager:
+    # RAM 캐시
+    _OPTIONS_MEMORY_CACHE = {}
+    _OPTIONS_CACHE_LOCK = threading.Lock()
+
     def __init__(self, base_dir, tool_id, server_id="default"):
+        self.base_dir = base_dir
+        self.tool_id = tool_id
+        self.server_id = server_id
+        self.task_key = f"{tool_id}_{server_id}"
         self.db_file = os.path.join(base_dir, 'task_logs', f"{tool_id}_{server_id}_options.db")
         os.makedirs(os.path.dirname(self.db_file), exist_ok=True)
         self._lock = threading.Lock()
 
+
     @contextmanager
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_file, timeout=10.0)
+        conn = sqlite3.connect(self.db_file, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA temp_store=MEMORY;")
         try: yield conn
         finally: conn.commit(); conn.close()
 
+
     def load(self, include_target_items=False) -> dict:
-        """저장된 툴 옵션을 딕셔너리로 반환 (실패 시 빈 dict 보장)"""
+        # RAM 메모리 캐시에서 즉시 반환
+        with CoreOptionsManager._OPTIONS_CACHE_LOCK:
+            if self.task_key in CoreOptionsManager._OPTIONS_MEMORY_CACHE:
+                return CoreOptionsManager._OPTIONS_MEMORY_CACHE[self.task_key].copy()
+
+        # 최초 1회만 디스크 파일에서 로드 후 RAM에 캐싱
         with self._lock:
             if not os.path.exists(self.db_file): 
                 return {}
@@ -1359,13 +1461,21 @@ class CoreOptionsManager:
                     row = c.fetchone()
                     if row and row[0]:
                         parsed = json.loads(row[0])
-                        return parsed if isinstance(parsed, dict) else {}
+                        result = parsed if isinstance(parsed, dict) else {}
+                        with CoreOptionsManager._OPTIONS_CACHE_LOCK:
+                            CoreOptionsManager._OPTIONS_MEMORY_CACHE[self.task_key] = result
+                        return result
             except Exception as e:
                 logger.debug(f"[OptionsManager] 로드 실패: {e}")
                 return {}
             return {}
 
+
     def save(self, data):
+        # RAM 캐시 및 디스크 영구 저장 동시 수행
+        with CoreOptionsManager._OPTIONS_CACHE_LOCK:
+            CoreOptionsManager._OPTIONS_MEMORY_CACHE[self.task_key] = data.copy()
+
         with self._lock:
             try:
                 with self._get_conn() as conn:
@@ -1374,14 +1484,18 @@ class CoreOptionsManager:
                     c.execute("DELETE FROM options")
                     c.execute("INSERT INTO options (payload) VALUES (?)", (json.dumps(data, ensure_ascii=False),))
             except Exception as e:
-                logger.warning(f"[OptionsManager] 옵션 저장 실패: {e}")
+                logger.warning(f"[OptionsManager] 저장 실패: {e}")
+
 
     def reset(self):
+        with CoreOptionsManager._OPTIONS_CACHE_LOCK:
+            if self.task_key in CoreOptionsManager._OPTIONS_MEMORY_CACHE:
+                del CoreOptionsManager._OPTIONS_MEMORY_CACHE[self.task_key]
         with self._lock:
             if os.path.exists(self.db_file):
                 try: os.remove(self.db_file)
-                except Exception as e:
-                    logger.warning(f"[CoreOptionsManager] DB 파일 삭제 중 오류: {e}")
+                except Exception: pass
+
 
 def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, server_id="default"):
     threading.current_thread().name = f"Worker_{tool_id}_{server_id}"
@@ -1408,10 +1522,12 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, se
 # ==============================================================================
 # [Universal Plex Database Engine (SQLite3 / PostgreSQL Dual Engine)]
 # ==============================================================================
+
 class UniversalPlexDatabaseEngine:
     _pg_pool = None
     _pg_pool_lock = threading.Lock()
     _pg_init_error = None
+
 
     def __init__(self, global_config):
         self.config = global_config or {}
@@ -1423,6 +1539,7 @@ class UniversalPlexDatabaseEngine:
 
         if self.db_type == "postgres":
             self._init_pg_pool_safe()
+
 
     def _init_pg_pool_safe(self):
         with UniversalPlexDatabaseEngine._pg_pool_lock:
@@ -1482,6 +1599,7 @@ class UniversalPlexDatabaseEngine:
                 UniversalPlexDatabaseEngine._pg_init_error = err_msg
                 self.pg_error = err_msg
 
+
     @classmethod
     def close_pool(cls):
         """서버 리로드 시 커넥션 풀 및 에러 상태 초기화"""
@@ -1493,6 +1611,7 @@ class UniversalPlexDatabaseEngine:
                 except Exception: pass
                 cls._pg_pool = None
             cls._pg_init_error = None
+
 
     @contextmanager
     def get_cursor(self):
@@ -1522,6 +1641,7 @@ class UniversalPlexDatabaseEngine:
             try: yield cur
             finally: cur.close(); conn.close()
 
+
     def translate_query(self, query):
         """SQLite 쿼리를 PostgreSQL 표준 SQL로 자동 번역"""
         if self.db_type == "postgres":
@@ -1544,6 +1664,7 @@ class UniversalPlexDatabaseEngine:
             return q
         return query
 
+
     def query(self, query, params=()):
         """SELECT 전용 스마트 쿼리 인터페이스"""
         if not query.strip().upper().startswith("SELECT"):
@@ -1564,6 +1685,7 @@ class UniversalPlexDatabaseEngine:
                 logger.warning("[DB] Plex 서버 종료 감지. Plex SQLite 바이너리로 우회 실행합니다.")
                 return self._run_sqlite_cli(query, params, is_select=True)
 
+
     def execute(self, query, params=()):
         """UPDATE / INSERT / DELETE 전용 쓰기 인터페이스"""
         if self.db_type == "postgres":
@@ -1573,6 +1695,7 @@ class UniversalPlexDatabaseEngine:
             return True, "PG Execute Success"
         else:
             return self._run_sqlite_cli(query, params, is_select=False)
+
 
     def _run_sqlite_cli(self, query, params=(), is_select=False):
         if not self.sqlite_bin or not os.path.exists(self.sqlite_bin):
@@ -1614,9 +1737,11 @@ def create_db_api(global_config_or_path, sqlite_bin=None):
         "engine": engine
     }
 
+
 # ==============================================================================
 # [플러그인 도구(Tool) 관리 및 중앙 라우터]
 # ==============================================================================
+
 def _load_tool_module(tools_dir, tool_id, entry_file):
     file_path = os.path.join(tools_dir, tool_id, entry_file)
     if not os.path.exists(file_path):
@@ -1638,6 +1763,7 @@ def _load_tool_module(tools_dir, tool_id, entry_file):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
 
 def check_update_readiness(base_dir, force_update=False):
     active_workers = [t for t in threading.enumerate() if t.name.startswith("Worker_")]
@@ -1689,6 +1815,7 @@ def check_update_readiness(base_dir, force_update=False):
     logger.error("Update aborted to prevent database corruption or incomplete state.")
     
     return False, len(still_running), f"{max_wait_seconds}초 대기 후에도 {len(still_running)}개의 작업이 종료되지 않았습니다."
+
 
 def dispatch_request(subpath, method, args, data, global_config):
     base_dir = global_config.get("base_dir")
@@ -1757,10 +1884,88 @@ def dispatch_request(subpath, method, args, data, global_config):
                 if MEDIA_ACTION_STATUS[task_id]['state'] == 'queued':
                     MEDIA_ACTION_STATUS[task_id]['state'] = 'cancelled'
                     MEDIA_ACTION_STATUS[task_id]['msg'] = '사용자 취소'
+                    broadcast_media_event({
+                        'task_id': task_id,
+                        'item_id': str(MEDIA_ACTION_STATUS[task_id].get('item_id', '')),
+                        'state': 'cancelled',
+                        'msg': '사용자 취소'
+                    })
                     return {"status": "success", "msg": "Cancelled"}, 200
                 else:
                     return {"status": "error", "msg": "이미 실행 중이거나 완료된 작업입니다."}, 400
             return {"status": "error", "msg": "작업을 찾을 수 없습니다."}, 404
+
+        elif subpath == 'media/queue_cancel' and method == 'POST':
+            task_id = data.get('task_id')
+            if task_id in MEDIA_ACTION_STATUS:
+                if MEDIA_ACTION_STATUS[task_id]['state'] == 'queued':
+                    MEDIA_ACTION_STATUS[task_id]['state'] = 'cancelled'
+                    MEDIA_ACTION_STATUS[task_id]['msg'] = '사용자 취소'
+                    broadcast_media_event({
+                        'task_id': task_id,
+                        'item_id': str(MEDIA_ACTION_STATUS[task_id].get('item_id', '')),
+                        'state': 'cancelled',
+                        'msg': '사용자 취소'
+                    })
+                    return {"status": "success", "msg": "Cancelled"}, 200
+                else:
+                    return {"status": "error", "msg": "이미 실행 중이거나 완료된 작업입니다."}, 400
+            return {"status": "error", "msg": "작업을 찾을 수 없습니다."}, 404
+
+        # 미디어 액션 큐 전용 실시간 SSE 스트리밍 엔드포인트
+        elif subpath == 'media/queue_stream' and method == 'GET':
+            def generate_media_stream_events():
+                listener_q = queue.Queue(maxsize=200)
+                with _MEDIA_STREAM_LOCK:
+                    _MEDIA_STREAM_LISTENERS.append(listener_q)
+
+                yield ": ping\n\n"
+
+                active_snapshot = []
+                for tid, status in list(MEDIA_ACTION_STATUS.items()):
+                    if status.get('state') in ['queued', 'processing']:
+                        active_snapshot.append({
+                            'task_id': tid,
+                            'item_id': str(status.get('item_id', '')),
+                            'state': status.get('state'),
+                            'action': status.get('action', '')
+                        })
+                if active_snapshot:
+                    yield f"data: {json.dumps({'type': 'snapshot', 'tasks': active_snapshot}, ensure_ascii=False)}\n\n"
+
+                idle_ticks = 0
+                try:
+                    while True:
+                        try:
+                            event = listener_q.get(timeout=3.0)
+                            idle_ticks = 0
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        except queue.Empty:
+                            idle_ticks += 1
+                            if idle_ticks % 5 == 0:
+                                yield ": keepalive\n\n"
+
+                            has_active = any(v.get('state') in ['queued', 'processing'] for v in MEDIA_ACTION_STATUS.values())
+                            if not has_active and idle_ticks > 10:
+                                break
+                except GeneratorExit:
+                    pass
+                finally:
+                    with _MEDIA_STREAM_LOCK:
+                        if listener_q in _MEDIA_STREAM_LISTENERS:
+                            try: _MEDIA_STREAM_LISTENERS.remove(listener_q)
+                            except Exception: pass
+
+            resp = Response(
+                generate_media_stream_events(),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache, no-transform',
+                    'X-Accel-Buffering': 'no',
+                    'Connection': 'keep-alive'
+                }
+            )
+            return resp, 200
 
         elif subpath.startswith('media/') and method == 'GET':
             rating_key = subpath.split('/')[1]
@@ -1769,8 +1974,22 @@ def dispatch_request(subpath, method, args, data, global_config):
         elif subpath.startswith('media/') and method == 'POST':
             parts = subpath.split('/')
             if len(parts) >= 3:
-                rating_key = parts[1]
-                action = parts[2]
+                raw_target_ids = parts[1]
+                action = parts[2] # match, refresh, analyze, unmatch, yaml_refresh
+                item_ids = []
+                if data and (data.get('item_ids') or data.get('ids')):
+                    raw_body_ids = data.get('item_ids') or data.get('ids')
+                    if isinstance(raw_body_ids, str):
+                        item_ids = [x.strip() for x in raw_body_ids.split(',') if x.strip()]
+                    elif isinstance(raw_body_ids, (list, tuple, set)):
+                        item_ids = [str(x).strip() for x in raw_body_ids if str(x).strip()]
+                elif ',' in raw_target_ids:
+                    item_ids = [x.strip() for x in raw_target_ids.split(',') if x.strip()]
+                elif raw_target_ids and raw_target_ids not in ['batch', '0']:
+                    item_ids = [raw_target_ids.strip()]
+
+                if not item_ids:
+                    return {"error": "대상 아이템 ID가 누락되었습니다."}, 400
 
                 plex_url = global_config.get("plex_url", "")
                 plex_token = global_config.get("plex_token", "")
@@ -1781,20 +2000,41 @@ def dispatch_request(subpath, method, args, data, global_config):
                 if not plex_url or not plex_token:
                     return {"error": "Plex 접속 정보 누락"}, 400
 
-                task_id = f"task_{rating_key}_{action}_{int(time.time() * 1000)}"
-                MEDIA_ACTION_STATUS[task_id] = {'state': 'queued', 'timestamp': time.time()}
-                MEDIA_ACTION_QUEUE.put({
-                    'task_id': task_id,
-                    'item_id': rating_key,
-                    'action': action,
-                    'plex_url': plex_url,
-                    'plex_token': plex_token,
-                    'data': data or {}
-                })
-                
-                logger.debug(f"📥 큐에 작업 추가됨 -> Action: {action}, Item: {rating_key}")
-                
-                return {"status": "queued", "task_id": task_id}, 202
+                now_ts = int(time.time() * 1000)
+                tasks_created = []
+
+                for idx, rk in enumerate(item_ids):
+                    rk_str = str(rk).strip()
+                    if not rk_str: continue
+
+                    task_id = f"task_{rk_str}_{action}_{now_ts}_{idx}"
+
+                    MEDIA_ACTION_STATUS[task_id] = {
+                        'state': 'queued', 
+                        'item_id': rk_str, 
+                        'action': action, 
+                        'timestamp': time.time()
+                    }
+
+                    MEDIA_ACTION_QUEUE.put({
+                        'task_id': task_id,
+                        'item_id': rk_str,
+                        'action': action,
+                        'plex_url': plex_url,
+                        'plex_token': plex_token,
+                        'data': data or {}
+                    })
+                    tasks_created.append({'item_id': rk_str, 'task_id': task_id})
+
+                first_task_id = tasks_created[0]['task_id'] if tasks_created else ""
+                logger.info(f"📥 미디어 큐 등록 완료 -> Action: {action}, 총 {len(tasks_created)}개 아이템 (1회 요청 처리)")
+
+                return {
+                    "status": "queued",
+                    "task_id": first_task_id,
+                    "tasks": tasks_created,
+                    "count": len(tasks_created)
+                }, 202
 
         elif subpath.startswith('mate/') and method == 'POST':
             ff_url = global_config.get("mate_url")
@@ -1882,7 +2122,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                 
             try:
                 req = Request(target_url, data=req_data, headers=headers, method=method)
-                with urlopen(req, timeout=120) as response:
+                with urlopen(req, timeout=180) as response:
                     resp_body = response.read().decode('utf-8')
                     logger.info(f"   ✅ [FF Relay 응답 ({response.status})]: {resp_body[:120]}...")
                     try: return json.loads(resp_body), response.status
@@ -1896,19 +2136,8 @@ def dispatch_request(subpath, method, args, data, global_config):
                 return {"ret": "error", "msg": f"FF 통신 실패: {str(e)}"}, 502
 
         elif subpath == 'tools' and method == 'GET':
-            installed_tools = []
-            for item in os.listdir(tools_dir):
-                tool_folder = os.path.join(tools_dir, item)
-                info_path = os.path.join(tool_folder, 'info.yaml')
-                if os.path.isdir(tool_folder) and os.path.exists(info_path):
-                    try:
-                        with open(info_path, 'r', encoding='utf-8') as f:
-                            tool_info = yaml.safe_load(f)
-                            tool_info['id'] = item 
-                            installed_tools.append(tool_info)
-                    except Exception as e:
-                        logger.error(f"info.yaml 파싱 실패 {info_path}: {e}")
-                        
+            installed_tools = get_installed_tools(tools_dir)
+            
             global GLOBAL_DASHBOARD_CACHE
             res_data = {
                 "tools": installed_tools, 
@@ -1985,6 +2214,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                 yaml.dump(tool_info, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
             with open(os.path.join(tool_path, entry_file), 'w', encoding='utf-8') as f:
                 f.write(py_content)
+                invalidate_tools_cache()
 
             return {"status": "success", "message": f"'{tool_info.get('name', original_id)}' 설치/업데이트 완료!"}, 200
 
@@ -2001,6 +2231,7 @@ def dispatch_request(subpath, method, args, data, global_config):
 
             if os.path.exists(tool_path):
                 shutil.rmtree(tool_path)
+                invalidate_tools_cache()
                 logger.info(f"[{get_tool_name(base_dir, tool_id)}] 및 관련 데이터 완전 삭제됨.")
                 return {"status": "success"}, 200
             return {"error": "해당 툴을 찾을 수 없습니다."}, 404
@@ -2265,7 +2496,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                             if not t_data:
                                 not_found_retries += 1
                                 if not_found_retries < 20:
-                                    time.sleep(0.3)
+                                    time.sleep(0.25)
                                     continue
                                 logger.warning(f"[{tool_name}] ⚠️ 태스크 데이터를 찾을 수 없어 스트림을 종료합니다.")
                                 yield f"data: {json.dumps({'state': 'not_found'})}\n\n"
@@ -2277,11 +2508,9 @@ def dispatch_request(subpath, method, args, data, global_config):
                             curr_progress = t_data.get('progress', 0)
                             curr_logs = t_data.get('logs', [])
                             curr_log_count = len(curr_logs)
-                            
-                            completed_ids = task_mgr.pop_completed_items()
 
                             if (curr_state != last_state or curr_progress != last_progress 
-                                    or curr_log_count != last_log_count or len(completed_ids) > 0 or ticks == 0):
+                                    or curr_log_count != last_log_count or ticks == 0):
                                 last_state = curr_state
                                 last_progress = curr_progress
                                 last_log_count = curr_log_count
@@ -2290,19 +2519,18 @@ def dispatch_request(subpath, method, args, data, global_config):
                                     'state': curr_state,
                                     'progress': curr_progress,
                                     'total': t_data.get('total', 0),
-                                    'logs': curr_logs,
-                                    'completed_items': completed_ids
+                                    'logs': curr_logs
                                 }
                                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                             
-                            elif ticks % 60 == 0:
+                            elif ticks % 20 == 0:
                                 yield ": keepalive\n\n"
 
                             if curr_state in ['completed', 'error', 'cancelled']:
                                 logger.info(f"[{tool_name}] 🏁 작업 {curr_state.upper()} 도달. 스트림 정상 마감.")
                                 break
 
-                            time.sleep(0.2)
+                            time.sleep(0.25)
                             ticks += 1
 
                     except GeneratorExit:
@@ -2335,9 +2563,11 @@ def dispatch_request(subpath, method, args, data, global_config):
         logger.error(traceback.format_exc())
         return {"error": str(e)}, 500
 
+
 # ==============================================================================
 # [JAV 전용 품번 파싱 및 정규화 엔진]
 # ==============================================================================
+
 DEFAULT_UNCENSORED_LABELS = ["1pon", "10mu", "carib", "fc2", "heyzo", "paco"]
 DEFAULT_JAV_RULES = {
     'generic_rules': [
@@ -2388,6 +2618,7 @@ DEFAULT_JAV_RULES = {
     ]
 }
 
+
 def compile_jav_rules(global_config):
     raw_rules = global_config.get("JAV_PARSING_RULES", DEFAULT_JAV_RULES)
     compiled = {'special': [], 'uncensored_special': [], 'generic': []}
@@ -2407,12 +2638,14 @@ def compile_jav_rules(global_config):
             compiled['generic'].append({'pattern': match.group(1), 'label_format': l_fmt.strip(), 'num_format': n_fmt.strip()})
     return compiled
 
+
 def pad_numeric_part(num_str, target_length):
     if not num_str: return ""
     match = re.match(r"(\d+)([A-Za-z]*)$", num_str)
     if match: return match.group(1).zfill(target_length) + match.group(2)
     if num_str.isdigit(): return num_str.zfill(target_length)
     return num_str
+
 
 def preprocess_jav_filename(base):
     if not base: return ""
@@ -2437,6 +2670,7 @@ def preprocess_jav_filename(base):
     base = re.sub(r'\s+', ' ', base).strip(' ._-')
 
     return base
+
 
 def extract_jav_pid(text, config, compiled_rules):
     if not text: return []
@@ -2483,6 +2717,7 @@ def extract_jav_pid(text, config, compiled_rules):
             
     return found_pids
 
+
 def normalize_pid_for_comparison(pid_str):
     if not pid_str or '-' not in pid_str: return None
     try:
@@ -2505,9 +2740,11 @@ def normalize_pid_for_comparison(pid_str):
         return norm_label + std_num + trailing_alpha
     except Exception: return None
 
+
 # ==============================================================================
 # [통합형 Plex Mate 연동 게이트웨이]
 # ==============================================================================
+
 def execute_plexmate_action(action_type, target, global_config, **kwargs):
     mate_url = global_config.get('mate_url', '')
     mate_apikey = global_config.get('mate_apikey', '')
@@ -2562,9 +2799,28 @@ def execute_plexmate_action(action_type, target, global_config, **kwargs):
         res = json.loads(response.read().decode('utf-8'))
         return res.get('ret') == 'success'
 
+
 # ==============================================================================
-# [공용 미디어 관리 엔진] - 스마트 매칭 / 리프레시 / 분석 통합
+# [미디어 액션 실시간 SSE 브로드캐스터 엔진]
 # ==============================================================================
+
+_MEDIA_STREAM_LISTENERS = []
+_MEDIA_STREAM_LOCK = threading.Lock()
+
+def broadcast_media_event(event_dict):
+    """모든 연결된 SSE 클라이언트에 미디어 상태 이벤트를 실시간 전송"""
+    with _MEDIA_STREAM_LOCK:
+        dead_listeners = []
+        for q in _MEDIA_STREAM_LISTENERS:
+            try:
+                q.put_nowait(event_dict)
+            except Exception:
+                dead_listeners.append(q)
+        for q in dead_listeners:
+            try: _MEDIA_STREAM_LISTENERS.remove(q)
+            except Exception: pass
+
+
 def media_action_worker_loop(global_config):
     logger.info("Media Action Queue Worker 시작됨.")
     while _SCHEDULER_STATES.get("PMH_Media_Worker", False):
@@ -2589,6 +2845,13 @@ def media_action_worker_loop(global_config):
             
             MEDIA_ACTION_STATUS[task_id]['state'] = 'processing'
             
+            broadcast_media_event({
+                'task_id': task_id,
+                'item_id': str(item_id),
+                'state': 'processing',
+                'action': action
+            })
+            
             try:
                 from plexapi.server import PlexServer
                 plex = PlexServer(plex_url, plex_token, timeout=120)
@@ -2603,21 +2866,27 @@ def media_action_worker_loop(global_config):
                     elif item.type == 'episode':
                         idx = int(getattr(item, 'parentIndex', 0) or 0)
                         if 100 <= idx <= 999: is_3digit_season = True
-                except Exception as e:
-                    logger.warning(f"[Core] 시즌 인덱스 확인 중 오류: {e}")
+                except Exception: pass
 
                 target_item = item
                 if item.type in ['episode', 'season']:
                     try:
                         target_item = execute_plex_action_safe(lambda: plex.fetchItem(item.grandparentRatingKey if item.type == 'episode' else item.parentRatingKey))
-                    except Exception as e:
-                        logger.warning(f"[Core] 타겟 아이템 로드 중 오류: {e}")
+                    except Exception: pass
                         
                 target_id = target_item.ratingKey
 
                 if action == 'unmatch':
                     execute_plex_action_safe(lambda: target_item.unmatch())
-                    MEDIA_ACTION_STATUS[task_id] = {'state': 'completed', 'msg': 'Unmatch 완료'}
+                    MEDIA_ACTION_STATUS[task_id] = {'state': 'completed', 'msg': 'Unmatch 완료', 'item_id': item_id, 'action': action}
+                    
+                    broadcast_media_event({
+                        'task_id': task_id,
+                        'item_id': str(item_id),
+                        'state': 'completed',
+                        'action': action,
+                        'msg': 'Unmatch 완료'
+                    })
             
                 elif action in ['match', 'refresh', 'analyze', 'yaml_refresh']:
                     try_ref = data.get('_try_refresh_first', False) if data else False
@@ -2663,12 +2932,35 @@ def media_action_worker_loop(global_config):
                             )
                             msg += " (YAML 자동 연계됨)"
 
-                        MEDIA_ACTION_STATUS[task_id].update({'state': 'completed', 'msg': msg})
+                        MEDIA_ACTION_STATUS[task_id].update({'state': 'completed', 'msg': msg, 'item_id': item_id, 'action': action})
+                        
+                        broadcast_media_event({
+                            'task_id': task_id,
+                            'item_id': str(item_id),
+                            'state': 'completed',
+                            'action': action,
+                            'msg': msg
+                        })
                     else:
-                        MEDIA_ACTION_STATUS[task_id].update({'state': 'error', 'msg': msg})
+                        MEDIA_ACTION_STATUS[task_id].update({'state': 'error', 'msg': msg, 'item_id': item_id, 'action': action})
+                        
+                        broadcast_media_event({
+                            'task_id': task_id,
+                            'item_id': str(item_id),
+                            'state': 'error',
+                            'action': action,
+                            'msg': msg
+                        })
                         
             except Exception as e:
-                MEDIA_ACTION_STATUS[task_id] = {'state': 'error', 'msg': str(e)}
+                MEDIA_ACTION_STATUS[task_id] = {'state': 'error', 'msg': str(e), 'item_id': item_id, 'action': action}
+                broadcast_media_event({
+                    'task_id': task_id,
+                    'item_id': str(item_id),
+                    'state': 'error',
+                    'action': action,
+                    'msg': str(e)
+                })
             
             finally:
                 MEDIA_ACTION_QUEUE.task_done()
@@ -2685,6 +2977,11 @@ def media_action_worker_loop(global_config):
         except Exception as e:
             logger.error(f"Media Worker Error: {e}")
             time.sleep(1)
+
+
+# ==============================================================================
+# [공용 미디어 관리 엔진] - 스마트 매칭 / 리프레시 / 분석 통합
+# ==============================================================================
 
 def perform_smart_media_action(
     plex_url, plex_token, rating_key, action_type='refresh', 
@@ -2895,20 +3192,20 @@ def perform_smart_media_action(
             except Exception: 
                 target_agent = ""
 
-        is_sjva_agent = target_agent.startswith('com.plexapp.agents.sjva') if target_agent else False
-        is_plex_agent = target_agent in ['tv.plex.agents.movie', 'tv.plex.agents.series'] if target_agent else False
+        # 로컬 메타데이터 에이전트(YAML, NFO) 및 일반/AV 에이전트 분기 정의
+        is_yaml_agent = 'yaml' in (target_agent or "").lower()
         is_nfo_agent = any(k in (target_agent or "").lower() for k in ['nfo', 'xbmc'])
-        is_custom_agent = not is_sjva_agent and not is_plex_agent and not is_nfo_agent and bool(target_agent)
+        is_sjva_agent = target_agent.startswith('com.plexapp.agents.sjva') and not is_yaml_agent if target_agent else False
+        is_plex_agent = target_agent in ['tv.plex.agents.movie', 'tv.plex.agents.series'] if target_agent else False
+        is_custom_agent = not is_sjva_agent and not is_plex_agent and not is_nfo_agent and not is_yaml_agent and bool(target_agent)
 
-        current_section_id = str(getattr(target_item, 'librarySectionID', 'Unknown'))
+        current_section_id = getattr(target_item, 'librarySectionID', None)
         
-        jav_section_cfg = str(global_config.get("JAV_SECTION", "")).strip().lower()
-        is_jav_allowed = (jav_section_cfg == 'all') or (jav_section_cfg and current_section_id in [s.strip() for s in jav_section_cfg.split(',')])
+        # YAML 또는 NFO 에이전트는 AV 판정에서 제외
+        is_jav_allowed = match_section_ids(global_config.get("JAV_SECTION"), current_section_id) and not is_yaml_agent and not is_nfo_agent
+        is_western_av = match_section_ids(global_config.get("WESTERN_AV_SECTION"), current_section_id) and not is_yaml_agent and not is_nfo_agent
 
-        western_cfg = str(global_config.get("WESTERN_AV_SECTION", "")).strip().lower()
-        is_western_av = (western_cfg == 'all') or (western_cfg and current_section_id in [s.strip() for s in western_cfg.split(',')])
-
-        is_av_mode = is_jav_allowed or is_western_av or is_sjva_agent or is_custom_agent
+        is_av_mode = (is_jav_allowed or is_western_av or is_sjva_agent or is_custom_agent) and not is_yaml_agent and not is_nfo_agent
 
         # --- 4. JAV 사전 검사 ---
         if is_sjva_agent or is_jav_allowed:
@@ -2939,11 +3236,12 @@ def perform_smart_media_action(
             if do_unmatch_first:
                 try:
                     delete_section_cfg = str(global_config.get("DELETE_JSON_SECTION", "")).strip().lower()
-                    current_section_id = str(getattr(target_item, 'librarySectionID', 'Unknown'))
-                    is_delete_allowed = (delete_section_cfg == 'all') or (delete_section_cfg and current_section_id in [s.strip() for s in delete_section_cfg.split(',')])
+                    current_section_id = getattr(target_item, 'librarySectionID', None)
+                    is_delete_allowed = match_section_ids(global_config.get("DELETE_JSON_SECTION"), current_section_id)
 
-                    if not is_delete_allowed:
-                        if task_logger: task_logger(f"💡 현재 섹션(ID: {current_section_id})은 JSON 삭제 미허용")
+                    # YAML 또는 NFO 섹션은 로컬 메타데이터 보호를 위해 삭제 루틴 건너뜀
+                    if not is_delete_allowed or is_yaml_agent or is_nfo_agent:
+                        if task_logger and not is_delete_allowed: task_logger(f"💡 현재 섹션(ID: {current_section_id})은 JSON 삭제 미허용")
                     else:
                         files_to_delete = []
                         video_dir = os.path.dirname(raw_file_path)
@@ -3114,10 +3412,10 @@ def perform_smart_media_action(
                 for q_type, q_text in queries_to_try:
                     if not q_text.strip(): continue
                     
-                    if is_av_mode or is_nfo_agent or not is_plex_agent:
+                    if is_av_mode or is_nfo_agent or is_yaml_agent or not is_plex_agent:
                         search_params = _build_search_params(q_text, item_year if not is_av_mode else None, raw_file_path)
                         search_url = f"{plex_url}/library/metadata/{target_item.ratingKey}/matches?{urlencode(search_params)}"
-                        tag_name = "Western AV" if is_western_av else ("NFO" if is_nfo_agent else "Custom/SJVA")
+                        tag_name = "YAML" if is_yaml_agent else ("Western AV" if is_western_av else ("NFO" if is_nfo_agent else "Custom/SJVA"))
                         if task_logger: task_logger(f"📡 [{tag_name}] 직접 API 검색 시도... ({q_type}: '{q_text}')")
                         matches = execute_plex_action_safe(lambda: _fetch_plex_api(search_url))
 
@@ -3150,12 +3448,13 @@ def perform_smart_media_action(
                 if task_logger: task_logger(f"❌ 일치하는 후보가 없습니다.")
                 return False, "검색 조건에 맞는 후보가 없습니다.", 0
 
-            # [케이스 1] NFO 에이전트: 로컬 NFO 기반이므로 1순위 결과 무조건 채택
-            if is_nfo_agent:
+            # [케이스 1] 로컬 메타데이터 에이전트 (NFO / YAML): 로컬 설정 기반이므로 검증 없이 1순위 결과 무조건 수용
+            if is_nfo_agent or is_yaml_agent:
                 best_match = matches[0]
                 best_score = 100
-                matched_by = "NFO 에이전트 (로컬 메타데이터 강제 수용)"
-                if task_logger: task_logger(f"💡 [NFO 모드] 로컬 NFO 검색 결과 채택 -> 후보 '{_get_val(best_match, 'name', '')}'")
+                agent_tag = "YAML" if is_yaml_agent else "NFO"
+                matched_by = f"{agent_tag} 에이전트 (로컬 메타데이터 강제 수용)"
+                if task_logger: task_logger(f"💡 [{agent_tag} 모드] 로컬 에이전트 검색 결과 1순위 즉시 채택 -> 후보 '{_get_val(best_match, 'name', '')}'")
 
             # [케이스 2] 통합 AV 모드 (JAV, Western AV, StashDB, TPDB, SJVA): '점수(Score)' 절대 판정
             elif is_av_mode:
@@ -3251,8 +3550,9 @@ def perform_smart_media_action(
             b_year = _get_val(best_match, 'year', None)
 
             if task_logger:
-                if matched_by.startswith("NFO"):
-                    task_logger(f"✨ [NFO 에이전트] 로컬 메타데이터 매칭 적용: '{candidate_name}'")
+                if matched_by.startswith("NFO") or matched_by.startswith("YAML"):
+                    agent_tag = "YAML" if "YAML" in matched_by else "NFO"
+                    task_logger(f"✨ [{agent_tag} 에이전트] 로컬 메타데이터 매칭 적용: '{candidate_name}'")
                 elif is_av_mode:
                     task_logger(f"✨ [AV 에이전트] 점수 통과 후보({best_score}점) 매칭 적용: '{candidate_name}'")
                 else:

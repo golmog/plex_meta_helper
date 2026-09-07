@@ -1000,7 +1000,6 @@ window.PmhUICore = {
             resEl.querySelectorAll('.pmh-tbl-action-btn, .pmh-tbl-global-action').forEach(b => b.onclick = async () => {
                 const payload = JSON.parse(b.dataset.payload);
                 const req = { ...getFormData(), ...payload };
-                config.toast.info("작업 실행 중...");
 
                 const wrapper = b.closest('.pmh-btn-wrapper');
                 const overlay = wrapper ? wrapper.querySelector('.pmh-btn-overlay') : null;
@@ -1089,9 +1088,12 @@ window.PmhUICore = {
             if (ctx.isDestroyed) return;
             if (ctx.pollTimer) clearTimeout(ctx.pollTimer);
             if (ctx.streamAbortController) ctx.streamAbortController.abort();
+            if (ctx.heartbeatTimer) clearInterval(ctx.heartbeatTimer);
 
             updateFormTabButtons(true);
             ctx.pollCount = 0;
+
+            let lastHeartbeatTime = Date.now();
 
             const stateEl = ctx.c.querySelector('#pmh_mon_state');
             const progEl = ctx.c.querySelector('#pmh_mon_prog');
@@ -1104,6 +1106,9 @@ window.PmhUICore = {
             cancelBtn.innerHTML = '<i class="fas fa-stop"></i> 작업 중단';
             cancelBtn.onclick = cancelActiveTask;
 
+            // =========================================================================
+            // [디바운싱 일괄 리로더]
+            // =========================================================================
             let pageReloadTimer = null;
             let isPageLoading = false;
 
@@ -1141,7 +1146,9 @@ window.PmhUICore = {
                 }, 600);
             };
 
-            // [SSE 실시간 데이터 수신 핸들러]
+            // =========================================================================
+            // [UI 갱신 및 상태 종료 처리]
+            // =========================================================================
             const updateUIWithData = (s) => {
                 if (!s || s.state === 'not_found') return false;
 
@@ -1160,7 +1167,7 @@ window.PmhUICore = {
                     cancelBtn.style.display = 'none';
                     stateEl.innerHTML = s.state === 'completed' ? '<i class="fas fa-check-circle"></i> 작업 완료' : 
                                         s.state === 'cancelled' ? '<i class="fas fa-stop-circle"></i> 작업 중단됨' : 
-                                        `<i class="fas fa-times-circle"></i> 종료됨 (${s.state})`;
+                                        `<i class="fas fa-times-circle"></i> 비정상 종료 (${s.state})`;
                                         
                     stateEl.style.color = s.state === 'completed' ? '#51a351' : '#bd362f';
                     barEl.style.background = s.state === 'completed' ? '#51a351' : '#bd362f';
@@ -1170,6 +1177,10 @@ window.PmhUICore = {
                     if (ctx.streamAbortController) {
                         ctx.streamAbortController.abort();
                         ctx.streamAbortController = null;
+                    }
+                    if (ctx.heartbeatTimer) {
+                        clearInterval(ctx.heartbeatTimer);
+                        ctx.heartbeatTimer = null;
                     }
 
                     setTimeout(() => {
@@ -1186,6 +1197,40 @@ window.PmhUICore = {
                 }
             };
 
+            // =========================================================================
+            // [클라이언트 하트비트 감시 워치독]
+            // =========================================================================
+            ctx.heartbeatTimer = setInterval(() => {
+                if (ctx.isDestroyed || !ctx.isRunning) {
+                    clearInterval(ctx.heartbeatTimer);
+                    return;
+                }
+                const silenceDuration = Date.now() - lastHeartbeatTime;
+                if (silenceDuration > 15000) {
+                    PmhLogger.warn(`[PMH UI] [SSE] ⚠️ 15초간 서버 응답 없음 (서버 다운/재시작 감지). 자가 중단 처리.`);
+                    clearInterval(ctx.heartbeatTimer);
+                    ctx.heartbeatTimer = null;
+                    
+                    if (ctx.streamAbortController) {
+                        ctx.streamAbortController.abort();
+                        ctx.streamAbortController = null;
+                    }
+
+                    updateUIWithData({
+                        state: 'error',
+                        progress: 0,
+                        total: 0,
+                        logs: [
+                            logBox.innerHTML ? logBox.innerHTML + '<br>' : '',
+                            `[${new Date().toLocaleTimeString()}] ❌ 서버와의 실시간 연결이 끊어졌습니다. (서버 재시작 또는 비정상 종료)`
+                        ]
+                    });
+                }
+            }, 3000);
+
+            // =========================================================================
+            // SSE 실시간 스트리밍
+            // =========================================================================
             try {
                 ctx.streamAbortController = new AbortController();
                 const targetServerNode = config.servers[config.activeServerIdx] || {};
@@ -1204,7 +1249,7 @@ window.PmhUICore = {
                     'X-PMH-Signature': secureToken
                 };
 
-                PmhLogger.debug(`[SSE] 📡 실시간 로그 스트리밍 연결 시도 (ServerID: ${activeSrvId.substring(0,8)}) ➔ ${streamUrl}`);
+                PmhLogger.debug(`[SSE] 📡 실시간 로그 스트리밍 연결 시도 ➔ ${streamUrl}`);
 
                 fetch(streamUrl, {
                     headers: authHeaders,
@@ -1215,6 +1260,7 @@ window.PmhUICore = {
                     }
 
                     PmhLogger.info(`[SSE] 🟢 실시간 스트림 파이프라인 연결 완료!`);
+                    lastHeartbeatTime = Date.now();
                     
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder('utf-8');
@@ -1223,8 +1269,10 @@ window.PmhUICore = {
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
+
+                        lastHeartbeatTime = Date.now();
+
                         buffer += decoder.decode(value, { stream: true });
-                        
                         const lines = buffer.split('\n\n');
                         buffer = lines.pop() || '';
 
@@ -1243,28 +1291,25 @@ window.PmhUICore = {
                     }
                 }).catch((streamErr) => {
                     if (ctx.streamAbortController && ctx.streamAbortController.signal.aborted) return;
-                    PmhLogger.warn(`[SSE] 🔴 스트리밍 연결 해제 (${streamErr.message}) ➔ 1.5초 폴링으로 자동 전환`);
-                    startClassicPollingFallback();
+                    PmhLogger.warn(`[PMH UI] [SSE] 🔴 스트리밍 소켓 단절 (${streamErr.message})`);
+                    
+                    updateUIWithData({
+                        state: 'error',
+                        progress: 0,
+                        total: 0,
+                        logs: [
+                            logBox.innerHTML ? logBox.innerHTML + '<br>' : '',
+                            `[${new Date().toLocaleTimeString()}] ❌ 서버와 통신할 수 없습니다: ${streamErr.message}`
+                        ]
+                    });
                 });
             } catch(e) {
-                PmhLogger.warn(`[SSE] 🔴 스트리밍 초기화 실패 (${e.message}) ➔ 폴링으로 전환`);
-                startClassicPollingFallback();
-            }
-
-            function startClassicPollingFallback() {
-                const poll = async () => {
-                    if (ctx.isDestroyed || !document.body.contains(ctx.c)) return;
-                    try {
-                        const s = await config.apiAdapter.status(config.toolId);
-                        const isDone = updateUIWithData(s);
-                        if (!isDone) {
-                            ctx.pollTimer = setTimeout(poll, 1500);
-                        }
-                    } catch(e) { 
-                        ctx.pollTimer = setTimeout(poll, 2000); 
-                    }
-                };
-                poll();
+                updateUIWithData({
+                    state: 'error',
+                    progress: 0,
+                    total: 0,
+                    logs: [`[오류] 스트리밍 초기화 실패: ${e.message}`]
+                });
             }
         };
 

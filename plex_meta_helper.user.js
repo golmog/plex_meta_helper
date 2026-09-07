@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.119
+// @version      0.9.120
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -195,6 +195,25 @@ GM_addStyle(`
         display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
     }
 
+    /* PMH 상단 다중 선택 단일 트리거 버튼 */
+    .pmh-multiselect-trigger-btn {
+        height: 28px !important; min-height: 28px !important; line-height: 26px !important;
+        padding: 0 10px !important; font-size: 11.5px !important; font-weight: bold !important;
+        border-radius: 4px !important; cursor: pointer !important;
+        border: 1px solid #444 !important; background: rgba(0, 0, 0, 0.4) !important; color: #eee !important;
+        display: inline-flex !important; align-items: center !important; gap: 5px !important;
+        margin: 0 8px !important; white-space: nowrap !important; transition: all 0.2s ease !important;
+        user-select: none !important; text-decoration: none !important;
+    }
+    .pmh-multiselect-trigger-btn * {
+        pointer-events: none !important;
+    }
+    .pmh-multiselect-trigger-btn:hover, .pmh-multiselect-trigger-btn.pmh-force-hover {
+        background: rgba(255, 255, 255, 0.1) !important;
+        border-color: #e5a00d !important;
+        color: #fff !important;
+    }
+
 `);
 
 (function() {
@@ -330,17 +349,43 @@ GM_addStyle(`
     document.body.appendChild(pmhActionMenu);
 
     function showMenu(targetElement) {
-        if (targetElement.dataset.refreshing || targetElement.innerHTML.includes('fa-spinner')) return;
+        if (!targetElement || targetElement.dataset.refreshing || targetElement.innerHTML.includes('fa-spinner')) return;
+        
+        if (currentHoverTarget === targetElement && pmhActionMenu.style.visibility === 'visible') {
+            if (menuHideTimer) clearTimeout(menuHideTimer);
+            return;
+        }
         
         currentMenuSessionId++;
         currentHoverTarget = targetElement;
         if (menuHideTimer) clearTimeout(menuHideTimer);
 
         document.querySelectorAll('.pmh-force-hover').forEach(el => el.classList.remove('pmh-force-hover'));
-
         targetElement.classList.add('pmh-force-hover');
 
-        if (targetElement.classList.contains('plex-path-scan-link')) {
+        // A. 상단 다중 선택 트리거 버튼 호버 시
+        if (targetElement.id === 'pmh-multiselect-trigger') {
+            pmhActionMenu.innerHTML = `
+                <div class="pmh-menu-item" data-action="batch_refresh">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-bolt" style="color:#2f96b4;"></i></div>
+                    메타 새로고침
+                </div>
+                <div class="pmh-menu-item" data-action="batch_rematch">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-link" style="color:#adb5bd;"></i></div>
+                    일반 리매칭
+                </div>
+                <div class="pmh-menu-item" data-action="batch_clean_match">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-broom" style="color:#f89406;"></i></div>
+                    클린 리매칭
+                </div>
+                <div class="pmh-menu-item" data-action="batch_analyze">
+                    <div class="pmh-menu-icon-wrap"><i class="fas fa-search-plus" style="color:#51a351;"></i></div>
+                    미디어 분석
+                </div>
+            `;
+        }
+        // B. 경로 스캔 링크 호버 시
+        else if (targetElement.classList.contains('plex-path-scan-link')) {
             pmhActionMenu.innerHTML = `
                 <div class="pmh-menu-item" data-action="scan_normal">
                     <div class="pmh-menu-icon-wrap"><i class="fas fa-search" style="color:#e5a00d;"></i></div>
@@ -351,7 +396,9 @@ GM_addStyle(`
                     VFS 갱신 후 스캔
                 </div>
             `;
-        } else {
+        } 
+        // C. 목록 GUID 뱃지 호버 시
+        else {
             const rawG = targetElement.dataset.rawGuid || targetElement.textContent || '';
             const targetServerId = targetElement.dataset.sid || (ServerConfig.SERVERS[0]?.machineIdentifier);
             const parentCont = targetElement.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]');
@@ -412,7 +459,7 @@ GM_addStyle(`
     }
 
     function hideMenu(targetSessionId) {
-        if (targetSessionId !== currentMenuSessionId) return;
+        if (targetSessionId !== undefined && targetSessionId !== currentMenuSessionId) return;
 
         pmhActionMenu.style.opacity = '0';
         
@@ -421,7 +468,7 @@ GM_addStyle(`
         }
 
         setTimeout(() => {
-            if (targetSessionId === currentMenuSessionId) {
+            if (targetSessionId === undefined || targetSessionId === currentMenuSessionId) {
                 pmhActionMenu.style.visibility = 'hidden';
                 currentHoverTarget = null;
             }
@@ -429,7 +476,7 @@ GM_addStyle(`
     }
 
     document.addEventListener('mouseover', (e) => {
-        const target = e.target.closest('.plex-guid-list-box, .plex-path-scan-link');
+        const target = e.target.closest('.plex-guid-list-box, .plex-path-scan-link, #pmh-multiselect-trigger');
         if (target) {
             if (target.hasAttribute('title')) target.removeAttribute('title'); 
             showMenu(target);
@@ -438,19 +485,23 @@ GM_addStyle(`
         }
     });
 
+    // 마우스 롤아웃(이탈) 감지 및 닫기
     document.addEventListener('mouseout', (e) => {
         if (!currentHoverTarget) return;
 
-        const isOutsideMenu = !pmhActionMenu.contains(e.relatedTarget);
-        const isOutsideBadge = !currentHoverTarget.contains(e.relatedTarget);
+        const isOutsideMenu = !e.relatedTarget || !pmhActionMenu.contains(e.relatedTarget);
+        const isOutsideTarget = !e.relatedTarget || !currentHoverTarget.contains(e.relatedTarget);
 
-        if (isOutsideMenu && isOutsideBadge) {
+        if (isOutsideMenu && isOutsideTarget) {
             if (menuHideTimer) clearTimeout(menuHideTimer);
             const sessionToClose = currentMenuSessionId;
-            menuHideTimer = setTimeout(() => { hideMenu(sessionToClose); }, 50); 
+            menuHideTimer = setTimeout(() => {
+                hideMenu(sessionToClose);
+            }, 100);
         }
     });
 
+    // 메뉴 항목 클릭 리스너
     document.addEventListener('click', (e) => {
         if (pmhActionMenu.style.visibility === 'visible') {
             const menuItem = e.target.closest('.pmh-menu-item');
@@ -458,6 +509,13 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 const actionType = menuItem.dataset.action;
                 
+                if (actionType.startsWith('batch_')) {
+                    const cleanAction = actionType.replace('batch_', '');
+                    hideMenu(currentMenuSessionId);
+                    executePmhBatchAction(cleanAction);
+                    return;
+                }
+
                 if (actionType === 'crop_poster') {
                     const targetGBox = currentHoverTarget;
                     const iid = targetGBox.dataset.iid;
@@ -467,21 +525,14 @@ GM_addStyle(`
                     const parentCont = targetGBox.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
                     const titleText = parentCont ? (parentCont.querySelector('[class*="Title"], a[aria-label]')?.textContent?.trim()) : '';
 
-                    infoLog(`[List Menu] 🎬 포스터 편집 실행 -> Item ID: ${iid}, Server ID: ${sid}, Code: ${rawG}`);
                     hideMenu(currentMenuSessionId);
-                    
-                    if (iid && sid) {
-                        openPosterCropModal(iid, sid, rawG, titleText);
-                    } else {
-                        toastr.error("아이템 정보(ID/Server)를 찾을 수 없습니다.");
-                    }
+                    if (iid && sid) openPosterCropModal(iid, sid, rawG, titleText);
                     return;
                 }
 
                 const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
                 clickEvent.pmhMenuAction = actionType; 
                 currentHoverTarget.dispatchEvent(clickEvent);
-                
                 hideMenu(currentMenuSessionId);
                 return;
             }
@@ -492,6 +543,7 @@ GM_addStyle(`
         }
     });
 
+    // 스크롤 시 즉시 닫기
     function hideMenuOnScroll() {
         if (pmhActionMenu.style.visibility === 'visible') hideMenu(currentMenuSessionId); 
     }
@@ -1255,8 +1307,8 @@ GM_addStyle(`
         return null;
     }
 
-    async function makeRequest(url, method = "GET", data = null, apiKey = null, cancelToken = null) {
-        log(`[API Req] [${method}] ${url}`);
+    async function makeRequest(url, method = "GET", data = null, apiKey = null, cancelToken = null, timeoutMs = 10000) {
+        log(`[API Req] [${method}] ${url} (Timeout: ${timeoutMs / 1000}s)`);
 
         const secureToken = await generateSecureHeader(apiKey);
 
@@ -1268,12 +1320,10 @@ GM_addStyle(`
             if (data) headers["Content-Type"] = "application/json";
             if (apiKey) headers["X-PMH-Signature"] = secureToken;
 
-            let reqTimeout = 10000;
-
             const req = GM_xmlhttpRequest({
                 method: method,
                 url: url,
-                timeout: reqTimeout,
+                timeout: timeoutMs,
                 headers: headers,
                 data: data ? JSON.stringify(data) : undefined,
                 onload: r => {
@@ -1291,8 +1341,7 @@ GM_addStyle(`
                                 resolve(parsed);
                             }
                         } catch(e) {
-                            errorLog("[API Parse Error] 서버 원본 응답:", r.responseText);
-                            reject(new Error(`서버 응답 파싱 실패 (HTTP ${r.status}): ${r.responseText?.substring(0, 100) || ''}`));
+                            reject(new Error(`서버 응답 파싱 실패 (HTTP ${r.status})`));
                         }
                     } else {
                         try {
@@ -1300,7 +1349,7 @@ GM_addStyle(`
                             const errMsg = errJson.error || errJson.message || `서버 오류 (HTTP ${r.status})`;
                             reject(new Error(errMsg));
                         } catch(e) {
-                            reject(new Error(`서버 처리 실패 (HTTP ${r.status}): ${r.statusText || ''}`));
+                            reject(new Error(`서버 처리 실패 (HTTP ${r.status})`));
                         }
                     }
                 },
@@ -1310,11 +1359,11 @@ GM_addStyle(`
                 },
                 ontimeout: () => {
                     activeRequests.delete(req);
-                    reject(new Error("Timeout: 서버 응답 시간 초과"));
+                    reject(new Error(`Timeout: 서버 응답 시간 초과 (${timeoutMs / 1000}초)`));
                 },
                 onabort: () => {
                     activeRequests.delete(req);
-                    reject(new Error("Aborted: 사용자에 의해 요청이 취소되었습니다."));
+                    reject(new Error("Aborted: 요청이 취소되었습니다."));
                 }
             });
             activeRequests.add(req);
@@ -1539,6 +1588,16 @@ GM_addStyle(`
             });
         }
 
+        if (meta.Location && Array.isArray(meta.Location)) {
+            log(`[Fallback] Meta Location parsed: ${meta.Location.length} location(s) found for item ${itemId}`);
+            meta.Location.forEach(loc => {
+                if (loc.path) {
+                    versions.push({ file: loc.path, parts: [{ path: loc.path }] });
+                }
+            });
+            if (!p && versions.length > 0) p = versions[0].file;
+        }
+
         let markers = {};
         if (meta.Marker) {
             meta.Marker.forEach(mk => {
@@ -1568,6 +1627,7 @@ GM_addStyle(`
         return {
             type: (meta.type === 'movie' || meta.type === 'episode') ? 'video' : 'directory',
             itemId: itemId, guid: guid, duration: meta.duration || 0,
+            librarySectionID: meta.librarySectionID || null,
             versions: versions, markers: markers,
             g: guid.split('://')[1]?.split('?')[0] || guid, raw_g: guid, p: p, tags: tags,
             part_id: versions.length > 0 ? versions[0].part_id : null,
@@ -2871,16 +2931,16 @@ GM_addStyle(`
                 dropdown.style.left = `${leftPos}px`;
                 dropdown.style.right = 'auto';
 
-                dropdown.innerHTML = `
-                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
-                        <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
-                    </div>
-                    <div class="pmh-tool-divider" style="margin:0;"></div>
-                    <div style="padding:30px 15px; text-align:center; color:#aaa; font-size:13px;">
-                        <i class="fas fa-spinner fa-spin" style="font-size:24px; color:#e5a00d; margin-bottom:12px;"></i><br>
-                        서버에서 설치된 툴을 불러오고 있습니다...
-                    </div>
-                `;
+                if (!dropdown.innerHTML || dropdown.innerHTML.trim() === '') {
+                    dropdown.innerHTML = `
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 15px; background:rgba(0,0,0,0.5); border-radius:6px 6px 0 0;">
+                            <span style="font-size: 12px; color: #e5a00d; font-weight: bold;">PMH Toolbox</span>
+                        </div>
+                        <div style="padding:25px 15px; text-align:center; color:#aaa; font-size:12px;">
+                            <i class="fas fa-spinner fa-spin" style="font-size:20px; color:#e5a00d; margin-bottom:8px;"></i><br>툴 목록 로딩 중...
+                        </div>
+                    `;
+                }
 
                 fetchTools();
             } else {
@@ -3082,11 +3142,19 @@ GM_addStyle(`
     }
 
     function renderListBadges(cont, poster, link, info, srvConfig, id) {
-        const targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
+        if (!cont || !cont.isConnected) return;
 
-        poster.querySelector('.pmh-render-marker')?.remove();
-        poster.querySelector('.pmh-top-right-wrapper')?.remove();
-        cont.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
+        if (cont.matches?.('[class*="PosterCard-card-"], [class*="ThumbCard-card-"], [class*="MetadataSimplePosterCard-card-"]')) {
+            const realParent = cont.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], tr[class*="TableRow-"]');
+            if (realParent) cont = realParent;
+        }
+
+        const targetServerId = srvConfig ? srvConfig.machineIdentifier : link?.getAttribute('href')?.match(/\/server\/([a-f0-9]+)\//)?.[1];
+
+        cont.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .pmh-guid-wrapper, .plex-guid-list-box').forEach(el => el.remove());
+        if (poster && poster !== cont) {
+            poster.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .pmh-guid-wrapper, .plex-guid-list-box').forEach(el => el.remove());
+        }
 
         const currentStateHash = getItemStateHash(cont);
         const marker = document.createElement('div');
@@ -3095,22 +3163,22 @@ GM_addStyle(`
         marker.setAttribute('data-iid', id);
 
         if (currentStateHash) marker.setAttribute('data-state-hash', currentStateHash);
-        poster.appendChild(marker);
+        if (poster) poster.appendChild(marker);
 
         let wrapper = null;
         if (state.listTag || state.listPlay || info.is_friend_pending) {
             wrapper = document.createElement('div');
             wrapper.className = 'pmh-top-right-wrapper pmh-fade-update';
 
-            const existingPlexBadge = poster.querySelector('[class*="Badge-topRightBadge-"], [class*="PlayStateBadge-topRightBadge-"]');
+            const existingPlexBadge = poster?.querySelector('[class*="Badge-topRightBadge-"], [class*="PlayStateBadge-topRightBadge-"]');
             if (existingPlexBadge) {
                 wrapper.style.top = '34px';
             }
 
-            poster.appendChild(wrapper);
+            if (poster) poster.appendChild(wrapper);
         }
 
-        if (info.is_friend_pending) {
+        if (info.is_friend_pending && wrapper) {
             marker.setAttribute('data-friend-pending', 'true');
 
             const fetchBtn = document.createElement('div');
@@ -3125,9 +3193,8 @@ GM_addStyle(`
                 fetchBtn.dataset.fetching = 'true';
                 fetchBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
 
-                const targetServerId = link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
+                const targetServerId = link?.getAttribute('href')?.match(/\/server\/([a-f0-9]+)\//)?.[1];
                 const plexSrv = extractPlexServerInfo(targetServerId);
-                infoLog(`[List] Friend server info fetch requested. (Server: ${targetServerId}, Item: ${id})`);
 
                 if (plexSrv) {
                     try {
@@ -3146,7 +3213,7 @@ GM_addStyle(`
             return;
         }
 
-        if (state.listTag && info.tags && info.tags.length > 0) {
+        if (state.listTag && info.tags && info.tags.length > 0 && wrapper) {
             info.tags.forEach(tagText => {
                 const t = document.createElement('div');
                 t.className = 'plex-list-res-tag';
@@ -3155,7 +3222,7 @@ GM_addStyle(`
             });
         }
 
-        if (state.listPlay) {
+        if (state.listPlay && wrapper) {
             if (srvConfig && info.p) {
                 const lPath = encodePathSafe(getLocalPath(info.p));
                 const pBtn = document.createElement('a');
@@ -3175,17 +3242,12 @@ GM_addStyle(`
             }
 
             if (info.part_id) {
-                const targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
+                const targetServerId = srvConfig ? srvConfig.machineIdentifier : link?.getAttribute('href')?.match(/\/server\/([a-f0-9]+)\//)?.[1];
                 const plexSrv = extractPlexServerInfo(targetServerId);
 
                 if (plexSrv) {
                     const vUrl = `${plexSrv.url}/library/parts/${info.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${id}`;
-
-                    let justFileName = "Unknown_Video.mp4";
-                    if (info.p) {
-                        const pathParts = info.p.split(/[\\/]/);
-                        justFileName = pathParts[pathParts.length - 1];
-                    }
+                    let justFileName = info.p ? (info.p.split(/[\\/]/).pop() || "Unknown_Video.mp4") : "Unknown_Video.mp4";
 
                     let sUrl = '';
                     if (info.sub_url && info.sub_url.trim() !== '') {
@@ -3197,7 +3259,6 @@ GM_addStyle(`
                     }
 
                     const streamPayload = encodePathSafe(vUrl) + '%7C' + encodePathSafe(sUrl) + '%7C' + encodePathSafe(justFileName);
-
                     const sBtn = document.createElement('a');
                     sBtn.href = `plexstream://${streamPayload}`;
                     sBtn.className = 'plex-list-play-external plex-list-stream-btn';
@@ -3216,11 +3277,8 @@ GM_addStyle(`
         }
 
         if (state.listGuid) {
-            const isWide = poster.clientWidth > 200;
+            const isWide = (poster?.clientWidth || 158) > 200;
             const currentLen = isWide ? state.guidLen * 2 : state.guidLen;
-
-            let short = '';
-            let isUnmatched = false;
 
             const gBoxWrapper = document.createElement('div');
             gBoxWrapper.className = 'pmh-guid-wrapper pmh-fade-update';
@@ -3252,41 +3310,26 @@ GM_addStyle(`
                 } else if (queueInfo.state === 'queued') {
                     gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
                     gBox.style.color = '#e5a00d';
-                } else {
+                } else if (queueInfo.state === 'processing') {
                     gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
                     gBox.style.color = '#2f96b4';
                 }
                 gBox.dataset.refreshing = 'true';
             } else if (info.g) {
-                short = info.g.length > currentLen ? info.g.substring(0, currentLen) + '...' : info.g;
+                const short = info.g.length > currentLen ? info.g.substring(0, currentLen) + '...' : info.g;
                 gBox.textContent = short;
-                gBox.title = `${info.g} : 클릭 시 재조회 (Shift+클릭: 리매칭)`;
+                gBox.title = `${info.g} : 마우스 올림 시 작업 메뉴`;
 
                 const lowerRawG = originalRawG.toLowerCase();
                 const isUnmatched = !lowerRawG || lowerRawG === '-' || lowerRawG.includes('local://') || lowerRawG.includes('none://');
 
                 if (isUnmatched) gBox.style.color = '#a68241';
-
                 gBox.dataset.unmatched = isUnmatched ? 'true' : 'false';
             } else {
-                gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>로딩 중...`;
-                gBox.style.color = '#adb5bd';
-
-                gBox.title = '클릭 시 데이터 다시 불러오기 (8초 후 자동 시도)';
-                gBox.style.cursor = 'pointer';
-
-                setTimeout(() => {
-                    if (gBox.isConnected && gBox.dataset.refreshing !== 'true' && gBox.innerHTML.includes('로딩 중')) {
-                        const stillQueued = window._pmh_media_queues && window._pmh_media_queues[id];
-                        if (!stillQueued) {
-                            infoLog(`[List] 'Loading...' timeout reached for ID: ${id}. Re-fetching from DB...`);
-                            gBox.click();
-                        }
-                    }
-                }, 8000);
+                gBox.innerHTML = `<i class="fas fa-info-circle" style="margin-right:4px;"></i>미확인`;
+                gBox.style.color = '#777';
             }
 
-            let abortPolling = false;
             gBox.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
 
@@ -3295,45 +3338,33 @@ GM_addStyle(`
                 }
 
                 if (gBox.dataset.refreshing === 'true') {
-                    const queueInfo = window._pmh_media_queues && window._pmh_media_queues[id];
-                    if (queueInfo && queueInfo.state === 'queued') {
+                    const qInfo = window._pmh_media_queues && window._pmh_media_queues[id];
+                    if (qInfo && qInfo.state === 'queued') {
                         gBox.innerHTML = `<i class="fas fa-ban" style="margin-right:4px;"></i>취소됨`;
                         gBox.style.color = '#bd362f';
 
-                        let targetServerId = null;
                         try {
-                            targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
                             const srv = getServerConfig(targetServerId);
-                            if (srv) {
-                                await makeRequest(`${srv.relayUrl}/media/queue_cancel`, 'POST', { task_id: queueInfo.task_id }, ClientSettings.masterApiKey);
+                            if (srv && qInfo.task_id && qInfo.task_id !== 'pending') {
+                                await makeRequest(`${srv.relayUrl}/media/queue_cancel`, 'POST', { task_id: qInfo.task_id }, ClientSettings.masterApiKey);
                             }
+                        } catch(err) {}
+                        delete window._pmh_media_queues[id];
+                        if (typeof window.saveQueueState === 'function') window.saveQueueState();
 
-                            delete window._pmh_media_queues[id];
-                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
-
-                            toastr.warning('작업 대기가 취소되었습니다.', '취소됨', {timeOut: 2000});
-                        } catch(err) {
-                            delete window._pmh_media_queues[id];
-                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                        } finally {
+                        setTimeout(() => {
                             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
                             markers.forEach(m => m.remove());
-                            setTimeout(() => { if (typeof processList === 'function') processList(); }, 1000);
-                        }
+                            if (typeof processList === 'function') processList();
+                        }, 800);
                     }
                     return;
                 }
 
-                if (!e.pmhMenuAction) {
-                    showMenu(gBox);
-                    return; 
-                }
-
                 const menuAction = e.pmhMenuAction;
-                const targetServerId = srvConfig ? srvConfig.machineIdentifier : link.getAttribute('href').match(/\/server\/([a-f0-9]+)\//)?.[1];
                 const plexSrv = targetServerId ? extractPlexServerInfo(targetServerId) : null;
-
-                if (!srvConfig || !plexSrv) return;
+                const srv = getServerConfig(targetServerId);
+                if (!srv || !plexSrv) return;
 
                 let actionName = '';
                 let apiAction = '';
@@ -3342,29 +3373,14 @@ GM_addStyle(`
                 if (menuAction === 'clean_match') {
                     actionName = '클린 리매칭'; apiAction = 'match';
                     extraData = { _try_refresh_first: false, _do_unmatch_first: true };
-                }
-                else if (menuAction === 'rematch') {
+                } else if (menuAction === 'rematch') {
                     actionName = '일반 리매칭'; apiAction = 'match';
                     extraData = { _try_refresh_first: false, _do_unmatch_first: false };
-                }
-                else if (menuAction === 'refresh') {
+                } else if (menuAction === 'refresh') {
                     actionName = '메타 새로고침'; apiAction = 'refresh';
-                }
-                else return;
+                } else return;
 
-                if (menuAction === 'crop_poster') {
-                    openPosterCropModal(id, targetServerId, info.g);
-                    return;
-                }
-
-                let itemDisplayName = "알 수 없는 항목";
-                if (info.p) {
-                    const pParts = info.p.split(/[\\/]/);
-                    itemDisplayName = pParts[pParts.length - 1];
-                } else {
-                    const labelEl = cont.querySelector('[aria-label]');
-                    if (labelEl) itemDisplayName = labelEl.getAttribute('aria-label');
-                }
+                let itemDisplayName = info.p ? (info.p.split(/[\\/]/).pop() || info.p) : (cont.querySelector('[class*="Title"], a[aria-label]')?.textContent?.trim() || `Item ${id}`);
 
                 window._pmh_media_queues = window._pmh_media_queues || {};
                 window._pmh_media_queues[id] = { 
@@ -3373,53 +3389,32 @@ GM_addStyle(`
                 };
                 if (typeof window.saveQueueState === 'function') window.saveQueueState();
 
-                const updateLiveBadge = (html, color, isRefreshing = true) => {
-                    const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                    markers.forEach(m => {
-                        const container = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                        const currentGBox = container ? container.querySelector('.plex-guid-list-box') : null;
-                        if (currentGBox) {
-                            currentGBox.innerHTML = html; currentGBox.style.color = color;
-                            if (isRefreshing) currentGBox.dataset.refreshing = 'true';
-                            else delete currentGBox.dataset.refreshing;
-                        }
-                    });
-                };
+                gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>요청중...`;
+                gBox.style.color = '#ccc';
+                gBox.dataset.refreshing = 'true';
 
-                updateLiveBadge(`<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>${actionName} 대기...`, '#ccc', true);
-                toastr.info(`서버 대기열에 [${actionName}] 작업을 추가합니다...`, "대기열 추가", {timeOut: 2000});
+                if (typeof window.startQueuePolling === 'function') {
+                    window.startQueuePolling(targetServerId);
+                }
 
                 try {
-                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${id}/${apiAction}`, 'POST', extraData, ClientSettings.masterApiKey);
-
-                    if (res.status === 'queued') {
-                        updateLiveBadge(`<i class="fas fa-check" style="margin-right:4px;"></i>큐 추가됨`, '#51a351', true);
-
-                        window._pmh_media_queues[id] = { task_id: res.task_id, start_time: Date.now(), state: 'queued', title: itemDisplayName, server_id: targetServerId };
-                        if (typeof window.saveQueueState === 'function') window.saveQueueState();
-
-                        if (typeof window.startQueuePolling === 'function') window.startQueuePolling(targetServerId);
-
-                        setTimeout(() => {
-                            if (window._pmh_media_queues && window._pmh_media_queues[id]) {
-                                const currentState = window._pmh_media_queues[id].state;
-                                if (currentState === 'queued') {
-                                    updateLiveBadge(`<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`, '#e5a00d', true);
-                                } else if (currentState === 'processing') {
-                                    updateLiveBadge(`<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`, '#2f96b4', true);
-                                }
+                    const res = await makeRequest(`${srv.relayUrl}/media/${id}/${apiAction}`, 'POST', extraData, ClientSettings.masterApiKey);
+                    if (res && res.status === 'queued') {
+                        if (window._pmh_media_queues[id]) {
+                            window._pmh_media_queues[id].task_id = res.task_id;
+                            if (window._pmh_media_queues[id].state !== 'processing' && window._pmh_media_queues[id].state !== 'completed') {
+                                window._pmh_media_queues[id].state = 'queued';
+                                updateQueueBadgeInDOM(id, 'queued');
                             }
-                        }, 1500);
-
-                    } else { throw new Error(res.error || res.message || "큐 등록 실패"); }
-                } catch (err) {
-                    toastr.error(`${actionName} 요청 실패: ${err.message}`, "오류", {timeOut: 4000});
-                    
+                            if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                        }
+                    }
+                } catch(err) {
                     delete window._pmh_media_queues[id];
                     if (typeof window.saveQueueState === 'function') window.saveQueueState();
-
-                    updateLiveBadge(`<i class="fas fa-times" style="margin-right:4px;"></i>요청 실패`, '#bd362f', false);
-                    setTimeout(() => { updateLiveBadge(originHTML, originColor, false); }, 3000);
+                    gBox.innerHTML = `<i class="fas fa-times" style="margin-right:4px;"></i>실패`;
+                    gBox.style.color = '#bd362f';
+                    delete gBox.dataset.refreshing;
                 }
             });
 
@@ -3428,10 +3423,10 @@ GM_addStyle(`
 
             cont.style.setProperty('overflow', 'visible', 'important');
 
-            let horizontalScroller = cont.closest('[class*="Scroller-horizontal"], [class*="HorizontalList-"]');
+            let horizontalScroller = cont.closest('[class*="Scroller-horizontal"], [class*="HorizontalList-"], [class*="VirtualHubScroller-"]');
             if (horizontalScroller) {
                 horizontalScroller.style.setProperty('overflow-y', 'hidden', 'important');
-                horizontalScroller.style.setProperty('padding-bottom', '15px', 'important');
+                horizontalScroller.style.setProperty('padding-bottom', '20px', 'important');
             }
         }
     }
@@ -3455,280 +3450,312 @@ GM_addStyle(`
         });
     }, 2500);
 
+    // =========================================================================
+    // 미디어 큐 실시간 SSE 수신 + 자가치유(Self-Healing) 자동 복원 엔진
+    // =========================================================================
+    window._pmh_active_queue_streams = window._pmh_active_queue_streams || {};
+    window._pmh_watchdog_timer = window._pmh_watchdog_timer || null;
+
+    function revertQueueBadgeToOriginal(itemId, serverId) {
+        if (!itemId) return;
+
+        if (window._pmh_media_queues?.[itemId]) {
+            delete window._pmh_media_queues[itemId];
+            if (typeof window.saveQueueState === 'function') window.saveQueueState();
+        }
+
+        setTimeout(() => {
+            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${itemId}"]`);
+            markers.forEach(m => m.remove());
+
+            if (typeof renderVisibleItems === 'function') renderVisibleItems();
+            else if (typeof processList === 'function') processList();
+        }, 2000);
+    }
+
     window.startQueuePolling = function(serverId) {
-        window._pmh_polling_active = window._pmh_polling_active || {};
-        if (window._pmh_polling_active[serverId]) return;
-        
-        const hasServerTask = Object.values(window._pmh_media_queues).some(q => q.server_id === serverId);
+        if (!serverId) return;
+        if (window._pmh_active_queue_streams[serverId]) return;
+
+        const hasServerTask = Object.values(window._pmh_media_queues || {}).some(q => q.server_id === serverId);
         if (!hasServerTask) return;
 
-        window._pmh_polling_active[serverId] = true;
-        let consecutiveErrors = 0;
+        const srvConfig = getServerConfig(serverId);
+        if (!srvConfig) return;
 
-        const pollLoop = async () => {
-            const serverQueueKeys = Object.keys(window._pmh_media_queues).filter(k => 
-                window._pmh_media_queues[k].server_id === serverId &&
-                window._pmh_media_queues[k].state !== 'requesting'
-            );
-            
-            if (serverQueueKeys.length === 0) {
-                window._pmh_polling_active[serverId] = false;
-                return;
+        window._pmh_active_queue_streams[serverId] = true;
+
+        (async () => {
+            let secureToken = "";
+            if (typeof generateSecureHeader === 'function') {
+                secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
             }
 
-            const srvConfig = getServerConfig(serverId);
-            const taskIdsList = serverQueueKeys.map(k => window._pmh_media_queues[k].task_id);
+            const streamUrl = `${srvConfig.relayUrl}/media/queue_stream?server_id=${encodeURIComponent(serverId)}&sig=${encodeURIComponent(secureToken)}&_t=${Date.now()}`;
+            log(`[Queue SSE] 📡 미디어 큐 실시간 스트림 연결 시도 (${srvConfig.name}) ➔ ${streamUrl}`);
 
-            if (srvConfig && taskIdsList.length > 0) {
-                try {
-                    const res = await makeRequest(`${srvConfig.relayUrl}/media/queue_status`, 'POST', { task_ids: taskIdsList }, ClientSettings.masterApiKey);
-                    consecutiveErrors = 0;
+            const abortController = new AbortController();
 
-                    for (const id of serverQueueKeys) {
-                        try {
-                            const qInfo = window._pmh_media_queues[id];
-                            if (!qInfo) continue;
+            try {
+                const response = await fetch(streamUrl, {
+                    headers: { 'Accept': 'text/event-stream', 'X-PMH-Signature': secureToken },
+                    signal: abortController.signal
+                });
 
-                            const status = res[qInfo.task_id];
-                            const isTimeout = (Date.now() - qInfo.start_time > 43200000);
+                if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
 
-                            if (!status || status.state === 'unknown' || status.state === 'error' || isTimeout) {
-                                const isUnknown = (!status || status.state === 'unknown');
+                infoLog(`[Queue SSE] 🟢 미디어 큐 실시간 파이프라인 연결 완료 (${srvConfig.name})`);
 
-                                if (isUnknown) {
-                                    infoLog(`[Queue] 아이템 ${id}의 작업 상태를 알 수 없습니다. (서버 재시작 또는 시간 경과)`);
-                                } else if (status.state === 'error') {
-                                    const failName = qInfo.title || "알 수 없는 항목";
-                                    warnLog(`[Queue] 작업 실패: [${failName}] ${status.msg}`);
-                                } else if (isTimeout) {
-                                    const failName = qInfo.title || "알 수 없는 항목";
-                                    warnLog(`[Queue] 시간 초과: [${failName}] 서버 응답이 없습니다.`);
-                                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
 
-                                deleteMemoryCache(`D_${serverId}_${id}`);
-                                deleteMemoryCache(`F_${serverId}_${id}`);
-                                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(id);
-                                
-                                delete window._pmh_media_queues[id];
-                                if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                                
-                                const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                markers.forEach(m => {
-                                    const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                    const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                    if (gBox) {
-                                        gBox.innerHTML = isUnknown ? `<i class="fas fa-sync-alt"></i> 대기 해제` : `<i class="fas fa-exclamation-triangle"></i> 실패`;
-                                        gBox.style.color = isUnknown ? '#777' : '#bd362f';
-                                        setTimeout(() => m.remove(), 2000);
-                                    } else {
-                                        m.remove();
-                                    }
-                                });
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-                                setTimeout(() => { if (typeof processList === 'function') processList(); }, 500);
-                            }
-                            
-                            else if (status.state === 'completed') {
-                                infoLog(`[Queue] 아이템 ${id}의 작업 성공 완료! 캐시 갱신을 시도합니다.`);
-                                
-                                const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                markers.forEach(m => {
-                                    const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                    const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                    if (gBox) {
-                                        gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>반영 중...`;
-                                        gBox.style.color = '#51a351';
-                                    }
-                                });
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop() || '';
 
-                                delete window._pmh_media_queues[id];
-                                if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                    for (const block of lines) {
+                        if (block.startsWith(':')) continue;
+                        const match = block.match(/data:\s*(.+)/);
+                        if (match) {
+                            try {
+                                const event = JSON.parse(match[1]);
 
-                                (async () => {
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    try {
-                                        const plexSrv = extractPlexServerInfo(serverId);
-                                        if (!plexSrv) return;
-                                        
-                                        let meta = null;
-                                        let oldCache = getMemoryCache(`L_${serverId}_${id}`) || {};
-                                        let newId = id;
+                                // =========================================================
+                                // [자가 치유 1] 서버 재부팅 감지 시 유령 작업 즉시 복원
+                                // =========================================================
+                                if (event.type === 'snapshot' && Array.isArray(event.tasks)) {
+                                    const activeBackendItemIds = new Set(event.tasks.map(t => String(t.item_id || '')));
+                                    const now = Date.now();
 
-                                        for (let retry = 0; retry < 3; retry++) {
-                                            meta = await fetchPlexMetaFallback(id, plexSrv);
-                                            
-                                            if (meta === 'DELETED') break;
-                                            
-                                            if (meta) {
-                                                const checkGuid = (meta.guid || '').toLowerCase();
-                                                if (!checkGuid.includes('local://') && !checkGuid.includes('none://') && checkGuid !== '-') {
-                                                    break;
-                                                }
+                                    event.tasks.forEach(t => {
+                                        const iid = String(t.item_id || '');
+                                        if (iid) {
+                                            window._pmh_media_queues = window._pmh_media_queues || {};
+                                            if (!window._pmh_media_queues[iid]) {
+                                                window._pmh_media_queues[iid] = {
+                                                    task_id: t.task_id,
+                                                    state: t.state,
+                                                    server_id: serverId,
+                                                    start_time: Date.now()
+                                                };
+                                            } else {
+                                                window._pmh_media_queues[iid].task_id = t.task_id;
+                                                window._pmh_media_queues[iid].state = t.state;
                                             }
-                                            infoLog(`[Queue] Plex API 반환값이 아직 갱신되지 않았습니다(local://). 3초 후 재시도... (${retry+1}/3)`);
-                                            await new Promise(r => setTimeout(r, 3000));
+                                            updateQueueBadgeInDOM(iid, t.state);
                                         }
+                                    });
 
-                                        if (meta === 'DELETED') {
-                                            meta = null; 
-                                            const filePath = oldCache ? oldCache.p : null;
-                                            const sectionId = oldCache ? oldCache.librarySectionID : null;
-
-                                            if (filePath && sectionId && plexSrv) {
-                                                infoLog(`[Queue] ID ${id}가 삭제되었습니다. 파일 경로로 새 ID 역추적을 시작합니다: ${filePath}`);
-                                                
-                                                const searchUrl = `${plexSrv.url}/library/sections/${sectionId}/all?file=${encodeURIComponent(filePath)}&X-Plex-Token=${plexSrv.token}`;
-                                                const newMeta = await new Promise((resolve) => {
-                                                    GM_xmlhttpRequest({
-                                                        method: 'GET', url: searchUrl,
-                                                        headers: { 'Accept': 'application/json' },
-                                                        timeout: 10000,
-                                                        onload: r => {
-                                                            try {
-                                                                if (r.status === 200) {
-                                                                    const resData = JSON.parse(r.responseText);
-                                                                    const metadata = resData.MediaContainer.Metadata;
-                                                                    if (metadata && metadata.length > 0) {
-                                                                        resolve(metadata[0]);
-                                                                        return;
-                                                                    }
-                                                                }
-                                                                resolve(null);
-                                                            } catch(e) { resolve(null); }
-                                                        },
-                                                        onerror: () => resolve(null),
-                                                        ontimeout: () => resolve(null)
-                                                    });
-                                                });
-
-                                                if (newMeta) {
-                                                    meta = newMeta;
-                                                    newId = String(newMeta.ratingKey);
-                                                    infoLog(`[Queue] 새 ID 역추적 성공! (구 ID: ${id} -> 신 ID: ${newId})`);
-                                                }
-                                            }
-                                            
-                                            if (!meta) {
-                                                const failMarkers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                                failMarkers.forEach(m => {
-                                                    const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                                    const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                                    if (gBox) {
-                                                        gBox.innerHTML = `<i class="fas fa-ghost" style="margin-right:4px;"></i>병합됨`;
-                                                        gBox.style.color = '#777';
-                                                        gBox.title = '다른 항목으로 완전히 병합되어 원본 ID가 사라졌습니다.';
-                                                    }
-                                                });
-                                                return;
-                                            }
-                                        }
-
-                                        if (!meta) {
-                                            infoLog(`[Queue] 일시적인 통신 지연으로 아이템 ${id}의 상태를 갱신하지 못했습니다. 기존 배지로 복원합니다.`);
-                                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                            markers.forEach(m => m.remove());
-                                            setTimeout(() => { if (typeof processList === 'function') processList(); }, 100);
-                                            return;
-                                        }
-
-                                        const updatedInfo = convertPlexMetaToLocalData(meta, newId);
-                                        const mergedInfo = { ...oldCache, ...updatedInfo, itemId: newId };
-                                        
-                                        if (newId !== id) {
-                                            deleteMemoryCache(`L_${serverId}_${id}`);
-                                            deleteMemoryCache(`D_${serverId}_${id}`);
-                                            deleteMemoryCache(`F_${serverId}_${id}`);
-                                        }
-                                        setMemoryCache(`L_${serverId}_${newId}`, mergedInfo);
-                                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.add(newId);
-
-                                        let displayData = { ...mergedInfo, tags: applyUserTags(mergedInfo.p, mergedInfo.tags) };
-
-                                        const liveWrappers = document.querySelectorAll(`div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"]`);
-                                        for (const live of liveWrappers) {
-                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]');
-                                            if (!liveLink) liveLink = live.querySelectorAll('a[href*="key="], a[href*="/metadata/"]')[0];
-                                            
-                                            const hrefAttr = liveLink ? decodeURIComponent(liveLink.getAttribute('href') || '') : '';
-                                            
-                                            if (liveLink && (hrefAttr.includes(id) || hrefAttr.includes(newId))) {
-                                                if (newId !== id && hrefAttr.includes(id)) {
-                                                    const oldHref = liveLink.getAttribute('href');
-                                                    const newHref = oldHref.replace(id, newId).replace(encodeURIComponent('/library/metadata/' + id), encodeURIComponent('/library/metadata/' + newId));
-                                                    liveLink.setAttribute('href', newHref);
-                                                }
-
-                                                let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
-                                                if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
-                                                
-                                                if (livePoster) {
-                                                    livePoster.querySelector('.pmh-render-marker')?.remove();
-                                                    livePoster.querySelector('.pmh-top-right-wrapper')?.remove();
-                                                    live.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
-                                                    
-                                                    renderListBadges(live, livePoster, liveLink, displayData, srvConfig, newId);
-                                                }
-                                            }
-                                        }
-                                    } catch (e) {
-                                        errorLog(`[Queue Callback] Direct render failed for ${id}:`, e);
-                                        setTimeout(() => { if (typeof processList === 'function') processList(); }, 500);
-                                    }
-                                })();
-                            }
-
-                            else if (status.state === 'processing' || status.state === 'queued') {
-                                const previousState = qInfo.state;
-                                const newState = status.state;
-
-                                if (previousState !== newState) {
-                                    window._pmh_media_queues[id].state = newState;
-                                    if (typeof window.saveQueueState === 'function') window.saveQueueState();
-
-                                    const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                                    markers.forEach(m => {
-                                        const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-                                        const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
-                                        if (gBox) {
-                                            if (newState === 'queued') {
-                                                gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
-                                                gBox.style.color = '#e5a00d';
-                                            } else if (newState === 'processing') {
-                                                gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
-                                                gBox.style.color = '#2f96b4';
+                                    Object.entries(window._pmh_media_queues || {}).forEach(([iid, qInfo]) => {
+                                        if (qInfo.server_id === serverId && qInfo.state !== 'requesting') {
+                                            if (!activeBackendItemIds.has(iid) && (now - qInfo.start_time > 8000)) {
+                                                infoLog(`[Queue SSE] 🔄 서버 재시작으로 유실된 작업 감지 (ID: ${iid}) ➜ 정상 GUID로 자동 복구`);
+                                                updateQueueBadgeInDOM(iid, 'cancelled');
+                                                revertQueueBadgeToOriginal(iid, serverId);
                                             }
                                         }
                                     });
+
+                                    if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                                    continue;
                                 }
-                            }
-                        } catch (innerError) {
-                            errorLog(`[Queue Polling] Error processing item ${id}:`, innerError);
+
+                                const itemId = String(event.item_id || '');
+                                if (!itemId) continue;
+
+                                log(`[Queue SSE] 📥 실시간 상태 수신 (ID: ${itemId}, State: ${event.state})`);
+
+                                if (event.state === 'processing') {
+                                    if (window._pmh_media_queues?.[itemId]) {
+                                        window._pmh_media_queues[itemId].state = 'processing';
+                                        if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                                    }
+                                    updateQueueBadgeInDOM(itemId, 'processing');
+                                }
+                                else if (event.state === 'completed') {
+                                    if (window._pmh_media_queues?.[itemId]) {
+                                        delete window._pmh_media_queues[itemId];
+                                        if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                                    }
+
+                                    updateQueueBadgeInDOM(itemId, 'completed');
+
+                                    setTimeout(async () => {
+                                        deleteMemoryCache(`L_${serverId}_${itemId}`);
+                                        deleteMemoryCache(`D_${serverId}_${itemId}`);
+                                        deleteMemoryCache(`F_${serverId}_${itemId}`);
+                                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
+
+                                        try {
+                                            const freshDbData = await makeRequest(
+                                                `${srvConfig.relayUrl}/library/batch`,
+                                                'POST',
+                                                { ids: [itemId], check_multi_path: state.listMultiPath },
+                                                ClientSettings.masterApiKey
+                                            );
+
+                                            const newData = freshDbData?.[itemId] || { ignored: true };
+                                            setMemoryCache(`L_${serverId}_${itemId}`, newData);
+
+                                            const allCards = document.querySelectorAll(`
+                                                div[data-testid^="cellItem"],
+                                                div[class*="ListItem-container"],
+                                                div[class*="MetadataPosterCard-container"],
+                                                div[class*="MetadataThumbCard-container"],
+                                                div[class*="ThumbCard-container"],
+                                                div[class*="HubItem-"],
+                                                tr[class*="TableRow-"]
+                                            `);
+
+                                            allCards.forEach(cont => {
+                                                const parentCell = cont.parentElement?.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], tr[class*="TableRow-"]');
+                                                if (parentCell && parentCell !== cont) return;
+
+                                                const { link: liveLink, iid: liveIid } = extractCardLinkAndId(cont);
+                                                if (liveLink && liveIid === itemId) {
+                                                    let livePoster = cont.querySelector(`
+                                                        [class*="PosterCard-card-"], 
+                                                        [class*="MetadataSimplePosterCard-card-"], 
+                                                        [class*="ThumbCard-card-"], 
+                                                        [class*="ThumbCard-imageContainer"],
+                                                        [class*="PosterCard-imageContainer"],
+                                                        [data-testid="metadata-poster"]
+                                                    `);
+                                                    if (!livePoster && cont.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+                                                    if (!livePoster) {
+                                                        const img = cont.querySelector('img[src*="/photo/"], img[src*="/thumb/"], img[src*="/art/"]');
+                                                        if (img) livePoster = img.closest('[class*="card"], [class*="container"], [class*="imageContainer"]') || img.parentElement;
+                                                    }
+                                                    if (!livePoster) livePoster = cont;
+
+                                                    if (livePoster) {
+                                                        let displayData = { ...newData, tags: applyUserTags(newData.p, newData.tags) };
+                                                        renderListBadges(cont, livePoster, liveLink, displayData, srvConfig, itemId);
+                                                    }
+                                                }
+                                            });
+
+                                        } catch (err) {
+                                            revertQueueBadgeToOriginal(itemId, serverId);
+                                        }
+                                    }, 800);
+                                }
+                                // =========================================================
+                                // 💡 [자가 치유 2] 에러 또는 취소 시 2초 후 정상 GUID 복원!
+                                // =========================================================
+                                else if (event.state === 'error' || event.state === 'cancelled') {
+                                    updateQueueBadgeInDOM(itemId, event.state);
+                                    revertQueueBadgeToOriginal(itemId, serverId);
+                                }
+
+                            } catch(e) {}
                         }
                     }
-                } catch (e) {
-                    consecutiveErrors++;
-                    errorLog("[Queue Polling] 네트워크 통신 오류 (연속 에러 카운트: " + consecutiveErrors + ")", e);
+                }
+            } catch (err) {
+                log(`[Queue SSE] ⚪ 스트림 연결 해제됨 (${err.message})`);
+            } finally {
+                delete window._pmh_active_queue_streams[serverId];
+            }
+        })();
 
-                    if (consecutiveErrors === 20) {
-                        toastr.warning("서버 응답 지연으로 대기열 추적이 멈췄습니다.<br>백그라운드 작업은 정상 진행 중이며, 연결 복구 시 화면이 자동 갱신됩니다.", "통신 지연", {timeOut: 8000});
-                    }
+        startQueueWatchdog();
+    };
+
+    // =========================================================================
+    // [보조 워치독] 타임아웃 10분 단축 및 유령 작업 자동 원상복구
+    // =========================================================================
+    function startQueueWatchdog() {
+        if (window._pmh_watchdog_timer) return;
+
+        window._pmh_watchdog_timer = setInterval(async () => {
+            const queueItems = Object.entries(window._pmh_media_queues || {});
+            if (queueItems.length === 0) {
+                clearInterval(window._pmh_watchdog_timer);
+                window._pmh_watchdog_timer = null;
+                return;
+            }
+
+            const now = Date.now();
+            for (const [id, qInfo] of queueItems) {
+                if (now - qInfo.start_time > 600000) {
+                    updateQueueBadgeInDOM(id, 'error');
+                    revertQueueBadgeToOriginal(id, qInfo.server_id);
+                }
+                else if (!window._pmh_active_queue_streams[qInfo.server_id]) {
+                    window.startQueuePolling(qInfo.server_id);
+                }
+            }
+        }, 20000);
+    }
+
+    // [DOM 뱃지 실시간 변경 헬퍼
+    function updateQueueBadgeInDOM(itemId, state) {
+        const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${itemId}"]`);
+        markers.forEach(m => {
+            const cont = m.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+            const gBox = cont ? cont.querySelector('.plex-guid-list-box') : null;
+            if (gBox) {
+                if (state === 'processing') {
+                    gBox.innerHTML = `<i class="fas fa-spinner fa-spin" style="margin-right:4px;"></i>처리중...`;
+                    gBox.style.color = '#2f96b4';
+                    gBox.dataset.refreshing = 'true';
+                } else if (state === 'queued') {
+                    gBox.innerHTML = `<i class="fas fa-clock" style="margin-right:4px;"></i>대기중...`;
+                    gBox.style.color = '#e5a00d';
+                    gBox.dataset.refreshing = 'true';
+                } else if (state === 'completed') {
+                    gBox.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>반영중...`;
+                    gBox.style.color = '#51a351';
+                } else if (state === 'cancelled') {
+                    gBox.innerHTML = `<i class="fas fa-ban" style="margin-right:4px;"></i>취소됨`;
+                    gBox.style.color = '#bd362f';
+                    delete gBox.dataset.refreshing;
+                } else if (state === 'error') {
+                    gBox.innerHTML = `<i class="fas fa-times-circle" style="margin-right:4px;"></i>실패`;
+                    gBox.style.color = '#bd362f';
+                    delete gBox.dataset.refreshing;
+                }
+            }
+        });
+    }
+
+    // [보조 워치독] 주기적으로 네트워크 단절 시 고스트 작업 정리
+    function startQueueWatchdog() {
+        if (window._pmh_watchdog_timer) return;
+
+        window._pmh_watchdog_timer = setInterval(async () => {
+            const queueItems = Object.entries(window._pmh_media_queues || {});
+            if (queueItems.length === 0) {
+                clearInterval(window._pmh_watchdog_timer);
+                window._pmh_watchdog_timer = null;
+                return;
+            }
+
+            const now = Date.now();
+            let needsSave = false;
+
+            for (const [id, qInfo] of queueItems) {
+                if (now - qInfo.start_time > 3600000) {
+                    delete window._pmh_media_queues[id];
+                    needsSave = true;
+                    updateQueueBadgeInDOM(id, 'error');
+                }
+                else if (!window._pmh_active_queue_streams[qInfo.server_id]) {
+                    window.startQueuePolling(qInfo.server_id);
                 }
             }
 
-            const stillHasServerTask = Object.values(window._pmh_media_queues).some(q => q.server_id === serverId);
-            if (stillHasServerTask) {
-                window._pmh_queue_poll_timer = window._pmh_queue_poll_timer || {};
-                if (window._pmh_queue_poll_timer[serverId]) clearTimeout(window._pmh_queue_poll_timer[serverId]);
-                
-                const nextPollDelay = consecutiveErrors > 5 ? 8000 : 3000;
-                window._pmh_queue_poll_timer[serverId] = setTimeout(pollLoop, nextPollDelay);
-            } else {
-                window._pmh_polling_active[serverId] = false;
+            if (needsSave && typeof window.saveQueueState === 'function') {
+                window.saveQueueState();
             }
-        };
-
-        pollLoop();
-    };
+        }, 25000);
+    }
 
     window._pmh_global_task_watcher_timer = null;
 
@@ -3933,10 +3960,51 @@ GM_addStyle(`
         watchLoop();
     }
 
+    // =========================================================================
+    // 목록 및 홈 화면 (List/Home Hubs) 처리 - 통합 뷰포트 렌더링 엔진
+    // =========================================================================
     let viewportObserver = null;
     const visibleElementsSet = new Set();
     let networkBatchTimer = null;
 
+    function extractCardLinkAndId(cont) {
+        if (!cont || !cont.isConnected) return { link: null, sid: null, iid: null, href: null };
+
+        let link = cont.querySelector(`
+            a[class*="PosterCardLink-link-"],
+            a[class*="ThumbCardLink-link-"],
+            a[class*="CardLink-link-"],
+            a[data-testid="metadataTitleLink"],
+            a[class*="MetadataTitleLink-"],
+            a[class*="TitleLink-"]
+        `);
+
+        if (!link) {
+            const allLinks = Array.from(cont.querySelectorAll('a[href*="/metadata/"], a[href*="key="]'));
+            link = allLinks.find(a => a.querySelector('img') || a.getAttribute('aria-label')) || allLinks[0];
+        }
+
+        if (!link) return { link: null, sid: null, iid: null, href: null };
+
+        const href = link.getAttribute('href') || '';
+        const sidMatch = href.match(/\/server\/([a-f0-9]+)\//) || window.location.hash.match(/\/server\/([a-f0-9]+)\//);
+        const sid = sidMatch ? sidMatch[1] : (ServerConfig.SERVERS[0]?.machineIdentifier || null);
+
+        let iid = null;
+        try {
+            if (href.includes('key=')) {
+                const keyParam = new URLSearchParams(href.split('?')[1]).get('key');
+                if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
+            }
+            if (!iid && href.includes('/metadata/')) {
+                iid = href.split('/metadata/')[1]?.split(/[\/?]/)[0];
+            }
+        } catch(e) {}
+
+        return { link, sid, iid, href };
+    }
+
+    // 뷰포트 옵저버 초기화 (상하 + 좌우 400px 전방위 감지)
     function initViewportObserver() {
         if (viewportObserver) {
             viewportObserver.disconnect();
@@ -3969,29 +4037,14 @@ GM_addStyle(`
             }
         }, {
             root: null,
-            rootMargin: '400px 0px',
+            rootMargin: '400px 400px',
             threshold: 0.01
         });
     }
 
     function tryInstantCacheRender(cont) {
-        if (!cont.isConnected) return false;
-
-        let link = cont.querySelector('a.PosterCardLink-link-LozvMm, a[data-testid="metadataTitleLink"]');
-        if (!link) link = cont.querySelectorAll('a[href*="/metadata/"]')[0];
-        if (!link) return false;
-
-        const href = link.getAttribute('href'); if (!href) return false;
-        const sidMatch = href.match(/\/server\/([a-f0-9]+)\//); if (!sidMatch) return false;
-        const sid = sidMatch[1];
-
-        let iid = null;
-        try {
-            const keyParam = new URLSearchParams(href.split('?')[1]).get('key');
-            if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
-        } catch(e) {}
-
-        if (isIgnoredItem(href, iid, cont) || !sid || !iid) return false;
+        const { link, sid, iid, href } = extractCardLinkAndId(cont);
+        if (!link || !sid || !iid || isIgnoredItem(href, iid, cont)) return false;
 
         const srvConfig = getServerConfig(sid);
         let cacheKey = srvConfig ? `L_${sid}_${iid}` : `F_${sid}_${iid}`;
@@ -4006,9 +4059,22 @@ GM_addStyle(`
             return true;
         }
 
-        let poster = cont.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+        let poster = cont.querySelector(`
+            [class*="PosterCard-card-"], 
+            [class*="MetadataSimplePosterCard-card-"], 
+            [class*="ThumbCard-card-"], 
+            [class*="Card-card-"], 
+            [class*="ThumbCard-imageContainer"],
+            [class*="PosterCard-imageContainer"],
+            [class*="ImageContainer-"],
+            [data-testid="metadata-poster"]
+        `);
         if (!poster && cont.classList.contains('ListItem-container')) poster = cont.firstElementChild;
-        if (!poster) return false;
+        if (!poster) {
+            const img = cont.querySelector('img[src*="/photo/"], img[src*="/thumb/"], img[src*="/art/"]');
+            if (img) poster = img.closest('[class*="card"], [class*="container"], [class*="imageContainer"]') || img.parentElement;
+        }
+        if (!poster) poster = cont;
 
         const style = window.getComputedStyle(poster);
         if (style.position === 'static') { poster.style.position = 'relative'; poster.style.overflow = 'hidden'; }
@@ -4034,12 +4100,6 @@ GM_addStyle(`
 
     async function processServerBatchRevalidation() {
         if (!state.listGuid && !state.listTag && !state.listPlay && !state.listMultiPath) return;
-
-        if (globalFallbackQueue.length > 0) {
-            infoLog(`[Queue] Screen or scroll changed. Nuking old analysis queue (${globalFallbackQueue.length} items).`);
-            globalFallbackQueue.length = 0;
-        }
-
         if (visibleElementsSet.size === 0) return;
 
         const session = currentRenderSession;
@@ -4048,26 +4108,8 @@ GM_addStyle(`
         const changedItems = new Set();
 
         visibleElementsSet.forEach(cont => {
-            if (!cont.isConnected) {
-                visibleElementsSet.delete(cont);
-                return;
-            }
-
-            let link = cont.querySelector('a.PosterCardLink-link-LozvMm, a[data-testid="metadataTitleLink"]');
-            if (!link) link = cont.querySelectorAll('a[href*="/metadata/"]')[0];
-            if (!link) return;
-
-            const href = link.getAttribute('href'); if (!href) return;
-            const sidMatch = href.match(/\/server\/([a-f0-9]+)\//); if (!sidMatch) return;
-            const sid = sidMatch[1];
-
-            let iid = null;
-            try {
-                const keyParam = new URLSearchParams(href.split('?')[1]).get('key');
-                if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
-            } catch(e) {}
-
-            if (isIgnoredItem(href, iid, cont) || !sid || !iid) return;
+            const { link, sid, iid, href } = extractCardLinkAndId(cont);
+            if (!link || !sid || !iid || isIgnoredItem(href, iid, cont)) return;
 
             itemsToRevalidate.push({ sid, iid, cont, link });
 
@@ -4090,10 +4132,8 @@ GM_addStyle(`
                     } else {
                         const isFriendPending = marker.getAttribute('data-friend-pending') === 'true';
                         let badgeMissing = false;
-
                         if ((state.listTag || state.listPlay || isFriendPending) && !cont.querySelector('.pmh-top-right-wrapper')) badgeMissing = true;
                         if (!isFriendPending && (state.listGuid || state.listMultiPath) && !cont.querySelector('.pmh-guid-wrapper')) badgeMissing = true;
-
                         if (!badgeMissing) isAlreadyRendered = true;
                     }
                 }
@@ -4101,12 +4141,21 @@ GM_addStyle(`
 
             if (isAlreadyRendered) return;
 
-            let poster = cont.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+            let poster = cont.querySelector(`
+                [class*="PosterCard-card-"], 
+                [class*="MetadataSimplePosterCard-card-"], 
+                [class*="ThumbCard-card-"], 
+                [class*="Card-card-"], 
+                [class*="ThumbCard-imageContainer"],
+                [class*="PosterCard-imageContainer"],
+                [data-testid="metadata-poster"]
+            `);
+            if (!poster && cont.classList.contains('ListItem-container')) poster = cont.firstElementChild;
             if (!poster) {
-                const img = cont.querySelector('img[src*="/photo/"]');
+                const img = cont.querySelector('img[src*="/photo/"], img[src*="/thumb/"], img[src*="/art/"]');
                 if (img) poster = img.closest('[class*="card"], [class*="container"], [class*="imageContainer"]') || img.parentElement;
             }
-            if (!poster && cont.classList.contains('ListItem-container')) poster = cont.firstElementChild;
+            if (!poster) poster = cont;
 
             if (poster) {
                 const style = window.getComputedStyle(poster);
@@ -4153,16 +4202,11 @@ GM_addStyle(`
             }
         });
 
+        // 2. 서버 배치 검증 요청
         if (swrDebounceTimer) clearTimeout(swrDebounceTimer);
 
         swrDebounceTimer = setTimeout(async () => {
             if (session !== currentRenderSession) return;
-
-            if (changedItems.size > 0) {
-                log(`[List] Metadata change detected! Pausing 500ms for DB sync...`);
-                await new Promise(r => setTimeout(r, 500));
-                if (session !== currentRenderSession) return;
-            }
 
             const revalServerMap = {};
             itemsToRevalidate.forEach(item => {
@@ -4240,21 +4284,33 @@ GM_addStyle(`
                                 setMemoryCache(`L_${serverId}_${id}`, newData);
 
                                 visibleElementsSet.forEach(live => {
-                                    let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]') || live.querySelectorAll('a[href*="/metadata/"]')[0];
-                                    if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
-                                        let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
+                                    const parentCell = live.parentElement?.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], tr[class*="TableRow-"]');
+                                    if (parentCell && parentCell !== live) return;
+
+                                    const { link: liveLink, iid: liveIid } = extractCardLinkAndId(live);
+                                    if (liveLink && liveIid === id) {
+                                        let livePoster = live.querySelector(`
+                                            [class*="PosterCard-card-"], 
+                                            [class*="MetadataSimplePosterCard-card-"], 
+                                            [class*="ThumbCard-card-"], 
+                                            [class*="ThumbCard-imageContainer"],
+                                            [class*="PosterCard-imageContainer"],
+                                            [data-testid="metadata-poster"]
+                                        `);
                                         if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+                                        if (!livePoster) {
+                                            const img = live.querySelector('img[src*="/photo/"], img[src*="/thumb/"], img[src*="/art/"]');
+                                            if (img) livePoster = img.closest('[class*="card"], [class*="container"], [class*="imageContainer"]') || img.parentElement;
+                                        }
+                                        if (!livePoster) livePoster = live;
 
                                         if (livePoster) {
-                                            livePoster.querySelector('.pmh-render-marker')?.remove();
-                                            livePoster.querySelector('.pmh-top-right-wrapper')?.remove();
-                                            live.querySelectorAll('.plex-guid-list-box, .pmh-guid-wrapper').forEach(el => el.remove());
-
                                             let displayData = { ...newData, tags: applyUserTags(newData.p, newData.tags) };
                                             renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
                                         }
                                     }
                                 });
+
                             } else {
                                 pendingItems.filter(p => p.sid === serverId && p.iid === id && !p.isRendered).forEach(item => {
                                     item.poster.querySelector('.pmh-render-marker')?.remove();
@@ -4266,335 +4322,265 @@ GM_addStyle(`
                                 });
                             }
                         });
-                    } catch (e) {}
+                    } catch(e) {}
                 }
-
-                if (session !== currentRenderSession) return;
-
-                const addedToNewQueue = new Set();
-                let queueCount = 0;
 
                 if (!srvConfig.is_postgres) {
                     idsToFallbackBypass.forEach(id => {
-                        if (addedToNewQueue.has(id)) return;
-                        const existsInPending = pendingItems.some(p => p.iid === id && p.sid === serverId);
-                        if (!existsInPending) return;
-
-                        addedToNewQueue.add(id);
-                        queueCount++;
-
                         globalFallbackQueue.push({
                             id: id,
                             session: session,
                             task: async () => {
                                 if (session !== currentRenderSession) return;
                                 try {
-                                    let logTitle = "Unknown Title";
-                                    const representativeItem = itemsToRevalidate.find(p => p.iid === id);
-                                    if (representativeItem) {
-                                        if (representativeItem.currentStateHash) {
-                                            const hashParts = representativeItem.currentStateHash.split('|');
-                                            logTitle = hashParts.find(p => p && isNaN(p)) || "Unknown Title";
-                                        }
-                                        if (logTitle === "Unknown Title" && representativeItem.link) {
-                                            logTitle = representativeItem.link.getAttribute('aria-label') || representativeItem.link.title || representativeItem.link.textContent.trim() || "Unknown Title";
-                                        }
-                                    }
-
-                                    infoLog(`[List Fallback] DB WAL Delay Bypassed. Fetching directly from Plex API for [${logTitle}] (ID: ${id})`);
                                     let meta = await fetchPlexMetaFallback(id, plexSrv);
-                                    if (!meta) return;
+                                    if (!meta || meta === 'DELETED') return;
 
                                     const updatedInfo = convertPlexMetaToLocalData(meta, id);
-                                    const oldCache = getMemoryCache(`L_${serverId}_${id}`);
-                                    if (oldCache) {
-                                        updatedInfo.analyze_count = oldCache.analyze_count || 0;
-                                        updatedInfo.last_analyze_time = oldCache.last_analyze_time || 0;
-                                        updatedInfo.corrupt_logged = oldCache.corrupt_logged || false;
-                                        updatedInfo.last_cooldown_log = oldCache.last_cooldown_log || 0;
-                                    }
+                                    setMemoryCache(`L_${serverId}_${id}`, updatedInfo);
+                                    sessionRevalidated.add(id);
 
-                                    if (meta && meta.Media && meta.Media.length > 0) {
-                                        const topMedia = meta.Media.sort((a, b) => (b.width || 0) - (a.width || 0))[0];
-                                        if (topMedia.Part && topMedia.Part[0] && topMedia.Part[0].Stream) {
-                                            const korSubs = topMedia.Part[0].Stream.filter(s => s.streamType === 3 && (s.languageCode === 'kor' || s.languageCode === 'ko'));
-                                            if (korSubs.length > 0) {
-                                                korSubs.sort((a, b) => {
-                                                    let sA = 0, sB = 0;
-                                                    if(a.key && a.key.trim() !== '') sA+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(a.codec)) sA+=50;
-                                                    if(b.key && b.key.trim() !== '') sB+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(b.codec)) sB+=50;
-                                                    return sB - sA;
-                                                });
-                                                if (korSubs[0].key && korSubs[0].key !== updatedInfo.sub_url) {
-                                                    updatedInfo.sub_id = korSubs[0].id;
-                                                    updatedInfo.sub_url = korSubs[0].key;
-                                                }
+                                    visibleElementsSet.forEach(live => {
+                                        const { link: liveLink, iid: liveIid } = extractCardLinkAndId(live);
+                                        if (liveLink && liveIid === id) {
+                                            let livePoster = live.querySelector(`
+                                                [class*="PosterCard-card-"], 
+                                                [class*="MetadataSimplePosterCard-card-"], 
+                                                [class*="ThumbCard-card-"], 
+                                                [class*="Card-card-"], 
+                                                [class*="ThumbCard-imageContainer"],
+                                                [data-testid="metadata-poster"]
+                                            `);
+                                            if (!livePoster && live.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+                                            if (!livePoster) {
+                                                const img = live.querySelector('img[src*="/photo/"], img[src*="/thumb/"], img[src*="/art/"]');
+                                                if (img) livePoster = img.closest('[class*="card"], [class*="container"], [class*="imageContainer"]') || img.parentElement;
+                                            }
+                                            if (!livePoster) livePoster = live;
+
+                                            if (livePoster) {
+                                                livePoster.querySelector('.pmh-render-marker')?.remove();
+                                                renderListBadges(live, livePoster, liveLink, updatedInfo, srvConfig, id);
                                             }
                                         }
-                                    }
-
-                                    if (representativeItem && representativeItem.currentStateHash) {
-                                        updatedInfo.saved_state_hash = representativeItem.currentStateHash;
-                                    }
-
-                                    if (session === currentRenderSession) {
-                                        setMemoryCache(`L_${serverId}_${id}`, updatedInfo);
-                                        sessionRevalidated.add(id);
-
-                                        let displayData = { ...updatedInfo, tags: applyUserTags(updatedInfo.p, updatedInfo.tags) };
-
-                                        visibleElementsSet.forEach(live => {
-                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]') || live.querySelectorAll('a[href*="/metadata/"]')[0];
-                                            if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(id)) {
-                                                let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
-                                                if (livePoster) {
-                                                    livePoster.querySelector('.pmh-render-marker')?.remove();
-                                                    renderListBadges(live, livePoster, liveLink, displayData, srvConfig, id);
-                                                    const matchedPending = pendingItems.find(p => p.poster === livePoster);
-                                                    if (matchedPending) matchedPending.isRendered = true;
-                                                }
-                                            }
-                                        });
-                                    }
-                                } catch (e) {
-                                    errorLog(`[Fallback Task] Error fetching Plex API for ${id}:`, e);
-                                }
+                                    });
+                                } catch(e) {}
                             }
                         });
                     });
+                    processGlobalFallbackQueue();
                 }
-
-                itemsToRevalidate.filter(p => p.sid === serverId).forEach(item => {
-                    if (changedItems.has(item.iid) || addedToNewQueue.has(item.iid)) return;
-
-                    const cacheKey = `L_${serverId}_${item.iid}`;
-                    const info = getMemoryCache(cacheKey);
-                    if (!info || info.ignored) return;
-
-                    const pItem = pendingItems.find(p => p.iid === item.iid && !p.isRendered);
-                    if (pItem) {
-                        let displayData = { ...info, tags: applyUserTags(info.p, info.tags) };
-                        renderListBadges(item.cont, pItem.poster, item.link, displayData, srvConfig, item.iid);
-                        pItem.isRendered = true;
-                    }
-
-                    let serverIgnoreList = [];
-                    if (window._pmh_latest_ping_results && window._pmh_latest_ping_results[serverId]) {
-                        const rawStr = window._pmh_latest_ping_results[serverId].ignore_res_section || "";
-                        serverIgnoreList = rawStr.split(',').map(s => s.trim()).filter(Boolean);
-                    }
-
-                    let isIgnoredSection = false;
-                    if (info.librarySectionID && serverIgnoreList.includes(String(info.librarySectionID))) {
-                        isIgnoredSection = true;
-                    }
-
-                    const hasResBadge = isIgnoredSection ? true : info.tags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
-                    const isVideo = isIgnoredSection ? false : !!info.part_id; 
-                    
-                    const analyzeCount = info.analyze_count || 0;
-                    const lastAnalyzeTime = info.last_analyze_time || 0;
-                    const now = Date.now();
-                    const isCoolingDown = (now - lastAnalyzeTime < 10000);
-                    const isCorrupt = (analyzeCount >= 3);
-                    const isUnanalyzed = (state.listTag && !hasResBadge && isVideo && !isCorrupt && !isCoolingDown);
-                    const rawG = (info.raw_g || '').toLowerCase();
-                    const isDummyGuid = !rawG || rawG === '-' || rawG.includes('local://') || rawG.includes('none://');
-                    const oldGuidAttr = item.cont.querySelector('.plex-guid-list-box')?.getAttribute('title') || '';
-                    const isCurrentlyShowingDummy = oldGuidAttr.includes('local://') || oldGuidAttr.includes('none://');
-
-                    const dbStillNotSynced = (changedItems.has(item.iid) || isCurrentlyShowingDummy) && (isDummyGuid || oldGuidAttr.includes(info.g));
-
-                    let logTitle = "Unknown Title";
-                    if (item.currentStateHash) {
-                        const hashParts = item.currentStateHash.split('|');
-                        logTitle = hashParts.find(p => p && isNaN(p)) || "Unknown Title";
-                    }
-                    if (logTitle === "Unknown Title" && item.link) {
-                        logTitle = item.link.getAttribute('aria-label') || item.link.title || item.link.textContent.trim() || "Unknown Title";
-                    }
-
-                    if (state.listTag && !hasResBadge && isVideo && !isCorrupt && isCoolingDown) {
-                        if (info.last_cooldown_log !== analyzeCount) {
-                            const timeLeft = ((10000 - (now - lastAnalyzeTime)) / 1000).toFixed(1);
-                            infoLog(`[Analyze] ⏳ Cooldown active for [${logTitle}] (ID: ${item.iid}). Waiting ${timeLeft}s before Attempt ${analyzeCount + 1}/3...`);
-                            let tempCache = getMemoryCache(`L_${serverId}_${item.iid}`);
-                            if (tempCache) {
-                                tempCache.last_cooldown_log = analyzeCount;
-                                setMemoryCache(`L_${serverId}_${item.iid}`, tempCache);
-                            }
-                        }
-                    }
-
-                    if (!hasResBadge && isVideo && isCorrupt && !isCoolingDown) {
-                        const existingBadge = item.cont.querySelector('.pmh-corrupt-badge');
-                        if (!existingBadge) {
-                            const wrapper = item.cont.querySelector('.pmh-top-right-wrapper');
-                            if (wrapper) {
-                                const errBadge = document.createElement('div');
-                                errBadge.className = 'plex-list-res-tag pmh-corrupt-badge';
-                                errBadge.textContent = '?';
-                                errBadge.title = '파일 분석 3회 실패 (손상 의심)';
-                                wrapper.insertBefore(errBadge, wrapper.firstChild);
-
-                                let tempCache = getMemoryCache(`L_${serverId}_${item.iid}`);
-                                if (tempCache && !tempCache.corrupt_logged) {
-                                    warnLog(`[Analyze-Failed] ⚠️ Analysis failed 3 times for [${logTitle}] (ID: ${item.iid}). Marked as Corrupt.`);
-                                    tempCache.corrupt_logged = true;
-                                    setMemoryCache(`L_${serverId}_${item.iid}`, tempCache);
-                                }
-                            }
-                        }
-                    }
-
-                    if ((isUnanalyzed || dbStillNotSynced) && info.p && !addedToNewQueue.has(item.iid)) {
-                        addedToNewQueue.add(item.iid);
-                        queueCount++;
-
-                        globalFallbackQueue.push({
-                            id: item.iid,
-                            session: session,
-                            task: async () => {
-                                if (session !== currentRenderSession) return;
-
-                                const latestCache = getMemoryCache(`L_${serverId}_${item.iid}`);
-                                const alreadyHasRes = latestCache && latestCache.tags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
-                                if (!dbStillNotSynced && latestCache && alreadyHasRes) return;
-
-                                await new Promise(r => setTimeout(r, 1000));
-                                if (session !== currentRenderSession) return;
-
-                                try {
-                                    if (dbStillNotSynced) {
-                                        log(`[Fallback] DB not synced yet for [${logTitle}] (ID: ${item.iid}). Calling Plex API...`);
-                                    } else {
-                                        infoLog(`[Analyze] Missing resolution tag for [${logTitle}] (ID: ${item.iid}) (Attempt ${analyzeCount + 1}/3). Calling Plex API...`);
-                                    }
-
-                                    let meta = await fetchPlexMetaFallback(item.iid, plexSrv);
-                                    if (!meta || meta === 'DELETED') return;
-
-                                    let fallbackTags = parsePlexFallbackTags(meta);
-                                    const m = meta.Media && meta.Media[0] ? meta.Media[0] : null;
-
-                                    let currentAnalyzeCount = analyzeCount;
-                                    let currentAnalyzeTime = lastAnalyzeTime;
-
-                                    if (!m || ((!m.width || m.width === 0) && !m.videoResolution)) {
-                                        currentAnalyzeCount += 1;
-                                        currentAnalyzeTime = Date.now();
-                                        meta = await analyzeAndFetchPlexMeta(item.iid, plexSrv);
-                                        if (meta) fallbackTags = parsePlexFallbackTags(meta);
-                                    }
-
-                                    let updatedInfo = {
-                                        g: info.g, raw_g: info.raw_g, p: info.p, tags: [...info.tags],
-                                        part_id: info.part_id, sub_id: info.sub_id, sub_url: info.sub_url, path_count: info.path_count,
-                                        analyze_count: currentAnalyzeCount,
-                                        last_analyze_time: currentAnalyzeTime,
-                                        corrupt_logged: info.corrupt_logged,
-                                        last_cooldown_log: info.last_cooldown_log
-                                    };
-
-                                    let needsUpdate = false;
-                                    if (isUnanalyzed) needsUpdate = true;
-
-                                    if (dbStillNotSynced && meta && meta.guid && meta.guid !== updatedInfo.raw_g) {
-                                        updatedInfo.g = meta.guid.split('://')[1]?.split('?')[0] || meta.guid;
-                                        updatedInfo.raw_g = meta.guid;
-                                        needsUpdate = true;
-                                    }
-                                    if (dbStillNotSynced) needsUpdate = true;
-
-                                    const newlyHasRes = fallbackTags.some(t => /8K|6K|4K|FHD|HD|SD/.test(t));
-                                    if (newlyHasRes) {
-                                        updatedInfo.analyze_count = 0;
-                                        updatedInfo.last_analyze_time = 0;
-                                        updatedInfo.corrupt_logged = false;
-                                    }
-
-                                    if (fallbackTags.length > 0) {
-                                        if (!hasResBadge || dbStillNotSynced) {
-                                            updatedInfo.tags = Array.from(new Set([...fallbackTags, ...updatedInfo.tags]));
-                                            needsUpdate = true;
-                                        }
-                                        if (fallbackTags.includes("SUB") && !updatedInfo.tags.includes("SUB")) {
-                                            updatedInfo.tags.push("SUB");
-                                            needsUpdate = true;
-                                        }
-                                    }
-
-                                    if (meta && meta.Media && meta.Media.length > 0) {
-                                        const topMedia = meta.Media.sort((a, b) => (b.width || 0) - (a.width || 0))[0];
-                                        if (topMedia.Part && topMedia.Part[0] && topMedia.Part[0].Stream) {
-                                            const korSubs = topMedia.Part[0].Stream.filter(s => s.streamType === 3 && (s.languageCode === 'kor' || s.languageCode === 'ko'));
-                                            if (korSubs.length > 0) {
-                                                korSubs.sort((a, b) => {
-                                                    let sA = 0, sB = 0;
-                                                    if(a.key && a.key.trim() !== '') sA+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(a.codec)) sA+=50;
-                                                    if(b.key && b.key.trim() !== '') sB+=100; if(['srt','ass','smi','vtt','ssa','sub','sup'].includes(b.codec)) sB+=50;
-                                                    return sB - sA;
-                                                });
-                                                if (korSubs[0].key && korSubs[0].key !== updatedInfo.sub_url) {
-                                                    updatedInfo.sub_id = korSubs[0].id;
-                                                    updatedInfo.sub_url = korSubs[0].key;
-                                                    needsUpdate = true;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    const stateItem = itemsToRevalidate.find(p => p.iid === item.iid);
-                                    if (stateItem && stateItem.currentStateHash) {
-                                        updatedInfo.saved_state_hash = stateItem.currentStateHash;
-                                    }
-
-                                    if (needsUpdate && session === currentRenderSession) {
-                                        setMemoryCache(`L_${serverId}_${item.iid}`, updatedInfo);
-                                        let displayData = { ...updatedInfo, tags: applyUserTags(updatedInfo.p, updatedInfo.tags) };
-
-                                        visibleElementsSet.forEach(live => {
-                                            let liveLink = live.querySelector('a[data-testid="metadataTitleLink"]') || live.querySelectorAll('a[href*="/metadata/"]')[0];
-                                            if (liveLink && decodeURIComponent(liveLink.getAttribute('href') || '').includes(item.iid)) {
-                                                let livePoster = live.querySelector(`[class*="PosterCard-card-"], [class*="MetadataSimplePosterCard-card-"], [class*="ThumbCard-card-"], [class*="Card-card-"], [class*="ThumbCard-imageContainer"], [data-testid="metadata-poster"]`);
-                                                if (livePoster) {
-                                                    livePoster.querySelector('.pmh-render-marker')?.remove();
-                                                    renderListBadges(live, livePoster, liveLink, displayData, srvConfig, item.iid);
-                                                    const matchedPending = pendingItems.find(p => p.poster === livePoster);
-                                                    if (matchedPending) matchedPending.isRendered = true;
-                                                }
-                                            }
-                                        });
-                                    }
-                                } catch (e) {}
-                            }
-                        });
-                    }
-                });
-
-                if (queueCount > 0) processGlobalFallbackQueue();
             }
-        }, 500);
+        }, 150);
     }
 
     function processList() {
         if (!state.listGuid && !state.listTag && !state.listPlay && !state.listMultiPath) return;
         if (!viewportObserver) initViewportObserver();
 
-        const itemWrappers = document.querySelectorAll(`
+        const candidates = document.querySelectorAll(`
             div[data-testid^="cellItem"]:not([data-pmh-observed="true"]),
             div[class*="ListItem-container"]:not([data-pmh-observed="true"]),
-            div[class*="MetadataPosterCard-container"]:not([data-pmh-observed="true"])
+            div[class*="MetadataPosterCard-container"]:not([data-pmh-observed="true"]),
+            div[class*="MetadataThumbCard-container"]:not([data-pmh-observed="true"]),
+            div[class*="ThumbCard-container"]:not([data-pmh-observed="true"]),
+            div[class*="PosterCard-container"]:not([data-pmh-observed="true"]),
+            div[class*="HubItem-"]:not([data-pmh-observed="true"]),
+            tr[class*="TableRow-"]:not([data-pmh-observed="true"])
         `);
 
-        itemWrappers.forEach(cont => {
+        candidates.forEach(cont => {
+            const parentCell = cont.parentElement?.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], tr[class*="TableRow-"]');
+            if (parentCell && parentCell !== cont) {
+                return;
+            }
+
             cont.setAttribute('data-pmh-observed', 'true');
             viewportObserver.observe(cont);
         });
+
+        if (typeof renderVisibleItems === 'function' && visibleElementsSet.size > 0) {
+            renderVisibleItems();
+        }
+    }
+
+    // =========================================================================
+    // Plex 네이티브 다중 선택(Multi-Select) 연동 배치 엔진
+    // =========================================================================
+
+    function getSelectedPlexItems() {
+        const selectedContainers = new Set();
+
+        document.querySelectorAll(`
+            button[aria-checked="true"],
+            div[class*="isSelected"],
+            div[class*="SelectedBadge"],
+            div[aria-selected="true"],
+            [class*="Card-card-"][class*="selected"],
+            [class*="Card-card-"][class*="Selected"],
+            [class*="PosterCard-card-"][class*="selected"],
+            [class*="PosterCard-card-"][class*="Selected"],
+            div[data-testid^="cellItem"]:has(svg#plex-icon-selected-560),
+            div[data-testid^="cellItem"]:has([class*="selected"]),
+            div[data-testid^="cellItem"]:has([class*="Selected"])
+        `).forEach(el => {
+            const card = el.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
+            if (card) selectedContainers.add(card);
+        });
+
+        const items = [];
+        selectedContainers.forEach(cont => {
+            let link = cont.querySelector('a.PosterCardLink-link-LozvMm, a[data-testid="metadataTitleLink"]') || cont.querySelectorAll('a[href*="/metadata/"]')[0];
+            if (!link) return;
+            const href = link.getAttribute('href'); if (!href) return;
+            const sidMatch = href.match(/\/server\/([a-f0-9]+)\//); if (!sidMatch) return;
+            const sid = sidMatch[1];
+
+            let iid = null;
+            try {
+                const keyParam = new URLSearchParams(href.split('?')[1]).get('key');
+                if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
+            } catch(e) {}
+
+            if (sid && iid && !isIgnoredItem(href, iid, cont)) {
+                let title = cont.querySelector('[class*="Title"], a[aria-label]')?.textContent?.trim() || `Item ${iid}`;
+                items.push({ id: iid, serverId: sid, title: title, cont: cont });
+            }
+        });
+        return items;
+    }
+
+    function clearPlexSelection() {
+        // 💡 [실제 DOM 타깃] '모두 선택 해제' 버튼 직접 클릭
+        const deselectBtn = document.querySelector(`
+            div[class*="PageHeaderMultiselectActions-deselect-"] button,
+            button:has(svg#plex-icon-remove-560),
+            div[class*="SelectionHeader"] button[aria-label*="취소"],
+            button[data-testid="selection-cancel"]
+        `);
+        if (deselectBtn) {
+            deselectBtn.click();
+            return;
+        }
+
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, code: 'Escape', bubbles: true }));
+    }
+
+    async function executePmhBatchAction(actionType) {
+        const selectedItems = getSelectedPlexItems();
+        if (selectedItems.length === 0) {
+            toastr.warning("선택된 항목의 정보를 찾을 수 없습니다.");
+            return;
+        }
+
+        let actionName = '';
+        let apiAction = '';
+        let extraData = {};
+
+        if (actionType === 'clean_match') {
+            actionName = '클린 리매칭'; apiAction = 'match';
+            extraData = { _try_refresh_first: false, _do_unmatch_first: true };
+        } else if (actionType === 'rematch') {
+            actionName = '일반 리매칭'; apiAction = 'match';
+            extraData = { _try_refresh_first: false, _do_unmatch_first: false };
+        } else if (actionType === 'refresh') {
+            actionName = '메타 새로고침'; apiAction = 'refresh';
+        } else if (actionType === 'analyze') {
+            actionName = '미디어 분석'; apiAction = 'analyze';
+        }
+
+        infoLog(`[Multi-Select] 🚀 선택된 ${selectedItems.length}개 항목에 대해 [${actionName}] 일괄 전송 시작`);
+
+        clearPlexSelection();
+
+        window._pmh_media_queues = window._pmh_media_queues || {};
+        for (const item of selectedItems) {
+            window._pmh_media_queues[item.id] = {
+                task_id: 'pending', start_time: Date.now(), state: 'requesting',
+                title: item.title, server_id: item.serverId
+            };
+            updateQueueBadgeInDOM(item.id, 'requesting');
+        }
+        if (typeof window.saveQueueState === 'function') window.saveQueueState();
+
+        const itemsByServer = {};
+        selectedItems.forEach(item => {
+            if (!itemsByServer[item.serverId]) itemsByServer[item.serverId] = [];
+            itemsByServer[item.serverId].push(item);
+        });
+
+        for (const [serverId, srvItems] of Object.entries(itemsByServer)) {
+            const srvConfig = getServerConfig(serverId);
+            if (!srvConfig) continue;
+
+            const itemIds = srvItems.map(i => i.id);
+            const payload = {
+                item_ids: itemIds,
+                ...extraData
+            };
+
+            try {
+                const res = await makeRequest(`${srvConfig.relayUrl}/media/${itemIds.join(',')}/${apiAction}`, 'POST', payload, ClientSettings.masterApiKey);
+                
+                if (res && res.status === 'queued' && Array.isArray(res.tasks)) {
+                    res.tasks.forEach(t => {
+                        if (window._pmh_media_queues[t.item_id]) {
+                            window._pmh_media_queues[t.item_id].task_id = t.task_id;
+                            
+                            if (window._pmh_media_queues[t.item_id].state !== 'processing' && window._pmh_media_queues[t.item_id].state !== 'completed') {
+                                window._pmh_media_queues[t.item_id].state = 'queued';
+                                updateQueueBadgeInDOM(t.item_id, 'queued');
+                            }
+                        }
+                    });
+                }
+            } catch (err) {
+                srvItems.forEach(item => {
+                    delete window._pmh_media_queues[item.id];
+                    updateQueueBadgeInDOM(item.id, 'error');
+                });
+            }
+
+            if (typeof window.startQueuePolling === 'function') {
+                window.startQueuePolling(serverId);
+            }
+        }
+
+        if (typeof window.saveQueueState === 'function') window.saveQueueState();
+    }
+
+    function checkAndInjectMultiSelectBar() {
+        const selectionContainer = document.querySelector('div[class*="PageHeaderMultiselectActions-container-"], div[class*="PageHeaderMultiselectActions-"]');
+
+        if (!selectionContainer) {
+            const existingBtn = document.getElementById('pmh-multiselect-trigger');
+            if (existingBtn) existingBtn.remove();
+            return;
+        }
+
+        if (document.getElementById('pmh-multiselect-trigger')) return;
+
+        const actionsContainer = selectionContainer.querySelector('div[class*="PageHeaderMultiselectActions-actions-"]') || selectionContainer;
+
+        const triggerBtn = document.createElement('button');
+        triggerBtn.type = 'button';
+        triggerBtn.id = 'pmh-multiselect-trigger';
+        triggerBtn.className = 'pmh-multiselect-trigger-btn';
+        triggerBtn.innerHTML = `
+            <i class="fas fa-magic" style="color:#e5a00d;"></i>
+            <span>PMH</span>
+            <i class="fas fa-chevron-down" style="font-size:9px; color:#888; margin-left:2px;"></i>
+        `;
+
+        if (actionsContainer.firstChild) {
+            actionsContainer.insertBefore(triggerBtn, actionsContainer.firstChild);
+        } else {
+            actionsContainer.appendChild(triggerBtn);
+        }
     }
 
     // ==========================================
-    // 7. 상세 모드 (Detail View) 처리
+    // 상세 모드 (Detail View) 처리
     // ==========================================
     function renderLoadingBox(container) {
         const existingBox = document.getElementById('plex-guid-box');
@@ -5426,7 +5412,6 @@ GM_addStyle(`
                 showBoxLoading();
                 
                 infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
-                toastr.info("서버에서 기존 데이터 덮어쓰기(일반 리매칭)를 시도합니다.", "일반 리매칭", {timeOut: 5000});
 
                 const matchOptions = {
                     _try_refresh_first: false,
@@ -5501,7 +5486,6 @@ GM_addStyle(`
                 showBoxLoading();
                 
                 infoLog(`[Detail] Foreground Clean Rematch requested for Item: ${data.itemId}`);
-                toastr.info("기존 메타데이터를 언매치(초기화)한 후 클린 리매칭을 시도합니다.", "클린 리매칭", {timeOut: 5000});
 
                 const matchOptions = {
                     _try_refresh_first: false,
@@ -5575,7 +5559,6 @@ GM_addStyle(`
                 btnAnalyze.title = "클릭시 대기 취소";
 
                 showBoxLoading();
-                toastr.info("미디어 분석을 요청 중입니다...<br>버튼을 다시 누르면 대기를 취소합니다.", "미디어 분석", {timeOut: 5000});
 
                 try {
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/analyze`, 'POST', {}, ClientSettings.masterApiKey);
@@ -5666,7 +5649,6 @@ GM_addStyle(`
         if (btnCropPoster) {
             btnCropPoster.addEventListener('click', (e) => {
                 e.preventDefault(); e.stopPropagation();
-                // 💡 제목과 GUID를 함께 넘겨 코드를 안전하게 추출
                 const itemTitle = document.querySelector('h1[data-testid="metadata-title"], [class*="MetadataTitle"]')?.textContent?.trim() || '';
                 openPosterCropModal(data.itemId, serverId, data.guid, itemTitle);
             });
@@ -5750,7 +5732,6 @@ GM_addStyle(`
                 const originalHtml = mateBtn.innerHTML;
                 mateBtn.style.pointerEvents = 'none';
                 mateBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> YAML/TMDB 반영 중...`;
-                toastr.info(`VFS 캐시 갱신 및 YAML/TMDB 반영을 요청합니다...`, "YAML/TMDB 적용", {timeOut: 4000});
 
                 try {
                     const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/yaml_refresh`, 'POST', {}, ClientSettings.masterApiKey);
@@ -5781,7 +5762,7 @@ GM_addStyle(`
     }
 
     // ==========================================
-    // 8. 앱 라우팅(SPA) 및 Observer
+    // 앱 라우팅(SPA) 및 Observer
     // ==========================================
     function checkUrlChange(force = false) {
         if (window.location.href !== currentUrl || force) {
@@ -5796,7 +5777,8 @@ GM_addStyle(`
             sessionRevalidated.clear();
             abortAllRequests();
 
-            document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .pmh-guid-wrapper').forEach(e => e.remove());
+            document.querySelectorAll('[data-pmh-observed]').forEach(e => e.removeAttribute('data-pmh-observed'));
+            document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e => e.remove());
 
             document.getElementById('plex-guid-box')?.remove();
             currentDisplayedItemId = null;
@@ -5824,6 +5806,8 @@ GM_addStyle(`
     const observer = new MutationObserver(() => {
         if (isObserverLocked) return;
 
+        checkAndInjectMultiSelectBar();
+
         if (!observerPending) {
             observerPending = true;
 
@@ -5840,6 +5824,7 @@ GM_addStyle(`
                 if (masterObserverTimer) clearTimeout(masterObserverTimer);
 
                 masterObserverTimer = setTimeout(() => {
+                    checkAndInjectMultiSelectBar();
                     processMatchModal();
                     if (!document.getElementById('pmdv-controls')) injectControlUI();
 
@@ -6130,10 +6115,17 @@ GM_addStyle(`
         if (settingsCloseBtn) settingsCloseBtn.onclick = closeSettingsModal;
 
         if (settingsModal) {
-            settingsModal.onclick = (e) => {
-                if (e.target === settingsModal) {
+            let isMouseDownOnSettingsBackdrop = false;
+
+            settingsModal.onmousedown = (e) => {
+                isMouseDownOnSettingsBackdrop = (e.target === settingsModal);
+            };
+
+            settingsModal.onmouseup = (e) => {
+                if (isMouseDownOnSettingsBackdrop && e.target === settingsModal) {
                     closeSettingsModal();
                 }
+                isMouseDownOnSettingsBackdrop = false;
             };
         }
 
@@ -6585,7 +6577,7 @@ GM_addStyle(`
     let customUploadPayload = null; 
     let currentCropItemData = null; 
 
-    // 1. GUID 또는 텍스트에서 식별 코드 추출
+    // GUID 또는 텍스트에서 식별 코드 추출
     function extractSjvaAgentCode(rawGuid) {
         if (!rawGuid) return null;
         let str = String(rawGuid).trim();
@@ -6599,7 +6591,7 @@ GM_addStyle(`
         return str;
     }
 
-    // 2. 첫 글자로 FF API 모듈 매핑 (C: 유모, E: 노모, W: 서양)
+    // 첫 글자로 FF API 모듈 매핑 (C: 유모, E: 노모, W: 서양)
     function getFfModuleFromCode(cleanCode) {
         if (!cleanCode) return null;
         const firstChar = cleanCode.charAt(0).toUpperCase();
@@ -6609,7 +6601,42 @@ GM_addStyle(`
         return null;
     }
 
-    // 3. AV 미디어 판별 헬퍼 (단일 영화 + 이미지서버 On + C/E/W 코드)
+    // AV 미디어 판별 헬퍼 (단일 영화 + 이미지서버 On + C/E/W 코드)
+    function isSectionMatched(sectionConfigStr, targetSectionId) {
+        if (!sectionConfigStr || targetSectionId === undefined || targetSectionId === null || targetSectionId === '') {
+            return false;
+        }
+        const cfgStr = String(sectionConfigStr).trim().toLowerCase();
+        if (!cfgStr) return false;
+        if (cfgStr === 'all') return true;
+
+        const targetId = parseInt(targetSectionId, 10);
+        if (isNaN(targetId)) return false;
+
+        const parts = cfgStr.split(',');
+        for (let part of parts) {
+            part = part.trim();
+            if (!part) continue;
+
+            if (part.includes('-')) {
+                const range = part.split('-');
+                if (range.length === 2) {
+                    const start = parseInt(range[0].trim(), 10);
+                    const end = parseInt(range[1].trim(), 10);
+                    if (!isNaN(start) && !isNaN(end) && targetId >= start && targetId <= end) {
+                        return true;
+                    }
+                }
+            } else {
+                const single = parseInt(part, 10);
+                if (!isNaN(single) && single === targetId) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     function isAvMediaItem(rawGuid, sectionId = '', serverId = '', itemType = 'video') {
         if (itemType === 'directory' || itemType === 'show' || itemType === 'season' || itemType === 'episode' || itemType === 'album' || itemType === 'audio') {
             return false;
@@ -6624,14 +6651,11 @@ GM_addStyle(`
         }
 
         if (sectionId && srv) {
-            const secStr = String(sectionId).trim();
-            const javSecs = (srv.jav_section || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-            const westSecs = (srv.western_av_section || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+            const isJavSec = isSectionMatched(srv.jav_section, sectionId);
+            const isWestSec = isSectionMatched(srv.western_av_section, sectionId);
 
-            if (javSecs.length > 0 || westSecs.length > 0) {
-                const isJavSec = javSecs.includes('all') || javSecs.includes(secStr);
-                const isWestSec = westSecs.includes('all') || westSecs.includes(secStr);
-                if (!isJavSec && !isWestSec) return false;
+            if ((srv.jav_section || srv.western_av_section) && !isJavSec && !isWestSec) {
+                return false;
             }
         }
 
@@ -6690,7 +6714,7 @@ GM_addStyle(`
         });
     }
 
-    // 6. 모달 DOM 생성 및 초기화 (PL / P 스위칭 버튼 추가)
+    // 모달 DOM 생성 및 초기화
     let pmhCropModal = document.getElementById('pmh-crop-modal');
     if (!pmhCropModal) {
         pmhCropModal = document.createElement('div');
@@ -6712,10 +6736,12 @@ GM_addStyle(`
                             <button class="pmh-crop-btn" id="pmh-crop-src-p" title="기본 세로 포스터(_p)를 불러옵니다."><i class="fas fa-portrait"></i> 세로(P)</button>
                         </div>
 
-                        <!-- 크롭 비율 (1:1.42 / 자유) -->
-                        <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;">
-                            <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-ratio-lock" title="Plex 포스터 표준 비율 (1:1.4225)"><i class="fas fa-lock"></i> 1:1.42</button>
-                            <button class="pmh-crop-btn" id="pmh-crop-ratio-free" title="비율 제한 없이 자유롭게 자르기"><i class="fas fa-expand"></i> 자유</button>
+                        <!-- 크롭 비율 (1:1.42 / 3:4 / 1:1 / 자유) -->
+                        <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;" id="pmh-crop-ratio-group">
+                            <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-ratio-lock" title="Plex 포스터 표준 비율 (1:1.4225)">1:1.42</button>
+                            <button class="pmh-crop-btn" id="pmh-crop-ratio-portrait" title="3:4 프로필 비율">3:4</button>
+                            <button class="pmh-crop-btn" id="pmh-crop-ratio-square" title="1:1 정사각형 비율">1:1</button>
+                            <button class="pmh-crop-btn" id="pmh-crop-ratio-free" title="비율 제한 없이 자유롭게 자르기">자유</button>
                         </div>
 
                         <!-- 회전 및 리셋 -->
@@ -6724,8 +6750,9 @@ GM_addStyle(`
                         <button class="pmh-crop-btn" id="pmh-crop-reset" style="color:#f89406 !important;" title="영역 및 회전 초기화"><i class="fas fa-sync-alt"></i></button>
                     </div>
 
-                    <!-- 파일 수동 교체/등록 버튼 -->
+                    <!-- 파일 수동 교체/등록 및 URL 로드 버튼 -->
                     <div style="display:flex; gap:5px; align-items:center;">
+                        <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="pmh-btn-toggle-crop-url" title="이미지 웹 주소(URL) 직접 입력"><i class="fas fa-link"></i> URL 로드</button>
                         <label class="pmh-crop-btn pmh-crop-btn-primary" style="cursor:pointer;" title="새 가로 원본 이미지를 불러옵니다. (가로 _pl_user와 크롭된 _p_user 동시 저장)">
                             <i class="fas fa-folder-open"></i> 가로(PL) 교체
                             <input type="file" id="pmh-upload-pl" accept="image/*" style="display:none;">
@@ -6735,6 +6762,14 @@ GM_addStyle(`
                             <input type="file" id="pmh-upload-p" accept="image/*" style="display:none;">
                         </label>
                     </div>
+                </div>
+
+                <!-- URL 직접 입력 슬라이드 바 (기본 숨김) -->
+                <div id="pmh-crop-url-bar" style="display:none; padding:8px 12px; background:#1a1d21; border-bottom:1px solid #333; align-items:center; gap:8px;">
+                    <span style="font-size:11.5px; font-weight:bold; color:#2f96b4; white-space:nowrap;"><i class="fas fa-link"></i> URL:</span>
+                    <input type="text" id="pmh-input-crop-url" placeholder="https://... 이미지 웹 주소 붙여넣기" style="flex:1; padding:4px 8px; font-size:12px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; outline:none;">
+                    <button type="button" class="pmh-crop-btn" id="pmh-btn-cancel-crop-url">취소</button>
+                    <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="pmh-btn-apply-crop-url">로드</button>
                 </div>
 
                 <div class="pmh-crop-view">
@@ -6754,7 +6789,7 @@ GM_addStyle(`
         document.body.appendChild(pmhCropModal);
     }
 
-    // 7. 모달 닫기 함수
+    // 모달 닫기 함수
     function closeCropModal() {
         if (cropperInstance) { 
             cropperInstance.destroy(); 
@@ -6773,13 +6808,31 @@ GM_addStyle(`
         }
         const plInp = document.getElementById('pmh-upload-pl'); if (plInp) plInp.value = '';
         const pInp = document.getElementById('pmh-upload-p'); if (pInp) pInp.value = '';
+
+        const urlBar = document.getElementById('pmh-crop-url-bar');
+        if (urlBar) urlBar.style.display = 'none';
+        const urlInp = document.getElementById('pmh-input-crop-url');
+        if (urlInp) urlInp.value = '';
+
+        // 비율 버튼 1:1.42 기본값으로 초기화
+        $('#pmh-crop-ratio-group .pmh-crop-btn').removeClass('pmh-crop-btn-active');
+        $('#pmh-crop-ratio-lock').addClass('pmh-crop-btn-active');
+
         if (pmhCropModal) pmhCropModal.style.display = 'none';
         customUploadPayload = null;
         currentCropItemData = null;
     }
 
-    // 8. 이미지 바이너리 로드 및 Cropper 인스턴스화 모듈
-    function loadCropImage(targetUrl) {
+    // 현재 활성화된 비율 반환 헬퍼
+    function getSelectedCropAspectRatio() {
+        if ($('#pmh-crop-ratio-portrait').hasClass('pmh-crop-btn-active')) return 3 / 4;
+        if ($('#pmh-crop-ratio-square').hasClass('pmh-crop-btn-active')) return 1 / 1;
+        if ($('#pmh-crop-ratio-free').hasClass('pmh-crop-btn-active')) return NaN;
+        return 1 / 1.4225;
+    }
+
+    // 이미지 바이너리 로드 및 Cropper 인스턴스화 모듈
+    function loadCropImage(targetUrl, isCustomUrl = false) {
         if (!targetUrl) return;
 
         const imgEl = document.getElementById('pmh-cropper-target-img');
@@ -6791,6 +6844,11 @@ GM_addStyle(`
 
         infoLog(`[Crop Modal] 🚀 이미지 로드 시작: ${targetUrl}`);
 
+        // 사용자가 입력한 외부 URL 정보 보관 (바이너리 변환 없이 URL 자체만 유지)
+        if (isCustomUrl) {
+            customUploadPayload = { type: 'url', url: targetUrl };
+        }
+
         GM_xmlhttpRequest({
             method: "GET",
             url: targetUrl,
@@ -6799,7 +6857,8 @@ GM_addStyle(`
             timeout: 30000,
             onload: (blobRes) => {
                 if (blobRes.status >= 200 && blobRes.status < 300 && blobRes.response) {
-                    const blobUrl = URL.createObjectURL(blobRes.response);
+                    const blob = blobRes.response;
+                    const blobUrl = URL.createObjectURL(blob);
 
                     const initCropper = () => {
                         spinner.style.display = 'none';
@@ -6811,8 +6870,10 @@ GM_addStyle(`
                         }
 
                         const TargetCropper = getCropperClass();
+                        const activeRatio = getSelectedCropAspectRatio();
+
                         cropperInstance = new TargetCropper(imgEl, {
-                            aspectRatio: 1 / 1.4225,
+                            aspectRatio: activeRatio,
                             viewMode: 1,
                             autoCropArea: 1.0,
                             responsive: true,
@@ -6854,7 +6915,7 @@ GM_addStyle(`
         });
     }
 
-    // 9. 모달 열기 및 크롭 에디터 구동 (PL & P URL 동시 수집)
+    // 모달 열기 및 크롭 에디터 구동
     async function openPosterCropModal(itemId, serverId, rawGuid, optTitle = '') {
         infoLog(`[Crop Modal] 🎬 포스터 편집 진입 -> Item ID: ${itemId}, Server ID: ${serverId}, Raw GUID: ${rawGuid}`);
 
@@ -6876,8 +6937,21 @@ GM_addStyle(`
             return toastr.warning("지원하지 않는 AV 코드 형식입니다. (C, E, W만 지원)");
         }
 
-        infoLog(`[Crop Modal] 🔍 식별 코드: '${cleanCode}', 대상 모듈: '${moduleName}'`);
-        toastr.info(`[${cleanCode}] FF에서 커버 이미지를 가져옵니다...`, "에디터 로드 중");
+        currentCropItemData = { itemId, serverId, code: cleanCode, module: moduleName };
+        customUploadPayload = null;
+
+        document.getElementById('pmh-crop-title').innerText = `[${cleanCode}] ${optTitle || '로딩 중...'} - 포스터 크롭 에디터`;
+        const imgEl = document.getElementById('pmh-cropper-target-img');
+        const spinner = document.getElementById('pmh-crop-spinner');
+
+        if (cropperInstance) { 
+            cropperInstance.destroy(); 
+            cropperInstance = null; 
+        }
+        imgEl.className = '';
+        imgEl.style.cssText = 'display: block; max-width: 100%; opacity: 0;';
+        spinner.style.display = 'block';
+        pmhCropModal.style.display = 'flex';
 
         try {
             const CropperConstructor = await ensureCropperLoaded();
@@ -6886,12 +6960,11 @@ GM_addStyle(`
             }
 
             const reqUrl = `${srvConfig.relayUrl}/ff_metadata/api/${moduleName}/info?code=${encodeURIComponent(cleanCode)}&call=plex`;
-            infoLog(`[Crop Modal] 📡 FF info API 요청: ${reqUrl}`);
+            infoLog(`[Crop Modal] 📡 FF info API 요청 (180초 타임아웃): ${reqUrl}`);
 
-            const infoRes = await makeRequest(reqUrl, 'GET', null, ClientSettings.masterApiKey);
+            const infoRes = await makeRequest(reqUrl, 'GET', null, ClientSettings.masterApiKey, null, 180000);
             infoLog(`[Crop Modal] ✅ FF info 응답 수신:`, infoRes);
 
-            // 1) 가로 커버 (PL) URL 추출
             let plUrl = '';
             if (infoRes.thumb) {
                 for (const t of infoRes.thumb) {
@@ -6901,7 +6974,6 @@ GM_addStyle(`
             if (!plUrl && infoRes.fanart && infoRes.fanart.length > 0) plUrl = infoRes.fanart[0];
             if (!plUrl) plUrl = infoRes.poster_url;
 
-            // 2) 세로 포스터 (P) URL 추출
             let pUrl = infoRes.poster_url || '';
             if (!pUrl && infoRes.thumb) {
                 for (const t of infoRes.thumb) {
@@ -6910,28 +6982,19 @@ GM_addStyle(`
             }
             if (!pUrl && plUrl) pUrl = plUrl;
 
-            infoLog(`[Crop Modal] 🖼️ PL(가로): '${plUrl}' | P(세로): '${pUrl}'`);
             if (!plUrl && !pUrl) throw new Error("편집할 원본 이미지 주소를 찾을 수 없습니다.");
 
-            // 상태 저장 (기본 소스는 PL)
-            currentCropItemData = { 
-                itemId, serverId, code: cleanCode, module: moduleName, 
-                plUrl: plUrl || pUrl, 
-                pUrl: pUrl || plUrl,
-                currentSource: 'pl'
-            };
-            customUploadPayload = null;
+            currentCropItemData.plUrl = plUrl || pUrl;
+            currentCropItemData.pUrl = pUrl || plUrl;
+            currentCropItemData.currentSource = 'pl';
 
             document.getElementById('pmh-crop-title').innerText = `[${cleanCode}] ${infoRes.title || optTitle} - 포스터 크롭 에디터`;
             
-            // 소스 버튼 UI 초기화 (PL 활성화)
             const btnSrcPl = document.getElementById('pmh-crop-src-pl');
             const btnSrcP = document.getElementById('pmh-crop-src-p');
             if (btnSrcPl) btnSrcPl.classList.add('pmh-crop-btn-active');
             if (btnSrcP) btnSrcP.classList.remove('pmh-crop-btn-active');
 
-            // 모달 노출 및 기본 PL 이미지 로드
-            pmhCropModal.style.display = 'flex';
             loadCropImage(currentCropItemData.plUrl);
 
         } catch (err) {
@@ -6941,9 +7004,22 @@ GM_addStyle(`
         }
     }
 
-    // 10. 툴바 및 모달 이벤트 바인딩
+    // 툴바 및 모달 이벤트 바인딩
+    let isMouseDownOnCropBackdrop = false;
+
+    pmhCropModal.onmousedown = (e) => {
+        isMouseDownOnCropBackdrop = (e.target === pmhCropModal);
+    };
+
+    pmhCropModal.onmouseup = (e) => {
+        if (isMouseDownOnCropBackdrop && e.target === pmhCropModal) {
+            closeCropModal();
+        }
+        isMouseDownOnCropBackdrop = false;
+    };
+
     pmhCropModal.onclick = (e) => { 
-        if (e.target === pmhCropModal || e.target.closest('#pmh-btn-crop-close') || e.target.closest('#pmh-btn-crop-cancel')) {
+        if (e.target.closest('#pmh-btn-crop-close') || e.target.closest('#pmh-btn-crop-cancel')) {
             closeCropModal(); 
         }
     };
@@ -6981,24 +7057,34 @@ GM_addStyle(`
     }
 
     // [비율] 고정 / 자유 토글
-    const btnRatioLock = document.getElementById('pmh-crop-ratio-lock');
-    const btnRatioFree = document.getElementById('pmh-crop-ratio-free');
-    if (btnRatioLock) {
-        btnRatioLock.onclick = function() {
-            if (cropperInstance) cropperInstance.setAspectRatio(1 / 1.4225);
-            this.classList.add('pmh-crop-btn-active');
-            if (btnRatioFree) btnRatioFree.classList.remove('pmh-crop-btn-active');
-        };
-    }
-    if (btnRatioFree) {
-        btnRatioFree.onclick = function() {
-            if (cropperInstance) cropperInstance.setAspectRatio(NaN);
-            this.classList.add('pmh-crop-btn-active');
-            if (btnRatioLock) btnRatioLock.classList.remove('pmh-crop-btn-active');
-        };
+        // 비율 조절 버튼 이벤트 (1:1.42, 3:4, 1:1, 자유)
+    function setCropAspectRatio(ratio, activeBtnId) {
+        if (cropperInstance) cropperInstance.setAspectRatio(ratio);
+        $('#pmh-crop-ratio-group .pmh-crop-btn').removeClass('pmh-crop-btn-active');
+        $('#' + activeBtnId).addClass('pmh-crop-btn-active');
     }
 
-    // [회전 및 리셋]
+    const btnRatioLock = document.getElementById('pmh-crop-ratio-lock');
+    if (btnRatioLock) {
+        btnRatioLock.onclick = function() { setCropAspectRatio(1 / 1.4225, 'pmh-crop-ratio-lock'); };
+    }
+
+    const btnRatioPortrait = document.getElementById('pmh-crop-ratio-portrait');
+    if (btnRatioPortrait) {
+        btnRatioPortrait.onclick = function() { setCropAspectRatio(3 / 4, 'pmh-crop-ratio-portrait'); };
+    }
+
+    const btnRatioSquare = document.getElementById('pmh-crop-ratio-square');
+    if (btnRatioSquare) {
+        btnRatioSquare.onclick = function() { setCropAspectRatio(1 / 1, 'pmh-crop-ratio-square'); };
+    }
+
+    const btnRatioFree = document.getElementById('pmh-crop-ratio-free');
+    if (btnRatioFree) {
+        btnRatioFree.onclick = function() { setCropAspectRatio(NaN, 'pmh-crop-ratio-free'); };
+    }
+
+    // 회전 및 리셋
     const btnRotateL = document.getElementById('pmh-crop-rotate-l');
     if (btnRotateL) btnRotateL.onclick = () => { if (cropperInstance) cropperInstance.rotate(-90); };
 
@@ -7010,9 +7096,70 @@ GM_addStyle(`
         btnReset.onclick = () => {
             if (cropperInstance) {
                 cropperInstance.reset();
-                cropperInstance.setAspectRatio(1 / 1.4225);
-                if (btnRatioLock) btnRatioLock.classList.add('pmh-crop-btn-active');
-                if (btnRatioFree) btnRatioFree.classList.remove('pmh-crop-btn-active');
+                setCropAspectRatio(1 / 1.4225, 'pmh-crop-ratio-lock');
+            }
+        };
+    }
+
+    // URL 직접 입력 슬라이드 바 토글 및 로드 처리
+    const btnToggleCropUrl = document.getElementById('pmh-btn-toggle-crop-url');
+    const cropUrlBar = document.getElementById('pmh-crop-url-bar');
+    const inputCropUrl = document.getElementById('pmh-input-crop-url');
+
+    if (btnToggleCropUrl && cropUrlBar) {
+        btnToggleCropUrl.onclick = function(e) {
+            e.preventDefault();
+            const isVisible = (cropUrlBar.style.display === 'flex');
+            cropUrlBar.style.display = isVisible ? 'none' : 'flex';
+            if (!isVisible && inputCropUrl) {
+                inputCropUrl.focus();
+                inputCropUrl.select();
+            }
+        };
+    }
+
+    const btnCancelCropUrl = document.getElementById('pmh-btn-cancel-crop-url');
+    if (btnCancelCropUrl && cropUrlBar) {
+        btnCancelCropUrl.onclick = function(e) {
+            e.preventDefault();
+            cropUrlBar.style.display = 'none';
+        };
+    }
+
+    function applyDirectCropUrl() {
+        if (!inputCropUrl) return;
+        const rawUrl = inputCropUrl.value.trim();
+        if (!rawUrl) {
+            toastr.warning("불러올 이미지 URL을 입력하세요.");
+            return;
+        }
+        if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
+            toastr.warning("올바른 HTTP/HTTPS 웹 주소를 입력하세요.");
+            return;
+        }
+
+        infoLog(`[Crop Modal] 사용자가 입력한 외부 URL 로드: ${rawUrl}`);
+        loadCropImage(rawUrl, true);
+        cropUrlBar.style.display = 'none';
+        toastr.info("URL 이미지를 불러오는 중입니다...");
+    }
+
+    const btnApplyCropUrl = document.getElementById('pmh-btn-apply-crop-url');
+    if (btnApplyCropUrl) {
+        btnApplyCropUrl.onclick = function(e) {
+            e.preventDefault();
+            applyDirectCropUrl();
+        };
+    }
+
+    if (inputCropUrl) {
+        inputCropUrl.onkeydown = function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                applyDirectCropUrl();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                if (cropUrlBar) cropUrlBar.style.display = 'none';
             }
         };
     }
@@ -7070,13 +7217,19 @@ GM_addStyle(`
                 };
 
                 if (customUploadPayload) {
-                    if (customUploadPayload.type === 'pl') payload.pl_base64 = customUploadPayload.data;
-                    else if (customUploadPayload.type === 'p') payload.p_base64 = customUploadPayload.data;
+                    if (customUploadPayload.type === 'pl') {
+                        payload.pl_base64 = customUploadPayload.data;
+                    } else if (customUploadPayload.type === 'p') {
+                        payload.p_base64 = customUploadPayload.data;
+                    } else if (customUploadPayload.type === 'url') {
+                        payload.image_url = customUploadPayload.url;
+                        payload.source_type = 'url';
+                    }
                 }
 
                 infoLog(`[Crop Modal] 💾 FF crop_save 요청 전송:`, payload);
 
-                const saveRes = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/api/${module}/crop_save`, 'POST', payload, ClientSettings.masterApiKey);
+                const saveRes = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/api/${module}/crop_save`, 'POST', payload, ClientSettings.masterApiKey, null, 180000);
                 infoLog(`[Crop Modal] ✅ FF crop_save 응답:`, saveRes);
                 
                 if (saveRes.ret !== 'success') {

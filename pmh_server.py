@@ -767,7 +767,7 @@ def relay_to_node(node_id, subpath):
     req_data = raw_body if raw_body else None
     if req_data: headers['Content-Length'] = str(len(req_data))
 
-    is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('queue_status') or subpath.endswith('active_queues') or subpath.endswith('/stream')
+    is_silent = subpath == 'ping' or subpath.endswith('/status') or subpath.endswith('/stream') or subpath.endswith('queue_status') or subpath.endswith('active_queues') or subpath.endswith('queue_stream')
     if not is_silent:
         pmh_logger.debug(f"🚀 Relay [{request.method}] -> {node_info['name']} ({target_url})")
 
@@ -776,7 +776,7 @@ def relay_to_node(node_id, subpath):
         if not subpath.endswith('/stream'):
             req.add_header('Connection', 'close') 
 
-        stream_timeout = None if subpath.endswith('/stream') else 120
+        stream_timeout = None if subpath.endswith('/stream') else (180 if subpath.startswith('ff_metadata/') else 120)
         response = urllib.request.urlopen(req, timeout=stream_timeout)
         resp_content_type = response.headers.get('Content-Type', '')
         
