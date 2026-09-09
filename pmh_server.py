@@ -776,7 +776,15 @@ def relay_to_node(node_id, subpath):
         if not subpath.endswith('/stream'):
             req.add_header('Connection', 'close') 
 
-        stream_timeout = None if subpath.endswith('/stream') else (180 if subpath.startswith('ff_metadata/') else 120)
+        if subpath.endswith('/stream'):
+            stream_timeout = None
+        elif 'preview' in subpath or 'make_preview_clip' in str(req_data or ''):
+            stream_timeout = 300
+        elif subpath.startswith('ff_metadata/'):
+            stream_timeout = 180
+        else:
+            stream_timeout = 120
+
         response = urllib.request.urlopen(req, timeout=stream_timeout)
         resp_content_type = response.headers.get('Content-Type', '')
         

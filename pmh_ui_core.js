@@ -44,11 +44,26 @@ window.PmhUICore = {
                     <i id="pmh-img-modal-spin" class="fas fa-spinner fa-spin" style="position:absolute; font-size:30px; color:#e5a00d;"></i>
                     <img id="pmh-img-modal-img" src="" style="max-width:100%; max-height:72vh; object-fit:contain; border-radius:4px; opacity:0; transition:opacity 0.2s;" onload="this.style.opacity=1; document.getElementById('pmh-img-modal-spin').style.display='none'; const imgW = Math.max(280, this.getBoundingClientRect().width); document.getElementById('pmh-img-modal-card').style.width = (imgW + 30) + 'px';">
                 </div>
-                <div style="font-size:10px; color:#777; text-align:center; margin-top:8px;">화면 어디든 클릭하면 닫힙니다.</div>
+                <div style="font-size:10px; color:#777; text-align:center; margin-top:8px;">화면 어디든 클릭하거나 ESC를 누르면 닫힙니다.</div>
             </div>
         `;
         document.body.appendChild(m);
-        m.addEventListener('click', () => m.remove());
+
+        const closeModal = () => {
+            document.removeEventListener('keydown', handleEscKey);
+            m.remove();
+        };
+
+        const handleEscKey = (e) => {
+            if (e.key === 'Escape' || e.keyCode === 27) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeModal();
+            }
+        };
+
+        document.addEventListener('keydown', handleEscKey);
+        m.addEventListener('click', closeModal);
         
         document.getElementById('pmh-img-modal-title').innerText = title || '이미지 미리보기';
         document.getElementById('pmh-img-modal-img').src = url;

@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.120"
+__version__ = "0.9.121"
 
 logger = logging.getLogger("PMH")
 
@@ -2101,10 +2101,16 @@ def dispatch_request(subpath, method, args, data, global_config):
             
             req_data = None
             if method == 'POST':
-                headers['Content-Type'] = 'application/json'
                 body_data = data.copy() if isinstance(data, dict) else {}
                 body_data['apikey'] = ff_apikey
-                req_data = json.dumps(body_data).encode('utf-8')
+
+                if sub_endpoint.startswith('ajax/') or 'command' in body_data:
+                    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+                    safe_form_data = {k: (v if v is not None else '') for k, v in body_data.items()}
+                    req_data = urlencode(safe_form_data).encode('utf-8')
+                else:
+                    headers['Content-Type'] = 'application/json'
+                    req_data = json.dumps(body_data).encode('utf-8')
             
             log_url = re.sub(r'apikey=[^&]+', 'apikey=****', target_url)
             if method == 'POST' and isinstance(data, dict):
@@ -2122,7 +2128,8 @@ def dispatch_request(subpath, method, args, data, global_config):
                 
             try:
                 req = Request(target_url, data=req_data, headers=headers, method=method)
-                with urlopen(req, timeout=180) as response:
+                ff_timeout = 300 if ('make_preview_clip' in str(req_data) or 'preview' in sub_endpoint) else 180
+                with urlopen(req, timeout=ff_timeout) as response:
                     resp_body = response.read().decode('utf-8')
                     logger.info(f"   ✅ [FF Relay 응답 ({response.status})]: {resp_body[:120]}...")
                     try: return json.loads(resp_body), response.status

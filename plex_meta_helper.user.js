@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.120
+// @version      0.9.121
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -4408,55 +4408,232 @@ GM_addStyle(`
     // Plex 네이티브 다중 선택(Multi-Select) 연동 배치 엔진
     // =========================================================================
 
-    function getSelectedPlexItems() {
-        const selectedContainers = new Set();
+    // 카드가 Plex 다중 선택 상태인지 여부 판별 헬퍼
+    function isSelectedCard(card) {
+        if (!card || !card.isConnected) return false;
 
-        document.querySelectorAll(`
-            button[aria-checked="true"],
-            div[class*="isSelected"],
-            div[class*="SelectedBadge"],
-            div[aria-selected="true"],
-            [class*="Card-card-"][class*="selected"],
-            [class*="Card-card-"][class*="Selected"],
-            [class*="PosterCard-card-"][class*="selected"],
-            [class*="PosterCard-card-"][class*="Selected"],
-            div[data-testid^="cellItem"]:has(svg#plex-icon-selected-560),
-            div[data-testid^="cellItem"]:has([class*="selected"]),
-            div[data-testid^="cellItem"]:has([class*="Selected"])
-        `).forEach(el => {
-            const card = el.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], div[class*="MetadataPosterCard-container"], tr[class*="TableRow-"]');
-            if (card) selectedContainers.add(card);
-        });
-
-        const items = [];
-        selectedContainers.forEach(cont => {
-            let link = cont.querySelector('a.PosterCardLink-link-LozvMm, a[data-testid="metadataTitleLink"]') || cont.querySelectorAll('a[href*="/metadata/"]')[0];
-            if (!link) return;
-            const href = link.getAttribute('href'); if (!href) return;
-            const sidMatch = href.match(/\/server\/([a-f0-9]+)\//); if (!sidMatch) return;
-            const sid = sidMatch[1];
-
-            let iid = null;
-            try {
-                const keyParam = new URLSearchParams(href.split('?')[1]).get('key');
-                if (keyParam) iid = decodeURIComponent(keyParam).split('/metadata/')[1]?.split(/[\/?]/)[0];
-            } catch(e) {}
-
-            if (sid && iid && !isIgnoredItem(href, iid, cont)) {
-                let title = cont.querySelector('[class*="Title"], a[aria-label]')?.textContent?.trim() || `Item ${iid}`;
-                items.push({ id: iid, serverId: sid, title: title, cont: cont });
+        const useElements = card.querySelectorAll(`
+            button[class*="Select"] use,
+            button[class*="select"] use,
+            [class*="SelectBadge"] use,
+            [class*="SelectedBadge"] use,
+            [class*="selectButton"] use,
+            [class*="select-button"] use
+        `);
+        for (const u of useElements) {
+            const href = u.getAttribute('xlink:href') || u.getAttribute('href') || '';
+            if (href.includes('selected') || href.includes('check')) {
+                return true;
             }
-        });
-        return items;
+        }
+
+        const allUses = card.querySelectorAll('use');
+        for (const u of allUses) {
+            const href = u.getAttribute('xlink:href') || u.getAttribute('href') || '';
+            if (href.includes('icon-selected') || href.includes('icon-check-round') || href.includes('checkbox-checked')) {
+                return true;
+            }
+        }
+
+        const selectButtons = card.querySelectorAll(`
+            button[class*="Select"],
+            button[class*="select"],
+            button[data-testid*="select"],
+            button[data-testid*="Select"]
+        `);
+        for (const btn of selectButtons) {
+            if (btn.getAttribute('aria-checked') === 'true' || btn.getAttribute('aria-pressed') === 'true') {
+                return true;
+            }
+            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+            if (label.includes('선택 해제') || label.includes('선택취소') || label.includes('deselect')) {
+                return true;
+            }
+        }
+
+        if (card.querySelector(`
+            [class*="SelectedBadge"],
+            [class*="selectedBadge"],
+            [class*="SelectBadge"][class*="selected"],
+            [class*="SelectBadge"][class*="Selected"],
+            [class*="selectBadge"][class*="selected"],
+            [class*="selectBadge"][class*="Selected"]
+        `)) {
+            return true;
+        }
+
+        if (card.matches('tr[class*="selected"], tr[class*="Selected"], tr[aria-selected="true"]')) {
+            return true;
+        }
+        if (card.querySelector('input[type="checkbox"]:checked')) {
+            return true;
+        }
+
+        const cardClass = card.className || '';
+        if (typeof cardClass === 'string' && (cardClass.includes('isSelected') || cardClass.includes('is-selected'))) {
+            return true;
+        }
+
+        return false;
     }
 
+    // React Fiber 트리를 탐색하여 선택 상태의 ID 목록 보조 수집
+    function getSelectedIdsFromReactFiber() {
+        try {
+            const selectionBar = document.querySelector('div[class*="PageHeaderMultiselectActions-container-"], div[class*="PageHeaderMultiselectActions-"]');
+            if (!selectionBar) return [];
+
+            const fiberKey = Object.keys(selectionBar).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+            if (!fiberKey) return [];
+
+            let fiber = selectionBar[fiberKey];
+            let depth = 0;
+            const collectedIds = new Set();
+
+            while (fiber && depth < 30) {
+                const props = fiber.memoizedProps;
+                if (props) {
+                    for (const key of ['selected', 'selectedIds', 'selectedItems', 'selection', 'selectedKeys']) {
+                        const target = props[key];
+                        if (target) {
+                            if (target instanceof Set || (typeof target.forEach === 'function' && typeof target.size === 'number')) {
+                                target.forEach(v => {
+                                    const id = typeof v === 'object' ? (v?.id || v?.ratingKey || v?.key) : v;
+                                    if (id) collectedIds.add(String(id));
+                                });
+                            } else if (Array.isArray(target)) {
+                                target.forEach(v => {
+                                    const id = typeof v === 'object' ? (v?.id || v?.ratingKey || v?.key) : v;
+                                    if (id) collectedIds.add(String(id));
+                                });
+                            }
+                        }
+                    }
+                    if (collectedIds.size > 0) break;
+                }
+
+                const state = fiber.memoizedState;
+                if (state) {
+                    let s = state;
+                    while (s) {
+                        const sVal = s.memoizedState;
+                        if (sVal) {
+                            if (sVal instanceof Set && sVal.size > 0) {
+                                sVal.forEach(v => {
+                                    const id = typeof v === 'object' ? (v?.id || v?.ratingKey || v?.key) : v;
+                                    if (id) collectedIds.add(String(id));
+                                });
+                            } else if (Array.isArray(sVal) && sVal.length > 0 && (typeof sVal[0] === 'string' || typeof sVal[0] === 'number')) {
+                                sVal.forEach(v => collectedIds.add(String(v)));
+                            }
+                        }
+                        if (collectedIds.size > 0) break;
+                        s = s.next;
+                    }
+                    if (collectedIds.size > 0) break;
+                }
+
+                fiber = fiber.return;
+                depth++;
+            }
+
+            if (collectedIds.size > 0) {
+                log(`[Multi-Select] React Fiber에서 선택된 ${collectedIds.size}개 ID 탐지 성공:`, Array.from(collectedIds));
+                return Array.from(collectedIds);
+            }
+        } catch (e) {
+            log("[Multi-Select] React Fiber 탐색 예외 (DOM 탐색으로 안전하게 대체):", e);
+        }
+        return [];
+    }
+
+    // 최종 선택된 모든 Plex 항목 수집
+    function getSelectedPlexItems() {
+        const itemsMap = new Map();
+
+        const allCandidateCards = document.querySelectorAll(`
+            div[data-testid^="cellItem"],
+            div[class*="ListItem-container"],
+            div[class*="MetadataPosterCard-container"],
+            div[class*="MetadataThumbCard-container"],
+            div[class*="ThumbCard-container"],
+            div[class*="PosterCard-container"],
+            div[class*="HubItem-"],
+            tr[class*="TableRow-"]
+        `);
+
+        allCandidateCards.forEach(card => {
+            const parentCard = card.parentElement?.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], tr[class*="TableRow-"]');
+            if (parentCard && parentCard !== card) return;
+
+            if (isSelectedCard(card)) {
+                const { link, sid, iid, href } = extractCardLinkAndId(card);
+                if (link && sid && iid && !isIgnoredItem(href, iid, card)) {
+                    if (!itemsMap.has(iid)) {
+                        let title = card.querySelector('[class*="Title"], a[aria-label]')?.textContent?.trim() || `Item ${iid}`;
+                        itemsMap.set(iid, { id: iid, serverId: sid, title: title, cont: card });
+                        log(`[Multi-Select] DOM 선택 항목 탐지: ${title} (ID: ${iid}, Server: ${sid})`);
+                    }
+                }
+            }
+        });
+
+        const reactIds = getSelectedIdsFromReactFiber();
+        if (reactIds && reactIds.length > 0) {
+            const currentHash = window.location.hash || window.location.search || '';
+            const sidMatch = currentHash.match(/\/server\/([a-f0-9]+)\//);
+            const fallbackSid = sidMatch ? sidMatch[1] : (ServerConfig.SERVERS[0]?.machineIdentifier || null);
+
+            reactIds.forEach(id => {
+                const strId = String(id);
+                if (!itemsMap.has(strId)) {
+                    let fallbackTitle = `Item ${strId}`;
+                    let resolvedSid = fallbackSid;
+
+                    if (fallbackSid) {
+                        const cached = getMemoryCache(`L_${fallbackSid}_${strId}`) || getMemoryCache(`D_${fallbackSid}_${strId}`) || getMemoryCache(`F_${fallbackSid}_${strId}`);
+                        if (cached) {
+                            if (cached.saved_title) fallbackTitle = cached.saved_title;
+                            else if (cached.p) fallbackTitle = cached.p.split(/[\\/]/).pop() || cached.p;
+                        }
+                    }
+
+                    if (resolvedSid) {
+                        itemsMap.set(strId, { id: strId, serverId: resolvedSid, title: fallbackTitle, cont: null });
+                        log(`[Multi-Select] React Fiber 가상화 선택 항목 보강: ${fallbackTitle} (ID: ${strId})`);
+                    }
+                }
+            });
+        }
+
+        const resultItems = Array.from(itemsMap.values());
+
+        const headerCountText = document.querySelector('div[class*="PageHeaderMultiselectActions-"] [class*="count"], div[class*="PageHeaderMultiselectActions-"] span')?.textContent || '';
+        const countMatch = headerCountText.match(/\d+/);
+        if (countMatch) {
+            const plexReportedCount = parseInt(countMatch[0], 10);
+            if (plexReportedCount !== resultItems.length) {
+                log(`[Multi-Select] ⚠️ Plex 헤더 표기(${plexReportedCount}개)와 PMH 감지 수량(${resultItems.length}개) 차이 감지 (가상화 렌더링 범위 차이)`);
+            } else {
+                log(`[Multi-Select] ✅ Plex 헤더 수량(${plexReportedCount}개)과 PMH 감지 수량 일치`);
+            }
+        }
+
+        infoLog(`[Multi-Select] 다중 선택 항목 최종 집계 완료: 총 ${resultItems.length}건`);
+        return resultItems;
+    }
+
+    // 작업 시작 후 Plex의 다중 선택 상태 초기화
     function clearPlexSelection() {
-        // 💡 [실제 DOM 타깃] '모두 선택 해제' 버튼 직접 클릭
         const deselectBtn = document.querySelector(`
             div[class*="PageHeaderMultiselectActions-deselect-"] button,
             button:has(svg#plex-icon-remove-560),
+            button:has(use[*|href*="remove"]),
+            button:has(use[*|href*="close"]),
             div[class*="SelectionHeader"] button[aria-label*="취소"],
-            button[data-testid="selection-cancel"]
+            button[data-testid="selection-cancel"],
+            button[aria-label*="선택 해제"],
+            button[aria-label*="Deselect"]
         `);
         if (deselectBtn) {
             deselectBtn.click();
@@ -5081,6 +5258,40 @@ GM_addStyle(`
             <a href="#" id="pmh-btn-crop-poster" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="FF 가로 커버(_pl)를 불러와 원하는 영역으로 크롭하여 세로 포스터(_p_user)로 저장합니다." onmouseover="this.style.color='#2f96b4'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-crop-alt" style="font-size: 10px; margin-right: 2px;"></i>포스터 편집</a>
         ` : '';
 
+        const findBestVideoPath = (versions) => {
+            if (!versions || versions.length === 0) return '';
+            const valid = versions.filter(v => v && v.file);
+            if (valid.length === 0) return '';
+
+            const maxWidth = Math.max(...valid.map(v => v.width || 0));
+            const topCandidates = valid.filter(v => (v.width || 0) === maxWidth);
+
+            if (topCandidates.length === 1) return topCandidates[0].file;
+
+            const isFirstPart = (path) => {
+                const name = path.split(/[\\/]/).pop().toLowerCase();
+                return /[-_. ]?(cd|part|pt|disc|dvd)[\s._-]*0*1\b/i.test(name) || /[-_. ]0*1\.[a-z0-9]+$/i.test(name);
+            };
+
+            const firstPart = topCandidates.find(v => isFirstPart(v.file));
+            if (firstPart) return firstPart.file;
+
+            topCandidates.sort((a, b) => {
+                const nameA = a.file.split(/[\\/]/).pop();
+                const nameB = b.file.split(/[\\/]/).pop();
+                return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+            });
+            return topCandidates[0].file;
+        };
+
+        const bestVideoPath = (isAvDetail && data.type === 'video' && data.versions) ? findBestVideoPath(data.versions) : '';
+
+        // 언제든 프리뷰 클립을 생성 또는 덮어쓰기 재생성할 수 있는 단일 버튼 구성
+        const previewClipBtnHtml = bestVideoPath ? `
+            <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
+            <a href="#" id="pmh-btn-make-preview" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="동영상에서 1~2분 몽타주 프리뷰 클립을 생성하고 예고편으로 등록합니다." onmouseover="this.style.color='#e5a00d'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-film" style="font-size: 10px; margin-right: 2px;"></i>프리뷰 생성</a>
+        ` : '';
+
         const refreshMetaBtnHtml = srvConfig ? `
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
             <a href="#" id="pmh-btn-refresh-meta" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 메타 새로고침을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-bolt" style="font-size: 10px; margin-right: 2px;"></i>메타 새로고침</a>
@@ -5091,6 +5302,7 @@ GM_addStyle(`
             <span style="opacity: 0.3; color: #adb5bd; margin: 0 4px;">|</span>
             <a href="#" id="pmh-btn-analyze" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 미디어 분석을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-search-plus" style="font-size: 10px; margin-right: 2px;"></i>미디어 분석</a>
             ${cropPosterBtnHtml}
+            ${previewClipBtnHtml}
         ` : '';
 
         const boxHtml = `
@@ -5373,14 +5585,18 @@ GM_addStyle(`
             });
         }
 
+        const targetItemId = data.itemId || extractIds().itemId;
+
         const btnRematch = document.getElementById('pmh-btn-rematch');
         if (btnRematch) {
             btnRematch.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
 
                 if (!plexSrv) return toastr.error("토큰을 찾을 수 없습니다.");
+                if (!targetItemId) return toastr.error("대상 아이템 ID를 확인할 수 없습니다.");
 
                 const originalHtml = `<i class="fas fa-link" style="font-size: 10px; margin-right: 2px;"></i>일반 리매칭`;
+                const originalTitle = "언매칭 없이 일반 리매칭을 시도합니다.";
 
                 if (btnRematch.dataset.refreshing === 'true') {
                     abortDetailRefresh = true;
@@ -5409,19 +5625,23 @@ GM_addStyle(`
                 btnRematch.cancelToken = {};
 
                 btnRematch.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>리매칭 진행중`;
+                btnRematch.title = "클릭시 대기 취소";
                 showBoxLoading();
                 
-                infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${data.itemId}`);
+                infoLog(`[Detail] Foreground Meta Rematch requested for Item: ${targetItemId}`);
 
                 const matchOptions = {
                     _try_refresh_first: false,
                     _do_unmatch_first: false,
                     _skip_sim_check: ClientSettings.matchSkipSimCheck,
-                    _custom_agent_score: ClientSettings.customAgentScore
+                    _use_custom_score: ClientSettings.useCustomScore,
+                    _custom_agent_score: ClientSettings.customAgentScore,
+                    _manual_match: ClientSettings.manualMatch
                 };
 
+                let isRematchSuccess = false;
                 try {
-                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey, btnRematch.cancelToken);
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${targetItemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey, btnRematch.cancelToken);
 
                     if (res.status === 'queued') {
                         await waitQueueTask(res.task_id, srvConfig);
@@ -5437,7 +5657,7 @@ GM_addStyle(`
                         infoLog(`[Detail] Rematch process cancelled by user/navigation.`);
                     } else {
                         toastr.error(`${err.message}`, "매칭 실패", {timeOut: 5000});
-                        errorLog(`[Detail] Rematch failed for Item: ${data.itemId}. Reason: ${err.message}`);
+                        errorLog(`[Detail] Rematch failed for Item: ${targetItemId}. Reason: ${err.message}`);
                     }
 
                     hideBoxLoading();
@@ -5449,7 +5669,7 @@ GM_addStyle(`
                 } finally {
                     if (isRematchSuccess && !globalAbortFlag && renderSessionAtClick === currentRenderSession && !abortDetailRefresh) {
                         invalidateVisibleCaches(serverId);
-                        deleteMemoryCache(`D_${serverId}_${data.itemId}`);
+                        deleteMemoryCache(`D_${serverId}_${targetItemId}`);
                         currentDisplayedItemId = null;
                         processDetail(true);
                         smartRefreshChildren();
@@ -5462,18 +5682,31 @@ GM_addStyle(`
         if (btnCleanMatch) {
             btnCleanMatch.addEventListener('click', async (e) => {
                 e.preventDefault(); e.stopPropagation();
+
                 if (!plexSrv) return toastr.error("토큰을 찾을 수 없습니다.");
+                if (!targetItemId) return toastr.error("대상 아이템 ID를 확인할 수 없습니다.");
 
                 const originalHtml = `<i class="fas fa-broom" style="font-size: 10px; margin-right: 2px;"></i>클린 리매칭`;
+                const originalTitle = "현재 메타데이터를 언매치 후 클린 리매칭합니다.";
                 
                 if (btnCleanMatch.dataset.refreshing === 'true') {
                     abortDetailRefresh = true;
                     btnCleanMatch.innerHTML = `<i class="fas fa-times" style="font-size: 10px; margin-right: 2px;"></i>취소됨`;
-                    if (btnCleanMatch.cancelToken && btnCleanMatch.cancelToken.abort) btnCleanMatch.cancelToken.abort();
+                    btnCleanMatch.title = "";
+
+                    if (btnCleanMatch.cancelToken && btnCleanMatch.cancelToken.abort) {
+                        btnCleanMatch.cancelToken.abort();
+                    }
+
                     hideBoxLoading();
                     toastr.warning("메타 리매칭이 취소되었습니다.", "취소됨", {timeOut: 2000});
+
                     setTimeout(() => {
-                        if (btnCleanMatch.isConnected) { btnCleanMatch.innerHTML = originalHtml; delete btnCleanMatch.dataset.refreshing; }
+                        if (btnCleanMatch.isConnected) {
+                            btnCleanMatch.innerHTML = originalHtml;
+                            btnCleanMatch.title = originalTitle;
+                            delete btnCleanMatch.dataset.refreshing;
+                        }
                     }, 1500);
                     return;
                 }
@@ -5483,33 +5716,51 @@ GM_addStyle(`
                 btnCleanMatch.cancelToken = {};
 
                 btnCleanMatch.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>리매칭 진행중`;
+                btnCleanMatch.title = "클릭시 대기 취소";
                 showBoxLoading();
                 
-                infoLog(`[Detail] Foreground Clean Rematch requested for Item: ${data.itemId}`);
+                infoLog(`[Detail] Foreground Clean Rematch requested for Item: ${targetItemId}`);
 
                 const matchOptions = {
                     _try_refresh_first: false,
                     _do_unmatch_first: true,
                     _skip_sim_check: ClientSettings.matchSkipSimCheck,
-                    _custom_agent_score: ClientSettings.customAgentScore
+                    _use_custom_score: ClientSettings.useCustomScore,
+                    _custom_agent_score: ClientSettings.customAgentScore,
+                    _manual_match: ClientSettings.manualMatch
                 };
 
                 let isRematchSuccess = false;
                 try {
-                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${data.itemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey, btnCleanMatch.cancelToken);
-                    if (res.status === 'queued') await waitQueueTask(res.task_id, srvConfig);
+                    const res = await makeRequest(`${srvConfig.relayUrl}/media/${targetItemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey, btnCleanMatch.cancelToken);
+
+                    if (res.status === 'queued') {
+                        await waitQueueTask(res.task_id, srvConfig);
+                    }
+
                     if (globalAbortFlag || renderSessionAtClick !== currentRenderSession || abortDetailRefresh) throw new Error("Cancelled");
+
                     isRematchSuccess = true;
                     toastr.success("클린 리매칭 완료!<br>잠시 후 UI에 반영됩니다.", "성공", {timeOut: 4000});
+
                 } catch (err) {
-                    if (err.message === "Cancelled" || err.message === "Aborted") infoLog(`[Detail] Clean Rematch process cancelled.`);
-                    else toastr.error(`${err.message}`, "매칭 실패", {timeOut: 5000});
+                    if (err.message === "Cancelled" || err.message === "Aborted") {
+                        infoLog(`[Detail] Clean Rematch process cancelled.`);
+                    } else {
+                        toastr.error(`${err.message}`, "매칭 실패", {timeOut: 5000});
+                        errorLog(`[Detail] Clean Rematch failed for Item: ${targetItemId}. Reason: ${err.message}`);
+                    }
+
                     hideBoxLoading();
-                    if (btnCleanMatch.isConnected) { btnCleanMatch.innerHTML = originalHtml; delete btnCleanMatch.dataset.refreshing; }
+                    if (btnCleanMatch.isConnected) {
+                        btnCleanMatch.innerHTML = originalHtml;
+                        btnCleanMatch.title = originalTitle;
+                        delete btnCleanMatch.dataset.refreshing;
+                    }
                 } finally {
                     if (isRematchSuccess && !globalAbortFlag && renderSessionAtClick === currentRenderSession && !abortDetailRefresh) {
                         invalidateVisibleCaches(serverId);
-                        deleteMemoryCache(`D_${serverId}_${data.itemId}`);
+                        deleteMemoryCache(`D_${serverId}_${targetItemId}`);
                         currentDisplayedItemId = null;
                         processDetail(true);
                         smartRefreshChildren();
@@ -5651,6 +5902,115 @@ GM_addStyle(`
                 e.preventDefault(); e.stopPropagation();
                 const itemTitle = document.querySelector('h1[data-testid="metadata-title"], [class*="MetadataTitle"]')?.textContent?.trim() || '';
                 openPosterCropModal(data.itemId, serverId, data.guid, itemTitle);
+            });
+        }
+
+        // 프리뷰 클립 생성 전용 이벤트 핸들러
+        const btnMakePreview = document.getElementById('pmh-btn-make-preview');
+        if (btnMakePreview) {
+            btnMakePreview.addEventListener('click', async (e) => {
+                e.preventDefault(); e.stopPropagation();
+
+                if (btnMakePreview.dataset.processing === 'true') {
+                    toastr.info("이미 프리뷰 생성이 진행 중입니다.");
+                    return;
+                }
+
+                const cleanCode = extractSjvaAgentCode(data.guid);
+                if (!cleanCode) {
+                    toastr.warning("AV 식별 코드를 확인할 수 없습니다.");
+                    return;
+                }
+
+                const moduleName = getFfModuleFromCode(cleanCode);
+                if (!moduleName) {
+                    toastr.warning("지원하지 않는 AV 코드 형식입니다.");
+                    return;
+                }
+
+                if (!bestVideoPath) {
+                    toastr.warning("대상 동영상 파일 경로를 찾을 수 없습니다.");
+                    return;
+                }
+
+                const catMap = {
+                    'jav_censored': 'JAV_CEN',
+                    'jav_uncensored': 'JAV_UNCEN',
+                    'western': 'WESTERN'
+                };
+                const cat = catMap[moduleName] || 'WESTERN';
+                const fileName = bestVideoPath.split(/[\\/]/).pop() || bestVideoPath;
+
+                const confirmCreateMsg = `[${cleanCode}] 프리뷰 클립(몽타주) 생성을 요청하시겠습니까?\n\n` +
+                                         `• 대상 영상: ${fileName}\n` +
+                                         `• 대기 시간: 최대 5분\n\n` +
+                                         `완료되면 Plex 클린 리매칭이 자동 수행됩니다.`;
+
+                if (!confirm(confirmCreateMsg)) return;
+
+                btnMakePreview.dataset.processing = 'true';
+                const originalHtml = btnMakePreview.innerHTML;
+                btnMakePreview.innerHTML = `<i class="fas fa-spinner fa-spin" style="font-size: 10px; margin-right: 2px;"></i>프리뷰 생성 중...`;
+                btnMakePreview.style.color = '#e5a00d';
+                showBoxLoading();
+
+                toastr.info("FF에 프리뷰 클립 생성을 요청했습니다.<br>동영상 인코딩 중입니다. 잠시 기다려주세요...", "프리뷰 생성 중", { timeOut: 15000 });
+
+                try {
+                    const postPayload = {
+                        code: cleanCode,
+                        cat: cat,
+                        video_path: bestVideoPath
+                    };
+
+                    infoLog(`[Preview Clip] 🎬 FF API make_preview_clip 요청 전송 (meta_db):`, postPayload);
+
+                    const res = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/api/meta_db/make_preview_clip`, 'POST', postPayload, ClientSettings.masterApiKey, null, 300000);
+                    infoLog(`[Preview Clip] ✅ FF API make_preview_clip 응답:`, res);
+
+                    if (res && res.ret === 'success') {
+                        toastr.success("프리뷰 클립 생성 완료!<br>Plex 클린 리매칭을 시작합니다.", "성공", { timeOut: 5000 });
+
+                        const matchOptions = {
+                            _try_refresh_first: false,
+                            _do_unmatch_first: true,
+                            _skip_sim_check: ClientSettings.matchSkipSimCheck,
+                            _use_custom_score: ClientSettings.useCustomScore,
+                            _custom_agent_score: ClientSettings.customAgentScore,
+                            _manual_match: ClientSettings.manualMatch
+                        };
+
+                        infoLog(`[Preview Clip] 🔄 프리뷰 등록 후 클린 리매칭 자동 연계: Item ${targetItemId}`);
+                        const rematchRes = await makeRequest(`${srvConfig.relayUrl}/media/${targetItemId}/match`, 'POST', matchOptions, ClientSettings.masterApiKey);
+
+                        if (rematchRes && rematchRes.status === 'queued') {
+                            await waitQueueTask(rematchRes.task_id, srvConfig);
+                        }
+
+                        toastr.success("클린 리매칭 완료! 프리뷰 예고편이 반영되었습니다.", "반영 완료", { timeOut: 5000 });
+
+                        invalidateVisibleCaches(serverId);
+                        deleteMemoryCache(`D_${serverId}_${targetItemId}`);
+                        currentDisplayedItemId = null;
+                        processDetail(true);
+                        smartRefreshChildren();
+
+                    } else {
+                        const errMsg = (res && (res.msg || res.message)) ? (res.msg || res.message) : '프리뷰 클립 생성 실패';
+                        toastr.error(errMsg, "생성 실패", { timeOut: 8000 });
+                    }
+
+                } catch (err) {
+                    errorLog("[Preview Clip] ❌ 프리뷰 생성 처리 중 오류:", err);
+                    toastr.error(`오류 발생: ${err.message || err}`, "오류", { timeOut: 8000 });
+                } finally {
+                    hideBoxLoading();
+                    if (btnMakePreview && btnMakePreview.isConnected) {
+                        btnMakePreview.innerHTML = originalHtml;
+                        btnMakePreview.style.color = '#adb5bd';
+                        delete btnMakePreview.dataset.processing;
+                    }
+                }
             });
         }
 
@@ -7254,6 +7614,61 @@ GM_addStyle(`
             }
         };
     }
+
+    // PMH 팝업 모달 및 드롭다운 ESC 단축키 일괄 닫기 핸들러
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' || e.keyCode === 27) {
+            // 이미지 확대 미리보기 모달 닫기
+            const imgModal = document.getElementById('pmh-image-modal');
+            if (imgModal) {
+                e.preventDefault();
+                e.stopPropagation();
+                imgModal.remove();
+                return;
+            }
+
+            // 포스터 크롭 에디터 모달 닫기
+            const cropModal = document.getElementById('pmh-crop-modal');
+            if (cropModal && cropModal.style.display === 'flex') {
+                e.preventDefault();
+                e.stopPropagation();
+                // URL 입력 바가 열려있다면 해당 바 먼저 닫기
+                const cropUrlBar = document.getElementById('pmh-crop-url-bar');
+                if (cropUrlBar && cropUrlBar.style.display === 'flex') {
+                    cropUrlBar.style.display = 'none';
+                    return;
+                }
+                closeCropModal();
+                return;
+            }
+
+            // 프론트엔드 전역 설정 모달 닫기
+            const settingsModal = document.getElementById('pmh-client-settings-modal');
+            if (settingsModal) {
+                e.preventDefault();
+                e.stopPropagation();
+                settingsModal.remove();
+                return;
+            }
+
+            // 상단 툴박스 드롭다운 메뉴 닫기
+            const toolDropdown = document.getElementById('pmh-tool-dropdown');
+            if (toolDropdown && toolDropdown.style.display === 'block') {
+                e.preventDefault();
+                e.stopPropagation();
+                toolDropdown.style.display = 'none';
+                return;
+            }
+
+            // GUID 컨텍스트 메뉴 닫기
+            if (typeof pmhActionMenu !== 'undefined' && pmhActionMenu && pmhActionMenu.style.visibility === 'visible') {
+                e.preventDefault();
+                e.stopPropagation();
+                hideMenu(currentMenuSessionId);
+                return;
+            }
+        }
+    });
 
     let isProcessingMatchModal = false;
 
