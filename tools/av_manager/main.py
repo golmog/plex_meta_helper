@@ -75,7 +75,8 @@ def get_ui(core_api=None):
                     {"value": "actor", "label": "배우 이름 한글화 대상 검출"},
                     {"value": "user_poster", "label": "유저 포스터 일괄 적용 (이미지 서버 사용시)"},
                     {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"},
-                    {"value": "llm_translation", "label": "LLM (Ollama) 번역 미적용 항목 검출 및 리매칭"}
+                    {"value": "llm_translation", "label": "LLM (Ollama) 번역 미적용 항목 검출 및 리매칭"},
+                    {"value": "preview_clip", "label": "일괄 프리뷰 클립 생성 (트레일러 없는 영상)"}
                 ]
             },
             
@@ -242,6 +243,9 @@ def run(data, core_api):
                 '_raw_db_pid': data.get('_raw_db_pid', ''),
                 '_raw_sec_id': data.get('_raw_sec_id', ''),
                 '_poster_files': data.get('_poster_files', ''),
+                '_sjva_code': data.get('_sjva_code', ''),
+                '_sjva_cat': data.get('_sjva_cat', ''),
+                'raw_path': data.get('raw_path', ''),
             }]
             task_data = data.copy()
             task_data['target_items'] = items
@@ -281,6 +285,72 @@ def run(data, core_api):
             return {"status": "error", "message": f"DB 삭제 실패: {str(e)}"}, 500
 
     return {"status": "error", "message": f"지원하지 않는 명령입니다 ({action})"}, 400
+
+# =====================================================================
+# 프리뷰 클립 생성을 위한 헬퍼
+# =====================================================================
+def extract_sjva_code_and_cat(guid):
+    if not guid: return None, None
+    s = str(guid).strip()
+    if '://' in s: s = s.split('://', 1)[1]
+    if '?' in s: s = s.split('?', 1)[0]
+    s = s.strip()
+    if not s or s == '-' or s.startswith('local') or s.startswith('none'):
+        return None, None
+    
+    prefix = s[0].upper()
+    if prefix == 'C': return s, 'JAV_CEN'
+    elif prefix == 'E': return s, 'JAV_UNCEN'
+    elif prefix == 'W': return s, 'WESTERN'
+    return None, None
+
+def find_best_video_file(file_list):
+    if not file_list: return ""
+    clean_files = [f.strip() for f in file_list if f.strip()]
+    if not clean_files: return ""
+    if len(clean_files) == 1: return clean_files[0]
+
+    part1_pattern = re.compile(r'[-_. ]?(cd|part|pt|disc|dvd)[\s._-]*0*1\b|[-_. ]0*1\.[a-zA-Z0-9]+$', re.IGNORECASE)
+    for f in clean_files:
+        if part1_pattern.search(os.path.basename(f)):
+            return f
+
+    sorted_files = sorted(clean_files, key=lambda x: [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', os.path.basename(x))])
+    return sorted_files[0]
+
+def make_ff_preview_clip(global_config, code, cat, video_path):
+    mate_url = global_config.get('mate_url', '').rstrip('/')
+    mate_apikey = global_config.get('mate_apikey', '')
+    if not mate_url or not mate_apikey:
+        return False, "FF(Plex Mate) 연결 설정(BASE.FF_URL / BASE.FF_APIKEY) 누락"
+
+    params = urllib.parse.urlencode({'apikey': mate_apikey})
+    target_url = f"{mate_url}/metadata/api/meta_db/make_preview_clip?{params}"
+    payload = {
+        'code': code,
+        'cat': cat,
+        'video_path': video_path,
+        'apikey': mate_apikey
+    }
+    
+    try:
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            target_url, data=data, method='POST',
+            headers={
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlexMetaHelper/1.0'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=300) as response:
+            res_text = response.read().decode('utf-8')
+            res_json = json.loads(res_text)
+            if res_json.get('ret') == 'success':
+                return True, res_json.get('msg', '프리뷰 클립 생성 성공')
+            else:
+                return False, res_json.get('msg', 'FF 프리뷰 생성 실패')
+    except Exception as e:
+        return False, f"FF 통신 실패: {e}"
 
 # ==============================================================================
 # 포스터 이력 영구 DB 관리 헬퍼 (로컬 SQLite)
@@ -408,11 +478,16 @@ def worker(task_data, core_api, start_index):
         try:
             placeholders = ",".join("?" for _ in clean_sec_ids)
             
-            # 💡 [핵심 수정] PostgreSQL ANSI 규격 준수: SELECT의 비집계 컬럼을 GROUP BY에 전수 명시!
+            # PostgreSQL ANSI 규격 준수: SELECT의 비집계 컬럼을 GROUP BY에 전수 명시
             group_fn = "string_agg" if core_api['config'].get('plex_db_type') == 'postgres' else "GROUP_CONCAT"
             q = f"""
                 SELECT mi.id, mi.title, mi.guid, ls.id AS section_id, ls.name AS section_name,
-                       {group_fn}(mp.file, '|||') AS all_files
+                       {group_fn}(mp.file, '|||') AS all_files,
+                       (
+                           (SELECT COUNT(*) FROM metadata_relations mr WHERE mr.metadata_item_id = mi.id OR mr.related_metadata_item_id = mi.id)
+                           +
+                           (SELECT COUNT(*) FROM metadata_items sub WHERE sub.parent_id = mi.id)
+                       ) AS extra_count
                 FROM metadata_items mi
                 JOIN library_sections ls ON mi.library_section_id = ls.id
                 LEFT JOIN media_items mpi ON mpi.metadata_item_id = mi.id
@@ -922,6 +997,45 @@ def worker(task_data, core_api, start_index):
                         "raw_path": fpath
                     })
 
+        # ----- [7] 일괄 프리뷰 클립 생성 (트레일러 없는 영상) -----
+        elif mode == "preview_clip":
+            for idx, item in enumerate(all_items):
+                if task.is_cancelled(): break
+                if idx > 0 and idx % 1000 == 0: 
+                    task.log(f"  ...트레일러 유무 및 메타데이터 검증 중: {idx:,} / {total_items:,} 완료")
+                    task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
+                
+                # Plex DB 상에 이미 트레일러/부가영상이 연결되어 있는 항목은 제외
+                extra_cnt = int(item.get('extra_count') or 0)
+                if extra_cnt > 0:
+                    continue
+
+                guid = str(item.get('guid') or '').strip()
+                sjva_code, sjva_cat = extract_sjva_code_and_cat(guid)
+                if not sjva_code:
+                    continue
+
+                files_raw = item.get('all_files')
+                if not files_raw: continue
+                files = files_raw.split('|||')
+                
+                best_file = find_best_video_file(files)
+                if not best_file:
+                    continue
+
+                db_title = item.get('title', '').strip()
+
+                result_data.append({
+                    "id": item['id'], 
+                    "section_name": item['section_name'], 
+                    "title": db_title, 
+                    "reason": f"트레일러 없음 ({sjva_code})", 
+                    "op_action": "make_preview",
+                    "_sjva_code": sjva_code,
+                    "_sjva_cat": sjva_cat,
+                    "raw_path": best_file
+                })
+
         if task.is_cancelled():
             task.log("🛑 검사가 사용자 취소로 중단되었습니다.")
             return
@@ -931,6 +1045,8 @@ def worker(task_data, core_api, start_index):
         btn_label = "일괄 리매칭 시작"
         if mode == "file_error": btn_label = "수동 확인 필요"
         
+        elif mode == "preview_clip": btn_label = "일괄 프리뷰 생성 및 리매칭"
+
         if mode == "file_error":
             columns[-1] = {"key": "raw_path", "label": "폴더", "align": "center", "header_align": "center", "type": "folder_link"}
             action_btn = None 
@@ -1089,6 +1205,62 @@ def worker(task_data, core_api, start_index):
                         task.log("  -> ⚠️ 분리 불가: 단일 미디어 파일입니다. 분리 대신 매칭(Match)으로 우회합니다.")
                         op_action = 'match'
 
+                if op_action == 'make_preview':
+                    sjva_code = item.get('_sjva_code')
+                    sjva_cat = item.get('_sjva_cat')
+                    video_path = item.get('raw_path')
+
+                    if not sjva_code or not sjva_cat:
+                        guid = str(getattr(plex_item, 'guid', '') or '').strip()
+                        sjva_code, sjva_cat = extract_sjva_code_and_cat(guid)
+
+                    if not video_path and hasattr(plex_item, 'media') and plex_item.media and plex_item.media[0].parts:
+                        video_path = plex_item.media[0].parts[0].file
+
+                    if not sjva_code or not sjva_cat:
+                        task.log(f"  -> ⚠️ AV 식별 코드(C/E/W)를 확인할 수 없어 프리뷰 생성을 스킵합니다.")
+                        item_has_error = True
+                    elif not video_path:
+                        task.log(f"  -> ⚠️ 대상 동영상 파일 경로를 찾을 수 없어 프리뷰 생성을 스킵합니다.")
+                        item_has_error = True
+                    else:
+                        task.log(f"  -> 🎬 [1/2] FF에 프리뷰 클립 생성 요청 중... (코드: {sjva_code}, 구분: {sjva_cat})")
+                        ff_ok, ff_msg = make_ff_preview_clip(core_api['config'], sjva_code, sjva_cat, video_path)
+
+                        if not ff_ok:
+                            task.log(f"  -> ❌ FF 프리뷰 클립 생성 실패: {ff_msg}")
+                            item_has_error = True
+                        else:
+                            task.log(f"  -> ✅ FF 프리뷰 클립 생성 성공: {ff_msg}")
+                            task.log(f"  -> 🔄 [2/2] 프리뷰 예고편 등록을 위한 클린 리매칭 시작...")
+
+                            success, msg, score = pmh_core.perform_smart_media_action(
+                                plex_url=plex._baseurl, 
+                                plex_token=plex._token, 
+                                rating_key=item_id, 
+                                action_type='match',
+                                item_title=plex_item.title, 
+                                item_year=plex_item.year, 
+                                target_agent=plex_item.section().agent,
+                                plex_inst=plex,
+                                try_refresh_first=False,
+                                do_unmatch_first=True,
+                                skip_sim_check=task_data.get('opt_skip_sim_check', True),
+                                use_custom_score=task_data.get('opt_use_custom_score', False),
+                                custom_agent_score=task_data.get('opt_custom_agent_score', 90),
+                                search_priority=task_data.get('opt_search_priority', 'auto'),
+                                manual_match=task_data.get('opt_manual_match', False),
+                                global_config=core_api['config'],
+                                task_logger=task.log,
+                                cancel_checker=task.is_cancelled
+                            )
+
+                            if success:
+                                task.log(f"  -> ✨ 프리뷰 생성 및 클린 리매칭 최종 완료: {msg}")
+                            else:
+                                task.log(f"  -> ❌ 클린 리매칭 실패: {msg}")
+                                item_has_error = True
+
                 if op_action == 'match':
                     if mode == "llm_translation":
                         target_json = item.get('_target_json')
@@ -1181,6 +1353,7 @@ def worker(task_data, core_api, start_index):
                 mode_label = "품번 불일치/오매칭 복구" if mode == "mismatch" else "중복 아이템 재매칭" if mode == "dupes" else "배우 한글화 갱신" if mode == "actor" else "유저 포스터 일괄 갱신"
                 if mode == "file_error": mode_label = "파일명 오류 항목(수동 확인/작업 필요)"
                 if mode == "llm_translation": mode_label = "LLM 미적용 항목 검출 및 리매칭"
+                if mode == "preview_clip": mode_label = "일괄 프리뷰 클립 생성 (트레일러 없는 영상)"
 
                 tool_vars = {"total": f"{total:,}", "elapsed_time": elapsed_str, "scan_mode_label": mode_label}
                 core_api['notify']("AV 매니저 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
