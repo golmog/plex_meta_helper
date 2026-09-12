@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.121"
+__version__ = "0.9.122"
 
 logger = logging.getLogger("PMH")
 
@@ -3440,7 +3440,7 @@ def perform_smart_media_action(
                                 if fallback_matches: matches = fallback_matches
 
                     else:
-                        kwargs = {'language': lang_code, 'title': q_text, 'manual': '1' if manual_match else '0'}
+                        kwargs = {'language': lang_code, 'title': q_text}
                         if target_agent: kwargs['agent'] = target_agent
                         if item_year: kwargs['year'] = str(item_year)
                         

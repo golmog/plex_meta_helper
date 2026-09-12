@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.121
+// @version      0.9.122
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3415,6 +3415,7 @@ GM_addStyle(`
                     gBox.innerHTML = `<i class="fas fa-times" style="margin-right:4px;"></i>실패`;
                     gBox.style.color = '#bd362f';
                     delete gBox.dataset.refreshing;
+                    revertQueueBadgeToOriginal(id, targetServerId);
                 }
             });
 
@@ -3465,12 +3466,63 @@ GM_addStyle(`
         }
 
         setTimeout(() => {
+            log(`[Queue Badge] 🔄 취소/실패 뱃지를 원래 GUID로 복원합니다. (Item ID: ${itemId})`);
+
             const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${itemId}"]`);
             markers.forEach(m => m.remove());
 
-            if (typeof renderVisibleItems === 'function') renderVisibleItems();
-            else if (typeof processList === 'function') processList();
-        }, 2000);
+            const srvConfig = getServerConfig(serverId);
+
+            let cachedData = getMemoryCache(`L_${serverId}_${itemId}`) || getMemoryCache(`F_${serverId}_${itemId}`);
+
+            const targetCards = document.querySelectorAll(`
+                div[data-testid^="cellItem"],
+                div[class*="ListItem-container"],
+                div[class*="MetadataPosterCard-container"],
+                div[class*="MetadataThumbCard-container"],
+                div[class*="ThumbCard-container"],
+                div[class*="PosterCard-container"],
+                div[class*="HubItem-"],
+                tr[class*="TableRow-"]
+            `);
+
+            let restoredCount = 0;
+            targetCards.forEach(cont => {
+                const parentCell = cont.parentElement?.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], tr[class*="TableRow-"]');
+                if (parentCell && parentCell !== cont) return;
+
+                const { link, iid } = extractCardLinkAndId(cont);
+                if (link && iid === itemId) {
+                    let poster = cont.querySelector(`
+                        [class*="PosterCard-card-"], 
+                        [class*="MetadataSimplePosterCard-card-"], 
+                        [class*="ThumbCard-card-"], 
+                        [class*="ThumbCard-imageContainer"],
+                        [class*="PosterCard-imageContainer"],
+                        [data-testid="metadata-poster"]
+                    `);
+                    if (!poster && cont.classList.contains('ListItem-container')) poster = cont.firstElementChild;
+                    if (!poster) {
+                        const img = cont.querySelector('img[src*="/photo/"], img[src*="/thumb/"], img[src*="/art/"]');
+                        if (img) poster = img.closest('[class*="card"], [class*="container"], [class*="imageContainer"]') || img.parentElement;
+                    }
+                    if (!poster) poster = cont;
+
+                    if (poster) {
+                        if (cachedData && !cachedData.ignored) {
+                            let displayData = { ...cachedData, tags: applyUserTags(cachedData.p, cachedData.tags) };
+                            renderListBadges(cont, poster, link, displayData, srvConfig, itemId);
+                        } else {
+                            // 캐시가 없거나 미확인 상태일 경우 기본 플레이스홀더 복원
+                            renderListBadges(cont, poster, link, { g: '', raw_g: '', tags: [] }, srvConfig, itemId);
+                        }
+                        restoredCount++;
+                    }
+                }
+            });
+
+            log(`[Queue Badge] ✅ 원상 복원 완료 (총 ${restoredCount}개 카드 반영)`);
+        }, 2500);
     }
 
     window.startQueuePolling = function(serverId) {
@@ -4715,6 +4767,7 @@ GM_addStyle(`
                 srvItems.forEach(item => {
                     delete window._pmh_media_queues[item.id];
                     updateQueueBadgeInDOM(item.id, 'error');
+                    revertQueueBadgeToOriginal(item.id, item.serverId);
                 });
             }
 
@@ -7088,48 +7141,58 @@ GM_addStyle(`
                     </button>
                 </div>
                 
-                <div class="pmh-crop-toolbar">
-                    <div style="display:flex; gap:4px; align-items:center;">
-                        <!-- 원본 소스 스위칭 (PL / P) -->
-                        <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;">
-                            <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-src-pl" title="기본 가로 커버(_pl)를 불러옵니다."><i class="fas fa-image"></i> 가로(PL)</button>
-                            <button class="pmh-crop-btn" id="pmh-crop-src-p" title="기본 세로 포스터(_p)를 불러옵니다."><i class="fas fa-portrait"></i> 세로(P)</button>
-                        </div>
+                <div class="pmh-crop-toolbar" style="display:flex; flex-direction:column; gap:6px; padding:8px 12px; background:#1a1d21; border-bottom:1px solid #2a2d32; flex-shrink:0;">
+                    <!-- 1열: 원본 소스, 조작 모드, 크롭 비율, 회전, 줌, 맞춤, 리셋 -->
+                    <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+                        <div style="display:flex; gap:4px; align-items:center; flex-wrap:nowrap;">
+                            <!-- 원본 소스 스위칭 (PL / P) -->
+                            <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;">
+                                <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-src-pl" title="기본 가로 커버(_pl)를 불러옵니다."><i class="fas fa-image"></i> 가로(PL)</button>
+                                <button class="pmh-crop-btn" id="pmh-crop-src-p" title="기본 세로 포스터(_p)를 불러옵니다."><i class="fas fa-portrait"></i> 세로(P)</button>
+                            </div>
 
-                        <!-- 크롭 비율 (1:1.42 / 3:4 / 1:1 / 자유) -->
-                        <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;" id="pmh-crop-ratio-group">
-                            <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-ratio-lock" title="Plex 포스터 표준 비율 (1:1.4225)">1:1.42</button>
-                            <button class="pmh-crop-btn" id="pmh-crop-ratio-portrait" title="3:4 프로필 비율">3:4</button>
-                            <button class="pmh-crop-btn" id="pmh-crop-ratio-square" title="1:1 정사각형 비율">1:1</button>
-                            <button class="pmh-crop-btn" id="pmh-crop-ratio-free" title="비율 제한 없이 자유롭게 자르기">자유</button>
-                        </div>
+                            <!-- 조작 모드 (이동 / 영역지정) -->
+                            <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;" id="pmh-crop-dragmode-group">
+                                <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-mode-move" title="이미지 이동(Pan) 모드: 크롭 박스 외부를 드래그하여 이미지를 상하좌우로 이동합니다."><i class="fas fa-arrows-alt"></i> 이동</button>
+                                <button class="pmh-crop-btn" id="pmh-crop-mode-crop" title="영역 지정(Crop) 모드: 마우스 드래그로 새 크롭 박스를 직접 그립니다."><i class="fas fa-crop-alt"></i> 영역지정</button>
+                            </div>
 
-                        <!-- 회전 및 리셋 -->
-                        <button class="pmh-crop-btn" id="pmh-crop-rotate-l" title="좌로 90도 회전"><i class="fas fa-undo"></i> 90°</button>
-                        <button class="pmh-crop-btn" id="pmh-crop-rotate-r" title="우로 90도 회전"><i class="fas fa-redo"></i> 90°</button>
-                        <button class="pmh-crop-btn" id="pmh-crop-reset" style="color:#f89406 !important;" title="영역 및 회전 초기화"><i class="fas fa-sync-alt"></i></button>
+                            <!-- 크롭 비율 (1:1.42 / 3:4 / 1:1 / 자유) -->
+                            <div style="display:flex; gap:3px; border-right:1px solid #333; padding-right:6px; margin-right:4px;" id="pmh-crop-ratio-group">
+                                <button class="pmh-crop-btn pmh-crop-btn-active" id="pmh-crop-ratio-lock" title="Plex 포스터 표준 비율 (1:1.4225)">1:1.42</button>
+                                <button class="pmh-crop-btn" id="pmh-crop-ratio-portrait" title="3:4 프로필 비율">3:4</button>
+                                <button class="pmh-crop-btn" id="pmh-crop-ratio-square" title="1:1 정사각형 비율">1:1</button>
+                                <button class="pmh-crop-btn" id="pmh-crop-ratio-free" title="비율 제한 없이 자유롭게 자르기">자유</button>
+                            </div>
+
+                            <!-- 회전, 줌 및 맞춤 -->
+                            <button class="pmh-crop-btn" id="pmh-crop-rotate-l" title="좌로 90도 회전 및 화면 맞춤"><i class="fas fa-undo"></i> 90°</button>
+                            <button class="pmh-crop-btn" id="pmh-crop-rotate-r" title="우로 90도 회전 및 화면 맞춤"><i class="fas fa-redo"></i> 90°</button>
+                            <button class="pmh-crop-btn" id="pmh-crop-zoom-in" title="이미지 확대"><i class="fas fa-search-plus"></i></button>
+                            <button class="pmh-crop-btn" id="pmh-crop-zoom-out" title="이미지 축소"><i class="fas fa-search-minus"></i></button>
+                            <button class="pmh-crop-btn" id="pmh-crop-fit" title="이미지를 화면 중앙 및 크기에 맞춤"><i class="fas fa-expand-arrows-alt"></i> 맞춤</button>
+                            <button class="pmh-crop-btn" id="pmh-crop-reset" style="color:#f89406 !important;" title="영역 및 회전 초기화"><i class="fas fa-sync-alt"></i></button>
+                        </div>
                     </div>
 
-                    <!-- 파일 수동 교체/등록 및 URL 로드 버튼 -->
-                    <div style="display:flex; gap:5px; align-items:center;">
-                        <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="pmh-btn-toggle-crop-url" title="이미지 웹 주소(URL) 직접 입력"><i class="fas fa-link"></i> URL 로드</button>
-                        <label class="pmh-crop-btn pmh-crop-btn-primary" style="cursor:pointer;" title="새 가로 원본 이미지를 불러옵니다. (가로 _pl_user와 크롭된 _p_user 동시 저장)">
-                            <i class="fas fa-folder-open"></i> 가로(PL) 교체
-                            <input type="file" id="pmh-upload-pl" accept="image/*" style="display:none;">
-                        </label>
-                        <label class="pmh-crop-btn pmh-crop-btn-success" style="cursor:pointer;" title="이미 완성된 세로형 포스터를 직접 등록합니다. (_p_user 단독 교체)">
-                            <i class="fas fa-file-image"></i> 세로(P) 등록
-                            <input type="file" id="pmh-upload-p" accept="image/*" style="display:none;">
-                        </label>
+                    <!-- 2열: URL 직접 입력 + 파일 교체/등록 버튼군 -->
+                    <div style="display:flex; justify-content:space-between; align-items:center; width:100%; gap:8px;">
+                        <div style="display:flex; align-items:center; gap:6px; flex-grow:1; min-width:0;">
+                            <span style="font-size:11.5px; font-weight:bold; color:#2f96b4; white-space:nowrap;"><i class="fas fa-link"></i> URL:</span>
+                            <input type="text" id="pmh-input-crop-url" placeholder="https://... 이미지 웹 주소 붙여넣기 후 엔터 또는 로드 클릭" style="flex:1; padding:4px 8px; font-size:12px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; outline:none; height:28px; box-sizing:border-box;">
+                            <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="pmh-btn-apply-crop-url">로드</button>
+                        </div>
+                        <div style="display:flex; gap:5px; align-items:center; flex-shrink:0;">
+                            <label class="pmh-crop-btn pmh-crop-btn-primary" style="cursor:pointer;" title="새 가로 원본 이미지를 불러옵니다. (가로 _pl_user와 크롭된 _p_user 동시 저장)">
+                                <i class="fas fa-folder-open"></i> 가로(PL) 교체
+                                <input type="file" id="pmh-upload-pl" accept="image/*" style="display:none;">
+                            </label>
+                            <label class="pmh-crop-btn pmh-crop-btn-success" style="cursor:pointer;" title="이미 완성된 세로형 포스터를 직접 등록합니다. (_p_user 단독 교체)">
+                                <i class="fas fa-file-image"></i> 세로(P) 등록
+                                <input type="file" id="pmh-upload-p" accept="image/*" style="display:none;">
+                            </label>
+                        </div>
                     </div>
-                </div>
-
-                <!-- URL 직접 입력 슬라이드 바 (기본 숨김) -->
-                <div id="pmh-crop-url-bar" style="display:none; padding:8px 12px; background:#1a1d21; border-bottom:1px solid #333; align-items:center; gap:8px;">
-                    <span style="font-size:11.5px; font-weight:bold; color:#2f96b4; white-space:nowrap;"><i class="fas fa-link"></i> URL:</span>
-                    <input type="text" id="pmh-input-crop-url" placeholder="https://... 이미지 웹 주소 붙여넣기" style="flex:1; padding:4px 8px; font-size:12px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; outline:none;">
-                    <button type="button" class="pmh-crop-btn" id="pmh-btn-cancel-crop-url">취소</button>
-                    <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="pmh-btn-apply-crop-url">로드</button>
                 </div>
 
                 <div class="pmh-crop-view">
@@ -7169,14 +7232,16 @@ GM_addStyle(`
         const plInp = document.getElementById('pmh-upload-pl'); if (plInp) plInp.value = '';
         const pInp = document.getElementById('pmh-upload-p'); if (pInp) pInp.value = '';
 
-        const urlBar = document.getElementById('pmh-crop-url-bar');
-        if (urlBar) urlBar.style.display = 'none';
         const urlInp = document.getElementById('pmh-input-crop-url');
         if (urlInp) urlInp.value = '';
 
         // 비율 버튼 1:1.42 기본값으로 초기화
         $('#pmh-crop-ratio-group .pmh-crop-btn').removeClass('pmh-crop-btn-active');
         $('#pmh-crop-ratio-lock').addClass('pmh-crop-btn-active');
+
+        // 드래그 모드 '이동' 기본값으로 초기화
+        $('#pmh-crop-dragmode-group .pmh-crop-btn').removeClass('pmh-crop-btn-active');
+        $('#pmh-crop-mode-move').addClass('pmh-crop-btn-active');
 
         if (pmhCropModal) pmhCropModal.style.display = 'none';
         customUploadPayload = null;
@@ -7231,11 +7296,13 @@ GM_addStyle(`
 
                         const TargetCropper = getCropperClass();
                         const activeRatio = getSelectedCropAspectRatio();
+                        const activeDragMode = $('#pmh-crop-mode-crop').hasClass('pmh-crop-btn-active') ? 'crop' : 'move';
 
                         cropperInstance = new TargetCropper(imgEl, {
                             aspectRatio: activeRatio,
                             viewMode: 1,
-                            autoCropArea: 1.0,
+                            dragMode: activeDragMode,
+                            autoCropArea: 1,
                             responsive: true,
                             restore: false,
                             checkCrossOrigin: false,
@@ -7444,47 +7511,100 @@ GM_addStyle(`
         btnRatioFree.onclick = function() { setCropAspectRatio(NaN, 'pmh-crop-ratio-free'); };
     }
 
-    // 회전 및 리셋
+    // 회전 후 캔버스가 컨테이너를 벗어나 잘리지 않도록 자동 축소 및 중앙 정렬하는 헬퍼 함수
+    function rotateAndFit(degree) {
+        if (!cropperInstance) return;
+        cropperInstance.rotate(degree);
+
+        const containerData = cropperInstance.getContainerData();
+        const canvasData = cropperInstance.getCanvasData();
+
+        const scaleH = containerData.height / canvasData.height;
+        const scaleW = containerData.width / canvasData.width;
+        const fitScale = Math.min(scaleH, scaleW);
+
+        if (fitScale < 1) {
+            cropperInstance.zoom(fitScale - 1);
+        }
+
+        const newCanvas = cropperInstance.getCanvasData();
+        cropperInstance.setCanvasData({
+            left: (containerData.width - newCanvas.width) / 2,
+            top: (containerData.height - newCanvas.height) / 2
+        });
+
+        log(`[Crop Modal] 회전(${degree}°) 및 뷰포트 맞춤 정렬 완료`);
+    }
+
+    // 조작 모드 토글 (이동 모드 / 영역지정 모드)
+    const btnModeMove = document.getElementById('pmh-crop-mode-move');
+    if (btnModeMove) {
+        btnModeMove.onclick = function() {
+            if (cropperInstance) cropperInstance.setDragMode('move');
+            $('#pmh-crop-dragmode-group .pmh-crop-btn').removeClass('pmh-crop-btn-active');
+            this.classList.add('pmh-crop-btn-active');
+        };
+    }
+
+    const btnModeCrop = document.getElementById('pmh-crop-mode-crop');
+    if (btnModeCrop) {
+        btnModeCrop.onclick = function() {
+            if (cropperInstance) cropperInstance.setDragMode('crop');
+            $('#pmh-crop-dragmode-group .pmh-crop-btn').removeClass('pmh-crop-btn-active');
+            this.classList.add('pmh-crop-btn-active');
+        };
+    }
+
+    // 좌/우 90도 회전
     const btnRotateL = document.getElementById('pmh-crop-rotate-l');
-    if (btnRotateL) btnRotateL.onclick = () => { if (cropperInstance) cropperInstance.rotate(-90); };
+    if (btnRotateL) btnRotateL.onclick = () => rotateAndFit(-90);
 
     const btnRotateR = document.getElementById('pmh-crop-rotate-r');
-    if (btnRotateR) btnRotateR.onclick = () => { if (cropperInstance) cropperInstance.rotate(90); };
+    if (btnRotateR) btnRotateR.onclick = () => rotateAndFit(90);
 
+    // 줌 컨트롤 및 화면 맞춤
+    const btnZoomIn = document.getElementById('pmh-crop-zoom-in');
+    if (btnZoomIn) btnZoomIn.onclick = () => { if (cropperInstance) cropperInstance.zoom(0.1); };
+
+    const btnZoomOut = document.getElementById('pmh-crop-zoom-out');
+    if (btnZoomOut) btnZoomOut.onclick = () => { if (cropperInstance) cropperInstance.zoom(-0.1); };
+
+    const btnFit = document.getElementById('pmh-crop-fit');
+    if (btnFit) {
+        btnFit.onclick = () => {
+            if (!cropperInstance) return;
+            const containerData = cropperInstance.getContainerData();
+            const canvasData = cropperInstance.getCanvasData();
+            const scaleH = containerData.height / canvasData.height;
+            const scaleW = containerData.width / canvasData.width;
+            const fitScale = Math.min(scaleH, scaleW);
+            cropperInstance.zoom(fitScale - 1);
+            const newCanvas = cropperInstance.getCanvasData();
+            cropperInstance.setCanvasData({
+                left: (containerData.width - newCanvas.width) / 2,
+                top: (containerData.height - newCanvas.height) / 2
+            });
+        };
+    }
+
+    // 영역 및 상태 초기화
     const btnReset = document.getElementById('pmh-crop-reset');
     if (btnReset) {
         btnReset.onclick = () => {
             if (cropperInstance) {
-                cropperInstance.reset();
                 setCropAspectRatio(1 / 1.4225, 'pmh-crop-ratio-lock');
+                cropperInstance.reset();
+                cropperInstance.setDragMode('move');
+                $('#pmh-crop-dragmode-group .pmh-crop-btn').removeClass('pmh-crop-btn-active');
+                $('#pmh-crop-mode-move').addClass('pmh-crop-btn-active');
+                log('[Crop Modal] 크롭 박스 및 뷰포트 상태 초기화 완료');
             }
         };
     }
 
-    // URL 직접 입력 슬라이드 바 토글 및 로드 처리
-    const btnToggleCropUrl = document.getElementById('pmh-btn-toggle-crop-url');
-    const cropUrlBar = document.getElementById('pmh-crop-url-bar');
+    // 2열 상시 URL 입력 로드 처리
     const inputCropUrl = document.getElementById('pmh-input-crop-url');
-
-    if (btnToggleCropUrl && cropUrlBar) {
-        btnToggleCropUrl.onclick = function(e) {
-            e.preventDefault();
-            const isVisible = (cropUrlBar.style.display === 'flex');
-            cropUrlBar.style.display = isVisible ? 'none' : 'flex';
-            if (!isVisible && inputCropUrl) {
-                inputCropUrl.focus();
-                inputCropUrl.select();
-            }
-        };
-    }
-
-    const btnCancelCropUrl = document.getElementById('pmh-btn-cancel-crop-url');
-    if (btnCancelCropUrl && cropUrlBar) {
-        btnCancelCropUrl.onclick = function(e) {
-            e.preventDefault();
-            cropUrlBar.style.display = 'none';
-        };
-    }
+    const btnApplyCropUrl = document.getElementById('pmh-btn-apply-crop-url');
 
     function applyDirectCropUrl() {
         if (!inputCropUrl) return;
@@ -7498,13 +7618,11 @@ GM_addStyle(`
             return;
         }
 
-        infoLog(`[Crop Modal] 사용자가 입력한 외부 URL 로드: ${rawUrl}`);
+        infoLog(`[Crop Modal] 2열 상시 URL 입력창을 통한 이미지 로드: ${rawUrl}`);
         loadCropImage(rawUrl, true);
-        cropUrlBar.style.display = 'none';
         toastr.info("URL 이미지를 불러오는 중입니다...");
     }
 
-    const btnApplyCropUrl = document.getElementById('pmh-btn-apply-crop-url');
     if (btnApplyCropUrl) {
         btnApplyCropUrl.onclick = function(e) {
             e.preventDefault();
@@ -7517,9 +7635,6 @@ GM_addStyle(`
             if (e.key === 'Enter') {
                 e.preventDefault();
                 applyDirectCropUrl();
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                if (cropUrlBar) cropUrlBar.style.display = 'none';
             }
         };
     }
@@ -7632,12 +7747,6 @@ GM_addStyle(`
             if (cropModal && cropModal.style.display === 'flex') {
                 e.preventDefault();
                 e.stopPropagation();
-                // URL 입력 바가 열려있다면 해당 바 먼저 닫기
-                const cropUrlBar = document.getElementById('pmh-crop-url-bar');
-                if (cropUrlBar && cropUrlBar.style.display === 'flex') {
-                    cropUrlBar.style.display = 'none';
-                    return;
-                }
                 closeCropModal();
                 return;
             }
