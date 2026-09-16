@@ -958,6 +958,25 @@ def worker(task_data, core_api, start_index):
                 db_title = item.get('title', '').strip()
                 match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
                 
+                base_name = os.path.splitext(os.path.basename(fpath))[0]
+                yaml_candidates = [
+                    os.path.join(dir_name, f"{base_name}.yaml"),
+                    os.path.join(dir_name, f"{base_name}.yml")
+                ]
+                if match:
+                    raw_pid = match.group(1)
+                    db_pid_lower = raw_pid.lower()
+                    yaml_candidates.extend([
+                        os.path.join(dir_name, f"{db_pid_lower}.yaml"),
+                        os.path.join(dir_name, f"{db_pid_lower}.yml"),
+                        os.path.join(dir_name, f"{raw_pid}.yaml"),
+                        os.path.join(dir_name, f"{raw_pid}.yml")
+                    ])
+
+                # sjva 에이전트 최우선 참조 대상인 YAML 파일이 존재하면 LLM 검사 대상에서 제외하고 통과
+                if any(os.path.exists(y) for y in set(yaml_candidates)):
+                    continue
+
                 reason = ""
                 if match:
                     # JAV: '품번(소문자).json'
@@ -1270,8 +1289,6 @@ def worker(task_data, core_api, start_index):
                                 task.log(f"  -> 🗑️ 새로운 LLM 번역을 위해 기존 JSON 메타데이터 삭제 완료")
                             except Exception as e:
                                 task.log(f"  -> ⚠️ 기존 JSON 삭제 실패 (권한 문제 의심): {e}")
-                        else:
-                            task.log("  -> ⚠️ 삭제할 JSON 메타데이터 파일을 찾지 못했습니다.")
 
                     do_unm = task_data.get('opt_unmatch_first', True)
                     skip_sim = task_data.get('opt_skip_sim_check', False)
