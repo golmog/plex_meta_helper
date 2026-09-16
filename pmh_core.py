@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.122"
+__version__ = "0.9.123"
 
 logger = logging.getLogger("PMH")
 
@@ -650,7 +650,21 @@ def handle_library_batch(data, max_batch_size, db_engine):
             SELECT mi.id, m.width,
                 (SELECT {group_fn}(ms.codec || '|' || COALESCE(ms.extra_data, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 1) as raw_stream_data,
                 (SELECT {group_fn}(ms.id || '|' || COALESCE(ms.language, 'und') || '|' || COALESCE(ms.codec, '') || '|' || COALESCE(ms.url, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 3) as sub_data,
-                mi.guid, mp.file, mp.id
+                mi.guid, mp.file, mp.id,
+                COALESCE(
+                    (SELECT mr.related_metadata_item_id FROM metadata_relations mr WHERE mr.metadata_item_id = mi.id AND mr.relation_type = 0 LIMIT 1),
+                    (SELECT mr.related_metadata_item_id FROM metadata_relations mr WHERE mr.metadata_item_id = mi.id LIMIT 1),
+                    (SELECT sub.id FROM metadata_items sub WHERE sub.parent_id = mi.id 
+                     ORDER BY 
+                       CASE 
+                         WHEN sub.metadata_type = 5 THEN 0 
+                         WHEN sub.title LIKE '%[preview]%' THEN 1 
+                         WHEN sub.title LIKE '%trailer%' THEN 2 
+                         WHEN sub.title LIKE '%예고편%' THEN 3 
+                         ELSE 4 
+                       END ASC, sub.id ASC 
+                     LIMIT 1)
+                ) as trailer_id
             FROM metadata_items mi
             LEFT JOIN media_items m ON m.metadata_item_id = mi.id
             LEFT JOIN media_parts mp ON mp.media_item_id = m.id
@@ -660,7 +674,7 @@ def handle_library_batch(data, max_batch_size, db_engine):
             result_map = {}
             for row in cursor.fetchall():
                 rk = str(row[0])
-                width, raw_data, sub_data, guid, filepath, part_id = row[1], row[2], row[3], row[4], row[5], row[6]
+                width, raw_data, sub_data, guid, filepath, part_id, trailer_id = row[1], row[2], row[3], row[4], row[5], row[6], row[7]
                 if filepath: filepath = unicodedata.normalize('NFC', filepath)
                 
                 path_count = 1
@@ -670,9 +684,9 @@ def handle_library_batch(data, max_batch_size, db_engine):
                 if rk not in result_map:
                     clean_guid = guid.split("://")[1].split("?")[0] if guid and "://" in guid else (guid or "")
                     if not filepath:
-                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None, "sub_id": "", "sub_url": "", "path_count": path_count }
+                        result_map[rk] = { "tags": [], "g": clean_guid, "raw_g": guid or "", "p": "", "part_id": None, "sub_id": "", "sub_url": "", "path_count": path_count, "trailer_id": trailer_id }
                         continue
-                        
+
                     tags, res_tag = [], None
                     width = width if width else 0
                     
@@ -724,7 +738,8 @@ def handle_library_batch(data, max_batch_size, db_engine):
                         "tags": tags, "g": clean_guid, "raw_g": guid or "", 
                         "p": filepath, "part_id": part_id,
                         "sub_id": best_sub_id, "sub_url": best_sub_url,
-                        "path_count": path_count
+                        "path_count": path_count,
+                        "trailer_id": trailer_id
                     }
 
         return result_map, 200
@@ -1832,9 +1847,12 @@ def dispatch_request(subpath, method, args, data, global_config):
             machine_id = global_config.get("machine_id", "")
             ignore_res = global_config.get("IGNORE_RES_SECTION", "")
             av_img_use = bool(global_config.get("AV_IMAGE_SERVER_USE", False))
+            av_img_url = str(global_config.get("AV_IMAGE_SERVER_URL", "")).strip().rstrip('/')
             jav_sec = str(global_config.get("JAV_SECTION", ""))
             west_sec = str(global_config.get("WESTERN_AV_SECTION", ""))
             db_type = global_config.get("plex_db_type", "sqlite3")
+            ff_metadb_use = bool(global_config.get("FF_METADB_USE", False))
+            ff_ddns = str(global_config.get("FF_DDNS", "")).strip().rstrip('/')
             
             db_ok = True
             db_err_msg = ""
@@ -1852,8 +1870,11 @@ def dispatch_request(subpath, method, args, data, global_config):
                 "db_error": db_err_msg,
                 "ignore_res_section": ignore_res,
                 "av_image_server_use": av_img_use,
+                "av_image_server_url": av_img_url,
                 "jav_section": jav_sec,
-                "western_av_section": west_sec
+                "western_av_section": west_sec,
+                "ff_metadb_use": ff_metadb_use,
+                "ff_ddns": ff_ddns
             }, 200
 
         elif subpath == 'library/batch' and method == 'POST':

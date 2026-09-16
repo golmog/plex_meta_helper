@@ -10,6 +10,8 @@ window.PmhUICore = {
         if (this.activeInstance) {
             this.activeInstance.isDestroyed = true;
             if (this.activeInstance.pollTimer) clearTimeout(this.activeInstance.pollTimer);
+            if (this.activeInstance.reconnectTimer) clearTimeout(this.activeInstance.reconnectTimer);
+            if (this.activeInstance.heartbeatTimer) clearInterval(this.activeInstance.heartbeatTimer);
             if (this.activeInstance.streamAbortController) {
                 this.activeInstance.streamAbortController.abort();
                 this.activeInstance.streamAbortController = null;
@@ -1104,11 +1106,14 @@ window.PmhUICore = {
             if (ctx.pollTimer) clearTimeout(ctx.pollTimer);
             if (ctx.streamAbortController) ctx.streamAbortController.abort();
             if (ctx.heartbeatTimer) clearInterval(ctx.heartbeatTimer);
+            if (ctx.reconnectTimer) clearTimeout(ctx.reconnectTimer);
 
             updateFormTabButtons(true);
             ctx.pollCount = 0;
 
             let lastHeartbeatTime = Date.now();
+            let retryCount = 0;
+            const maxRetries = 15;
 
             const stateEl = ctx.c.querySelector('#pmh_mon_state');
             const progEl = ctx.c.querySelector('#pmh_mon_prog');
@@ -1121,9 +1126,7 @@ window.PmhUICore = {
             cancelBtn.innerHTML = '<i class="fas fa-stop"></i> 작업 중단';
             cancelBtn.onclick = cancelActiveTask;
 
-            // =========================================================================
-            // [디바운싱 일괄 리로더]
-            // =========================================================================
+            // 디바운싱 일괄 리로더
             let pageReloadTimer = null;
             let isPageLoading = false;
 
@@ -1161,9 +1164,7 @@ window.PmhUICore = {
                 }, 600);
             };
 
-            // =========================================================================
-            // [UI 갱신 및 상태 종료 처리]
-            // =========================================================================
+            // UI 갱신 및 상태 종료 처리
             const updateUIWithData = (s) => {
                 if (!s || s.state === 'not_found') return false;
 
@@ -1190,12 +1191,16 @@ window.PmhUICore = {
                     updateFormTabButtons(false);
 
                     if (ctx.streamAbortController) {
-                        ctx.streamAbortController.abort();
+                        try { ctx.streamAbortController.abort(); } catch(e) {}
                         ctx.streamAbortController = null;
                     }
                     if (ctx.heartbeatTimer) {
                         clearInterval(ctx.heartbeatTimer);
                         ctx.heartbeatTimer = null;
+                    }
+                    if (ctx.reconnectTimer) {
+                        clearTimeout(ctx.reconnectTimer);
+                        ctx.reconnectTimer = null;
                     }
 
                     setTimeout(() => {
@@ -1212,45 +1217,82 @@ window.PmhUICore = {
                 }
             };
 
-            // =========================================================================
-            // [클라이언트 하트비트 감시 워치독]
-            // =========================================================================
+            // 하트비트 감시 워치독: 과도한 침묵 시 에러 종료 대신 재연결 트리거
             ctx.heartbeatTimer = setInterval(() => {
                 if (ctx.isDestroyed || !ctx.isRunning) {
                     clearInterval(ctx.heartbeatTimer);
                     return;
                 }
                 const silenceDuration = Date.now() - lastHeartbeatTime;
-                if (silenceDuration > 15000) {
-                    PmhLogger.warn(`[PMH UI] [SSE] ⚠️ 15초간 서버 응답 없음 (서버 다운/재시작 감지). 자가 중단 처리.`);
-                    clearInterval(ctx.heartbeatTimer);
-                    ctx.heartbeatTimer = null;
-                    
+                if (silenceDuration > 35000) {
+                    PmhLogger.warn(`[PMH UI] [SSE] ⚠️ 35초간 무응답 감지. 파이프라인 자동 재연결을 시도합니다.`);
+                    lastHeartbeatTime = Date.now();
                     if (ctx.streamAbortController) {
-                        ctx.streamAbortController.abort();
+                        try { ctx.streamAbortController.abort(); } catch(e) {}
                         ctx.streamAbortController = null;
                     }
+                    scheduleReconnect("일시적 응답 지연으로 인한 재연결");
+                }
+            }, 5000);
 
+            // 지수 백오프 기반 스트림 자동 재연결 스케줄러
+            const scheduleReconnect = (reason) => {
+                if (ctx.isDestroyed || !ctx.isRunning || ctx.isCancelling) return;
+                if (ctx.reconnectTimer) return;
+
+                retryCount++;
+                if (retryCount > maxRetries) {
+                    PmhLogger.error(`[PMH UI] [SSE] ❌ 최대 재연결 시도 횟수(${maxRetries}회) 초과. 모니터링 종료.`);
                     updateUIWithData({
                         state: 'error',
                         progress: 0,
                         total: 0,
                         logs: [
                             logBox.innerHTML ? logBox.innerHTML + '<br>' : '',
-                            `[${new Date().toLocaleTimeString()}] ❌ 서버와의 실시간 연결이 끊어졌습니다. (서버 재시작 또는 비정상 종료)`
+                            `[${new Date().toLocaleTimeString()}] ❌ 서버와의 통신이 최종 두절되었습니다. (최대 재시도 초과)`
                         ]
                     });
+                    return;
                 }
-            }, 3000);
 
-            // =========================================================================
-            // SSE 실시간 스트리밍
-            // =========================================================================
-            try {
+                const delay = Math.min(1000 * Math.pow(1.5, retryCount), 10000);
+                PmhLogger.info(`[PMH UI] [SSE] 🔄 ${delay / 1000}초 후 자동 재연결 시도 (${retryCount}/${maxRetries}회)... [사유: ${reason}]`);
+
+                stateEl.innerHTML = `<i class="fas fa-sync fa-spin"></i> 연결 복구 중 (${retryCount}/${maxRetries})...`;
+                stateEl.style.color = '#f89406';
+
+                ctx.reconnectTimer = setTimeout(async () => {
+                    ctx.reconnectTimer = null;
+                    if (ctx.isDestroyed || !ctx.isRunning || ctx.isCancelling) return;
+
+                    // 백엔드 작업 완료 여부 사전 점검
+                    try {
+                        const statusCheck = await config.apiAdapter.status(config.toolId);
+                        if (statusCheck && ['completed', 'error', 'cancelled'].includes(statusCheck.state)) {
+                            PmhLogger.info(`[PMH UI] [SSE] 재연결 중 작업 완료 감지 (${statusCheck.state})`);
+                            updateUIWithData(statusCheck);
+                            return;
+                        }
+                    } catch (statusErr) {
+                        PmhLogger.debug(`[PMH UI] 상태 점검 대기: ${statusErr.message}`);
+                    }
+
+                    connectStream();
+                }, delay);
+            };
+
+            // SSE 스트림 연결 본체
+            const connectStream = async () => {
+                if (ctx.isDestroyed || !ctx.isRunning || ctx.isCancelling) return;
+                if (ctx.streamAbortController) {
+                    try { ctx.streamAbortController.abort(); } catch(e) {}
+                    ctx.streamAbortController = null;
+                }
+
                 ctx.streamAbortController = new AbortController();
                 const targetServerNode = config.servers[config.activeServerIdx] || {};
                 const srvRelay = targetServerNode.relayUrl || `/api/relay/${targetServerNode.id || 'master_node'}`;
-                
+
                 let secureToken = "";
                 if (config.apiAdapter && typeof config.apiAdapter.getSignature === 'function') {
                     secureToken = await config.apiAdapter.getSignature();
@@ -1258,7 +1300,7 @@ window.PmhUICore = {
 
                 const activeSrvId = ctx.srvId || targetServerNode.machineIdentifier || targetServerNode.machine_id || 'default';
                 const streamUrl = `${srvRelay}/tool/${config.toolId}/stream?server_id=${encodeURIComponent(activeSrvId)}&sig=${encodeURIComponent(secureToken)}&_t=${Date.now()}`;
-                
+
                 const authHeaders = { 
                     'Accept': 'text/event-stream',
                     'X-PMH-Signature': secureToken
@@ -1276,7 +1318,8 @@ window.PmhUICore = {
 
                     PmhLogger.info(`[SSE] 🟢 실시간 스트림 파이프라인 연결 완료!`);
                     lastHeartbeatTime = Date.now();
-                    
+                    retryCount = 0;
+
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder('utf-8');
                     let buffer = '';
@@ -1304,28 +1347,23 @@ window.PmhUICore = {
                             }
                         }
                     }
+
+                    // 정상 스트림 마감 외에 소켓이 비정상 종료된 경우 재연결 트리거
+                    if (ctx.isRunning && !ctx.isCancelling && !ctx.isDestroyed) {
+                        scheduleReconnect("서버 스트림 연결 정상 종료 후 재확인");
+                    }
+
                 }).catch((streamErr) => {
                     if (ctx.streamAbortController && ctx.streamAbortController.signal.aborted) return;
                     PmhLogger.warn(`[PMH UI] [SSE] 🔴 스트리밍 소켓 단절 (${streamErr.message})`);
-                    
-                    updateUIWithData({
-                        state: 'error',
-                        progress: 0,
-                        total: 0,
-                        logs: [
-                            logBox.innerHTML ? logBox.innerHTML + '<br>' : '',
-                            `[${new Date().toLocaleTimeString()}] ❌ 서버와 통신할 수 없습니다: ${streamErr.message}`
-                        ]
-                    });
+
+                    // 에러 발생 시 즉시 포기하지 않고 자동 재연결 시도
+                    scheduleReconnect(streamErr.message);
                 });
-            } catch(e) {
-                updateUIWithData({
-                    state: 'error',
-                    progress: 0,
-                    total: 0,
-                    logs: [`[오류] 스트리밍 초기화 실패: ${e.message}`]
-                });
-            }
+            };
+
+            // 최초 스트림 연결 시작
+            connectStream();
         };
 
         if (ctx.ui.active_task && ctx.ui.active_task.state === 'running') {

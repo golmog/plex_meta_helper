@@ -23,6 +23,9 @@ BASE:
 
   FF_URL: "http://localhost:9999"
   FF_APIKEY: "WORKER_FF_API_KEY_HERE"
+  FF_DDNS: "https://ff.yourdomain.com"
+
+  FF_METADB_USE: false
 
   DISCORD_WEBHOOK: ""
 

@@ -77,6 +77,12 @@ BASE:
   # FF(Plex Mate) 연결 정보
   FF_URL: "http://localhost:9999"
   FF_APIKEY: "YOUR_FF_API_KEY_HERE"
+
+  # FF Proxy URL 생성을 위한 FF DDNS 주소 (예: https://ff.yourdomain.com)
+  FF_DDNS: ""
+
+  # FF 메타데이터 DB 연동 기능 활성화 여부 (기본값: false)
+  FF_METADB_USE: false
   
   # 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
@@ -198,6 +204,7 @@ global_conf = {
     "plex_token": BASE_CFG.get("PLEX_TOKEN", ""),
     "mate_apikey": BASE_CFG.get("FF_APIKEY", ""),
     "mate_url": BASE_CFG.get("FF_URL", ""),
+    "FF_DDNS": str(BASE_CFG.get("FF_DDNS", "")).strip().rstrip('/'),
     "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
     "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
     "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
@@ -205,9 +212,11 @@ global_conf = {
     "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
     "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
     "AV_IMAGE_SERVER_USE": bool(BASE_CFG.get("AV_IMAGE_SERVER_USE", False)),
+    "AV_IMAGE_SERVER_URL": str(BASE_CFG.get("AV_IMAGE_SERVER_URL", "")).strip().rstrip('/'),
     "JAV_MIN_SCORE": int(BASE_CFG.get("JAV_MIN_SCORE", 95)),
     "WESTERN_MIN_SCORE": int(BASE_CFG.get("WESTERN_MIN_SCORE", 95)),
     "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
+    "FF_METADB_USE": bool(BASE_CFG.get("FF_METADB_USE", False)),
     "is_master": IS_MASTER
 }
 
@@ -545,6 +554,7 @@ def api_admin_reload_core():
                 "plex_token": BASE_CFG.get("PLEX_TOKEN", ""),
                 "mate_apikey": BASE_CFG.get("FF_APIKEY", ""),
                 "mate_url": BASE_CFG.get("FF_URL", ""),
+                "FF_DDNS": str(BASE_CFG.get("FF_DDNS", "")).strip().rstrip('/'),
                 "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
                 "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
                 "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
@@ -552,7 +562,9 @@ def api_admin_reload_core():
                 "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
                 "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
                 "AV_IMAGE_SERVER_USE": bool(BASE_CFG.get("AV_IMAGE_SERVER_USE", False)),
+                "AV_IMAGE_SERVER_URL": str(BASE_CFG.get("AV_IMAGE_SERVER_URL", "")).strip().rstrip('/'),
                 "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
+                "FF_METADB_USE": bool(BASE_CFG.get("FF_METADB_USE", False)),
                 "is_master": IS_MASTER
             })
             NODE_INFO_CACHE.clear()
@@ -620,8 +632,11 @@ def get_client_config():
     
     master_db_type = str(BASE_CFG.get("PLEX_DB_TYPE", "sqlite3")).lower()
     master_av_img = bool(BASE_CFG.get("AV_IMAGE_SERVER_USE", False))
+    master_av_img_url = str(BASE_CFG.get("AV_IMAGE_SERVER_URL", "")).strip().rstrip('/')
     master_jav_sec = str(BASE_CFG.get("JAV_SECTION", ""))
     master_west_sec = str(BASE_CFG.get("WESTERN_AV_SECTION", ""))
+    master_ff_metadb = bool(BASE_CFG.get("FF_METADB_USE", False))
+    master_ff_ddns = str(BASE_CFG.get("FF_DDNS", "")).strip().rstrip('/')
 
     servers = [{
         "id": "master_node", 
@@ -630,8 +645,11 @@ def get_client_config():
         "db_type": master_db_type,
         "is_postgres": master_db_type == "postgres",
         "av_image_server_use": master_av_img,
+        "av_image_server_url": master_av_img_url,
         "jav_section": master_jav_sec,
-        "western_av_section": master_west_sec
+        "western_av_section": master_west_sec,
+        "ff_metadb_use": master_ff_metadb,
+        "ff_ddns": master_ff_ddns
     }]
     nodes = MASTER_CFG.get("NODES") or []
     
@@ -644,8 +662,11 @@ def get_client_config():
         plex_machine_id = cached_node.get("machine_id", "")
         node_db_type = cached_node.get("db_type", "sqlite3")
         node_av_img = cached_node.get("av_image_server_use", False)
+        node_av_img_url = cached_node.get("av_image_server_url", "")
         node_jav_sec = cached_node.get("jav_section", "")
         node_west_sec = cached_node.get("western_av_section", "")
+        node_ff_metadb = cached_node.get("ff_metadb_use", False)
+        node_ff_ddns = cached_node.get("ff_ddns", "")
 
         if not plex_machine_id:
             try:
@@ -656,15 +677,21 @@ def get_client_config():
                     plex_machine_id = data.get("machine_id", "")
                     node_db_type = data.get("db_type", "sqlite3")
                     node_av_img = bool(data.get("av_image_server_use", False))
+                    node_av_img_url = str(data.get("av_image_server_url", "")).strip().rstrip('/')
                     node_jav_sec = str(data.get("jav_section", ""))
                     node_west_sec = str(data.get("western_av_section", ""))
+                    node_ff_metadb = bool(data.get("ff_metadb_use", False))
+                    node_ff_ddns = str(data.get("ff_ddns", "")).strip().rstrip('/')
                     
                     NODE_INFO_CACHE[node_id] = {
                         "machine_id": plex_machine_id,
                         "db_type": node_db_type,
                         "av_image_server_use": node_av_img,
+                        "av_image_server_url": node_av_img_url,
                         "jav_section": node_jav_sec,
-                        "western_av_section": node_west_sec
+                        "western_av_section": node_west_sec,
+                        "ff_metadb_use": node_ff_metadb,
+                        "ff_ddns": node_ff_ddns
                     }
             except Exception as e:
                 pmh_logger.debug(f"워커({node.get('name')}) 핑 실패: {e}")
@@ -676,8 +703,11 @@ def get_client_config():
             "db_type": node_db_type,
             "is_postgres": node_db_type == "postgres",
             "av_image_server_use": node_av_img,
+            "av_image_server_url": node_av_img_url,
             "jav_section": node_jav_sec,
-            "western_av_section": node_west_sec
+            "western_av_section": node_west_sec,
+            "ff_metadb_use": node_ff_metadb,
+            "ff_ddns": node_ff_ddns
         })
 
     return jsonify({

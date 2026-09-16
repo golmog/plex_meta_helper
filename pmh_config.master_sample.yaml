@@ -48,6 +48,10 @@ BASE:
   # FF 연결 정보
   FF_URL: "http://localhost:9999"
   FF_APIKEY: "YOUR_FF_API_KEY_HERE"
+  FF_DDNS: "https://ff.yourdomain.com"
+
+  # FF 메타데이터 DB 연동 기능 활성화 여부 (기본값: false)
+  FF_METADB_USE: false
 
   # (선택) 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
@@ -82,6 +86,8 @@ BASE:
 
   # 로컬 AV 이미지 서버 사용 여부 (포스터 크롭 편집 기능 활성화)
   AV_IMAGE_SERVER_USE: false
+  # 로컬 이미지 서버 기본 도메인/주소 (끝 슬래시 제외)
+  AV_IMAGE_SERVER_URL: ""
 
   # 에이전트 매칭 시 기본 합격 점수 커트라인
   JAV_MIN_SCORE: 95
