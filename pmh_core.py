@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.123"
+__version__ = "0.9.124"
 
 logger = logging.getLogger("PMH")
 
@@ -1900,38 +1900,34 @@ def dispatch_request(subpath, method, args, data, global_config):
             return active_tasks, 200
 
         elif subpath == 'media/queue_cancel' and method == 'POST':
-            task_id = data.get('task_id')
-            if task_id in MEDIA_ACTION_STATUS:
-                if MEDIA_ACTION_STATUS[task_id]['state'] == 'queued':
-                    MEDIA_ACTION_STATUS[task_id]['state'] = 'cancelled'
-                    MEDIA_ACTION_STATUS[task_id]['msg'] = '사용자 취소'
-                    broadcast_media_event({
-                        'task_id': task_id,
-                        'item_id': str(MEDIA_ACTION_STATUS[task_id].get('item_id', '')),
-                        'state': 'cancelled',
-                        'msg': '사용자 취소'
-                    })
-                    return {"status": "success", "msg": "Cancelled"}, 200
-                else:
-                    return {"status": "error", "msg": "이미 실행 중이거나 완료된 작업입니다."}, 400
-            return {"status": "error", "msg": "작업을 찾을 수 없습니다."}, 404
+            target_task_id = data.get('task_id')
+            target_item_id = str(data.get('item_id', '')).strip()
 
-        elif subpath == 'media/queue_cancel' and method == 'POST':
-            task_id = data.get('task_id')
-            if task_id in MEDIA_ACTION_STATUS:
-                if MEDIA_ACTION_STATUS[task_id]['state'] == 'queued':
-                    MEDIA_ACTION_STATUS[task_id]['state'] = 'cancelled'
-                    MEDIA_ACTION_STATUS[task_id]['msg'] = '사용자 취소'
-                    broadcast_media_event({
-                        'task_id': task_id,
-                        'item_id': str(MEDIA_ACTION_STATUS[task_id].get('item_id', '')),
-                        'state': 'cancelled',
-                        'msg': '사용자 취소'
-                    })
-                    return {"status": "success", "msg": "Cancelled"}, 200
-                else:
-                    return {"status": "error", "msg": "이미 실행 중이거나 완료된 작업입니다."}, 400
-            return {"status": "error", "msg": "작업을 찾을 수 없습니다."}, 404
+            found_tasks = []
+            if target_task_id and target_task_id in MEDIA_ACTION_STATUS:
+                found_tasks.append((target_task_id, MEDIA_ACTION_STATUS[target_task_id]))
+            elif target_item_id:
+                for tid, st in list(MEDIA_ACTION_STATUS.items()):
+                    if str(st.get('item_id', '')) == target_item_id and st.get('state') in ['queued', 'processing']:
+                        found_tasks.append((tid, st))
+
+            if not found_tasks:
+                return {"status": "error", "msg": "취소할 유효한 대기/진행 작업을 찾을 수 없습니다."}, 404
+
+            cancelled_count = 0
+            for tid, st in found_tasks:
+                st['state'] = 'cancelled'
+                st['msg'] = '사용자 취소'
+                broadcast_media_event({
+                    'task_id': tid,
+                    'item_id': str(st.get('item_id', '')),
+                    'state': 'cancelled',
+                    'msg': '사용자 취소'
+                })
+                cancelled_count += 1
+                logger.info(f"🛑 작업 취소 완료 (Task: {tid}, Item: {st.get('item_id')})")
+
+            return {"status": "success", "msg": f"{cancelled_count}개 작업이 안전하게 취소되었습니다."}, 200
 
         # 미디어 액션 큐 전용 실시간 SSE 스트리밍 엔드포인트
         elif subpath == 'media/queue_stream' and method == 'GET':
@@ -2934,9 +2930,9 @@ def media_action_worker_loop(global_config):
                         manual_match=manual_m,
                         global_config=global_config, 
                         task_logger=lambda x: logger.info(f"[Queue] {x}"),
-                        cancel_checker=lambda: False
+                        cancel_checker=lambda: MEDIA_ACTION_STATUS.get(task_id, {}).get('state') == 'cancelled'
                     )
-                    
+
                     if success:
                         if item.type in ['season', 'episode'] and action in ['match', 'refresh']:
                             logger.info(f"⏳ 하위 항목({item.type})으로 메타데이터가 전파될 때까지 대기합니다...")

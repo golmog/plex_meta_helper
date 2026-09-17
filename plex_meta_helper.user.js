@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.123
+// @version      0.9.124
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3854,24 +3854,28 @@ GM_addStyle(`
 
                 if (gBox.dataset.refreshing === 'true') {
                     const qInfo = window._pmh_media_queues && window._pmh_media_queues[id];
-                    if (qInfo && qInfo.state === 'queued') {
-                        gBox.innerHTML = `<i class="fas fa-ban" style="margin-right:4px;"></i>취소됨`;
+                    if (qInfo) {
+                        gBox.innerHTML = `<i class="fas fa-ban" style="margin-right:4px;"></i>취소중...`;
                         gBox.style.color = '#bd362f';
 
                         try {
                             const srv = getServerConfig(targetServerId);
-                            if (srv && qInfo.task_id && qInfo.task_id !== 'pending') {
-                                await makeRequest(`${srv.relayUrl}/media/queue_cancel`, 'POST', { task_id: qInfo.task_id }, ClientSettings.masterApiKey);
+                            if (srv) {
+                                await makeRequest(`${srv.relayUrl}/media/queue_cancel`, 'POST', {
+                                    task_id: (qInfo.task_id && qInfo.task_id !== 'pending') ? qInfo.task_id : null,
+                                    item_id: id
+                                }, ClientSettings.masterApiKey);
                             }
-                        } catch(err) {}
+                        } catch(err) {
+                            warnLog(`[Queue Cancel] 백엔드 취소 요청 실패 (Item: ${id}):`, err);
+                        }
+
                         delete window._pmh_media_queues[id];
                         if (typeof window.saveQueueState === 'function') window.saveQueueState();
 
                         setTimeout(() => {
-                            const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${id}"]`);
-                            markers.forEach(m => m.remove());
-                            if (typeof processList === 'function') processList();
-                        }, 800);
+                            revertQueueBadgeToOriginal(id, targetServerId);
+                        }, 500);
                     }
                     return;
                 }
@@ -4091,17 +4095,12 @@ GM_addStyle(`
                             try {
                                 const event = JSON.parse(match[1]);
 
-                                // =========================================================
-                                // 서버 재시작으로 비어있는 스냅샷 수신 시 유령 작업 즉시 복원
-                                // =========================================================
                                 if (event.type === 'snapshot' && Array.isArray(event.tasks)) {
-                                    const activeBackendItemIds = new Set(event.tasks.map(t => String(t.item_id || '')));
-                                    const now = Date.now();
+                                    window._pmh_media_queues = window._pmh_media_queues || {};
 
                                     event.tasks.forEach(t => {
                                         const iid = String(t.item_id || '');
                                         if (iid) {
-                                            window._pmh_media_queues = window._pmh_media_queues || {};
                                             if (!window._pmh_media_queues[iid]) {
                                                 window._pmh_media_queues[iid] = {
                                                     task_id: t.task_id,
@@ -4114,17 +4113,6 @@ GM_addStyle(`
                                                 window._pmh_media_queues[iid].state = t.state;
                                             }
                                             updateQueueBadgeInDOM(iid, t.state);
-                                        }
-                                    });
-
-                                    // 서버 큐에 존재하지 않는 프론트엔드 유령 작업은 취소 처리 후 정상 복원
-                                    Object.entries(window._pmh_media_queues || {}).forEach(([iid, qInfo]) => {
-                                        if (qInfo.server_id === serverId) {
-                                            if (!activeBackendItemIds.has(iid) && (now - qInfo.start_time > 3000)) {
-                                                infoLog(`[Queue SSE] 🔄 서버 재시작으로 유실된 작업 감지 (ID: ${iid}) ➜ 원래 상태로 자동 복구`);
-                                                updateQueueBadgeInDOM(iid, 'cancelled');
-                                                revertQueueBadgeToOriginal(iid, serverId);
-                                            }
                                         }
                                     });
 
@@ -4268,30 +4256,73 @@ GM_addStyle(`
         });
     }
 
-    // 단일 통합 워치독: 연결 재시도 및 2분 이상 응답 없는 유령 작업 자동 원상 복구
+    // 백엔드 실행 상태를 안정적으로 감시하고 SSE 연결을 유지하는 워치독
     function startQueueWatchdog() {
         if (window._pmh_watchdog_timer) return;
 
         window._pmh_watchdog_timer = setInterval(async () => {
-            const queueItems = Object.entries(window._pmh_media_queues || {});
-            if (queueItems.length === 0) {
-                clearInterval(window._pmh_watchdog_timer);
-                window._pmh_watchdog_timer = null;
-                return;
+            if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) return;
+
+            const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
+
+            for (const srv of ServerConfig.SERVERS) {
+                try {
+                    const activeRes = await new Promise((resolve, reject) => {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: `${srv.relayUrl}/media/active_queues`,
+                            headers: { 'X-PMH-Signature': secureToken },
+                            timeout: 3000,
+                            onload: r => r.status === 200 ? resolve(JSON.parse(r.responseText)) : reject(),
+                            onerror: () => reject(), ontimeout: () => reject()
+                        });
+                    });
+
+                    if (activeRes && typeof activeRes === 'object') {
+                        const activeItemMap = new Map();
+
+                        for (const [taskId, status] of Object.entries(activeRes)) {
+                            const itemId = String(status.item_id || '');
+                            if (itemId) {
+                                activeItemMap.set(itemId, { taskId, status });
+                            }
+                        }
+
+                        window._pmh_media_queues = window._pmh_media_queues || {};
+
+                        // 백엔드에 존재하는 작업이 프론트 큐에 없으면 조용히 등록 및 DOM 갱신
+                        for (const [itemId, info] of activeItemMap.entries()) {
+                            const cur = window._pmh_media_queues[itemId];
+                            if (!cur || cur.state !== info.status.state) {
+                                window._pmh_media_queues[itemId] = {
+                                    task_id: info.taskId,
+                                    state: info.status.state,
+                                    server_id: srv.machineIdentifier,
+                                    start_time: cur?.start_time || Date.now()
+                                };
+                                updateQueueBadgeInDOM(itemId, info.status.state);
+                            }
+                        }
+
+                        // 백엔드에 작업이 존재하는데 SSE 스트림이 끊겨있다면 연결 복원
+                        if (activeItemMap.size > 0 && !window._pmh_active_queue_streams[srv.machineIdentifier]) {
+                            window.startQueuePolling(srv.machineIdentifier);
+                        }
+                    }
+                } catch (e) {}
             }
 
+            // 5분 이상 응답이 없는 장기 미응답 고착 건만 단독 정리
             const now = Date.now();
-            for (const [id, qInfo] of queueItems) {
-                if (now - qInfo.start_time > 120000) {
-                    infoLog(`[Watchdog] ⚠️ 응답 시간 초과 작업 감지 (ID: ${id}) ➜ 원래 상태로 자동 복원`);
-                    updateQueueBadgeInDOM(id, 'cancelled');
+            const queueEntries = Object.entries(window._pmh_media_queues || {});
+            for (const [id, qInfo] of queueEntries) {
+                if (now - qInfo.start_time > 300000) {
+                    delete window._pmh_media_queues[id];
                     revertQueueBadgeToOriginal(id, qInfo.server_id);
                 }
-                else if (!window._pmh_active_queue_streams[qInfo.server_id]) {
-                    window.startQueuePolling(qInfo.server_id);
-                }
             }
-        }, 10000);
+            if (typeof window.saveQueueState === 'function') window.saveQueueState();
+        }, 6000);
     }
 
     window._pmh_global_task_watcher_timer = null;
@@ -10170,20 +10201,6 @@ GM_addStyle(`
 
                                 if (typeof window.startQueuePolling === 'function') {
                                     window.startQueuePolling(srv.machineIdentifier);
-                                }
-                            }
-
-                            for (const [id, qInfo] of Object.entries(window._pmh_media_queues)) {
-                                if (qInfo.server_id === srv.machineIdentifier) {
-                                    if (!activeRes || !activeRes[qInfo.task_id]) {
-                                        infoLog(`[Boot Sync] 🔄 서버 재시작으로 유실된 작업 정리 및 복원 (ID: ${id})`);
-                                        delete window._pmh_media_queues[id];
-                                        needsSave = true;
-
-                                        // 화면에 대기중으로 표시된 카드를 원래 GUID로 복구
-                                        updateQueueBadgeInDOM(id, 'cancelled');
-                                        revertQueueBadgeToOriginal(id, srv.machineIdentifier);
-                                    }
                                 }
                             }
                         } catch (err) {
