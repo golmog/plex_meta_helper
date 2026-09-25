@@ -12,6 +12,7 @@ window.PmhUICore = {
             if (this.activeInstance.pollTimer) clearTimeout(this.activeInstance.pollTimer);
             if (this.activeInstance.reconnectTimer) clearTimeout(this.activeInstance.reconnectTimer);
             if (this.activeInstance.heartbeatTimer) clearInterval(this.activeInstance.heartbeatTimer);
+            if (this.activeInstance.idleWatchTimer) clearTimeout(this.activeInstance.idleWatchTimer);
             if (this.activeInstance.streamAbortController) {
                 this.activeInstance.streamAbortController.abort();
                 this.activeInstance.streamAbortController = null;
@@ -255,6 +256,7 @@ window.PmhUICore = {
             srvId: resolvedSrvId,
             srvName: resolvedSrvName,
             pollTimer: null,
+            idleWatchTimer: null,
             currentPage: isNaN(initialPage) ? 1 : initialPage,
             itemsPerPage: config.uiSchema.saved_options?.items_per_page || 10,
             sortKey: config.uiSchema.saved_options?._sort_key || null,
@@ -270,6 +272,14 @@ window.PmhUICore = {
 
         const updateFormTabButtons = (running) => {
             ctx.isRunning = running;
+
+            if (typeof stopIdleWatcher === 'function' && typeof startIdleWatcher === 'function') {
+                if (running) {
+                    stopIdleWatcher();
+                } else {
+                    startIdleWatcher();
+                }
+            }
 
             ctx.c.querySelectorAll('.pmh-main-run-btn').forEach(btn => {
                 if (!btn.dataset.originalHtml) btn.dataset.originalHtml = btn.innerHTML;
@@ -1366,10 +1376,45 @@ window.PmhUICore = {
             connectStream();
         };
 
+        const stopIdleWatcher = () => {
+            if (ctx.idleWatchTimer) {
+                clearTimeout(ctx.idleWatchTimer);
+                ctx.idleWatchTimer = null;
+            }
+        };
+
+        const startIdleWatcher = () => {
+            if (ctx.isDestroyed || ctx.isRunning) return;
+            stopIdleWatcher();
+
+            ctx.idleWatchTimer = setTimeout(async () => {
+                ctx.idleWatchTimer = null;
+                if (ctx.isDestroyed || ctx.isRunning) return;
+
+                try {
+                    PmhLogger.debug(`[PMH UI] 외부 작업 감시 상태 확인 중... (Tool: ${config.toolId}, Server: ${ctx.srvId})`);
+                    const statusCheck = await config.apiAdapter.status(config.toolId);
+                    if (statusCheck && statusCheck.state === 'running') {
+                        PmhLogger.info(`[PMH UI] 📡 외부/백그라운드 작업 감지 (Tool: ${config.toolId}, Server: ${ctx.srvId}). 실시간 모니터링으로 전환합니다.`);
+                        switchTab('pmh_tab_monitor');
+                        startPolling();
+                        return;
+                    }
+                } catch (e) {
+                    PmhLogger.debug(`[PMH UI] 외부 작업 감시 폴링 오류 (재시도 예정): ${e}`);
+                }
+
+                if (!ctx.isDestroyed && !ctx.isRunning) {
+                    startIdleWatcher();
+                }
+            }, 3500);
+        };
+
         if (ctx.ui.active_task && ctx.ui.active_task.state === 'running') {
             switchTab('pmh_tab_monitor'); startPolling();
         } else {
             loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir);
+            startIdleWatcher();
         }
 
         ctx.c.querySelectorAll('.pmh-main-run-btn').forEach(btn => {

@@ -8,21 +8,13 @@ Flask 백엔드는 실시간으로 Plex DB와 연동하고 프론트엔드의 �
 
 ## 업데이트
 
-v0.9.124 (2026-09-18)
-- UI: FF 메타/인물 DB 수정, 트레일러 재생, 갤러리 모달 추가(정상 이용을 위해서 FF의 메타 DB, AV 이미지 서버 사용 필요)
-- 위 모달 이용을 위해서 백엔드(노드) 설정 추가:
-```yaml
-  # FF Proxy URL 생성을 위한 FF DDNS 주소 (예: https://ff.yourdomain.com)
-  FF_DDNS: ""
-
-  # FF 메타데이터 DB 연동 기능 활성화 여부 (기본값: false)
-  FF_METADB_USE: false
-
-  # 로컬 이미지 서버 기본 도메인/주소 (끝 슬래시 제외)
-  AV_IMAGE_SERVER_URL: ""
-```
-- 목록 다중 선택 로직 개선: 메모리 내의 Plex 기본 UI 선택 목록 직접 추출
-- 미디어 큐 복구/처리 로직 개선
+v0.9.125 (2026-09-26)
+- 서버 백엔드 설정에 `TRUSTED_PROXIES` 추가:
+  - `request.remote_addr`가 신뢰 프록시 목록(Trusted Proxy)에 부합할 때 `X-Forwarded-For(XFF)` 헤더를 분석해 리얼 IP를 기준으로 fail2ban 적용
+  - XFF 헤더가 없다면 `X-Real-IP`를 대안으로 확인
+  - `request.remote_addr`가 신뢰 프록시가 아니거나 헤더가 없는 로컬/직접 접근의 경우에는 기존대로 request.remote_addr를 기준으로 Fail2Ban을 적용
+  - 신뢰 프록시 대역(`TRUSTED_PROXIES`) 외부에서 조작된 X-Forwarded-For 헤더를 직접 보내더라도 이를 무시하고 실제 연결 소켓 IP를 기준으로 차단
+- 툴: 툴 패널이 열려있을 때 다른 장소에서 툴을 실행할 경우를 위한 폴링 로직 추가
 - 기타 개선, 버그 수정
 
 v0.9.x

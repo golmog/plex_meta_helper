@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.124"
+__version__ = "0.9.125"
 
 logger = logging.getLogger("PMH")
 

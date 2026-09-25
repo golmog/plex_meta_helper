@@ -94,6 +94,15 @@ BASE:
     - "192.168.0.*"
     - "10.0.*.*"
 
+  # Reverse Proxy(Nginx Proxy Manager, Caddy 등) 신뢰 IP/대역 목록
+  # 여기에 지정된 프록시를 경유한 요청만 X-Forwarded-For / X-Real-IP 원본 클라이언트 IP를 신뢰합니다.
+  TRUSTED_PROXIES:
+    - "127.0.0.1"
+    - "192.168.*.*"
+    - "10.*.*.*"
+    - "172.16.*.*"
+    - "172.17.*.*"
+
   # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
   DEV_MODE: false
 
@@ -267,6 +276,10 @@ FAIL2BAN_WHITELIST = BASE_CFG.get("FAIL2BAN_WHITELIST", [])
 if not isinstance(FAIL2BAN_WHITELIST, list):
     FAIL2BAN_WHITELIST = [FAIL2BAN_WHITELIST]
 
+TRUSTED_PROXIES = BASE_CFG.get("TRUSTED_PROXIES", [])
+if not isinstance(TRUSTED_PROXIES, list):
+    TRUSTED_PROXIES = [TRUSTED_PROXIES]
+
 if len(API_KEY) < 8:
     pmh_logger.critical("API_KEY 길이가 너무 짧아 구동을 중단합니다. (보안 취약)")
     sys.exit(1)
@@ -289,6 +302,37 @@ def _is_ip_whitelisted(ip_addr):
             prefix = pattern.rstrip("*")
             if ip_addr.startswith(prefix): return True
     return False
+
+def _is_trusted_proxy(ip_addr):
+    if not TRUSTED_PROXIES: return False
+    for pattern in TRUSTED_PROXIES:
+        pattern = str(pattern).strip()
+        if not pattern: continue
+        if pattern == ip_addr: return True
+        if pattern.endswith("*"):
+            prefix = pattern.rstrip("*")
+            if ip_addr.startswith(prefix): return True
+    return False
+
+def get_client_ip(req):
+    direct_ip = req.remote_addr or "Unknown IP"
+    if not _is_trusted_proxy(direct_ip):
+        return direct_ip
+
+    xff = req.headers.get("X-Forwarded-For", "").strip()
+    if xff:
+        client_candidates = [ip.strip() for ip in xff.split(",") if ip.strip()]
+        if client_candidates:
+            client_ip = client_candidates[0]
+            pmh_logger.debug(f"[Security] 신뢰 프록시({direct_ip}) 경유 원본 IP 확인: {client_ip} (X-Forwarded-For)")
+            return client_ip
+
+    x_real = req.headers.get("X-Real-IP", "").strip()
+    if x_real:
+        pmh_logger.debug(f"[Security] 신뢰 프록시({direct_ip}) 경유 원본 IP 확인: {x_real} (X-Real-IP)")
+        return x_real
+
+    return direct_ip
 
 def _garbage_collect_failed_ips():
     if not ENABLE_FAIL2BAN: return
@@ -375,13 +419,12 @@ def check_api_key():
     if request.path not in allowed_restart_paths and is_server_restart_required():
         return jsonify({"error": "SERVER_RESTART_REQUIRED", "message": "서버 수동 재시작 필요"}), 426
         
-    client_ip = request.remote_addr or "Unknown IP"
+    client_ip = get_client_ip(request)
     
     if is_ip_blocked(client_ip):
         print(f"[PMH SECURITY] 🛑 다중 인증 실패로 차단된 IP의 접근 시도 거부: {client_ip}")
         return jsonify({"error": "Too Many Failed Attempts. Try again later."}), 429
-        
-    # 💡 [보완] 헤더는 물론 URL 쿼리 파라미터(?sig=)로 전달된 서명도 지원
+
     signature = request.headers.get("X-PMH-Signature", "") or request.args.get("sig", "") or request.args.get("_sig", "")
     
     legacy_key = request.headers.get("X-API-Key", "") or request.args.get("apikey", "")
@@ -519,7 +562,7 @@ def api_admin_update():
 @app.route('/api/admin/reload_core', methods=['POST'])
 def api_admin_reload_core():
     global cfg, BASE_CFG, MASTER_CFG, IS_MASTER, DEV_MODE, API_KEY
-    global ENABLE_FAIL2BAN, FAIL2BAN_WHITELIST, global_conf, NODE_INFO_CACHE
+    global ENABLE_FAIL2BAN, FAIL2BAN_WHITELIST, TRUSTED_PROXIES, global_conf, NODE_INFO_CACHE
     global PUID, PGID
     
     try:
@@ -543,6 +586,9 @@ def api_admin_reload_core():
             ENABLE_FAIL2BAN = BASE_CFG.get("ENABLE_FAIL2BAN", True)
             FAIL2BAN_WHITELIST = BASE_CFG.get("FAIL2BAN_WHITELIST", [])
             if not isinstance(FAIL2BAN_WHITELIST, list): FAIL2BAN_WHITELIST = [FAIL2BAN_WHITELIST]
+
+            TRUSTED_PROXIES = BASE_CFG.get("TRUSTED_PROXIES", [])
+            if not isinstance(TRUSTED_PROXIES, list): TRUSTED_PROXIES = [TRUSTED_PROXIES]
 
             global_conf.update({
                 "puid": PUID, "pgid": PGID,

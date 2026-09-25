@@ -63,6 +63,15 @@ BASE:
     - "192.168.0.*"
     - "10.0.*.*"
 
+  # Reverse Proxy(Nginx Proxy Manager, Caddy 등) 신뢰 IP/대역 목록
+  # 여기에 지정된 프록시를 경유한 요청만 X-Forwarded-For / X-Real-IP 원본 클라이언트 IP를 신뢰합니다.
+  TRUSTED_PROXIES:
+    - "127.0.0.1"
+    - "192.168.*.*"
+    - "10.*.*.*"
+    - "172.16.*.*"
+    - "172.17.*.*"
+
   # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
   DEV_MODE: false
 
