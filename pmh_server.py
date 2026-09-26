@@ -103,6 +103,10 @@ BASE:
     - "172.16.*.*"
     - "172.17.*.*"
 
+  # API 서명 토큰 유효 시간(초). 기본값: 60
+  # 클라이언트와 서버 간 시스템 시계(NTP) 오차나 지연이 잦은 환경일 경우 180~300 등으로 늘려 설정할 수 있습니다.
+  TOKEN_EXPIRE_SECONDS: 60
+
   # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
   DEV_MODE: false
 
@@ -280,6 +284,8 @@ TRUSTED_PROXIES = BASE_CFG.get("TRUSTED_PROXIES", [])
 if not isinstance(TRUSTED_PROXIES, list):
     TRUSTED_PROXIES = [TRUSTED_PROXIES]
 
+TOKEN_EXPIRE_SECONDS = int(BASE_CFG.get("TOKEN_EXPIRE_SECONDS", 60))
+
 if len(API_KEY) < 8:
     pmh_logger.critical("API_KEY 길이가 너무 짧아 구동을 중단합니다. (보안 취약)")
     sys.exit(1)
@@ -387,7 +393,7 @@ def verify_signature(signature, api_key):
         req_ts = int(req_ts_str)
         current_ts = int(time.time() / 10) * 10
         
-        if abs(current_ts - req_ts) > 60:
+        if abs(current_ts - req_ts) > TOKEN_EXPIRE_SECONDS:
             return False
             
         payload = f"{api_key}:{req_ts}".encode('utf-8')
@@ -396,6 +402,7 @@ def verify_signature(signature, api_key):
     except Exception as e:
         pmh_logger.warning(f"[API Security] 서명 검증 실패: {e}")
         return False
+
 
 # ==============================================================================
 # [Flask 앱 초기화]
@@ -562,7 +569,7 @@ def api_admin_update():
 @app.route('/api/admin/reload_core', methods=['POST'])
 def api_admin_reload_core():
     global cfg, BASE_CFG, MASTER_CFG, IS_MASTER, DEV_MODE, API_KEY
-    global ENABLE_FAIL2BAN, FAIL2BAN_WHITELIST, TRUSTED_PROXIES, global_conf, NODE_INFO_CACHE
+    global ENABLE_FAIL2BAN, FAIL2BAN_WHITELIST, TRUSTED_PROXIES, TOKEN_EXPIRE_SECONDS, global_conf, NODE_INFO_CACHE
     global PUID, PGID
     
     try:
@@ -589,6 +596,8 @@ def api_admin_reload_core():
 
             TRUSTED_PROXIES = BASE_CFG.get("TRUSTED_PROXIES", [])
             if not isinstance(TRUSTED_PROXIES, list): TRUSTED_PROXIES = [TRUSTED_PROXIES]
+
+            TOKEN_EXPIRE_SECONDS = int(BASE_CFG.get("TOKEN_EXPIRE_SECONDS", 60))
 
             global_conf.update({
                 "puid": PUID, "pgid": PGID,

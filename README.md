@@ -8,14 +8,15 @@ Flask 백엔드는 실시간으로 Plex DB와 연동하고 프론트엔드의 �
 
 ## 업데이트
 
-v0.9.125 (2026-09-26)
-- 서버 백엔드 설정에 `TRUSTED_PROXIES` 추가:
+v0.9.126 (2026-09-26)
+- 서버 백엔드 설정에 `TOKEN_EXPIRE_SECONDS` 추가: 클라이언트와 서버 간 시스템 시계(NTP) 오차나 지연이 잦은 환경일 경우 늘려 설정(기본값: 60)
+- https Plex 연결과 http 서버 연결로 Mixed Content 거부 문제가 발생할 경우, SSE 스트리밍 통신에 브라우저 네이티브 fetch 대신 Tampermonkey GM_xmlhttpRequest의 onprogress를 사용하여 폴백 우회
+- 미디어 큐 상태 감지/워치독 로직 개선
+- 서버 백엔드 설정에 `TOKEN_EXPIRE_SECONDS` 추가: v0.9.125
   - `request.remote_addr`가 신뢰 프록시 목록(Trusted Proxy)에 부합할 때 `X-Forwarded-For(XFF)` 헤더를 분석해 리얼 IP를 기준으로 fail2ban 적용
   - XFF 헤더가 없다면 `X-Real-IP`를 대안으로 확인
   - `request.remote_addr`가 신뢰 프록시가 아니거나 헤더가 없는 로컬/직접 접근의 경우에는 기존대로 request.remote_addr를 기준으로 Fail2Ban을 적용
   - 신뢰 프록시 대역(`TRUSTED_PROXIES`) 외부에서 조작된 X-Forwarded-For 헤더를 직접 보내더라도 이를 무시하고 실제 연결 소켓 IP를 기준으로 차단
-- 툴: 툴 패널이 열려있을 때 다른 장소에서 툴을 실행할 경우를 위한 폴링 로직 추가
-- 기타 개선, 버그 수정
 
 v0.9.x
 - PostgreSQL 지원(번들 툴 포함): [plex-postgresql](https://github.com/cgnl/plex-postgresql) 대응

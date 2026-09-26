@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.125
+// @version      0.9.126
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -4043,6 +4043,81 @@ GM_addStyle(`
         }, 2500);
     }
 
+    // 작업 완료 시 캐시 무효화, 신규 DB 배치 조회 및 카드 뱃지 일괄 갱신 공용 헬퍼
+    async function handleQueueCompleted(itemId, serverId) {
+        if (!itemId || !serverId) return;
+
+        if (window._pmh_media_queues?.[itemId]) {
+            delete window._pmh_media_queues[itemId];
+            if (typeof window.saveQueueState === 'function') window.saveQueueState();
+        }
+
+        updateQueueBadgeInDOM(itemId, 'completed');
+
+        const srvConfig = getServerConfig(serverId);
+        if (!srvConfig) return;
+
+        setTimeout(async () => {
+            deleteMemoryCache(`L_${serverId}_${itemId}`);
+            deleteMemoryCache(`D_${serverId}_${itemId}`);
+            deleteMemoryCache(`F_${serverId}_${itemId}`);
+            if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
+
+            try {
+                const freshDbData = await makeRequest(
+                    `${srvConfig.relayUrl}/library/batch`,
+                    'POST',
+                    { ids: [itemId], check_multi_path: state.listMultiPath },
+                    ClientSettings.masterApiKey
+                );
+
+                const newData = freshDbData?.[itemId] || { ignored: true };
+                setMemoryCache(`L_${serverId}_${itemId}`, newData);
+
+                const allCards = document.querySelectorAll(`
+                    div[data-testid^="cellItem"],
+                    div[class*="ListItem-container"],
+                    div[class*="MetadataPosterCard-container"],
+                    div[class*="MetadataThumbCard-container"],
+                    div[class*="ThumbCard-container"],
+                    div[class*="HubItem-"],
+                    tr[class*="TableRow-"]
+                `);
+
+                allCards.forEach(cont => {
+                    const parentCell = cont.parentElement?.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], tr[class*="TableRow-"]');
+                    if (parentCell && parentCell !== cont) return;
+
+                    const { link: liveLink, iid: liveIid } = extractCardLinkAndId(cont);
+                    if (liveLink && liveIid === itemId) {
+                        let livePoster = cont.querySelector(`
+                            [class*="PosterCard-card-"], 
+                            [class*="MetadataSimplePosterCard-card-"], 
+                            [class*="ThumbCard-card-"], 
+                            [class*="ThumbCard-imageContainer"],
+                            [class*="PosterCard-imageContainer"],
+                            [data-testid="metadata-poster"]
+                        `);
+                        if (!livePoster && cont.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
+                        if (!livePoster) {
+                            const img = cont.querySelector('img[src*="/photo/"], img[src*="/thumb/"], img[src*="/art/"]');
+                            if (img) livePoster = img.closest('[class*="card"], [class*="container"], [class*="imageContainer"]') || img.parentElement;
+                        }
+                        if (!livePoster) livePoster = cont;
+
+                        if (livePoster) {
+                            let displayData = { ...newData, tags: applyUserTags(newData.p, newData.tags) };
+                            renderListBadges(cont, livePoster, liveLink, displayData, srvConfig, itemId);
+                        }
+                    }
+                });
+
+            } catch (err) {
+                revertQueueBadgeToOriginal(itemId, serverId);
+            }
+        }, 800);
+    }
+
     window.startQueuePolling = function(serverId) {
         if (!serverId) return;
         if (window._pmh_active_queue_streams[serverId]) return;
@@ -4064,159 +4139,155 @@ GM_addStyle(`
             const streamUrl = `${srvConfig.relayUrl}/media/queue_stream?server_id=${encodeURIComponent(serverId)}&sig=${encodeURIComponent(secureToken)}&_t=${Date.now()}`;
             log(`[Queue SSE] 📡 미디어 큐 실시간 스트림 연결 시도 (${srvConfig.name}) ➔ ${streamUrl}`);
 
-            const abortController = new AbortController();
+            // 수신된 SSE 이벤트 블록 처리 공용 파서
+            const processEventPayload = (event) => {
+                if (!event) return;
 
-            try {
-                const response = await fetch(streamUrl, {
-                    headers: { 'Accept': 'text/event-stream', 'X-PMH-Signature': secureToken },
-                    signal: abortController.signal
-                });
+                if (event.type === 'snapshot' && Array.isArray(event.tasks)) {
+                    window._pmh_media_queues = window._pmh_media_queues || {};
 
-                if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+                    event.tasks.forEach(t => {
+                        const iid = String(t.item_id || '');
+                        if (iid) {
+                            if (!window._pmh_media_queues[iid]) {
+                                window._pmh_media_queues[iid] = {
+                                    task_id: t.task_id,
+                                    state: t.state,
+                                    server_id: serverId,
+                                    start_time: Date.now()
+                                };
+                            } else {
+                                window._pmh_media_queues[iid].task_id = t.task_id;
+                                window._pmh_media_queues[iid].state = t.state;
+                            }
+                            updateQueueBadgeInDOM(iid, t.state);
+                        }
+                    });
 
-                infoLog(`[Queue SSE] 🟢 미디어 큐 실시간 파이프라인 연결 완료 (${srvConfig.name})`);
+                    if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                    return;
+                }
 
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder('utf-8');
-                let buffer = '';
+                const itemId = String(event.item_id || '');
+                if (!itemId) return;
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
+                log(`[Queue SSE] 📥 실시간 상태 수신 (ID: ${itemId}, State: ${event.state})`);
 
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop() || '';
+                if (event.state === 'processing') {
+                    if (window._pmh_media_queues?.[itemId]) {
+                        window._pmh_media_queues[itemId].state = 'processing';
+                        if (typeof window.saveQueueState === 'function') window.saveQueueState();
+                    }
+                    updateQueueBadgeInDOM(itemId, 'processing');
+                }
+                else if (event.state === 'completed') {
+                    handleQueueCompleted(itemId, serverId);
+                }
+                else if (event.state === 'error' || event.state === 'cancelled') {
+                    updateQueueBadgeInDOM(itemId, event.state);
+                    revertQueueBadgeToOriginal(itemId, serverId);
+                }
+            };
 
-                    for (const block of lines) {
-                        if (block.startsWith(':')) continue;
-                        const match = block.match(/data:\s*(.+)/);
-                        if (match) {
-                            try {
-                                const event = JSON.parse(match[1]);
+            // Mixed Content 환경 판별: 페이지는 HTTPS인데 서버 URL은 비보안 HTTP인 경우
+            const isMixedContent = (window.location.protocol === 'https:' && streamUrl.startsWith('http://'));
 
-                                if (event.type === 'snapshot' && Array.isArray(event.tasks)) {
-                                    window._pmh_media_queues = window._pmh_media_queues || {};
+            // 1차 트랙: Mixed Content 제약이 없는 환경(HTTPS 도메인 연결 또는 로컬 HTTP 환경)은 웹 표준 fetch ReadableStream 우선 가동
+            if (!isMixedContent) {
+                const abortController = new AbortController();
+                try {
+                    const response = await fetch(streamUrl, {
+                        headers: { 'Accept': 'text/event-stream', 'X-PMH-Signature': secureToken },
+                        signal: abortController.signal
+                    });
 
-                                    event.tasks.forEach(t => {
-                                        const iid = String(t.item_id || '');
-                                        if (iid) {
-                                            if (!window._pmh_media_queues[iid]) {
-                                                window._pmh_media_queues[iid] = {
-                                                    task_id: t.task_id,
-                                                    state: t.state,
-                                                    server_id: serverId,
-                                                    start_time: Date.now()
-                                                };
-                                            } else {
-                                                window._pmh_media_queues[iid].task_id = t.task_id;
-                                                window._pmh_media_queues[iid].state = t.state;
-                                            }
-                                            updateQueueBadgeInDOM(iid, t.state);
-                                        }
-                                    });
+                    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+                    infoLog(`[Queue SSE] 🟢 미디어 큐 실시간 파이프라인 연결 완료 (fetch 스트림 - ${srvConfig.name})`);
 
-                                    if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                                    continue;
-                                }
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let buffer = '';
 
-                                const itemId = String(event.item_id || '');
-                                if (!itemId) continue;
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
 
-                                log(`[Queue SSE] 📥 실시간 상태 수신 (ID: ${itemId}, State: ${event.state})`);
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n\n');
+                        buffer = lines.pop() || '';
 
-                                if (event.state === 'processing') {
-                                    if (window._pmh_media_queues?.[itemId]) {
-                                        window._pmh_media_queues[itemId].state = 'processing';
-                                        if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                                    }
-                                    updateQueueBadgeInDOM(itemId, 'processing');
-                                }
-                                else if (event.state === 'completed') {
-                                    if (window._pmh_media_queues?.[itemId]) {
-                                        delete window._pmh_media_queues[itemId];
-                                        if (typeof window.saveQueueState === 'function') window.saveQueueState();
-                                    }
-
-                                    updateQueueBadgeInDOM(itemId, 'completed');
-
-                                    setTimeout(async () => {
-                                        deleteMemoryCache(`L_${serverId}_${itemId}`);
-                                        deleteMemoryCache(`D_${serverId}_${itemId}`);
-                                        deleteMemoryCache(`F_${serverId}_${itemId}`);
-                                        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
-
-                                        try {
-                                            const freshDbData = await makeRequest(
-                                                `${srvConfig.relayUrl}/library/batch`,
-                                                'POST',
-                                                { ids: [itemId], check_multi_path: state.listMultiPath },
-                                                ClientSettings.masterApiKey
-                                            );
-
-                                            const newData = freshDbData?.[itemId] || { ignored: true };
-                                            setMemoryCache(`L_${serverId}_${itemId}`, newData);
-
-                                            const allCards = document.querySelectorAll(`
-                                                div[data-testid^="cellItem"],
-                                                div[class*="ListItem-container"],
-                                                div[class*="MetadataPosterCard-container"],
-                                                div[class*="MetadataThumbCard-container"],
-                                                div[class*="ThumbCard-container"],
-                                                div[class*="HubItem-"],
-                                                tr[class*="TableRow-"]
-                                            `);
-
-                                            allCards.forEach(cont => {
-                                                const parentCell = cont.parentElement?.closest('div[data-testid^="cellItem"], div[class*="ListItem-container"], tr[class*="TableRow-"]');
-                                                if (parentCell && parentCell !== cont) return;
-
-                                                const { link: liveLink, iid: liveIid } = extractCardLinkAndId(cont);
-                                                if (liveLink && liveIid === itemId) {
-                                                    let livePoster = cont.querySelector(`
-                                                        [class*="PosterCard-card-"], 
-                                                        [class*="MetadataSimplePosterCard-card-"], 
-                                                        [class*="ThumbCard-card-"], 
-                                                        [class*="ThumbCard-imageContainer"],
-                                                        [class*="PosterCard-imageContainer"],
-                                                        [data-testid="metadata-poster"]
-                                                    `);
-                                                    if (!livePoster && cont.classList.contains('ListItem-container')) livePoster = live.firstElementChild;
-                                                    if (!livePoster) {
-                                                        const img = cont.querySelector('img[src*="/photo/"], img[src*="/thumb/"], img[src*="/art/"]');
-                                                        if (img) livePoster = img.closest('[class*="card"], [class*="container"], [class*="imageContainer"]') || img.parentElement;
-                                                    }
-                                                    if (!livePoster) livePoster = cont;
-
-                                                    if (livePoster) {
-                                                        let displayData = { ...newData, tags: applyUserTags(newData.p, newData.tags) };
-                                                        renderListBadges(cont, livePoster, liveLink, displayData, srvConfig, itemId);
-                                                    }
-                                                }
-                                            });
-
-                                        } catch (err) {
-                                            revertQueueBadgeToOriginal(itemId, serverId);
-                                        }
-                                    }, 800);
-                                }
-                                // =========================================================
-                                // 에러 또는 취소 시 2초 후 정상 GUID 복원
-                                // =========================================================
-                                else if (event.state === 'error' || event.state === 'cancelled') {
-                                    updateQueueBadgeInDOM(itemId, event.state);
-                                    revertQueueBadgeToOriginal(itemId, serverId);
-                                }
-
-                            } catch(e) {}
+                        for (const block of lines) {
+                            if (block.startsWith(':')) continue;
+                            const match = block.match(/data:\s*(.+)/);
+                            if (match) {
+                                try { processEventPayload(JSON.parse(match[1])); } catch(e) {}
+                            }
                         }
                     }
+                    log(`[Queue SSE] ⚪ 스트림 연결 정상 마감 (${srvConfig.name})`);
+                    delete window._pmh_active_queue_streams[serverId];
+                    return;
+
+                } catch (err) {
+                    log(`[Queue SSE] fetch 스트림 실패 또는 차단 (${err.message}). GM_xmlhttpRequest 대안 트랙을 검토합니다.`);
                 }
-            } catch (err) {
-                log(`[Queue SSE] ⚪ 스트림 연결 해제됨 (${err.message})`);
-            } finally {
-                delete window._pmh_active_queue_streams[serverId];
             }
+
+            // 2차 트랙: Mixed Content 우회가 필수적이거나 fetch 실패 시 Tampermonkey GM_xmlhttpRequest 백그라운드 스트림 대안 가동
+            let lastReadIndex = 0;
+            let lineBuffer = '';
+
+            const parseGmBlocks = (rawText, isFinal = false) => {
+                if (!rawText) return;
+                const newChunk = rawText.substring(lastReadIndex);
+                lastReadIndex = rawText.length;
+
+                lineBuffer += newChunk;
+                const blocks = lineBuffer.split('\n\n');
+                lineBuffer = blocks.pop() || '';
+
+                // 연결 종료(onload) 시 버퍼에 남아있는 미처리 마지막 블록 강제 Flush
+                if (isFinal && lineBuffer) {
+                    blocks.push(lineBuffer);
+                    lineBuffer = '';
+                }
+
+                for (const block of blocks) {
+                    if (block.startsWith(':')) continue;
+                    const match = block.match(/data:\s*(.+)/);
+                    if (match) {
+                        try { processEventPayload(JSON.parse(match[1])); } catch(e) {}
+                    }
+                }
+            };
+
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: streamUrl,
+                headers: {
+                    'Accept': 'text/event-stream',
+                    'X-PMH-Signature': secureToken,
+                    'Cache-Control': 'no-cache'
+                },
+                onprogress: (response) => {
+                    parseGmBlocks(response.responseText, false);
+                },
+                onload: (response) => {
+                    parseGmBlocks(response.responseText, true);
+                    log(`[Queue SSE] ⚪ GM 스트림 연결 정상 종료 (${srvConfig.name})`);
+                    delete window._pmh_active_queue_streams[serverId];
+                },
+                onerror: (err) => {
+                    log(`[Queue SSE] ⚪ GM 스트림 연결 해제됨 (${err ? (err.error || err) : 'Error'})`);
+                    delete window._pmh_active_queue_streams[serverId];
+                },
+                ontimeout: () => {
+                    log(`[Queue SSE] ⚪ GM 스트림 연결 타임아웃 (${srvConfig.name})`);
+                    delete window._pmh_active_queue_streams[serverId];
+                }
+            });
+
+            infoLog(`[Queue SSE] 🟢 미디어 큐 실시간 파이프라인 연결 완료 (GM 우회 스트림 - ${srvConfig.name})`);
         })();
 
         startQueueWatchdog();
@@ -4267,6 +4338,42 @@ GM_addStyle(`
 
             for (const srv of ServerConfig.SERVERS) {
                 try {
+                    // 현재 프론트엔드 큐에 대기 중인 작업들의 백엔드 실시간 상태 직접 질의 (자가치유)
+                    const pendingEntries = Object.entries(window._pmh_media_queues || {}).filter(([_, q]) => q.server_id === srv.machineIdentifier);
+                    const taskIdsToCheck = pendingEntries.map(([_, q]) => q.task_id).filter(tid => tid && tid !== 'pending');
+
+                    if (taskIdsToCheck.length > 0) {
+                        try {
+                            const statusMap = await makeRequest(
+                                `${srv.relayUrl}/media/queue_status`,
+                                'POST',
+                                { task_ids: taskIdsToCheck },
+                                ClientSettings.masterApiKey,
+                                null,
+                                4000
+                            );
+
+                            if (statusMap && typeof statusMap === 'object') {
+                                for (const [itemId, qInfo] of pendingEntries) {
+                                    const tStatus = statusMap[qInfo.task_id];
+                                    if (tStatus) {
+                                        if (tStatus.state === 'completed') {
+                                            infoLog(`[Watchdog Self-Healing] 백엔드 작업 완료 감지 (ID: ${itemId}). 뱃지를 즉시 갱신합니다.`);
+                                            handleQueueCompleted(itemId, srv.machineIdentifier);
+                                        } else if (tStatus.state === 'error' || tStatus.state === 'cancelled') {
+                                            warnLog(`[Watchdog Self-Healing] 백엔드 작업 비정상 종료 감지 (ID: ${itemId}, State: ${tStatus.state})`);
+                                            updateQueueBadgeInDOM(itemId, tStatus.state);
+                                            revertQueueBadgeToOriginal(itemId, srv.machineIdentifier);
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (statusErr) {
+                            log(`[Watchdog] queue_status 질의 실패 (다음 주기에 재시도): ${statusErr.message}`);
+                        }
+                    }
+
+                    // 백엔드 활성 큐 조회
                     const activeRes = await new Promise((resolve, reject) => {
                         GM_xmlhttpRequest({
                             method: 'GET',
