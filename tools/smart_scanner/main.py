@@ -88,59 +88,81 @@ def parse_yaml_markers_for_item(yaml_data, m_type, s_idx=None, e_idx=None):
         # 단일 영화: 최상위 markers 확인
         markers_dict = yaml_data.get('markers')
     elif m_type == 4:
-        # TV 에피소드: 시즌/에피소드 계층 구조 탐색
+        # TV 에피소드: 시즌/에피소드 구조 탐색
         seasons = yaml_data.get('seasons')
-        if isinstance(seasons, dict) and s_idx is not None:
-            s_keys = [s_idx, str(s_idx), f"Season {s_idx}", f"시즌 {s_idx}"]
+        s_target_str = str(s_idx).strip() if s_idx is not None else None
+        e_target_str = str(e_idx).strip() if e_idx is not None else None
+
+        # 실제 show.yaml 형태: seasons가 리스트([- index: 1])인 경우
+        if isinstance(seasons, list) and s_target_str is not None:
+            for s_entry in seasons:
+                if not isinstance(s_entry, dict): continue
+                
+                # 시즌 번호 식별 (index 또는 season 키 확인)
+                s_val = s_entry.get('index') if s_entry.get('index') is not None else s_entry.get('season')
+                if str(s_val).strip() != s_target_str:
+                    continue
+
+                # 에피소드 목록 탐색
+                episodes = s_entry.get('episodes')
+                if isinstance(episodes, list) and e_target_str is not None:
+                    for ep_entry in episodes:
+                        if not isinstance(ep_entry, dict): continue
+                        
+                        # 에피소드 번호 식별 (index 또는 episode 키 확인)
+                        e_val = ep_entry.get('index') if ep_entry.get('index') is not None else ep_entry.get('episode')
+                        if str(e_val).strip() == e_target_str:
+                            markers_dict = ep_entry.get('markers')
+                            break
+                            
+                elif isinstance(episodes, dict) and e_target_str is not None:
+                    ep_data = episodes.get(e_idx) or episodes.get(e_target_str)
+                    if isinstance(ep_data, dict):
+                        markers_dict = ep_data.get('markers')
+
+                if markers_dict:
+                    break
+
+        # 호환용: seasons가 딕셔너리({ 1: ... })인 경우
+        elif isinstance(seasons, dict) and s_target_str is not None:
+            s_keys = [s_idx, s_target_str, f"Season {s_target_str}", f"시즌 {s_target_str}"]
             season_data = None
             for sk in s_keys:
-                if sk in seasons:
+                if sk in seasons and isinstance(seasons[sk], dict):
                     season_data = seasons[sk]
                     break
                     
             if isinstance(season_data, dict):
                 episodes = season_data.get('episodes')
-                if isinstance(episodes, dict) and e_idx is not None:
-                    e_keys = [e_idx, str(e_idx), f"Episode {e_idx}", f"화 {e_idx}"]
-                    ep_data = None
-                    for ek in e_keys:
-                        if ek in episodes:
-                            ep_data = episodes[ek]
-                            break
+                if isinstance(episodes, list) and e_target_str is not None:
+                    for ep_entry in episodes:
+                        if isinstance(ep_entry, dict):
+                            e_val = ep_entry.get('index') if ep_entry.get('index') is not None else ep_entry.get('episode')
+                            if str(e_val).strip() == e_target_str:
+                                markers_dict = ep_entry.get('markers')
+                                break
+                elif isinstance(episodes, dict) and e_target_str is not None:
+                    ep_data = episodes.get(e_idx) or episodes.get(e_target_str)
                     if isinstance(ep_data, dict):
                         markers_dict = ep_data.get('markers')
 
         # 평면 episodes 리스트 또는 딕셔너리 탐색
-        if not markers_dict and 'episodes' in yaml_data:
+        if not markers_dict and 'episodes' in yaml_data and e_target_str is not None:
             episodes = yaml_data.get('episodes')
             if isinstance(episodes, list):
                 for ep in episodes:
                     if isinstance(ep, dict):
-                        ep_s = ep.get('season')
-                        ep_e = ep.get('episode') or ep.get('index')
-                        if str(ep_s) == str(s_idx) and str(ep_e) == str(e_idx):
+                        ep_s = str(ep.get('season', '')).strip()
+                        ep_e = str(ep.get('episode', ep.get('index', ''))).strip()
+                        if (s_target_str is None or ep_s == s_target_str) and ep_e == e_target_str:
                             markers_dict = ep.get('markers')
                             break
-            elif isinstance(episodes, list):
-                for ep in episodes:
-                    if isinstance(ep, dict):
-                        ep_s = ep.get('season')
-                        ep_e = ep.get('episode') or ep.get('index')
-                        if str(ep_s) == str(s_idx) and str(ep_e) == str(e_idx):
-                            markers_dict = ep.get('markers')
-                            break
-            elif isinstance(episodes, dict) and e_idx is not None:
-                s_str = str(s_idx).strip() if s_idx is not None else ""
-                e_str = str(e_idx).strip()
-                s_code = f"S{int(s_str):02d}" if s_str.isdigit() else ""
-                e_code = f"E{int(e_str):02d}" if e_str.isdigit() else ""
+            elif isinstance(episodes, dict):
+                s_code = f"S{int(s_target_str):02d}" if (s_target_str and s_target_str.isdigit()) else ""
+                e_code = f"E{int(e_target_str):02d}" if e_target_str.isdigit() else ""
                 code_key = f"{s_code}{e_code}" if (s_code and e_code) else None
 
-                possible_keys = [
-                    e_str,
-                    f"{s_str}-{e_str}" if s_str else None,
-                    code_key
-                ]
+                possible_keys = [e_target_str, f"{s_target_str}-{e_target_str}" if s_target_str else None, code_key]
                 for pk in possible_keys:
                     if pk and pk in episodes and isinstance(episodes[pk], dict):
                         markers_dict = episodes[pk].get('markers')
