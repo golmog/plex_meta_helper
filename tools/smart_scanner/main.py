@@ -121,11 +121,25 @@ def parse_yaml_markers_for_item(yaml_data, m_type, s_idx=None, e_idx=None):
                         if str(ep_s) == str(s_idx) and str(ep_e) == str(e_idx):
                             markers_dict = ep.get('markers')
                             break
+            elif isinstance(episodes, list):
+                for ep in episodes:
+                    if isinstance(ep, dict):
+                        ep_s = ep.get('season')
+                        ep_e = ep.get('episode') or ep.get('index')
+                        if str(ep_s) == str(s_idx) and str(ep_e) == str(e_idx):
+                            markers_dict = ep.get('markers')
+                            break
             elif isinstance(episodes, dict) and e_idx is not None:
+                s_str = str(s_idx).strip() if s_idx is not None else ""
+                e_str = str(e_idx).strip()
+                s_code = f"S{int(s_str):02d}" if s_str.isdigit() else ""
+                e_code = f"E{int(e_str):02d}" if e_str.isdigit() else ""
+                code_key = f"{s_code}{e_code}" if (s_code and e_code) else None
+
                 possible_keys = [
-                    str(e_idx),
-                    f"{s_idx}-{e_idx}",
-                    f"S{int(s_idx):02d}E{int(e_idx):02d}" if (str(s_idx).isdigit() and str(e_idx).isdigit()) else None
+                    e_str,
+                    f"{s_str}-{e_str}" if s_str else None,
+                    code_key
                 ]
                 for pk in possible_keys:
                     if pk and pk in episodes and isinstance(episodes[pk], dict):
@@ -247,7 +261,6 @@ def get_target_issues(req_data, core_api, task=None):
     target_sections = req_data.get('target_sections', [])
     opt_yaml_marker_vfs = req_data.get('opt_yaml_marker_vfs', False)
     path_mappings = core_api['config'].get('path_mappings', [])
-    vfs_refreshed_dirs = set()
     parsed_yaml_cache = {}
     
     # 1회성 임시 필터 (조회 탭)
@@ -340,12 +353,15 @@ def get_target_issues(req_data, core_api, task=None):
     def add_target(rk, m_type, title, sec_name, fix_type, file_path=None, parent_rk=None):
         target_rk = parent_rk if parent_rk and fix_type in ['match', 'refresh', 'yaml_season', 'yaml_marker'] else rk
         
-        if target_rk not in targets:
+        is_new = target_rk not in targets
+        if is_new:
             targets[target_rk] = {"title": title, "section": sec_name, "type": m_type, "fix": fix_type, "files": set()}
             
         if file_path: targets[target_rk]["files"].add(file_path)
         if parent_rk: assigned_grandparents.add(parent_rk)
+        return is_new
 
+    # 💡 [ANSI 표준화] IFNULL -> COALESCE 교체
     base_from = f"""
         SELECT
             mi.id, mi.metadata_type, mi.title, 
@@ -361,7 +377,6 @@ def get_target_issues(req_data, core_api, task=None):
         FROM metadata_items mi
         WHERE mi.library_section_id IN ({lib_ids_str}) AND 
     """
-
 
     def format_title(r, is_episode=False, is_parent=False):
         m_type = r.get('metadata_type')
@@ -411,10 +426,47 @@ def get_target_issues(req_data, core_api, task=None):
         for step_idx, (fix_type, msg) in enumerate(tasks_to_run, 1):
             if task and task.is_cancelled(): break
             
+            step_base_pct = int(((step_idx - 1) / total_steps) * 85)
+            step_span_pct = int((1 / total_steps) * 85)
+
             if task: 
-                progress_pct = int((step_idx / total_steps) * 80)
                 task.log(f"⏳ [{step_idx}/{total_steps}] {msg}")
-                task.update_state('running', progress=progress_pct, total=100)
+                task.update_state('running', progress=step_base_pct, total=100)
+
+            # 언바운드 방지를 위해 루프 시작 시점마다 기본값 초기화
+            row_count = 0
+            step_initial_count = len(targets)
+
+            # 마커 검사 시 VFS 갱신 옵션 활성화 시 라이브러리 섹션 최상위 등록 경로들에 대해 사전 일괄 갱신 수행
+            if fix_type == 'yaml_marker' and opt_yaml_marker_vfs:
+                try:
+                    loc_q = f"SELECT DISTINCT root_path FROM section_locations WHERE library_section_id IN ({lib_ids_str})"
+                    loc_rows = core_api['query'](loc_q)
+                    root_dirs = set()
+                    for lr in loc_rows:
+                        rp = lr.get('root_path')
+                        if rp:
+                            translated_rp = translate_path(rp, path_mappings)
+                            root_dirs.add(translated_rp)
+
+                    if root_dirs:
+                        if task:
+                            task.log(f"📂 [VFS 일괄 갱신] 최신 YAML 확인을 위해 라이브러리 최상위 경로 {len(root_dirs)}곳의 VFS를 미리 갱신합니다...")
+                            task.log(f"   (라이브러리 크기에 따라 장시간 소요될 수 있으며, 타임아웃 제한 없이 완료될 때까지 대기합니다)")
+
+                        for r_dir in sorted(root_dirs):
+                            if task and task.is_cancelled(): break
+                            if task: task.log(f"   -> VFS 갱신 요청 중: '{r_dir}'")
+                            try:
+                                vfs_ok = pmh_core.execute_plexmate_action('vfs_refresh', r_dir, core_api['config'], timeout=None)
+                                if vfs_ok:
+                                    if task: task.log(f"      ✅ VFS 갱신 완료: '{os.path.basename(r_dir) or r_dir}'")
+                                else:
+                                    if task: task.log(f"      ⚠️ VFS 갱신 응답 실패: '{r_dir}'")
+                            except Exception as vfs_err:
+                                if task: task.log(f"      ⚠️ VFS 갱신 오류: {vfs_err}")
+                except Exception as loc_err:
+                    if task: task.log(f"⚠️ 라이브러리 최상위 경로 조회 중 오류 발생: {loc_err}")
 
             query = ""
             if fix_type == 'analyze':
@@ -500,8 +552,28 @@ def get_target_issues(req_data, core_api, task=None):
 
             if query:
                 rows = core_api['query'](query)
-                for r in rows:
+                row_count = len(rows)
+
+                if fix_type == 'yaml_marker':
+                    if task: task.log(f"   -> DB 1차 후보 {row_count:,}건을 검사합니다. (파일 및 YAML 대조 시작)")
+                elif task and row_count > 0:
+                    task.log(f"   -> DB 후보 {row_count:,}건 확인됨.")
+
+                last_progress_time = time.time()
+                step_initial_count = len(targets)
+
+                for r_idx, r in enumerate(rows, 1):
                     if task and task.is_cancelled(): break
+
+                    if fix_type == 'yaml_marker' and row_count > 0:
+                        cur_pct = step_base_pct + int((r_idx / row_count) * step_span_pct)
+                        task.update_state('running', progress=cur_pct, total=100)
+
+                        now_t = time.time()
+                        if now_t - last_progress_time >= 3.5:
+                            last_progress_time = now_t
+                            found_so_far = len(targets) - step_initial_count
+                            task.log(f"      [검증 진행] {r_idx:,}/{row_count:,}건 확인 중... (선별됨: {found_so_far:,}건)")
 
                     rk = r.get('id')
                     m_type = r.get('metadata_type')
@@ -518,22 +590,12 @@ def get_target_issues(req_data, core_api, task=None):
                     elif m_type in (2, 3, 8, 9): display_title = format_title(r, is_parent=True)
                     elif m_type in (4, 10): display_title = format_title(r, is_episode=True)
 
-                    # YAML 마커 정밀 검증 (DB 누락 마커와 YAML 실제 유효값 대조)
                     if fix_type == 'yaml_marker':
                         if not f_path: continue
 
                         local_file_path = translate_path(f_path, path_mappings)
                         target_dir = get_show_root_dir(local_file_path)
 
-                        # 옵션 활성화 시 폴더 단위 VFS 갱신 1회 수행
-                        if opt_yaml_marker_vfs and target_dir not in vfs_refreshed_dirs:
-                            vfs_refreshed_dirs.add(target_dir)
-                            try:
-                                pmh_core.execute_plexmate_action('vfs_refresh', target_dir, core_api['config'], async_mode='false')
-                            except Exception as vfs_err:
-                                if task: task.log(f"      ⚠️ VFS 갱신 실패 ({os.path.basename(target_dir)}): {vfs_err}")
-
-                        # YAML 파일 경로 탐색 및 캐싱 로드
                         yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
                         yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
                         yaml_path = os.path.join(target_dir, yaml_filename)
@@ -559,14 +621,12 @@ def get_target_issues(req_data, core_api, task=None):
                         db_has_intro = bool(r.get('db_has_intro'))
                         db_has_credits = bool(r.get('db_has_credits'))
 
-                        # DB에는 없지만 YAML에는 유효한 시간값이 있는 마커가 최소 1개 이상 있는지 검사
                         needs_marker_sync = False
                         if not db_has_intro and yaml_markers.get('intro'):
                             needs_marker_sync = True
                         if not db_has_credits and yaml_markers.get('credits'):
                             needs_marker_sync = True
 
-                        # YAML에도 마커 시간값이 비어있거나 이미 DB에 존재하는 경우 복구 대상에서 제외
                         if not needs_marker_sync:
                             continue
 
@@ -596,7 +656,7 @@ def get_target_issues(req_data, core_api, task=None):
 
                     if skip_item: continue
 
-                    # 2. 수동 임시 필터 검사
+                    # 수동 임시 필터 검사
                     if ui_inc_rules or ui_exc_rules:
                         ui_texts = _get_texts(ui_filter_fields)
                         if ui_inc_rules and not _is_match(ui_inc_rules, ui_texts): skip_item = True
@@ -607,10 +667,14 @@ def get_target_issues(req_data, core_api, task=None):
                     # 복구 대상 맵에 추가
                     if m_type == 1:
                         display_title = format_title(r)
-                        add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk)
+                        if add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk):
+                            if task and fix_type == 'yaml_marker':
+                                task.log(f"      ✨ [마커 대상 선별] {display_title}")
                     elif m_type in (2, 3, 8, 9):
                         display_title = format_title(r, is_parent=True)
-                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk)
+                        if add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk):
+                            if task and fix_type == 'yaml_marker':
+                                task.log(f"      ✨ [마커 대상 선별] {display_title}")
                     elif m_type in (4, 10): 
                         actual_parent = grandparent_id or parent_id
                         if fix_type in ['match', 'refresh', 'yaml_season', 'yaml_marker'] and actual_parent:
@@ -620,9 +684,16 @@ def get_target_issues(req_data, core_api, task=None):
                         else:
                             display_title = format_title(r, is_episode=True)
                             
-                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
+                        if add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent):
+                            if task and fix_type == 'yaml_marker':
+                                task.log(f"      ✨ [마커 대상 선별] {display_title}")
                         
-            if task: task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
+            if task: 
+                if fix_type == 'yaml_marker':
+                    found_in_step = len(targets) - step_initial_count
+                    task.log(f"   ✓ 마커 검증 완료: 1차 후보 {row_count:,}건 중 복구 대상 {found_in_step:,}건 선별")
+                else:
+                    task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
 
     except Exception as e:
         if task: task.log(f"❌ Plex DB 연결 또는 쿼리 실패: {e}")
@@ -724,7 +795,7 @@ def worker(task_data, core_api, start_index):
     retry_errors = task_data.get('retry_errors', False)
 
     # -----------------------------------------------------------------
-    # [1] Preview 및 Cron Run 초기 조회 (Datatable 구성)
+    # Preview 및 Cron Run 초기 조회 (Datatable 구성)
     # -----------------------------------------------------------------
     if action in ['preview', 'cron_run']:
         prefix = "[자동 실행] " if action == 'cron_run' else ""
@@ -824,7 +895,7 @@ def worker(task_data, core_api, start_index):
             task.log(f"✅ [자동 실행] 조회 완료. 생성된 목록(총 {total_issues:,}건)을 바탕으로 즉시 복구 작업을 시작합니다.")
 
     # -----------------------------------------------------------------
-    # [2] Execute 모드 (실제 처리 진행)
+    # Execute 모드 (실제 처리 진행)
     # -----------------------------------------------------------------
     work_start_time = time.time()
     actual_fix_counts = {'analyze': 0, 'match': 0, 'refresh': 0, 'yaml_season': 0, 'yaml_marker': 0}
@@ -837,7 +908,7 @@ def worker(task_data, core_api, start_index):
     progress = task_data.get('_resume_start_index', start_index)
     prefix = "[자동 실행] " if task_data.get('_is_cron') else ""
 
-    # [1] 실행 대상 목록 로드
+    # 실행 대상 목록 로드
     if task_data.get('_is_single'):
         items = task_data.get('target_items', [])
     else:
@@ -873,14 +944,14 @@ def worker(task_data, core_api, start_index):
     mate_apikey = core_api['config'].get('mate_apikey', '')
     path_mappings = core_api['config'].get('path_mappings', [])
 
-    # [2] Plex 서버 연결
+    # Plex 서버 연결
     try:
         plex = core_api['get_plex']()
         if progress == 0: task.log("🔌 Plex 연결 완료.")
     except Exception as e:
         task.update_state('error'); task.log(f"❌ Plex 서버 연결 실패: {str(e)}"); return
 
-    # [3] 메인 루프
+    # 메인 루프
     try:
         for item in items:
             if task.is_cancelled(): 
@@ -957,7 +1028,7 @@ def worker(task_data, core_api, start_index):
                                             has_valid_marker_to_apply = True
 
                                     elif m_type in (2, 3, 4):
-                                        # 쇼: 쇼 산하 모든 에피소드 중 DB에는 없지만 YAML에 유효값이 있는 에피소드가 1개라도 존재하는지 검사
+                                        # 쇼: 산하 모든 에피소드 중 DB에는 없지만 YAML에 유효값이 있는 에피소드가 1개라도 존재하는지 검사
                                         ep_rows = core_api['query']("""
                                             SELECT ep.id, (SELECT "index" FROM metadata_items WHERE id = ep.parent_id) as s_idx, ep."index" as e_idx,
                                                    (SELECT 1 FROM taggings WHERE metadata_item_id = ep.id AND text = 'intro' LIMIT 1) as db_has_intro,
@@ -987,8 +1058,8 @@ def worker(task_data, core_api, start_index):
                     if skip_yaml:
                         skip_delay = True
                     else:
-                        task.log(f"      ✅ 검증 통과. 전체 쇼(Show) 단위로 VFS 갱신 및 YAML 적용을 요청합니다...")
-
+                        task.log(f"      ✅ 검증 통과. 전체 쇼(Show) 단위로 Plex Mate YAML/TMDB 반영을 요청합니다...")
+                        
                         if fix_type == 'yaml_season':
                             is_sjva = False
                             try:
@@ -1004,15 +1075,14 @@ def worker(task_data, core_api, start_index):
                                     task_logger=task.log, cancel_checker=task.is_cancelled
                                 )
 
-                        success, msg, _ = pmh_core.perform_smart_media_action(
-                            plex_url=plex._baseurl, plex_token=plex._token, rating_key=rk, 
-                            action_type='yaml_refresh', plex_inst=plex, global_config=core_api['config'],
-                            task_logger=task.log, cancel_checker=task.is_cancelled
-                        )
-                        if success: 
-                            task.log("         ➔ 🟢 Plex Mate 연동 및 VFS 갱신 성공!")
-                        else: 
-                            task.log(f"         ➔ 🔴 연동 실패: {msg}")
+                        try:
+                            if pmh_core.execute_plexmate_action('manual_refresh', int(rk), core_api['config']):
+                                task.log("         ➔ 🟢 Plex Mate YAML/TMDB 반영 성공!")
+                            else:
+                                task.log("         ➔ 🔴 Plex Mate 반영 실패")
+                                item_has_error = True
+                        except Exception as mr_err:
+                            task.log(f"         ➔ 🔴 연동 실패: {mr_err}")
                             item_has_error = True
 
                 else:
@@ -1072,12 +1142,14 @@ def worker(task_data, core_api, start_index):
                                 except: has_3digit = False
                                 
                                 if has_3digit:
-                                    task.log("      [후속 작업] 쇼 내부에 3자리 특수 시즌이 감지되었으므로, YAML 적용을 추가로 실행합니다.")
-                                    pmh_core.perform_smart_media_action(
-                                        plex_url=plex._baseurl, plex_token=plex._token, rating_key=show_rk, 
-                                        action_type='yaml_refresh', plex_inst=plex, global_config=core_api['config'],
-                                        task_logger=task.log, cancel_checker=task.is_cancelled
-                                    )
+                                    task.log("      [후속 작업] 쇼 내부에 3자리 특수 시즌이 감지되었으므로, Plex Mate YAML 적용을 실행합니다.")
+                                    try:
+                                        if pmh_core.execute_plexmate_action('manual_refresh', int(show_rk), core_api['config']):
+                                            task.log("         ➔ 🟢 Plex Mate YAML/TMDB 반영 성공!")
+                                        else:
+                                            task.log("         ➔ 🔴 Plex Mate 반영 실패")
+                                    except Exception as mr_err:
+                                        task.log(f"         ➔ 🔴 연동 실패: {mr_err}")
 
                         if fix_type == 'analyze':
                             plex_item = plex.fetchItem(int(rk))
@@ -1119,7 +1191,7 @@ def worker(task_data, core_api, start_index):
                     time.sleep(0.5)
 
         # -----------------------------------------------------------------
-        # [4] 모든 작업 종료 후 검증 및 통계 알림 (단일 실행이 아닐 때만)
+        # 모든 작업 종료 후 검증 및 통계 알림 (단일 실행이 아닐 때만)
         # -----------------------------------------------------------------
         if not task_data.get('_is_single'):
             analyze_rks = [int(i['rating_key']) for i in items if i['fix_type'] == 'analyze' and str(i['rating_key']).isdigit()]
