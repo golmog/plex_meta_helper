@@ -10,6 +10,7 @@ import re
 import time
 import unicodedata
 import json
+import yaml
 import pmh_core
 
 # =====================================================================
@@ -62,6 +63,85 @@ def translate_path(plex_path, mappings):
         if p_path and plex_path.startswith(p_path): return s_path + plex_path[len(p_path):]
     return plex_path
 
+def is_valid_marker_time(val):
+    """마커 시간값이 빈 문자열이 아니고 유효한 숫자인지 판별"""
+    if val is None or str(val).strip() == '': return False
+    try:
+        float(val)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+def check_marker_validity(marker_entry):
+    """intro/credits 항목 내 start, end가 모두 유효한 숫자인지 판별"""
+    if not isinstance(marker_entry, dict): return False
+    return is_valid_marker_time(marker_entry.get('start')) and is_valid_marker_time(marker_entry.get('end'))
+
+def parse_yaml_markers_for_item(yaml_data, m_type, s_idx=None, e_idx=None):
+    """YAML 데이터에서 해당 미디어 항목의 intro/credits 유효성({'intro': bool, 'credits': bool})을 정밀 추출"""
+    result = {'intro': False, 'credits': False}
+    if not isinstance(yaml_data, dict): return result
+
+    markers_dict = None
+
+    if m_type == 1:
+        # 단일 영화: 최상위 markers 확인
+        markers_dict = yaml_data.get('markers')
+    elif m_type == 4:
+        # TV 에피소드: 시즌/에피소드 계층 구조 탐색
+        seasons = yaml_data.get('seasons')
+        if isinstance(seasons, dict) and s_idx is not None:
+            s_keys = [s_idx, str(s_idx), f"Season {s_idx}", f"시즌 {s_idx}"]
+            season_data = None
+            for sk in s_keys:
+                if sk in seasons:
+                    season_data = seasons[sk]
+                    break
+                    
+            if isinstance(season_data, dict):
+                episodes = season_data.get('episodes')
+                if isinstance(episodes, dict) and e_idx is not None:
+                    e_keys = [e_idx, str(e_idx), f"Episode {e_idx}", f"화 {e_idx}"]
+                    ep_data = None
+                    for ek in e_keys:
+                        if ek in episodes:
+                            ep_data = episodes[ek]
+                            break
+                    if isinstance(ep_data, dict):
+                        markers_dict = ep_data.get('markers')
+
+        # 평면 episodes 리스트 또는 딕셔너리 탐색
+        if not markers_dict and 'episodes' in yaml_data:
+            episodes = yaml_data.get('episodes')
+            if isinstance(episodes, list):
+                for ep in episodes:
+                    if isinstance(ep, dict):
+                        ep_s = ep.get('season')
+                        ep_e = ep.get('episode') or ep.get('index')
+                        if str(ep_s) == str(s_idx) and str(ep_e) == str(e_idx):
+                            markers_dict = ep.get('markers')
+                            break
+            elif isinstance(episodes, dict) and e_idx is not None:
+                possible_keys = [
+                    str(e_idx),
+                    f"{s_idx}-{e_idx}",
+                    f"S{int(s_idx):02d}E{int(e_idx):02d}" if (str(s_idx).isdigit() and str(e_idx).isdigit()) else None
+                ]
+                for pk in possible_keys:
+                    if pk and pk in episodes and isinstance(episodes[pk], dict):
+                        markers_dict = episodes[pk].get('markers')
+                        break
+
+        # 쇼 전체 기본값 또는 극장판/단편 공통 마커
+        if not markers_dict:
+            markers_dict = yaml_data.get('markers')
+
+    if isinstance(markers_dict, dict):
+        result['intro'] = check_marker_validity(markers_dict.get('intro'))
+        result['credits'] = check_marker_validity(markers_dict.get('credits'))
+
+    return result
+
 # =====================================================================
 # 1. UI 스키마
 # =====================================================================
@@ -89,6 +169,7 @@ def get_ui(core_api):
                 {"id": "opt_yaml_season", "label": "3자리 시즌 에피소드 중 YAML 미적용 항목 감지", "default": True},
                 {"id": "opt_yaml_marker", "label": "인트로/크레딧 마커 누락 항목 YAML 적용", "default": True}
             ]},
+            {"id": "opt_yaml_marker_vfs", "type": "checkbox", "label": "마커 검사 시 최신 YAML 확인을 위한 VFS 갱신 수행", "default": False, "show_if": {"opt_yaml_marker": True}},
             {"id": "opt_analyze_audio", "type": "checkbox", "label": "비디오 분석 시 오디오 코덱 검사 포함", "default": True, "show_if": {"opt_analyze": True}},
             {"id": "filter_fields", "type": "multi_select", "label": "정규식 필터 적용 대상 필드", "options": [
                 {"value": "guid", "text": "에이전트 (GUID)"},
@@ -164,13 +245,17 @@ def get_ui(core_api):
 # =====================================================================
 def get_target_issues(req_data, core_api, task=None):
     target_sections = req_data.get('target_sections', [])
+    opt_yaml_marker_vfs = req_data.get('opt_yaml_marker_vfs', False)
+    path_mappings = core_api['config'].get('path_mappings', [])
+    vfs_refreshed_dirs = set()
+    parsed_yaml_cache = {}
     
-    # 1. 1회성 임시 필터 (조회 탭)
+    # 1회성 임시 필터 (조회 탭)
     ui_filter_fields = req_data.get('filter_fields', ['guid', 'title'])
     filter_include_raw = req_data.get('filter_include', '')
     filter_exclude_raw = req_data.get('filter_exclude', '')
     
-    # 2. 고정 전역 필터 (환경설정 탭)
+    # 고정 전역 필터 (환경설정 탭)
     fixed_filter_cron_only = req_data.get('fixed_filter_cron_only', False)
     fixed_filter_fields = req_data.get('fixed_filter_fields', ['guid', 'title'])
     fixed_filter_include_raw = req_data.get('fixed_filter_include', '')
@@ -261,7 +346,6 @@ def get_target_issues(req_data, core_api, task=None):
         if file_path: targets[target_rk]["files"].add(file_path)
         if parent_rk: assigned_grandparents.add(parent_rk)
 
-    # 💡 [ANSI 표준화] IFNULL -> COALESCE 교체
     base_from = f"""
         SELECT
             mi.id, mi.metadata_type, mi.title, 
@@ -271,10 +355,13 @@ def get_target_issues(req_data, core_api, task=None):
             (SELECT title FROM metadata_items WHERE id = COALESCE((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
             (SELECT year FROM metadata_items WHERE id = COALESCE((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
             (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
-            mi."index" as e_idx
+            mi."index" as e_idx,
+            (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'intro' LIMIT 1) as db_has_intro,
+            (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'credits' LIMIT 1) as db_has_credits
         FROM metadata_items mi
         WHERE mi.library_section_id IN ({lib_ids_str}) AND 
     """
+
 
     def format_title(r, is_episode=False, is_parent=False):
         m_type = r.get('metadata_type')
@@ -391,11 +478,17 @@ def get_target_issues(req_data, core_api, task=None):
                 query = base_from + """
                     (
                         (mi.metadata_type = 1 
-                         AND NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text IN ('intro', 'credits')) 
+                         AND (
+                            NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'intro')
+                            OR NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'credits')
+                         )
                          AND mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != '')
                         OR
                         (mi.metadata_type = 4 
-                         AND NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text IN ('intro', 'credits')) 
+                         AND (
+                            NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'intro')
+                            OR NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'credits')
+                         )
                          AND mi.parent_id IN (
                             SELECT parent.id FROM metadata_items parent 
                             JOIN metadata_items grandparent ON grandparent.id = parent.parent_id 
@@ -425,6 +518,58 @@ def get_target_issues(req_data, core_api, task=None):
                     elif m_type in (2, 3, 8, 9): display_title = format_title(r, is_parent=True)
                     elif m_type in (4, 10): display_title = format_title(r, is_episode=True)
 
+                    # YAML 마커 정밀 검증 (DB 누락 마커와 YAML 실제 유효값 대조)
+                    if fix_type == 'yaml_marker':
+                        if not f_path: continue
+
+                        local_file_path = translate_path(f_path, path_mappings)
+                        target_dir = get_show_root_dir(local_file_path)
+
+                        # 옵션 활성화 시 폴더 단위 VFS 갱신 1회 수행
+                        if opt_yaml_marker_vfs and target_dir not in vfs_refreshed_dirs:
+                            vfs_refreshed_dirs.add(target_dir)
+                            try:
+                                pmh_core.execute_plexmate_action('vfs_refresh', target_dir, core_api['config'], async_mode='false')
+                            except Exception as vfs_err:
+                                if task: task.log(f"      ⚠️ VFS 갱신 실패 ({os.path.basename(target_dir)}): {vfs_err}")
+
+                        # YAML 파일 경로 탐색 및 캐싱 로드
+                        yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
+                        yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
+                        yaml_path = os.path.join(target_dir, yaml_filename)
+                        if not os.path.exists(yaml_path):
+                            yaml_path = os.path.join(target_dir, yml_filename)
+
+                        if not os.path.exists(yaml_path):
+                            continue
+
+                        if yaml_path not in parsed_yaml_cache:
+                            try:
+                                with open(yaml_path, 'r', encoding='utf-8') as yf:
+                                    parsed_yaml_cache[yaml_path] = yaml.safe_load(yf) or {}
+                            except Exception as y_err:
+                                parsed_yaml_cache[yaml_path] = {}
+                                if task: task.log(f"      ⚠️ YAML 파싱 실패 ({os.path.basename(yaml_path)}): {y_err}")
+
+                        yaml_data = parsed_yaml_cache.get(yaml_path, {})
+                        s_idx = r.get('s_idx')
+                        e_idx = r.get('e_idx')
+                        yaml_markers = parse_yaml_markers_for_item(yaml_data, m_type, s_idx, e_idx)
+
+                        db_has_intro = bool(r.get('db_has_intro'))
+                        db_has_credits = bool(r.get('db_has_credits'))
+
+                        # DB에는 없지만 YAML에는 유효한 시간값이 있는 마커가 최소 1개 이상 있는지 검사
+                        needs_marker_sync = False
+                        if not db_has_intro and yaml_markers.get('intro'):
+                            needs_marker_sync = True
+                        if not db_has_credits and yaml_markers.get('credits'):
+                            needs_marker_sync = True
+
+                        # YAML에도 마커 시간값이 비어있거나 이미 DB에 존재하는 경우 복구 대상에서 제외
+                        if not needs_marker_sync:
+                            continue
+
                     # [필터 로직] - 고정 필터(Settings)와 임시 필터(Inputs) 각각 독립 적용
                     def _get_texts(fields):
                         texts = []
@@ -443,7 +588,7 @@ def get_target_issues(req_data, core_api, task=None):
 
                     skip_item = False
                     
-                    # 1. 고정 필터 검사
+                    # 고정 필터 검사
                     if apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules):
                         fixed_texts = _get_texts(fixed_filter_fields)
                         if fixed_inc_rules and not _is_match(fixed_inc_rules, fixed_texts): skip_item = True
@@ -793,24 +938,57 @@ def worker(task_data, core_api, start_index):
                                 task.log(f"      ⚠️ 대상 폴더에 {yaml_filename} 파일이 없어 마커 적용을 스킵합니다.")
                                 skip_yaml = True
                             else:
-                                has_marker_info = False
+                                has_valid_marker_to_apply = False
                                 try:
                                     with open(target_yaml_path, 'r', encoding='utf-8') as yf:
-                                        yaml_content = yf.read()
-                                        if re.search(r'^\s*(markers|intro|credits)\s*:', yaml_content, re.MULTILINE):
-                                            has_marker_info = True
+                                        loaded_yaml = yaml.safe_load(yf) or {}
+
+                                    if m_type == 1:
+                                        # 영화: DB 누락 마커와 YAML 유효값 비교
+                                        m_check = core_api['query']("""
+                                            SELECT 
+                                                (SELECT 1 FROM taggings WHERE metadata_item_id = ? AND text = 'intro' LIMIT 1) as db_has_intro,
+                                                (SELECT 1 FROM taggings WHERE metadata_item_id = ? AND text = 'credits' LIMIT 1) as db_has_credits
+                                        """, (int(rk), int(rk)))
+                                        db_intro = bool(m_check[0]['db_has_intro']) if m_check else False
+                                        db_credits = bool(m_check[0]['db_has_credits']) if m_check else False
+                                        y_markers = parse_yaml_markers_for_item(loaded_yaml, 1)
+                                        if (not db_intro and y_markers.get('intro')) or (not db_credits and y_markers.get('credits')):
+                                            has_valid_marker_to_apply = True
+
+                                    elif m_type in (2, 3, 4):
+                                        # 쇼: 쇼 산하 모든 에피소드 중 DB에는 없지만 YAML에 유효값이 있는 에피소드가 1개라도 존재하는지 검사
+                                        ep_rows = core_api['query']("""
+                                            SELECT ep.id, (SELECT "index" FROM metadata_items WHERE id = ep.parent_id) as s_idx, ep."index" as e_idx,
+                                                   (SELECT 1 FROM taggings WHERE metadata_item_id = ep.id AND text = 'intro' LIMIT 1) as db_has_intro,
+                                                   (SELECT 1 FROM taggings WHERE metadata_item_id = ep.id AND text = 'credits' LIMIT 1) as db_has_credits
+                                            FROM metadata_items ep
+                                            JOIN metadata_items sea ON ep.parent_id = sea.id
+                                            WHERE sea.parent_id = ? AND ep.metadata_type = 4
+                                        """, (int(rk),))
+
+                                        for ep_r in ep_rows:
+                                            db_intro = bool(ep_r.get('db_has_intro'))
+                                            db_credits = bool(ep_r.get('db_has_credits'))
+                                            s_idx = ep_r.get('s_idx')
+                                            e_idx = ep_r.get('e_idx')
+                                            y_markers = parse_yaml_markers_for_item(loaded_yaml, 4, s_idx, e_idx)
+                                            if (not db_intro and y_markers.get('intro')) or (not db_credits and y_markers.get('credits')):
+                                                has_valid_marker_to_apply = True
+                                                break
+
                                 except Exception as e:
-                                    task.log(f"      ⚠️ YAML 파일을 읽는 중 오류가 발생했습니다: {e}")
+                                    task.log(f"      ⚠️ YAML 파일을 검증하는 중 오류가 발생했습니다: {e}")
                                 
-                                if not has_marker_info:
-                                    task.log(f"      ⚠️ {yaml_filename} 파일에 마커(markers) 정보가 존재하지 않아 스킵합니다.")
+                                if not has_valid_marker_to_apply:
+                                    task.log(f"      ⚠️ {yaml_filename} 파일 내에 실제로 반영할 유효한 마커 시간값(start/end)이 없거나 이미 DB에 등록되어 있어 스킵합니다.")
                                     skip_yaml = True
 
                     if skip_yaml:
                         skip_delay = True
                     else:
                         task.log(f"      ✅ 검증 통과. 전체 쇼(Show) 단위로 VFS 갱신 및 YAML 적용을 요청합니다...")
-                        
+
                         if fix_type == 'yaml_season':
                             is_sjva = False
                             try:
