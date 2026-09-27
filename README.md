@@ -8,6 +8,9 @@ Flask 백엔드는 실시간으로 Plex DB와 연동하고 프론트엔드의 �
 
 ## 업데이트
 
+v0.9.127 (2026-09-27)
+- 번들 툴 개별 설치 핸들러 누락 수정
+
 v0.9.126 (2026-09-26)
 - 서버 백엔드 설정에 `TOKEN_EXPIRE_SECONDS` 추가: 클라이언트와 서버 간 시스템 시계(NTP) 오차나 지연이 잦은 환경일 경우 늘려 설정(기본값: 60)
 - https Plex 연결과 http 서버 연결로 Mixed Content 거부 문제가 발생할 경우, SSE 스트리밍 통신에 브라우저 네이티브 fetch 대신 Tampermonkey GM_xmlhttpRequest의 onprogress를 사용하여 폴백 우회

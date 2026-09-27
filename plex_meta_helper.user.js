@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.126
+// @version      0.9.127
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -3161,6 +3161,48 @@ GM_addStyle(`
                     doSingleUpdateBtn.innerHTML = originalHtml;
                     delete doSingleUpdateBtn.dataset.updating;
                     doSingleUpdateBtn.style.pointerEvents = 'auto';
+                }
+                return;
+            }
+
+            // 미설치 번들 툴 개별 설치 버튼 클릭 핸들러
+            const installBundleBtn = e.target.closest('.pmh-tool-install-bundle-btn');
+            if (installBundleBtn) {
+                e.preventDefault(); e.stopPropagation();
+                if (installBundleBtn.dataset.installing) return;
+
+                const targetId = installBundleBtn.dataset.id;
+                const targetUrl = installBundleBtn.dataset.url;
+
+                installBundleBtn.dataset.installing = "true";
+                const origHtml = installBundleBtn.innerHTML;
+                installBundleBtn.innerHTML = `<i class="fas fa-spinner fa-spin" style="color:#51a351;"></i>`;
+                installBundleBtn.style.pointerEvents = "none";
+
+                toastr.info(`'${targetId}' 툴 설치를 시작합니다... (전체 서버 적용)`);
+
+                let successCount = 0;
+                await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
+                    try {
+                        const r = await PmhToolAPI.call(srv, `/tools/install`, "POST", { url: targetUrl, target_id: targetId });
+                        if (r.status === 200) successCount++;
+                        res();
+                    } catch(err) { res(); }
+                })));
+
+                if (successCount > 0) {
+                    toastr.success(`'${targetId}' 툴 설치 완료!`);
+                    installBundleBtn.innerHTML = `<i class="fas fa-check" style="color:#51a351;"></i>`;
+                    pmhToolListCache = null;
+                    setTimeout(async () => {
+                        await checkUpdate(true);
+                        fetchTools();
+                    }, 600);
+                } else {
+                    toastr.error("툴 설치 실패 (서버 상태 또는 네트워크를 확인하세요)");
+                    installBundleBtn.innerHTML = origHtml;
+                    delete installBundleBtn.dataset.installing;
+                    installBundleBtn.style.pointerEvents = "auto";
                 }
                 return;
             }
