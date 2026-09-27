@@ -343,7 +343,7 @@ def get_target_issues(req_data, core_api, task=None):
     targets = {}
     assigned_grandparents = set()
 
-    sec_query = "SELECT id, name FROM library_sections"
+    sec_query = "SELECT id, name, section_type FROM library_sections"
     sec_params = []
     if target_sections and 'all' not in target_sections:
         clean_sec_ids = [int(s) for s in target_sections if str(s).isdigit()]
@@ -364,6 +364,9 @@ def get_target_issues(req_data, core_api, task=None):
 
     lib_map = {str(r['id']): r['name'] for r in target_libs}
     lib_ids_str = ",".join(lib_map.keys())
+    # TV 쇼 라이브러리(section_type=2) 섹션 ID 목록 별도 분리
+    show_sec_ids = [str(r['id']) for r in target_libs if r.get('section_type') == 2]
+    show_lib_ids_str = ",".join(show_sec_ids) if show_sec_ids else ""
 
     total_scanned = 0
     try:
@@ -383,7 +386,6 @@ def get_target_issues(req_data, core_api, task=None):
         if parent_rk: assigned_grandparents.add(parent_rk)
         return is_new
 
-    # 💡 [ANSI 표준화] IFNULL -> COALESCE 교체
     base_from = f"""
         SELECT
             mi.id, mi.metadata_type, mi.title, 
@@ -399,6 +401,22 @@ def get_target_issues(req_data, core_api, task=None):
         FROM metadata_items mi
         WHERE mi.library_section_id IN ({lib_ids_str}) AND 
     """
+
+    show_base_from = f"""
+        SELECT
+            mi.id, mi.metadata_type, mi.title, 
+            (SELECT file FROM media_parts WHERE media_item_id = (SELECT id FROM media_items WHERE metadata_item_id = mi.id LIMIT 1) LIMIT 1) as file,
+            mi.year, mi.parent_id, mi.guid, mi.library_section_id,
+            (SELECT parent_id FROM metadata_items WHERE id = mi.parent_id) as grandparent_id,
+            (SELECT title FROM metadata_items WHERE id = COALESCE((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_title,
+            (SELECT year FROM metadata_items WHERE id = COALESCE((SELECT parent_id FROM metadata_items WHERE id = mi.parent_id), mi.parent_id)) as show_year,
+            (SELECT "index" FROM metadata_items WHERE id = mi.parent_id) as s_idx,
+            mi."index" as e_idx,
+            (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'intro' LIMIT 1) as db_has_intro,
+            (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'credits' LIMIT 1) as db_has_credits
+        FROM metadata_items mi
+        WHERE mi.library_section_id IN ({show_lib_ids_str}) AND 
+    """ if show_lib_ids_str else ""
 
     def format_title(r, is_episode=False, is_parent=False):
         m_type = r.get('metadata_type')
@@ -459,36 +477,39 @@ def get_target_issues(req_data, core_api, task=None):
             row_count = 0
             step_initial_count = len(targets)
 
-            # 마커 검사 시 VFS 갱신 옵션 활성화 시 라이브러리 섹션 최상위 등록 경로들에 대해 사전 일괄 갱신 수행
+            # 마커 검사 시 VFS 갱신 옵션 활성화 시 TV 쇼 라이브러리 섹션 최상위 등록 경로들에 대해 사전 일괄 갱신 수행
             if fix_type == 'yaml_marker' and opt_yaml_marker_vfs:
-                try:
-                    loc_q = f"SELECT DISTINCT root_path FROM section_locations WHERE library_section_id IN ({lib_ids_str})"
-                    loc_rows = core_api['query'](loc_q)
-                    root_dirs = set()
-                    for lr in loc_rows:
-                        rp = lr.get('root_path')
-                        if rp:
-                            translated_rp = translate_path(rp, path_mappings)
-                            root_dirs.add(translated_rp)
+                if not show_lib_ids_str:
+                    if task: task.log("   -> TV 쇼 섹션이 선택되지 않아 VFS 갱신을 건너뜁니다.")
+                else:
+                    try:
+                        loc_q = f"SELECT DISTINCT root_path FROM section_locations WHERE library_section_id IN ({show_lib_ids_str})"
+                        loc_rows = core_api['query'](loc_q)
+                        root_dirs = set()
+                        for lr in loc_rows:
+                            rp = lr.get('root_path')
+                            if rp:
+                                translated_rp = translate_path(rp, path_mappings)
+                                root_dirs.add(translated_rp)
 
-                    if root_dirs:
-                        if task:
-                            task.log(f"📂 [VFS 일괄 갱신] 최신 YAML 확인을 위해 라이브러리 최상위 경로 {len(root_dirs)}곳의 VFS를 미리 갱신합니다...")
-                            task.log(f"   (라이브러리 크기에 따라 장시간 소요될 수 있으며, 타임아웃 제한 없이 완료될 때까지 대기합니다)")
+                        if root_dirs:
+                            if task:
+                                task.log(f"📂 [VFS 일괄 갱신] 최신 YAML 확인을 위해 TV 쇼 라이브러리 경로 {len(root_dirs)}곳의 VFS를 미리 갱신합니다...")
+                                task.log(f"   (라이브러리 크기에 따라 장시간 소요될 수 있으며, 타임아웃 제한 없이 완료될 때까지 대기합니다)")
 
-                        for r_dir in sorted(root_dirs):
-                            if task and task.is_cancelled(): break
-                            if task: task.log(f"   -> VFS 갱신 요청 중: '{r_dir}'")
-                            try:
-                                vfs_ok = pmh_core.execute_plexmate_action('vfs_refresh', r_dir, core_api['config'], timeout=None)
-                                if vfs_ok:
-                                    if task: task.log(f"      ✅ VFS 갱신 완료: '{os.path.basename(r_dir) or r_dir}'")
-                                else:
-                                    if task: task.log(f"      ⚠️ VFS 갱신 응답 실패: '{r_dir}'")
-                            except Exception as vfs_err:
-                                if task: task.log(f"      ⚠️ VFS 갱신 오류: {vfs_err}")
-                except Exception as loc_err:
-                    if task: task.log(f"⚠️ 라이브러리 최상위 경로 조회 중 오류 발생: {loc_err}")
+                            for r_dir in sorted(root_dirs):
+                                if task and task.is_cancelled(): break
+                                if task: task.log(f"   -> VFS 갱신 요청 중: '{r_dir}'")
+                                try:
+                                    vfs_ok = pmh_core.execute_plexmate_action('vfs_refresh', r_dir, core_api['config'], timeout=None)
+                                    if vfs_ok:
+                                        if task: task.log(f"      ✅ VFS 갱신 완료: '{os.path.basename(r_dir) or r_dir}'")
+                                    else:
+                                        if task: task.log(f"      ⚠️ VFS 갱신 응답 실패: '{r_dir}'")
+                                except Exception as vfs_err:
+                                    if task: task.log(f"      ⚠️ VFS 갱신 오류: {vfs_err}")
+                    except Exception as loc_err:
+                        if task: task.log(f"⚠️ 라이브러리 최상위 경로 조회 중 오류 발생: {loc_err}")
 
             query = ""
             if fix_type == 'analyze':
@@ -538,39 +559,39 @@ def get_target_issues(req_data, core_api, task=None):
                 """
                 
             elif fix_type == 'yaml_season':
-                query = base_from + """
-                    mi.metadata_type = 4 
-                    AND mi.parent_id IN (SELECT id FROM metadata_items WHERE "index" BETWEEN 100 AND 999)
-                    AND (mi.guid LIKE 'local://%' OR mi.guid = '' OR mi.guid IS NULL)
-                    AND mi.parent_id IN (
-                        SELECT parent.id FROM metadata_items parent 
-                        JOIN metadata_items grandparent ON grandparent.id = parent.parent_id 
-                        WHERE grandparent.guid NOT LIKE 'local://%' AND grandparent.guid NOT LIKE 'none://%' AND grandparent.guid != ''
-                    )
-                """
-            elif fix_type == 'yaml_marker':
-                query = base_from + """
-                    (
-                        (mi.metadata_type = 1 
-                         AND (
-                            NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'intro')
-                            OR NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'credits')
-                         )
-                         AND mi.guid NOT LIKE 'local://%' AND mi.guid NOT LIKE 'none://%' AND mi.guid != '')
-                        OR
-                        (mi.metadata_type = 4 
-                         AND (
-                            NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'intro')
-                            OR NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'credits')
-                         )
-                         AND mi.parent_id IN (
+                if not show_base_from:
+                    if task: task.log("   -> TV 쇼 라이브러리가 선택되지 않아 시즌 YAML 검사를 건너뜁니다.")
+                    query = ""
+                else:
+                    # TV 쇼 섹션(section_type=2)의 에피소드(metadata_type=4)만 한정 조회
+                    query = show_base_from + """
+                        mi.metadata_type = 4 
+                        AND mi.parent_id IN (SELECT id FROM metadata_items WHERE "index" BETWEEN 100 AND 999)
+                        AND (mi.guid LIKE 'local://%' OR mi.guid = '' OR mi.guid IS NULL)
+                        AND mi.parent_id IN (
                             SELECT parent.id FROM metadata_items parent 
                             JOIN metadata_items grandparent ON grandparent.id = parent.parent_id 
                             WHERE grandparent.guid NOT LIKE 'local://%' AND grandparent.guid NOT LIKE 'none://%' AND grandparent.guid != ''
-                         )
                         )
-                    )
-                """
+                    """
+            elif fix_type == 'yaml_marker':
+                if not show_base_from:
+                    if task: task.log("   -> TV 쇼 라이브러리가 선택되지 않아 마커 검사를 건너뜁니다.")
+                    query = ""
+                else:
+                    # TV 쇼 에피소드(metadata_type=4)만 한정 조회
+                    query = show_base_from + """
+                        mi.metadata_type = 4 
+                        AND (
+                            NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'intro')
+                            OR NOT EXISTS (SELECT 1 FROM taggings WHERE metadata_item_id = mi.id AND text = 'credits')
+                        )
+                        AND mi.parent_id IN (
+                            SELECT parent.id FROM metadata_items parent 
+                            JOIN metadata_items grandparent ON grandparent.id = parent.parent_id 
+                            WHERE grandparent.guid NOT LIKE 'local://%' AND grandparent.guid NOT LIKE 'none://%' AND grandparent.guid != ''
+                        )
+                    """
 
             if query:
                 rows = core_api['query'](query)
@@ -612,17 +633,17 @@ def get_target_issues(req_data, core_api, task=None):
                     elif m_type in (2, 3, 8, 9): display_title = format_title(r, is_parent=True)
                     elif m_type in (4, 10): display_title = format_title(r, is_episode=True)
 
+                    # YAML 마커 정밀 검증 (DB 누락 마커와 YAML 실제 유효값 대조)
                     if fix_type == 'yaml_marker':
                         if not f_path: continue
 
                         local_file_path = translate_path(f_path, path_mappings)
                         target_dir = get_show_root_dir(local_file_path)
 
-                        yaml_filename = 'movie.yaml' if m_type == 1 else 'show.yaml'
-                        yml_filename = 'movie.yml' if m_type == 1 else 'show.yml'
-                        yaml_path = os.path.join(target_dir, yaml_filename)
+                        # TV 쇼 전용 YAML 파일 탐색 (show.yaml / show.yml)
+                        yaml_path = os.path.join(target_dir, 'show.yaml')
                         if not os.path.exists(yaml_path):
-                            yaml_path = os.path.join(target_dir, yml_filename)
+                            yaml_path = os.path.join(target_dir, 'show.yml')
 
                         if not os.path.exists(yaml_path):
                             continue
@@ -638,17 +659,19 @@ def get_target_issues(req_data, core_api, task=None):
                         yaml_data = parsed_yaml_cache.get(yaml_path, {})
                         s_idx = r.get('s_idx')
                         e_idx = r.get('e_idx')
-                        yaml_markers = parse_yaml_markers_for_item(yaml_data, m_type, s_idx, e_idx)
+                        yaml_markers = parse_yaml_markers_for_item(yaml_data, 4, s_idx, e_idx)
 
                         db_has_intro = bool(r.get('db_has_intro'))
                         db_has_credits = bool(r.get('db_has_credits'))
 
+                        # DB에는 없지만 YAML에는 유효한 시간값이 있는 마커가 최소 1개 이상 있는지 검사
                         needs_marker_sync = False
                         if not db_has_intro and yaml_markers.get('intro'):
                             needs_marker_sync = True
                         if not db_has_credits and yaml_markers.get('credits'):
                             needs_marker_sync = True
 
+                        # YAML에도 마커 시간값이 비어있거나 이미 DB에 존재하는 경우 복구 대상에서 제외
                         if not needs_marker_sync:
                             continue
 
