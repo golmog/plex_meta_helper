@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.127"
+__version__ = "0.9.129"
 
 logger = logging.getLogger("PMH")
 
@@ -2547,7 +2547,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                                 }
                                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                             
-                            elif ticks % 20 == 0:
+                            elif ticks % 6 == 0:
                                 yield ": keepalive\n\n"
 
                             if curr_state in ['completed', 'error', 'cancelled']:
@@ -2558,7 +2558,9 @@ def dispatch_request(subpath, method, args, data, global_config):
                             ticks += 1
 
                     except GeneratorExit:
-                        pass
+                        logger.debug(f"[{tool_name}] 클라이언트가 SSE 스트림 연결을 닫았습니다. (GeneratorExit)")
+                    except Exception as stream_err:
+                        logger.error(f"[{tool_name}] ❌ SSE 스트림 전송 중 예외 발생: {stream_err}")
                     finally:
                         logger.info(f"[{tool_name}] ⚪ SSE 실시간 스트림 연결 해제됨")
 

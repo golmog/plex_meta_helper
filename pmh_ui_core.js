@@ -1242,7 +1242,7 @@ window.PmhUICore = {
                 logBox.innerHTML = s.logs ? s.logs.join('<br>') : '';
                 logBox.scrollTop = logBox.scrollHeight;
 
-                const hasProgress = (s.completed_items && s.completed_items.length > 0) || (s.state === 'running');
+                const hasProgress = (s.completed_items && s.completed_items.length > 0);
                 if (hasProgress && ctx.autoRefresh) {
                     triggerDebouncedPageReload(false);
                 }
