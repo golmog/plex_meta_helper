@@ -721,18 +721,76 @@ window.PmhUICore = {
             resEl.style.display = 'flex';
             let html = '';
 
-            const getLocalPath = (serverPath) => {
-                const mappings = config.pathMappings || [];
-                if (!mappings.length || !serverPath) return serverPath;
-                
-                for (const m of mappings) {
-                    const sp = (m.serverPrefix || '').replace(/\\/g, '/');
-                    const lp = (m.localPrefix || '').replace(/\\/g, '/');
-                    
-                    if (sp && serverPath.replace(/\\/g, '/').startsWith(sp)) {
-                        return lp + serverPath.replace(/\\/g, '/').substring(sp.length);
+            const parseCatiaMappings = (rawStr) => {
+                const map = {
+                    '"': '\u02BA',
+                    '*': '\u2217',
+                    ':': '\u2236',
+                    '<': '\u276E',
+                    '>': '\u276F',
+                    '?': '\uFF1F',
+                    '|': '\u2223'
+                };
+                if (!rawStr) return map;
+                let cleanStr = String(rawStr).replace(/^catia:mappings\s*=\s*/i, '').trim();
+                const pairs = cleanStr.split(/[\s,]+/);
+                for (const pair of pairs) {
+                    const parts = pair.split(':');
+                    if (parts.length === 2) {
+                        let fromChar = parts[0].trim();
+                        let toChar = parts[1].trim();
+                        if (fromChar.toLowerCase().startsWith('0x')) {
+                            try { fromChar = String.fromCharCode(parseInt(fromChar, 16)); } catch(e) {}
+                        }
+                        if (toChar.toLowerCase().startsWith('0x')) {
+                            try { toChar = String.fromCharCode(parseInt(toChar, 16)); } catch(e) {}
+                        }
+                        if (fromChar && toChar && fromChar !== '\\' && fromChar !== '/') {
+                            map[fromChar] = toChar;
+                        }
                     }
                 }
+                return map;
+            };
+
+            const applyCatiaMapping = (pathStr) => {
+                if (!pathStr) return pathStr;
+                const map = ctx.catiaMap || (ctx.catiaMap = parseCatiaMappings(config.catiaMappings));
+                let res = pathStr;
+                for (const [fromChar, toChar] of Object.entries(map)) {
+                    res = res.split(fromChar).join(toChar);
+                }
+                return res;
+            };
+
+            const getLocalPath = (serverPath) => {
+                const mappings = config.pathMappings || [];
+                if (!serverPath) return serverPath;
+                const normServer = serverPath.replace(/\\/g, '/');
+                const useCatia = Boolean(config.enableCatiaMapping);
+
+                if (mappings.length > 0) {
+                    for (const m of mappings) {
+                        const sp = (m.serverPrefix || '').replace(/\\/g, '/');
+                        const lp = (m.localPrefix || '').replace(/\\/g, '/');
+                        
+                        if (sp && normServer.startsWith(sp)) {
+                            let sub = normServer.substring(sp.length);
+                            if (useCatia) {
+                                sub = applyCatiaMapping(sub);
+                            }
+                            return lp + sub;
+                        }
+                    }
+                }
+
+                if (useCatia) {
+                    const driveMatch = serverPath.match(/^([a-zA-Z]:[\\/])(.*)$/);
+                    if (driveMatch) {
+                        return driveMatch[1] + applyCatiaMapping(driveMatch[2]);
+                    }
+                }
+
                 return serverPath;
             };
 

@@ -107,6 +107,11 @@ BASE:
   # 클라이언트와 서버 간 시스템 시계(NTP) 오차나 지연이 잦은 환경일 경우 180~300 등으로 늘려 설정할 수 있습니다.
   TOKEN_EXPIRE_SECONDS: 60
 
+  # Samba vfs_catia 특수문자 매핑 (smb.conf의 catia:mappings 형식)
+  # 윈도우에서 사용할 수 없는 특수문자(: * ? " < > | 등)를 SMB 공유 시 유니코드 기호로 치환하여 로컬 재생/폴더 열기 깨짐을 방지합니다.
+  # 비워둘 경우 기본 표준 매핑(0x22, 0x2a, 0x3a, 0x3c, 0x3e, 0x3f, 0x5c, 0x7c)이 적용됩니다.
+  CATIA_MAPPINGS: "0x22:0x02ba,0x2a:0x2217,0x3a:0x2236,0x3c:0x276e,0x3e:0x276f,0x3f:0xff1f,0x5c:0x29f9,0x7c:0x2223"
+
   # (개발용) True일 경우 GitHub 업데이트(덮어쓰기)를 수행하지 않습니다.
   DEV_MODE: false
 
@@ -765,11 +770,16 @@ def get_client_config():
             "ff_ddns": node_ff_ddns
         })
 
+    catia_mappings = BASE_CFG.get("CATIA_MAPPINGS", "")
+    if not catia_mappings and MASTER_CFG:
+        catia_mappings = MASTER_CFG.get("CATIA_MAPPINGS", "")
+
     return jsonify({
         "status": "success",
         "AUTO_UPDATE_CHECK": MASTER_CFG.get("AUTO_UPDATE_CHECK", True),
         "DISPLAY_PATH_PREFIXES_TO_REMOVE": MASTER_CFG.get("DISPLAY_PATH_PREFIXES_TO_REMOVE", []),
         "USER_TAGS": MASTER_CFG.get("USER_TAGS", {}),
+        "CATIA_MAPPINGS": catia_mappings,
         "SERVERS": servers
     }), 200
 

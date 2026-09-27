@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.127
+// @version      0.9.128
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -1426,6 +1426,7 @@ GM_addStyle(`
             maxCacheSize: 5000,
             devMode: false,
             pathMappings: [],
+            enableCatiaMapping: false,
             matchTryRefreshFirst: false,
             matchDoUnmatchFirst: false,
             matchSkipSimCheck: false,
@@ -2024,13 +2025,32 @@ GM_addStyle(`
     }
 
     function getLocalPath(originalPath) {
-        if (!originalPath || !ClientSettings.pathMappings) return originalPath;
-        for (const mapping of ClientSettings.pathMappings) {
-            const localPrefix = mapping.localPrefix.replace(/\\/g, '/');
-            if (originalPath.startsWith(mapping.serverPrefix)) {
-                return localPrefix + originalPath.substring(mapping.serverPrefix.length);
+        if (!originalPath) return originalPath;
+        const useCatia = Boolean(ClientSettings.enableCatiaMapping);
+
+        if (ClientSettings.pathMappings && ClientSettings.pathMappings.length > 0) {
+            for (const mapping of ClientSettings.pathMappings) {
+                const serverPrefix = (mapping.serverPrefix || '').replace(/\\/g, '/');
+                const localPrefix = (mapping.localPrefix || '').replace(/\\/g, '/');
+                const normOrig = originalPath.replace(/\\/g, '/');
+
+                if (serverPrefix && normOrig.startsWith(serverPrefix)) {
+                    let subPath = normOrig.substring(serverPrefix.length);
+                    if (useCatia) {
+                        subPath = applyCatiaMapping(subPath);
+                    }
+                    return localPrefix + subPath;
+                }
             }
         }
+
+        if (useCatia) {
+            const driveMatch = originalPath.match(/^([a-zA-Z]:[\\/])(.*)$/);
+            if (driveMatch) {
+                return driveMatch[1] + applyCatiaMapping(driveMatch[2]);
+            }
+        }
+
         return originalPath;
     }
     window.getLocalPath = getLocalPath;
@@ -2048,6 +2068,60 @@ GM_addStyle(`
         const t = Math.floor(Number(ms) / 1000);
         const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
         return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}` : `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    // Samba smb.conf catia:mappings 형식 파서 (16진수 0x3a:0x2236 및 직관적 문자열 지원)
+    function parseCatiaMappings(rawStr) {
+        const map = {
+            '"': '\u02BA',
+            '*': '\u2217',
+            ':': '\u2236',
+            '<': '\u276E',
+            '>': '\u276F',
+            '?': '\uFF1F',
+            '|': '\u2223'
+        };
+        if (!rawStr) return map;
+
+        if (typeof rawStr === 'object') {
+            for (const [k, v] of Object.entries(rawStr)) {
+                if (k && v && k !== '\\' && k !== '/') map[k] = v;
+            }
+            return map;
+        }
+
+        let cleanStr = String(rawStr).replace(/^catia:mappings\s*=\s*/i, '').trim();
+        const pairs = cleanStr.split(/[\s,]+/);
+
+        for (const pair of pairs) {
+            const parts = pair.split(':');
+            if (parts.length === 2) {
+                let fromChar = parts[0].trim();
+                let toChar = parts[1].trim();
+
+                if (fromChar.toLowerCase().startsWith('0x')) {
+                    try { fromChar = String.fromCharCode(parseInt(fromChar, 16)); } catch(e) {}
+                }
+                if (toChar.toLowerCase().startsWith('0x')) {
+                    try { toChar = String.fromCharCode(parseInt(toChar, 16)); } catch(e) {}
+                }
+
+                if (fromChar && toChar && fromChar !== '\\' && fromChar !== '/') {
+                    map[fromChar] = toChar;
+                }
+            }
+        }
+        return map;
+    }
+
+    function applyCatiaMapping(pathStr) {
+        if (!pathStr) return pathStr;
+        const map = ServerConfig.catiaMap || parseCatiaMappings(ServerConfig.CATIA_MAPPINGS);
+        let res = pathStr;
+        for (const [fromChar, toChar] of Object.entries(map)) {
+            res = res.split(fromChar).join(toChar);
+        }
+        return res;
     }
 
     // 미디어 버전 목록 중 최적의 원본 동영상 파일 경로 산출 공용 헬퍼
@@ -2294,6 +2368,8 @@ GM_addStyle(`
                 availableServerIndices: availableServerIndices,
                 activeServerIdx: srvIdx,
                 pathMappings: ClientSettings.pathMappings,
+                enableCatiaMapping: Boolean(ClientSettings.enableCatiaMapping),
+                catiaMappings: ServerConfig.CATIA_MAPPINGS,
                 logLevel: ClientSettings.logLevel,
 
                 apiAdapter: {
@@ -7407,6 +7483,12 @@ GM_addStyle(`
                         <div id="pmh-path-mapping-container" style="background:rgba(0,0,0,0.2); padding:10px; border:1px solid #333; border-radius:4px; min-height:40px;">
                             ${mappingsHtml || '<div class="pmh-no-map-msg" style="color:#777; font-size:12px; text-align:center; padding:5px 0;">등록된 매핑이 없습니다.</div>'}
                         </div>
+                        <div style="margin-top:8px;">
+                            <label class="pmh-check-label" style="display:flex; align-items:center; gap:8px;" title="우분투 Samba(vfs_catia) 공유 시 콜론(:), 물음표(?), 따옴표(&quot;) 등의 윈도우 금지 문자를 유니코드 문자로 치환하여 로컬 재생/폴더 열기 오류를 방지합니다.">
+                                <input type="checkbox" id="pmh-set-catia-mapping" style="width:14px; height:14px;" ${ClientSettings.enableCatiaMapping ? 'checked' : ''}>
+                                <span style="color:#ddd;">Samba Catia 특수문자 매핑 (: * ? " < > | ➔ 유니코드 변환)</span>
+                            </label>
+                        </div>
 
                         <div class="pmh-form-group" style="margin: 20px 0; border: 1px solid rgba(229, 160, 13, 0.4); padding: 10px; border-radius: 4px;">
                             <label class="pmh-form-label" style="margin-bottom:8px;"><i class="fas fa-link"></i> 스마트 매칭 / 리매칭 동작 설정</label>
@@ -7899,6 +7981,7 @@ GM_addStyle(`
                 maxCacheSize: parseInt(document.getElementById('pmh-set-cache-size').value, 10) || 5000,
                 devMode: document.getElementById('pmh-set-dev-mode').checked,
                 pathMappings: newMaps,
+                enableCatiaMapping: document.getElementById('pmh-set-catia-mapping').checked,
                 matchTryRefreshFirst: document.getElementById('pmh-set-match-refresh').checked,
                 manualMatch: document.getElementById('pmh-set-manual-match').checked,
                 matchDoUnmatchFirst: document.getElementById('pmh-set-match-unmatch').checked,
@@ -10196,6 +10279,8 @@ GM_addStyle(`
             ServerConfig.AUTO_UPDATE_CHECK = res.AUTO_UPDATE_CHECK !== false;
             ServerConfig.USER_TAGS = res.USER_TAGS || {};
             ServerConfig.DISPLAY_PATH_PREFIXES_TO_REMOVE = res.DISPLAY_PATH_PREFIXES_TO_REMOVE || [];
+            ServerConfig.CATIA_MAPPINGS = res.CATIA_MAPPINGS || "";
+            ServerConfig.catiaMap = parseCatiaMappings(ServerConfig.CATIA_MAPPINGS);
             ServerConfig.SERVERS = (res.SERVERS || []).map(srv => {
                 return {
                     id: srv.id, 
