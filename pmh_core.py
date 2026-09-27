@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.129"
+__version__ = "0.9.130"
 
 logger = logging.getLogger("PMH")
 
@@ -2501,13 +2501,14 @@ def dispatch_request(subpath, method, args, data, global_config):
                 return status_data, 200
 
             elif action == 'stream' and method == 'GET':
+                session_id = args.get('session_id', 'default')[:8]
                 tool_name = get_tool_name(base_dir, tool_id)
-                logger.info(f"[{tool_name}] 🟢 SSE 실시간 스트림 연결 수립됨 (ServerID: {server_id[:8]})")
+                logger.info(f"[{tool_name}] 🟢 SSE 실시간 스트림 연결 수립됨 (ServerID: {server_id[:8]}, Session: {session_id})")
 
                 def generate_sse_events():
                     yield ": ping\n\n"
                     
-                    last_log_count = 0
+                    last_log_entry = ""
                     last_progress = -1
                     last_state = ""
                     ticks = 0
@@ -2522,7 +2523,7 @@ def dispatch_request(subpath, method, args, data, global_config):
                                 if not_found_retries < 20:
                                     time.sleep(0.25)
                                     continue
-                                logger.warning(f"[{tool_name}] ⚠️ 태스크 데이터를 찾을 수 없어 스트림을 종료합니다.")
+                                logger.warning(f"[{tool_name}] ⚠️ 태스크 데이터를 찾을 수 없어 스트림을 종료합니다. (Session: {session_id})")
                                 yield f"data: {json.dumps({'state': 'not_found'})}\n\n"
                                 break
                             
@@ -2531,13 +2532,13 @@ def dispatch_request(subpath, method, args, data, global_config):
                             curr_state = t_data.get('state', 'unknown')
                             curr_progress = t_data.get('progress', 0)
                             curr_logs = t_data.get('logs', [])
-                            curr_log_count = len(curr_logs)
+                            curr_last_log = curr_logs[-1] if curr_logs else ""
 
                             if (curr_state != last_state or curr_progress != last_progress 
-                                    or curr_log_count != last_log_count or ticks == 0):
+                                    or curr_last_log != last_log_entry or ticks == 0):
                                 last_state = curr_state
                                 last_progress = curr_progress
-                                last_log_count = curr_log_count
+                                last_log_entry = curr_last_log
 
                                 payload = {
                                     'state': curr_state,
@@ -2551,18 +2552,18 @@ def dispatch_request(subpath, method, args, data, global_config):
                                 yield ": keepalive\n\n"
 
                             if curr_state in ['completed', 'error', 'cancelled']:
-                                logger.info(f"[{tool_name}] 🏁 작업 {curr_state.upper()} 도달. 스트림 정상 마감.")
+                                logger.info(f"[{tool_name}] 🏁 작업 {curr_state.upper()} 도달. 스트림 정상 마감. (Session: {session_id})")
                                 break
 
                             time.sleep(0.25)
                             ticks += 1
 
                     except GeneratorExit:
-                        logger.debug(f"[{tool_name}] 클라이언트가 SSE 스트림 연결을 닫았습니다. (GeneratorExit)")
+                        logger.debug(f"[{tool_name}] 클라이언트가 SSE 스트림 연결을 닫았습니다. (Session: {session_id})")
                     except Exception as stream_err:
-                        logger.error(f"[{tool_name}] ❌ SSE 스트림 전송 중 예외 발생: {stream_err}")
+                        logger.error(f"[{tool_name}] ❌ SSE 스트림 전송 중 예외 발생 (Session: {session_id}): {stream_err}")
                     finally:
-                        logger.info(f"[{tool_name}] ⚪ SSE 실시간 스트림 연결 해제됨")
+                        logger.info(f"[{tool_name}] ⚪ SSE 실시간 스트림 연결 해제됨 (ServerID: {server_id[:8]}, Session: {session_id})")
 
                 resp = Response(
                     generate_sse_events(), 

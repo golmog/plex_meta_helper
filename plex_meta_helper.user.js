@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.129
+// @version      0.9.130
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2743,7 +2743,7 @@ GM_addStyle(`
                                 <div class="pmh-panel-title"><i class="fas fa-wrench"></i> <span id="pmh-panel-title-text"></span></div>
                                 <div style="display:flex; align-items:center;">
                                     <a href="#" class="pmh-panel-minimize" id="pmh-panel-minimize" title="최소화/복원"><i class="fas fa-minus"></i></a>
-                                    <a href="#" class="pmh-panel-close" id="pmh-panel-close"><i class="fas fa-times"></i></a>
+                                    <a href="#" class="pmh-panel-close" id="pmh-panel-close" title="닫기"><i class="fas fa-times"></i></a>
                                 </div>
                             </div>
                             <div class="pmh-panel-content" id="pmh-panel-content"></div>
@@ -2753,6 +2753,9 @@ GM_addStyle(`
 
                     document.getElementById('pmh-panel-close').onclick = (e) => {
                         e.preventDefault(); e.stopPropagation();
+                        if (window.PmhUICore && window.PmhUICore.destroyActiveInstance) {
+                            window.PmhUICore.destroyActiveInstance();
+                        }
                         panel.style.display = 'none';
                         window._pmh_is_minimized = false;
                         GM_setValue('pmh_last_open_tool', '');
@@ -4077,9 +4080,55 @@ GM_addStyle(`
     window._pmh_polling_active = window._pmh_polling_active || false;
     window._pmh_queue_poll_timer = window._pmh_queue_poll_timer || null;
 
+    const pmhMediaBus = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('pmh_media_bus') : null;
+
     window.saveQueueState = function() {
         localStorage.setItem('pmh_media_queues', JSON.stringify(window._pmh_media_queues));
+        if (pmhMediaBus) {
+            pmhMediaBus.postMessage({ type: 'QUEUE_SYNC', queues: window._pmh_media_queues });
+        }
     };
+
+    if (pmhMediaBus) {
+        pmhMediaBus.onmessage = (e) => {
+            const data = e.data;
+            if (!data) return;
+
+            if (data.type === 'QUEUE_SYNC') {
+                const updatedQueues = data.queues || {};
+                const oldQueues = window._pmh_media_queues || {};
+                window._pmh_media_queues = updatedQueues;
+
+                for (const [itemId, qInfo] of Object.entries(updatedQueues)) {
+                    updateQueueBadgeInDOM(itemId, qInfo.state);
+                    if (qInfo.server_id && !window._pmh_active_queue_streams[qInfo.server_id]) {
+                        window.startQueuePolling(qInfo.server_id);
+                    }
+                }
+
+                for (const itemId of Object.keys(oldQueues)) {
+                    if (!updatedQueues[itemId]) {
+                        revertQueueBadgeToOriginal(itemId, oldQueues[itemId].server_id);
+                    }
+                }
+
+                if (Object.keys(updatedQueues).length > 0) {
+                    startQueueWatchdog();
+                } else {
+                    stopQueueWatchdog();
+                }
+            } else if (data.type === 'ITEM_COMPLETED') {
+                deleteMemoryCache(`L_${data.serverId}_${data.itemId}`);
+                deleteMemoryCache(`D_${data.serverId}_${data.itemId}`);
+                deleteMemoryCache(`F_${data.serverId}_${data.itemId}`);
+                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(data.itemId);
+
+                const markers = document.querySelectorAll(`.pmh-render-marker[data-iid="${data.itemId}"]`);
+                markers.forEach(m => m.setAttribute('data-stale', 'true'));
+                setTimeout(() => { if (typeof processList === 'function') processList(); }, 150);
+            }
+        };
+    }
 
     setTimeout(() => {
         const serversToPoll = new Set(Object.values(window._pmh_media_queues).map(q => q.server_id).filter(Boolean));
@@ -4168,6 +4217,10 @@ GM_addStyle(`
         if (window._pmh_media_queues?.[itemId]) {
             delete window._pmh_media_queues[itemId];
             if (typeof window.saveQueueState === 'function') window.saveQueueState();
+        }
+
+        if (pmhMediaBus) {
+            pmhMediaBus.postMessage({ type: 'ITEM_COMPLETED', itemId, serverId });
         }
 
         updateQueueBadgeInDOM(itemId, 'completed');
@@ -4445,18 +4498,36 @@ GM_addStyle(`
         });
     }
 
-    // 백엔드 실행 상태를 안정적으로 감시하고 SSE 연결을 유지하는 워치독
+    function stopQueueWatchdog() {
+        if (window._pmh_watchdog_timer) {
+            clearInterval(window._pmh_watchdog_timer);
+            window._pmh_watchdog_timer = null;
+            log("[Watchdog] 큐가 비어있으므로 백그라운드 워치독을 정지(Sleep)합니다.");
+        }
+    }
+
     function startQueueWatchdog() {
+        const currentQueueCount = Object.keys(window._pmh_media_queues || {}).length;
+        if (currentQueueCount === 0) {
+            stopQueueWatchdog();
+            return;
+        }
+
         if (window._pmh_watchdog_timer) return;
+        log("[Watchdog] 활성 작업 감지: 온디맨드 감시 타이머를 가동합니다.");
 
         window._pmh_watchdog_timer = setInterval(async () => {
             if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) return;
+
+            if (Object.keys(window._pmh_media_queues || {}).length === 0) {
+                stopQueueWatchdog();
+                return;
+            }
 
             const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
 
             for (const srv of ServerConfig.SERVERS) {
                 try {
-                    // 현재 프론트엔드 큐에 대기 중인 작업들의 백엔드 실시간 상태 직접 질의 (자가치유)
                     const pendingEntries = Object.entries(window._pmh_media_queues || {}).filter(([_, q]) => q.server_id === srv.machineIdentifier);
                     const taskIdsToCheck = pendingEntries.map(([_, q]) => q.task_id).filter(tid => tid && tid !== 'pending');
 
@@ -4491,7 +4562,6 @@ GM_addStyle(`
                         }
                     }
 
-                    // 백엔드 활성 큐 조회
                     const activeRes = await new Promise((resolve, reject) => {
                         GM_xmlhttpRequest({
                             method: 'GET',
@@ -4515,7 +4585,6 @@ GM_addStyle(`
 
                         window._pmh_media_queues = window._pmh_media_queues || {};
 
-                        // 백엔드에 존재하는 작업이 프론트 큐에 없으면 조용히 등록 및 DOM 갱신
                         for (const [itemId, info] of activeItemMap.entries()) {
                             const cur = window._pmh_media_queues[itemId];
                             if (!cur || cur.state !== info.status.state) {
@@ -4529,7 +4598,6 @@ GM_addStyle(`
                             }
                         }
 
-                        // 백엔드에 작업이 존재하는데 SSE 스트림이 끊겨있다면 연결 복원
                         if (activeItemMap.size > 0 && !window._pmh_active_queue_streams[srv.machineIdentifier]) {
                             window.startQueuePolling(srv.machineIdentifier);
                         }
@@ -4537,7 +4605,6 @@ GM_addStyle(`
                 } catch (e) {}
             }
 
-            // 5분 이상 응답이 없는 장기 미응답 고착 건만 단독 정리
             const now = Date.now();
             const queueEntries = Object.entries(window._pmh_media_queues || {});
             for (const [id, qInfo] of queueEntries) {
@@ -10378,6 +10445,9 @@ GM_addStyle(`
             checkUrlChange(true);
 
             startGlobalTaskWatcher();
+            if (Object.keys(window._pmh_media_queues || {}).length > 0) {
+                startQueueWatchdog();
+            }
 
             setTimeout(async () => {
                 if (!ServerConfig.SERVERS || ServerConfig.SERVERS.length === 0) return;

@@ -255,6 +255,7 @@ window.PmhUICore = {
             opts: config.uiSchema.saved_options || {},
             srvId: resolvedSrvId,
             srvName: resolvedSrvName,
+            sessionId: 'sess_' + Math.random().toString(36).substring(2, 9),
             pollTimer: null,
             idleWatchTimer: null,
             currentPage: isNaN(initialPage) ? 1 : initialPage,
@@ -1352,12 +1353,15 @@ window.PmhUICore = {
             // SSE 스트림 연결 본체
             const connectStream = async () => {
                 if (ctx.isDestroyed || !ctx.isRunning || ctx.isCancelling) return;
+                
                 if (ctx.streamAbortController) {
                     try { ctx.streamAbortController.abort(); } catch(e) {}
                     ctx.streamAbortController = null;
                 }
 
-                ctx.streamAbortController = new AbortController();
+                const currentController = new AbortController();
+                ctx.streamAbortController = currentController;
+
                 const targetServerNode = config.servers[config.activeServerIdx] || {};
                 const srvRelay = targetServerNode.relayUrl || `/api/relay/${targetServerNode.id || 'master_node'}`;
 
@@ -1367,14 +1371,14 @@ window.PmhUICore = {
                 }
 
                 const activeSrvId = ctx.srvId || targetServerNode.machineIdentifier || targetServerNode.machine_id || 'default';
-                const streamUrl = `${srvRelay}/tool/${config.toolId}/stream?server_id=${encodeURIComponent(activeSrvId)}&sig=${encodeURIComponent(secureToken)}&_t=${Date.now()}`;
+                const streamUrl = `${srvRelay}/tool/${config.toolId}/stream?server_id=${encodeURIComponent(activeSrvId)}&session_id=${ctx.sessionId}&sig=${encodeURIComponent(secureToken)}&_t=${Date.now()}`;
 
                 const authHeaders = { 
                     'Accept': 'text/event-stream',
                     'X-PMH-Signature': secureToken
                 };
 
-                PmhLogger.debug(`[SSE] 📡 실시간 로그 스트리밍 연결 시도 ➔ ${streamUrl}`);
+                PmhLogger.debug(`[SSE] 📡 실시간 로그 스트리밍 연결 시도 (${ctx.sessionId}) ➔ ${streamUrl}`);
 
                 fetch(streamUrl, {
                     headers: authHeaders,
