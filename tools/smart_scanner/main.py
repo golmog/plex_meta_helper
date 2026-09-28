@@ -63,19 +63,42 @@ def translate_path(plex_path, mappings):
         if p_path and plex_path.startswith(p_path): return s_path + plex_path[len(p_path):]
     return plex_path
 
-def is_valid_marker_time(val):
-    """마커 시간값이 빈 문자열이 아니고 유효한 숫자인지 판별"""
-    if val is None or str(val).strip() == '': return False
+def is_valid_marker_time(val, allow_zero=False):
+    """마커 시간값이 빈 값이나 무효값(0 등)이 아니고 유효한 양수인지 판별"""
+    if val is None or str(val).strip() in ('', '0', '0.0'):
+        if not allow_zero:
+            return False
     try:
-        float(val)
+        num = float(val)
+        if num < 0: return False
+        if num == 0 and not allow_zero: return False
         return True
     except (ValueError, TypeError):
         return False
 
 def check_marker_validity(marker_entry):
-    """intro/credits 항목 내 start, end가 모두 유효한 숫자인지 판별"""
+    """intro/credits 항목 내 start, end가 유효한 재생 구간을 가지는지 판별 (0 및 빈 값 무시)"""
     if not isinstance(marker_entry, dict): return False
-    return is_valid_marker_time(marker_entry.get('start')) and is_valid_marker_time(marker_entry.get('end'))
+    s_raw = marker_entry.get('start')
+    e_raw = marker_entry.get('end')
+
+    # 시작/종료값이 아예 없거나 둘 다 빈 값 또는 0인 경우 없는 마커로 취급
+    if s_raw is None or e_raw is None: return False
+    s_clean = str(s_raw).strip()
+    e_clean = str(e_raw).strip()
+    if s_clean in ('', '0', '0.0') and e_clean in ('', '0', '0.0'): return False
+
+    try:
+        s = float(s_clean)
+        e = float(e_clean)
+        # 종료 시간(end)은 0 이하일 수 없으며, 반드시 시작 시간(start)보다 커야 유효한 구간으로 인정
+        if e <= 0 or e <= s:
+            return False
+        if s < 0:
+            return False
+        return True
+    except (ValueError, TypeError):
+        return False
 
 def parse_yaml_markers_for_item(yaml_data, m_type, s_idx=None, e_idx=None):
     """YAML 데이터에서 해당 미디어 항목의 intro/credits 유효성({'intro': bool, 'credits': bool})을 정밀 추출"""
