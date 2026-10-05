@@ -8,35 +8,26 @@ Flask 백엔드는 실시간으로 Plex DB와 연동하고 프론트엔드의 �
 
 ## 업데이트
 
-v0.9.130 (2026-09-27)
-- SSE 스트림 정상 유지를 보장, 개별 세션 로직 도입으로 다중 스트림 연결
-- 다중 탭 실시간 이벤트 전파(BroadcastChannel)
-
-v0.9.128 (2026-09-27)
-- 서버 백엔드(노드) 설정에 `CATIA_MAPPINGS` 추가:
-  - 윈도우에서 사용할 수 없는 특수문자(`: * ? " < > |`등)를 SMB 공유 시 유니코드 기호로 치환하여 로컬 재생/폴더 열기 깨짐 방지
-  - 먼저 samba 설정(`/etc/samba/smb.conf`) 공유 섹션에 catia mappings 설정 필요
-```
-   mangled names = no
-   vfs objects = catia
-   catia:mappings = 0x22:0x02ba,0x2a:0x2217,0x3a:0x2236,0x3c:0x276e,0x3e:0x276f,0x3f:0xff1f,0x5c:0x29f9,0x7c:0x2223
-```
-  - `pmh_config.yaml` 설정 예시(설정하지 않을 경우 기본값으로 적용):
+v0.9.131 (2026-10-05): 서버 재시작 필요
+- FF 메타 DB를 PostgreSQL로 사용시 PMH에서 직접 조회 가능
 ```yaml
-  CATIA_MAPPINGS: "0x22:0x02ba,0x2a:0x2217,0x3a:0x2236,0x3c:0x276e,0x3e:0x276f,0x3f:0xff1f,0x5c:0x29f9,0x7c:0x2223"
+  # pmh_config.yaml에 추가
+
+  # [외부/FF 메타데이터 DB 엔진 설정] (postgres 또는 none)
+  # 활성화 시 플러그인 툴들이 HTTP API 대신 외부 PostgreSQL에 직접 질의하여 대량 작업을 고속 처리합니다.
+  META_DB_TYPE: "postgres"
+  META_PG_CONFIG:
+    HOST: "postgres"
+    PORT: 5432
+    DBNAME: "metadata"
+    USER: "metadata"
+    PASSWORD: "YOUR_PASSWORD"
+    SCHEMA: "public"
 ```
-  - 프론트엔드 설정에 추가된 Samba Catia 관련 옵션 활성화 필수
-
-
-v0.9.126 (2026-09-26)
-- 서버 백엔드(노드) 설정에 `TOKEN_EXPIRE_SECONDS` 추가: 클라이언트와 서버 간 시스템 시계(NTP) 오차나 지연이 잦은 환경일 경우 늘려 설정(기본값: 60)
-- https Plex 연결과 http 서버 연결로 Mixed Content 거부 문제가 발생할 경우, SSE 스트리밍 통신에 브라우저 네이티브 fetch 대신 Tampermonkey GM_xmlhttpRequest의 onprogress를 사용하여 폴백 우회
-- 미디어 큐 상태 감지/워치독 로직 개선
-- 서버 백엔드(노드) 설정에 `TOKEN_EXPIRE_SECONDS` 추가: v0.9.125
-  - `request.remote_addr`가 신뢰 프록시 목록(Trusted Proxy)에 부합할 때 `X-Forwarded-For(XFF)` 헤더를 분석해 리얼 IP를 기준으로 fail2ban 적용
-  - XFF 헤더가 없다면 `X-Real-IP`를 대안으로 확인
-  - `request.remote_addr`가 신뢰 프록시가 아니거나 헤더가 없는 로컬/직접 접근의 경우에는 기존대로 request.remote_addr를 기준으로 Fail2Ban을 적용
-  - 신뢰 프록시 대역(`TRUSTED_PROXIES`) 외부에서 조작된 X-Forwarded-For 헤더를 직접 보내더라도 이를 무시하고 실제 연결 소켓 IP를 기준으로 차단
+- 영상/배우 DB 편집 모달 개선
+- `AV 매니저` 툴 개선:
+  - 메타 관련 기능을 FF 메타 DB 연동 위주로 변경
+  - 기존 유저 포스터 이력 DB를 생성했다면 업데이트 전 UI에서 삭제하거나 수동 삭제 필요
 
 v0.9.x
 - PostgreSQL 지원(번들 툴 포함): [plex-postgresql](https://github.com/cgnl/plex-postgresql) 대응
@@ -109,10 +100,9 @@ curl -fsSL https://raw.githubusercontent.com/golmog/plex_meta_helper/main/instal
 3. `마스터 서버 주소`와 `접속 키(APIKEY)`를 입력하고 연결을 테스트한 후 저장합니다.
 
 ### 4. 모바일 PWA 접속 (선택)
-PMH 
 1. 스마트폰이나 태블릿의 브라우저에서 마스터 서버 주소(예: `http://192.168.x.x:8899`)로 접속합니다.
 2. 설정 탭에서 API Key를 입력하여 로그인합니다.
-3. 브라우저 메뉴에서 **[홈 화면에 추가]**를 선택하여 전체 화면 앱(PWA) 모드로 쾌적하게 사용하세요.
+3. 브라우저 메뉴에서 **[홈 화면에 추가]**를 선택하여 전체 화면 앱(PWA) 모드로 사용할 수 있습니다.
 
 서버 설정은 샘플 yaml 내의 설명을 참고하세요.
 

@@ -885,7 +885,7 @@ window.PmhUICore = {
                             if (col.type === 'image_preview' && row[col.img_url_key || 'img_url']) {
                                 const imgUrl = row[col.img_url_key || 'img_url'];
                                 const itemTitle = String(row[col.title_key || 'title'] || row.title || row.name || val || '').replace(/"/g, '&quot;');
-                                displayHtml = `<a href="#" class="pmh-image-preview-btn" data-url="${imgUrl}" data-title="${itemTitle}" style="color:#2f96b4; text-decoration:none;"><i class="fas fa-image"></i> ${val} (미리보기)</a>`;
+                                displayHtml = `<a href="#" class="pmh-image-preview-btn" data-url="${imgUrl}" data-title="${itemTitle}" style="color:#2f96b4; text-decoration:none;" title="클릭하여 포스터 미리보기"><i class="fas fa-image" style="margin-right:4px;"></i>${val}</a>`;
                             }
                             else if (col.type === 'link' && row[col.link_key]) {
                                 if (isMobileEnv) {

@@ -48,10 +48,23 @@ BASE:
   # FF 연결 정보
   FF_URL: "http://localhost:9999"
   FF_APIKEY: "YOUR_FF_API_KEY_HERE"
+
+  # FF Proxy URL 생성을 위한 FF DDNS 주소 (예: https://ff.yourdomain.com)
   FF_DDNS: "https://ff.yourdomain.com"
 
   # FF 메타데이터 DB 연동 기능 활성화 여부 (기본값: false)
   FF_METADB_USE: false
+
+  # [외부/FF 메타데이터 DB 엔진 설정] (postgres 또는 none)
+  # 활성화 시 플러그인 툴들이 HTTP API 대신 외부 PostgreSQL에 직접 질의하여 대량 작업을 고속 처리합니다.
+  META_DB_TYPE: "none"
+  META_PG_CONFIG:
+    HOST: "postgres"
+    PORT: 5432
+    DBNAME: "metadata"
+    USER: "metadata"
+    PASSWORD: "YOUR_PASSWORD"
+    SCHEMA: "public"
 
   # (선택) 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""

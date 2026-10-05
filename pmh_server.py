@@ -83,6 +83,17 @@ BASE:
 
   # FF 메타데이터 DB 연동 기능 활성화 여부 (기본값: false)
   FF_METADB_USE: false
+
+  # [외부/FF 메타데이터 DB 엔진 설정] (postgres 또는 none)
+  # 활성화 시 플러그인 툴들이 HTTP API 대신 외부 PostgreSQL에 직접 질의하여 대량 작업을 고속 처리합니다.
+  META_DB_TYPE: "none"
+  META_PG_CONFIG:
+    HOST: "postgres"
+    PORT: 5432
+    DBNAME: "metadata"
+    USER: "metadata"
+    PASSWORD: "YOUR_PASSWORD"
+    SCHEMA: "public"
   
   # 노드 전역 디스코드 알림 웹훅 URL
   DISCORD_WEBHOOK: ""
@@ -223,6 +234,8 @@ global_conf = {
     "mate_apikey": BASE_CFG.get("FF_APIKEY", ""),
     "mate_url": BASE_CFG.get("FF_URL", ""),
     "FF_DDNS": str(BASE_CFG.get("FF_DDNS", "")).strip().rstrip('/'),
+    "meta_db_type": str(BASE_CFG.get("META_DB_TYPE", "none")).lower(),
+    "meta_pg_config": BASE_CFG.get("META_PG_CONFIG", {}),
     "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
     "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
     "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
@@ -276,6 +289,18 @@ if not os.path.exists(CORE_FILE_PATH):
 
 import pmh_core
 pmh_core.start_scheduler_daemon(global_conf)
+
+if global_conf.get("meta_db_type") == "postgres":
+    pmh_logger.info("🐘 [MetaDB Startup Check] 외부 메타 PostgreSQL 연결 상태 검사 중...")
+    try:
+        startup_meta_engine = pmh_core.UniversalMetaDatabaseEngine(global_conf)
+        is_ok, check_msg = startup_meta_engine.test_connection()
+        if is_ok:
+            pmh_logger.info(f"✅ [MetaDB Startup Check] 외부 메타 PostgreSQL 연결 성공: {check_msg}")
+        else:
+            pmh_logger.warning(f"⚠️ [MetaDB Startup Check] 외부 메타 PostgreSQL 연결 실패: {check_msg}")
+    except Exception as e:
+        pmh_logger.warning(f"⚠️ [MetaDB Startup Check] 검사 중 예외 발생: {e}")
 
 # ==============================================================================
 # [보안 및 Rate Limiting 모듈]
@@ -615,6 +640,8 @@ def api_admin_reload_core():
                 "mate_apikey": BASE_CFG.get("FF_APIKEY", ""),
                 "mate_url": BASE_CFG.get("FF_URL", ""),
                 "FF_DDNS": str(BASE_CFG.get("FF_DDNS", "")).strip().rstrip('/'),
+                "meta_db_type": str(BASE_CFG.get("META_DB_TYPE", "none")).lower(),
+                "meta_pg_config": BASE_CFG.get("META_PG_CONFIG", {}),
                 "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
                 "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
                 "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
@@ -635,6 +662,9 @@ def api_admin_reload_core():
         if hasattr(pmh_core, 'UniversalPlexDatabaseEngine'):
             pmh_core.UniversalPlexDatabaseEngine.close_pool()
 
+        if hasattr(pmh_core, 'UniversalMetaDatabaseEngine'):
+            pmh_core.UniversalMetaDatabaseEngine.close_pool()
+
         if hasattr(pmh_core, 'stop_scheduler_daemon'):
             pmh_core.stop_scheduler_daemon()
             time.sleep(1.0)
@@ -642,6 +672,17 @@ def api_admin_reload_core():
         importlib.reload(pmh_core)
         pmh_core.start_scheduler_daemon(global_conf)
         
+        if global_conf.get("meta_db_type") == "postgres":
+            try:
+                reload_meta_engine = pmh_core.UniversalMetaDatabaseEngine(global_conf)
+                is_ok, check_msg = reload_meta_engine.test_connection()
+                if is_ok:
+                    pmh_logger.info(f"✅ [MetaDB Reload Check] 외부 메타 PostgreSQL 연결 성공: {check_msg}")
+                else:
+                    pmh_logger.warning(f"⚠️ [MetaDB Reload Check] 외부 메타 PostgreSQL 연결 실패: {check_msg}")
+            except Exception as e:
+                pmh_logger.warning(f"⚠️ [MetaDB Reload Check] 검사 중 예외 발생: {e}")
+
         pmh_logger.info(f"✅ 리로드 완료! (v{pmh_core.get_version()})")
         return jsonify({"status": "success", "message": "모듈 리로드 완료"}), 200
     except Exception as e:
@@ -981,6 +1022,11 @@ if __name__ == '__main__':
     print(f" [ Time ] {time.strftime('%z (%Z)')}")
     print(f" [ Port ] {SERVER_PORT}")
     print(f" [ DB   ] {BASE_CFG.get('PLEX_DB_PATH', 'Not Set')}")
+    meta_db_banner = "Disabled"
+    if str(BASE_CFG.get("META_DB_TYPE", "none")).lower() == "postgres":
+        pg_c = BASE_CFG.get("META_PG_CONFIG", {})
+        meta_db_banner = f"PostgreSQL ({pg_c.get('HOST', 'postgres')}:{pg_c.get('PORT', 5432)}/{pg_c.get('DBNAME', 'metadata')})"
+    print(f" [ Meta ] {meta_db_banner}")
     print(f" [ PUID ] {PUID} / PGID: {PGID}")
     print("="*60 + "\n")
     

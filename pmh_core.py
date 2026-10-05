@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.130"
+__version__ = "0.9.131"
 
 logger = logging.getLogger("PMH")
 
@@ -499,6 +499,7 @@ def _execute_scheduled_tasks(global_config, now):
                 data_mgr = CoreDataManager(base_dir, tool_id, server_id, task_mgr=task_mgr)
                 
                 db_api = create_db_api(global_config)
+                meta_db_engine = UniversalMetaDatabaseEngine(global_config)
                 
                 def get_plex_instance():
                     from plexapi.server import PlexServer
@@ -518,7 +519,14 @@ def _execute_scheduled_tasks(global_config, now):
                     "task": task_mgr, "config": global_config or {},
                     "cache": data_mgr, "options": opts, 
                     "notify": create_discord_notifier(base_dir, tool_id, server_id, global_config),
-                    "sort": core_natural_sort
+                    "sort": core_natural_sort,
+                    "meta_db": {
+                        "is_enabled": meta_db_engine.is_enabled,
+                        "test_connection": meta_db_engine.test_connection,
+                        "query": meta_db_engine.query,
+                        "execute": meta_db_engine.execute,
+                        "get_cursor": meta_db_engine.get_cursor
+                    }
                 }
 
                 res, code = module.run(req_data, core_api)
@@ -1739,6 +1747,149 @@ class UniversalPlexDatabaseEngine:
             raise Exception(f"Plex SQLite 실행 실패: {e.stderr.decode('utf-8')}")
 
 
+# ==============================================================================
+# [Universal Meta Database Engine (외부 메타데이터 PostgreSQL 범용 엔진)]
+# ==============================================================================
+
+class UniversalMetaDatabaseEngine:
+    """특정 비즈니스 로직 없이 도구가 요청한 임의의 SQL을 안전하게 풀링/실행하는 범용 메타 DB 엔진"""
+    _pool = None
+    _pool_lock = threading.Lock()
+    _init_error = None
+
+    def __init__(self, global_config):
+        self.config = global_config or {}
+        self.db_type = str(self.config.get("meta_db_type", "none")).lower()
+        self.pg_config = self.config.get("meta_pg_config", {})
+        self.pg_error = UniversalMetaDatabaseEngine._init_error
+
+        if self.db_type == "postgres":
+            self._init_pool_safe()
+
+    def _init_pool_safe(self):
+        with UniversalMetaDatabaseEngine._pool_lock:
+            if UniversalMetaDatabaseEngine._pool is not None:
+                return
+
+            try:
+                import psycopg2
+                from psycopg2 import pool
+            except ImportError:
+                logger.info("📦 PostgreSQL 모듈(psycopg2-binary)이 감지되지 않아 자동 설치를 시작합니다...")
+                try:
+                    cmd = [sys.executable, "-m", "pip", "install", "psycopg2-binary"]
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    if res.returncode == 0:
+                        logger.info("✅ 'psycopg2-binary' 자동 설치 완료!")
+                        import psycopg2
+                        from psycopg2 import pool
+                    else:
+                        err_msg = f"psycopg2-binary 설치 실패: {res.stderr[:100]}"
+                        UniversalMetaDatabaseEngine._init_error = err_msg
+                        self.pg_error = err_msg
+                        return
+                except Exception as pip_err:
+                    err_msg = f"psycopg2-binary 설치 예외: {pip_err}"
+                    UniversalMetaDatabaseEngine._init_error = err_msg
+                    self.pg_error = err_msg
+                    return
+
+            host = self.pg_config.get("HOST", "127.0.0.1")
+            port = int(self.pg_config.get("PORT", 5432))
+            dbname = self.pg_config.get("DBNAME", "metadata")
+            user = self.pg_config.get("USER", "metadata")
+            password = self.pg_config.get("PASSWORD", "")
+            schema = str(self.pg_config.get("SCHEMA", "public")).strip() or "public"
+
+            logger.info(f"🐘 [MetaDB Engine] 외부 메타 PostgreSQL 커넥션 풀 초기화 시도... (Host: {host}:{port}, DB: {dbname}, Schema: {schema})")
+
+            try:
+                connect_args = {"connect_timeout": 10, "options": f"-c search_path={schema}"}
+                if host.startswith('/'):
+                    connect_args["host"] = host
+                    UniversalMetaDatabaseEngine._pool = pool.ThreadedConnectionPool(
+                        minconn=1, maxconn=10, dbname=dbname, user=user, password=password, **connect_args
+                    )
+                else:
+                    UniversalMetaDatabaseEngine._pool = pool.ThreadedConnectionPool(
+                        minconn=1, maxconn=10, host=host, port=port, dbname=dbname, user=user, password=password, **connect_args
+                    )
+                UniversalMetaDatabaseEngine._init_error = None
+                self.pg_error = None
+                logger.info("🐘 [MetaDB Engine] 외부 메타 PostgreSQL 커넥션 풀 연결 성공!")
+            except Exception as conn_err:
+                err_msg = f"{conn_err}".strip().replace("\n", " ")
+                logger.error(f"❌ [MetaDB Engine] 외부 메타 PostgreSQL 연결 실패: {err_msg}")
+                UniversalMetaDatabaseEngine._init_error = err_msg
+                self.pg_error = err_msg
+
+    @classmethod
+    def close_pool(cls):
+        """서버 리로드 시 커넥션 풀 및 에러 상태 초기화"""
+        with cls._pool_lock:
+            if cls._pool is not None:
+                try:
+                    cls._pool.closeall()
+                    logger.info("🐘 [MetaDB Engine] 기존 외부 메타 PostgreSQL 커넥션 풀을 안전하게 종료했습니다.")
+                except Exception: pass
+                cls._pool = None
+            cls._init_error = None
+
+    def is_enabled(self):
+        """메타 DB가 활성화되어 있고 커넥션 풀이 건강한지 확인"""
+        return self.db_type == "postgres" and UniversalMetaDatabaseEngine._pool is not None and not self.pg_error
+
+    def test_connection(self):
+        """PostgreSQL 메타 DB 연결 상태를 실제 SELECT 1 쿼리로 검증하고 (성공여부, 메시지) 반환"""
+        if self.db_type != "postgres":
+            return False, "META_DB_TYPE이 postgres로 설정되지 않았습니다."
+        if not UniversalMetaDatabaseEngine._pool:
+            self._init_pool_safe()
+        if self.pg_error:
+            return False, f"연결 풀 생성 실패: {self.pg_error}"
+        try:
+            with self.get_cursor() as cur:
+                cur.execute("SELECT 1;")
+            return True, "PostgreSQL 메타 DB 연결 정상 확인"
+        except Exception as e:
+            err_msg = str(e).strip().replace("\n", " ")
+            return False, f"연결 질의 실패: {err_msg}"
+
+    @contextmanager
+    def get_cursor(self):
+        """스레드 세이프 커서 획득 컨텍스트 매니저 (결과를 Dict 형태로 자동 매핑)"""
+        if not self.is_enabled():
+            err = self.pg_error or UniversalMetaDatabaseEngine._init_error or "메타 DB가 비활성화되어 있거나 연결되지 않았습니다."
+            raise ConnectionError(f"[MetaDB Engine] {err}")
+
+        from psycopg2.extras import DictCursor
+        conn = UniversalMetaDatabaseEngine._pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=DictCursor) as cur:
+                yield cur
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            UniversalMetaDatabaseEngine._pool.putconn(conn)
+
+    def query(self, query, params=()):
+        """도구가 전달한 임의의 SELECT 문을 실행하고 딕셔너리 리스트로 반환"""
+        if not query.strip().upper().startswith("SELECT"):
+            raise ValueError("Security Error: 'query' API는 SELECT 문만 허용합니다.")
+
+        with self.get_cursor() as cur:
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
+
+    def execute(self, query, params=()):
+        """필요 시 도구가 전달한 쓰기 SQL 실행"""
+        with self.get_cursor() as cur:
+            cur.execute(query, params)
+        return True, "Meta DB Execute Success"
+
+
 def create_db_api(global_config_or_path, sqlite_bin=None):
     if isinstance(global_config_or_path, dict):
         engine = UniversalPlexDatabaseEngine(global_config_or_path)
@@ -2307,7 +2458,8 @@ def dispatch_request(subpath, method, args, data, global_config):
             merged_config['plex_sqlite_bin'] = current_opts['sqlite_bin']
 
             db_api = create_db_api(merged_config)
-            
+            meta_db_engine = UniversalMetaDatabaseEngine(merged_config)
+
             task_mgr = CoreTaskManager(base_dir, tool_id, server_id)
             data_mgr = CoreDataManager(base_dir, tool_id, server_id, task_mgr=task_mgr)
 
@@ -2335,7 +2487,14 @@ def dispatch_request(subpath, method, args, data, global_config):
                 "cache": data_mgr,
                 "options": current_opts,
                 "notify": create_discord_notifier(base_dir, tool_id, server_id, global_config),
-                "sort": core_natural_sort
+                "sort": core_natural_sort,
+                "meta_db": {
+                    "is_enabled": meta_db_engine.is_enabled,
+                    "test_connection": meta_db_engine.test_connection,
+                    "query": meta_db_engine.query,
+                    "execute": meta_db_engine.execute,
+                    "get_cursor": meta_db_engine.get_cursor
+                }
             }
 
             if action == 'ui' and method == 'GET':

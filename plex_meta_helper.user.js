@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.130
+// @version      0.9.131
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -8356,6 +8356,7 @@ GM_addStyle(`
                             <span style="font-size:11.5px; font-weight:bold; color:#2f96b4; white-space:nowrap;"><i class="fas fa-link"></i> URL:</span>
                             <input type="text" id="pmh-input-crop-url" placeholder="https://... 이미지 웹 주소 붙여넣기 후 엔터 또는 로드 클릭" style="flex:1; padding:4px 8px; font-size:12px; background:#111; color:#fff; border:1px solid #444; border-radius:4px; outline:none; height:28px; box-sizing:border-box;">
                             <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="pmh-btn-apply-crop-url">로드</button>
+                            <button type="button" class="pmh-crop-btn pmh-crop-btn-success" id="pmh-btn-direct-save" style="display:none !important; white-space:nowrap;" title="입력된 이미지 URL을 FF 서버에 다운로드하여 즉시 유저 이미지로 저장하고 DB를 업데이트합니다."></button>
                         </div>
                         <div style="display:flex; gap:5px; align-items:center; flex-shrink:0;">
                             <label class="pmh-crop-btn pmh-crop-btn-primary" style="cursor:pointer;" title="새 가로 원본 이미지를 불러옵니다. (가로 _pl_user와 크롭된 _p_user 동시 저장)">
@@ -8418,9 +8419,29 @@ GM_addStyle(`
         $('#pmh-crop-dragmode-group .pmh-crop-btn').removeClass('pmh-crop-btn-active');
         $('#pmh-crop-mode-move').addClass('pmh-crop-btn-active');
 
+        const btnDirectSave = document.getElementById('pmh-btn-direct-save');
+        if (btnDirectSave) btnDirectSave.style.setProperty('display', 'none', 'important');
+
         if (pmhCropModal) pmhCropModal.style.display = 'none';
         customUploadPayload = null;
         currentCropItemData = null;
+    }
+
+    // PL/P 선택 상태와 URL 로드 여부에 따라 direct_save 버튼 동적 노출/라벨 갱신 헬퍼
+    function updateDirectSaveBtn() {
+        const btnDirectSave = document.getElementById('pmh-btn-direct-save');
+        const inputCropUrl = document.getElementById('pmh-input-crop-url');
+        if (!btnDirectSave) return;
+
+        const urlVal = inputCropUrl ? inputCropUrl.value.trim() : '';
+        if (customUploadPayload && customUploadPayload.type === 'url' && urlVal) {
+            const isP = currentCropItemData && currentCropItemData.currentSource === 'p';
+            const label = isP ? 'p_user 저장' : 'pl_user 저장';
+            btnDirectSave.innerHTML = `<i class="fas fa-save"></i> ${label}`;
+            btnDirectSave.style.setProperty('display', 'inline-flex', 'important');
+        } else {
+            btnDirectSave.style.setProperty('display', 'none', 'important');
+        }
     }
 
     // 현재 활성화된 비율 반환 헬퍼
@@ -8541,6 +8562,8 @@ GM_addStyle(`
         currentCropItemData = { itemId, serverId, code: cleanCode, module: moduleName };
         customUploadPayload = null;
 
+        updateDirectSaveBtn();
+
         document.getElementById('pmh-crop-title').innerText = `[${cleanCode}] ${optTitle || '로딩 중...'} - 포스터 크롭 에디터`;
         const imgEl = document.getElementById('pmh-cropper-target-img');
         const spinner = document.getElementById('pmh-crop-spinner');
@@ -8609,6 +8632,287 @@ GM_addStyle(`
     // PMH 영상 DB 편집 모달 및 클린 리매칭 자동 연계 로직
     // =========================================================================
     let currentEditMetaContext = null;
+
+    // 출연 배우 검색 및 추가 모달 (FF meta_db actorSearchModal 규격 일치)
+    function openPmhActorSearchModal(category, srvConfig, onSelectCallback) {
+        if (!srvConfig) return toastr.error("서버 설정을 찾을 수 없습니다.");
+
+        const domain = (category === 'WESTERN' ? 'WESTERN' : 'JAV');
+        window._pmh_top_z_index = (window._pmh_top_z_index || 10000010) + 10;
+        const currentZIndex = window._pmh_top_z_index;
+
+        let defW = Math.min(680, window.innerWidth * 0.9);
+        let defH = Math.min(540, window.innerHeight * 0.85);
+        let defTop = Math.max(20, (window.innerHeight - defH) / 2);
+        let defLeft = Math.max(20, (window.innerWidth - defW) / 2);
+
+        const modalId = `pmh-actor-search-modal-${Date.now()}`;
+        const m = document.createElement('div');
+        m.id = 'pmh-actor-search-modal';
+        m.className = 'pmh-db-modal pmh-stacked-modal';
+        m.style.zIndex = currentZIndex;
+
+        m.innerHTML = `
+            <div id="${modalId}-card" class="pmh-db-card" style="width:${defW}px; height:${defH}px; top:${defTop}px; left:${defLeft}px; position:fixed; z-index:${currentZIndex + 1}; display:flex; flex-direction:column;">
+                <div class="pmh-resizer pmh-resizer-n"></div><div class="pmh-resizer pmh-resizer-s"></div>
+                <div class="pmh-resizer pmh-resizer-e"></div><div class="pmh-resizer pmh-resizer-w"></div>
+                <div class="pmh-resizer pmh-resizer-ne"></div><div class="pmh-resizer pmh-resizer-nw"></div>
+                <div class="pmh-resizer pmh-resizer-se"></div><div class="pmh-resizer pmh-resizer-sw"></div>
+
+                <div class="pmh-db-header" id="${modalId}-header">
+                    <span style="color:#2f96b4; font-weight:bold; font-size:13.5px;"><i class="fas fa-search" style="margin-right:6px;"></i>출연 배우 검색 및 추가</span>
+                    <button type="button" class="pmh-actor-search-close" style="background:none; border:none; color:#aaa; font-size:16px; cursor:pointer;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#aaa'"><i class="fas fa-times"></i></button>
+                </div>
+
+                <div class="pmh-db-body" style="padding:12px; display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow:hidden;">
+                    <!-- 검색 필터 툴바 -->
+                    <div style="display:flex; gap:8px; margin-bottom:10px; align-items:center; flex-wrap:wrap; flex-shrink:0;">
+                        <input type="text" id="${modalId}-kw" class="pmh-input-text" placeholder="배우 이름, 일본어/영문 이름, 식별코드(PA106, PS... 등) 검색" style="flex:1; min-width:180px; padding:6px 10px; font-size:12.5px;">
+                        <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="${modalId}-btn-search" style="padding:0 14px !important;"><i class="fas fa-search"></i> 검색</button>
+                        <label class="pmh-check-label" style="display:flex; align-items:center; gap:5px; font-size:11.5px; color:#aaa; cursor:pointer;">
+                            <input type="checkbox" id="${modalId}-chk-aliases" checked style="width:14px; height:14px;"> 별칭 포함
+                        </label>
+                        <select id="${modalId}-sort" class="pmh-input-select" style="width:145px; padding:4px 8px; font-size:11.5px;">
+                            <option value="match" selected>정확도/일치순</option>
+                            <option value="id_asc">코드/ID 번호순 (1-9)</option>
+                            <option value="id_desc">코드/ID 번호순 (9-1)</option>
+                            <option value="name_asc">이름순 (ㄱ-ㅎ/A-Z)</option>
+                            <option value="name_desc">이름 역순 (ㅎ-ㄱ/Z-A)</option>
+                        </select>
+                    </div>
+
+                    <!-- 결과 목록 테이블 -->
+                    <div style="flex:1 1 auto; overflow-y:auto; background:#0d1117; border:1px solid #333; border-radius:4px;">
+                        <table style="width:100%; border-collapse:collapse; font-size:12px; text-align:left; table-layout:fixed;">
+                            <thead>
+                                <tr style="background:#16181b; border-bottom:1px solid #333; color:#aaa; position:sticky; top:0; z-index:2;">
+                                    <th style="padding:6px; text-align:center; width:60px; white-space:nowrap;">사진</th>
+                                    <th style="padding:6px; width:160px; white-space:nowrap;">배우 이름</th>
+                                    <th style="padding:6px; white-space:nowrap;">원문 / 영문 / 별칭</th>
+                                    <th style="padding:6px; text-align:center; width:75px; white-space:nowrap;">추가</th>
+                                </tr>
+                            </thead>
+                            <tbody id="${modalId}-tbody">
+                                <tr><td colspan="4" style="text-align:center; color:#777; padding:35px;">배우 이름을 입력하여 검색하세요.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="pmh-db-footer" style="display:flex; justify-content:flex-end;">
+                    <button type="button" class="pmh-crop-btn pmh-actor-search-close">닫기</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(m);
+        m.style.display = 'flex';
+
+        const hoverPreviewEl = document.createElement('div');
+        hoverPreviewEl.id = `${modalId}-hover-preview`;
+        hoverPreviewEl.style.cssText = `
+            position: fixed; display: none; z-index: ${currentZIndex + 25};
+            pointer-events: none; background: #14171a; border: 1px solid #e5a00d;
+            border-radius: 6px; padding: 4px; box-shadow: 0 8px 30px rgba(0,0,0,0.95);
+            width: 180px; box-sizing: border-box;
+        `;
+        hoverPreviewEl.innerHTML = `<img src="" referrerpolicy="no-referrer" style="width: 100%; height: 235px; object-fit: cover; border-radius: 4px; display: block; background: #0a0c0e;">`;
+        document.body.appendChild(hoverPreviewEl);
+
+        const card = m.querySelector(`#${modalId}-card`);
+        const header = m.querySelector(`#${modalId}-header`);
+        makeVideoCardDraggable(card, header);
+        makeVideoCardResizable(card);
+
+        const closeThis = () => {
+            if (hoverPreviewEl) hoverPreviewEl.remove();
+            m.remove();
+        };
+        m.querySelectorAll('.pmh-actor-search-close').forEach(b => b.onclick = closeThis);
+
+        let isMouseDownOnBackdrop = false;
+        m.onmousedown = (e) => { isMouseDownOnBackdrop = (e.target === m); };
+        m.onmouseup = (e) => {
+            if (isMouseDownOnBackdrop && e.target === m) closeThis();
+            isMouseDownOnBackdrop = false;
+        };
+
+        const kwInput = m.querySelector(`#${modalId}-kw`);
+        const btnSearch = m.querySelector(`#${modalId}-btn-search`);
+        const sortSelect = m.querySelector(`#${modalId}-sort`);
+        const chkAliases = m.querySelector(`#${modalId}-chk-aliases`);
+        const tbody = m.querySelector(`#${modalId}-tbody`);
+
+        setTimeout(() => kwInput.focus(), 80);
+
+        let currentResultsRaw = [];
+        let currentSearchKeyword = '';
+
+        // 검색 정확도 점수 계산기 (FF main_db.js getActorMatchScore 일치)
+        const getActorMatchScore = (actor, kw) => {
+            const target = kw.toLowerCase().trim();
+            if (!target) return 0;
+
+            const name_org = (actor.name_org || '').toLowerCase().trim();
+            const name_ko = (actor.name_ko || '').toLowerCase().trim();
+            const name_en = (actor.name_en || '').toLowerCase().trim();
+            const other = (actor.other_names || '').toLowerCase().trim();
+            const idx = (actor.person_idx || '').toLowerCase().trim();
+
+            const raw_target_num = target.replace(/^(pa|ps|pt)/i, '');
+            const raw_idx_num = idx.replace(/^(pa|ps|pt)/i, '');
+
+            if (idx === target || (raw_target_num && raw_target_num === raw_idx_num && raw_target_num.length >= 2)) return 200;
+            if (name_org === target || name_ko === target) return 100;
+            if (name_en === target) return 90;
+            if (idx && (idx.indexOf(target) === 0 || (raw_target_num && raw_idx_num.indexOf(raw_target_num) === 0))) {
+                const lenDiff = Math.abs(idx.length - target.length);
+                return Math.max(110, 150 - (lenDiff * 8));
+            }
+            if (name_org.indexOf(target) === 0 || name_ko.indexOf(target) === 0) return 80;
+            if (name_org.indexOf(target) !== -1 || name_ko.indexOf(target) !== -1) return 60;
+            if (idx && idx.indexOf(target) !== -1) return 50;
+            if (name_en.indexOf(target) !== -1 || other.indexOf(target) !== -1) return 40;
+            return 10;
+        };
+
+        const renderSortedResults = () => {
+            if (!currentResultsRaw || currentResultsRaw.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#777; padding:35px;">검색 결과가 없습니다.</td></tr>';
+                return;
+            }
+
+            const sortMode = sortSelect.value || 'match';
+            const list = currentResultsRaw.slice();
+
+            if (sortMode === 'match') {
+                list.sort((a, b) => {
+                    const scoreA = getActorMatchScore(a, currentSearchKeyword);
+                    const scoreB = getActorMatchScore(b, currentSearchKeyword);
+                    if (scoreB !== scoreA) return scoreB - scoreA;
+                    const numA = parseInt((a.person_idx || '').replace(/[^0-9]/g, ''), 10) || 0;
+                    const numB = parseInt((b.person_idx || '').replace(/[^0-9]/g, ''), 10) || 0;
+                    if (numA !== numB) return numA - numB;
+                    return (a.name_ko || a.name_org || '').localeCompare(b.name_ko || b.name_org || '', 'ko');
+                });
+            } else if (sortMode === 'id_asc') {
+                list.sort((a, b) => (parseInt((a.person_idx || '').replace(/[^0-9]/g, ''), 10) || 0) - (parseInt((b.person_idx || '').replace(/[^0-9]/g, ''), 10) || 0));
+            } else if (sortMode === 'id_desc') {
+                list.sort((a, b) => (parseInt((b.person_idx || '').replace(/[^0-9]/g, ''), 10) || 0) - (parseInt((a.person_idx || '').replace(/[^0-9]/g, ''), 10) || 0));
+            } else if (sortMode === 'name_asc') {
+                list.sort((a, b) => (a.name_ko || a.name_org || '').localeCompare(b.name_ko || b.name_org || '', 'ko'));
+            } else if (sortMode === 'name_desc') {
+                list.sort((a, b) => (b.name_ko || b.name_org || '').localeCompare(a.name_ko || a.name_org || '', 'ko'));
+            }
+
+            tbody.innerHTML = '';
+            list.forEach(a => {
+                const tr = document.createElement('tr');
+                tr.style.cssText = 'border-bottom:1px solid #222; transition:background 0.15s;';
+                tr.onmouseenter = () => tr.style.background = 'rgba(255,255,255,0.04)';
+                tr.onmouseleave = () => tr.style.background = 'transparent';
+
+                const photoUrl = a.thumb ? getFfMediaProxyUrl(srvConfig, a.thumb, '', 'image', domain) : '';
+                const photoHtml = photoUrl 
+                    ? `<img src="${photoUrl}" data-full-url="${photoUrl}" class="pmh-actor-search-thumb" style="width:48px; height:48px; object-fit:cover; border-radius:3px; box-shadow:0 1px 3px rgba(0,0,0,0.5); cursor:pointer;">` 
+                    : `<div style="width:48px; height:48px; background:#1c1f24; border-radius:3px; display:flex; align-items:center; justify-content:center; color:#555; font-size:10px;">No Img</div>`;
+                const codeBadge = a.person_idx ? `<span style="background:#2f96b4; color:#fff; font-size:10px; font-weight:bold; padding:1px 5px; border-radius:3px; margin-right:4px;">${a.person_idx}</span>` : '';
+                const displayName = a.name_ko || a.name_org || '-';
+
+                let subInfo = (a.name_org && a.name_org !== displayName) ? a.name_org : '';
+                if (a.name_en && a.name_en !== displayName && a.name_en !== a.name_org) {
+                    subInfo += (subInfo ? ` (${a.name_en})` : a.name_en);
+                }
+                if (!subInfo) subInfo = '-';
+                if (a.other_names) subInfo += `<div style="color:#777; font-size:10.5px; margin-top:2px; word-break:break-all; overflow-wrap:anywhere; line-height:1.35;">별칭: ${a.other_names}</div>`;
+
+                tr.innerHTML = `
+                    <td style="padding:6px; text-align:center;">${photoHtml}</td>
+                    <td style="padding:6px; overflow:hidden;"><div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px;">${codeBadge}<strong style="color:#fff; font-size:13px; word-break:break-all;">${displayName}</strong></div></td>
+                    <td style="padding:6px; color:#aaa; font-size:11.5px; word-break:break-all; overflow-wrap:anywhere; line-height:1.4;">${subInfo}</td>
+                    <td style="padding:6px; text-align:center;"><button type="button" class="pmh-crop-btn pmh-crop-btn-success pmh-btn-select-actor" style="padding:0 10px !important;">선택</button></td>
+                `;
+
+                const thumbImg = tr.querySelector('.pmh-actor-search-thumb');
+                if (thumbImg) {
+                    thumbImg.onmouseenter = () => {
+                        const fullUrl = thumbImg.dataset.fullUrl;
+                        if (!fullUrl) return;
+                        const rect = thumbImg.getBoundingClientRect();
+                        const pImg = hoverPreviewEl.querySelector('img');
+                        pImg.src = fullUrl;
+
+                        let leftPos = rect.right + 12;
+                        if (leftPos + 190 > window.innerWidth) {
+                            leftPos = Math.max(10, rect.left - 192);
+                        }
+
+                        let topPos = rect.top - 20;
+                        if (topPos + 250 > window.innerHeight) {
+                            topPos = Math.max(10, window.innerHeight - 255);
+                        }
+
+                        hoverPreviewEl.style.left = `${leftPos}px`;
+                        hoverPreviewEl.style.top = `${topPos}px`;
+                        hoverPreviewEl.style.display = 'block';
+                    };
+
+                    thumbImg.onmouseleave = () => {
+                        hoverPreviewEl.style.display = 'none';
+                        const pImg = hoverPreviewEl.querySelector('img');
+                        if (pImg) pImg.src = '';
+                    };
+                }
+
+                tr.querySelector('.pmh-btn-select-actor').onclick = () => {
+                    if (typeof onSelectCallback === 'function') {
+                        onSelectCallback(a);
+                    }
+                    toastr.success(`[${displayName}] 배우가 추가되었습니다.`);
+                    closeThis();
+                };
+
+                tbody.appendChild(tr);
+            });
+
+            // 결과 테이블 스크롤 시 확대 카드가 붕 떠서 남지 않도록 즉시 숨김
+            if (tbody.parentElement) {
+                tbody.parentElement.onscroll = () => {
+                    if (hoverPreviewEl) hoverPreviewEl.style.display = 'none';
+                };
+            }
+        };
+
+        const performSearch = async () => {
+            const kw = kwInput.value.trim();
+            if (!kw) return toastr.warning("검색할 배우 이름을 입력하세요.");
+
+            currentSearchKeyword = kw;
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#2f96b4; padding:35px;"><i class="fas fa-spinner fa-spin fa-2x" style="margin-bottom:8px;"></i><br>인물 DB에서 검색하고 있습니다...</td></tr>';
+
+            try {
+                const searchOpts = { include_aliases: chkAliases.checked };
+                const res = await PmhFfBridge.callPersonApi(srvConfig, 'person_search', kw, domain, JSON.stringify(searchOpts));
+
+                if (res && res.ret === 'success') {
+                    currentResultsRaw = res.data || [];
+                    renderSortedResults();
+                } else {
+                    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:#bd362f; padding:35px;">검색 실패: ${res?.msg || '알 수 없는 오류'}</td></tr>`;
+                }
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:#bd362f; padding:35px;">통신 오류: ${err.message || err}</td></tr>`;
+            }
+        };
+
+        btnSearch.onclick = performSearch;
+        sortSelect.onchange = renderSortedResults;
+        kwInput.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                performSearch();
+            }
+        };
+    }
 
     async function openPmhMetaDbModal(itemId, serverId, rawGuid, optTitle = '') {
         let srvConfig = getServerConfig(serverId);
@@ -9467,10 +9771,8 @@ GM_addStyle(`
     async function openPmhPersonDbModal(targetIdentifier, domain, srvConfig, serverId) {
         infoLog(`[Person DB Modal] 👤 인물 DB 모달 호출: [${targetIdentifier}] (${domain})`);
 
-        // serverId 매칭 보장 (누락 방지)
         const activeServerId = serverId || srvConfig?.machineIdentifier || srvConfig?.id || (ServerConfig.SERVERS[0]?.machineIdentifier);
 
-        // 다중 모달 z-index 및 겹침 오프셋 계산
         window._pmh_top_z_index = (window._pmh_top_z_index || 10000010) + 10;
         const currentZIndex = window._pmh_top_z_index;
 
@@ -9503,13 +9805,14 @@ GM_addStyle(`
                         <span>FF 인물 DB에서 정보를 조회하고 있습니다...</span>
                     </div>
                     <div id="${modalId}-form" style="display:none;">
+                        <input type="hidden" id="${modalId}-id-val">
                         <input type="hidden" id="${modalId}-thumb-val">
                         <input type="hidden" id="${modalId}-selected-primary-url">
 
-                        <!-- 상단 2열 배치: 260px 프로필 사진 캐러셀(좌) + 2열 입력란(우) -->
+                        <!-- 상단 프로필 사진 캐러셀(좌) + 입력 폼(우) -->
                         <div style="display:flex; gap:15px; margin-bottom:15px;">
-                            <div style="width:260px; height:360px; flex-shrink:0; display:flex; flex-direction:column; justify-content:space-between; background:#111; padding:8px; border-radius:6px; border:1px solid #333; box-sizing:border-box;">
-                                <div style="width:100%; height:306px; background:#000; border-radius:4px; overflow:hidden; display:flex; justify-content:center; align-items:center; position:relative;">
+                            <div style="width:260px; height:430px; flex-shrink:0; display:flex; flex-direction:column; justify-content:space-between; background:#111; padding:8px; border-radius:6px; border:1px solid #333; box-sizing:border-box;">
+                                <div style="width:100%; height:375px; background:#000; border-radius:4px; overflow:hidden; display:flex; justify-content:center; align-items:center; position:relative;">
                                     <span id="${modalId}-badge-type" style="position:absolute; top:6px; left:6px; z-index:3; font-size:10px; padding:2px 6px; border-radius:3px; background:rgba(0,123,255,0.75); color:#fff; font-weight:bold;">SERVER</span>
                                     <img id="${modalId}-preview-img" referrerpolicy="no-referrer" src="" style="max-width:100%; max-height:100%; object-fit:cover; cursor:pointer;" title="클릭하여 라이트박스로 크게 보기">
                                 </div>
@@ -9521,11 +9824,11 @@ GM_addStyle(`
                                 </div>
                             </div>
 
-                            <!-- 2열 속성 폼 -->
+                            <!-- 프로필 속성 폼 -->
                             <div style="flex-grow:1; display:flex; flex-direction:column; gap:8px;">
                                 <div style="display:flex; gap:10px;">
-                                    <div class="pmh-form-group" style="width:120px; margin:0;">
-                                        <label class="pmh-form-label">도메인</label>
+                                    <div class="pmh-form-group" style="width:130px; margin:0;">
+                                        <label class="pmh-form-label">도메인 (Domain)</label>
                                         <select id="${modalId}-domain" class="pmh-input-select">
                                             <option value="JAV">JAV</option>
                                             <option value="WESTERN">WESTERN</option>
@@ -9533,79 +9836,93 @@ GM_addStyle(`
                                         </select>
                                     </div>
                                     <div class="pmh-form-group" style="flex:1; margin:0;">
-                                        <label class="pmh-form-label">식별코드 (Code/ID)</label>
-                                        <input type="text" id="${modalId}-idx" class="pmh-input-text" readonly style="background:#222; color:#aaa;">
+                                        <label class="pmh-form-label">고유 식별코드 (Code/ID)</label>
+                                        <input type="text" id="${modalId}-idx" class="pmh-input-text" readonly style="background:#222; color:#aaa;" placeholder="고유 식별코드">
                                     </div>
                                 </div>
                                 <div style="display:flex; gap:10px;">
                                     <div class="pmh-form-group" style="flex:1; margin:0;">
                                         <label class="pmh-form-label">원문 이름 (Name ORG)</label>
-                                        <input type="text" id="${modalId}-name-org" class="pmh-input-text">
+                                        <input type="text" id="${modalId}-name-org" class="pmh-input-text" placeholder="원문 표기 (한자/가나/영문)">
                                     </div>
                                     <div class="pmh-form-group" style="flex:1; margin:0;">
                                         <label class="pmh-form-label">한국어 표기 (Name KO)</label>
-                                        <input type="text" id="${modalId}-name-ko" class="pmh-input-text">
+                                        <input type="text" id="${modalId}-name-ko" class="pmh-input-text" placeholder="번역/한국어 표기명">
                                     </div>
-                                </div>
-                                <div style="display:flex; gap:10px;">
                                     <div class="pmh-form-group" style="flex:1; margin:0;">
                                         <label class="pmh-form-label">영문 이름 (Name EN)</label>
-                                        <input type="text" id="${modalId}-name-en" class="pmh-input-text">
+                                        <input type="text" id="${modalId}-name-en" class="pmh-input-text" placeholder="English Name">
                                     </div>
+                                </div>
+                                <div style="display:flex; gap:10px;">
                                     <div class="pmh-form-group" style="flex:1; margin:0;">
                                         <label class="pmh-form-label">소속사 / 에이전시</label>
-                                        <input type="text" id="${modalId}-agency" class="pmh-input-text">
+                                        <input type="text" id="${modalId}-agency" class="pmh-input-text" placeholder="소속사명">
+                                    </div>
+                                    <div class="pmh-form-group" style="flex:1; margin:0;">
+                                        <label class="pmh-form-label">생년월일 (Birth)</label>
+                                        <input type="text" id="${modalId}-birth" class="pmh-input-text" placeholder="YYYY-MM-DD">
                                     </div>
                                 </div>
                                 <div style="display:flex; gap:10px;">
                                     <div class="pmh-form-group" style="flex:1; margin:0;">
-                                        <label class="pmh-form-label">생년월일 (YYYY-MM-DD)</label>
-                                        <input type="text" id="${modalId}-birth" class="pmh-input-text">
+                                        <label class="pmh-form-label">신장 (Height, cm)</label>
+                                        <input type="number" id="${modalId}-height" class="pmh-input-text" placeholder="165">
                                     </div>
                                     <div class="pmh-form-group" style="flex:1; margin:0;">
-                                        <label class="pmh-form-label">신장 (cm)</label>
-                                        <input type="number" id="${modalId}-height" class="pmh-input-text">
-                                    </div>
-                                </div>
-                                <div style="display:flex; gap:10px;">
-                                    <div class="pmh-form-group" style="flex:1; margin:0;">
-                                        <label class="pmh-form-label">혈액형</label>
-                                        <input type="text" id="${modalId}-blood" class="pmh-input-text">
-                                    </div>
-                                    <div class="pmh-form-group" style="flex:1; margin:0;">
-                                        <label class="pmh-form-label">취미 / 특기</label>
-                                        <input type="text" id="${modalId}-hobby" class="pmh-input-text">
+                                        <label class="pmh-form-label">혈액형 (Blood)</label>
+                                        <input type="text" id="${modalId}-blood" class="pmh-input-text" placeholder="A형 / B형 / O형 ...">
                                     </div>
                                 </div>
                                 <div class="pmh-form-group" style="margin:0;">
+                                    <label class="pmh-form-label">취미 / 특기</label>
+                                    <input type="text" id="${modalId}-hobby" class="pmh-input-text" placeholder="취미 및 특기 사항">
+                                </div>
+                                <div class="pmh-form-group" style="margin:0;">
                                     <label class="pmh-form-label">별칭 / 예명 목록 (쉼표 구분)</label>
-                                    <input type="text" id="${modalId}-aliases" class="pmh-input-text">
+                                    <input type="text" id="${modalId}-aliases" class="pmh-input-text" placeholder="예명 또는 별칭">
                                 </div>
                             </div>
                         </div>
 
-                        <!-- AV 스펙 영역 -->
+                        <!-- AV 스펙 영역 (JAV / WESTERN 전용) -->
                         <div id="${modalId}-av-spec-row" style="display:flex; gap:10px; margin-bottom:12px; background:rgba(255,255,255,0.02); border:1px dashed rgba(255,255,255,0.1); padding:8px; border-radius:4px;">
                             <div class="pmh-form-group" style="flex:2; margin:0;">
                                 <label class="pmh-form-label" style="color:#2f96b4;">신체 사이즈 (B-W-H)</label>
                                 <input type="text" id="${modalId}-body" class="pmh-input-text" placeholder="예: B85-W58-H86">
                             </div>
                             <div class="pmh-form-group" style="flex:1; margin:0;">
-                                <label class="pmh-form-label" style="color:#2f96b4;">브라 컵</label>
+                                <label class="pmh-form-label" style="color:#2f96b4;">브라 컵 (Cup)</label>
                                 <input type="text" id="${modalId}-bra" class="pmh-input-text" placeholder="예: E컵">
                             </div>
                             <div class="pmh-form-group" style="flex:1.5; margin:0;">
-                                <label class="pmh-form-label" style="color:#2f96b4;">데뷔일 (YYYY-MM-DD)</label>
-                                <input type="text" id="${modalId}-debut" class="pmh-input-text">
+                                <label class="pmh-form-label" style="color:#2f96b4;">데뷔일 (Debut)</label>
+                                <input type="text" id="${modalId}-debut" class="pmh-input-text" placeholder="YYYY-MM-DD">
+                            </div>
+                        </div>
+
+                        <!-- 미디어 소스 경로 및 URL 영역 (도메인별 동적 배치) -->
+                        <div id="${modalId}-media-sources-row" style="display:flex; gap:10px; margin-bottom:10px;">
+                            <div class="pmh-form-group" id="${modalId}-wrap-local-path" style="flex:1; margin:0;">
+                                <label class="pmh-form-label" id="${modalId}-lbl-local-path">로컬 상대 경로 (local_img_path)</label>
+                                <input type="text" id="${modalId}-local-path" class="pmh-input-text" placeholder="초성/이름_PA123.jpg">
+                            </div>
+                            <div class="pmh-form-group" id="${modalId}-wrap-google-id" style="flex:1; margin:0;">
+                                <label class="pmh-form-label" id="${modalId}-lbl-google-id">Google FileID (google_fileid)</label>
+                                <input type="text" id="${modalId}-google-id" class="pmh-input-text" placeholder="구글 드라이브 ID">
+                            </div>
+                            <div class="pmh-form-group" id="${modalId}-wrap-site-url" style="flex:1; margin:0;">
+                                <label class="pmh-form-label" id="${modalId}-lbl-site-url">사이트 원본 URL (site_img_url)</label>
+                                <input type="text" id="${modalId}-site-url" class="pmh-input-text" placeholder="https://...">
                             </div>
                         </div>
 
                         <!-- 프로필 이미지 및 정보 출처 URL -->
-                        <div class="pmh-form-group" style="margin-top:10px;">
-                            <label class="pmh-form-label">프로필 이미지 URLs (엔터로 여러 개 입력)</label>
-                            <textarea id="${modalId}-site-img-urls" class="pmh-input-text" style="height:55px; resize:vertical;"></textarea>
+                        <div class="pmh-form-group">
+                            <label class="pmh-form-label">프로필 이미지 URLs (줄바꿈으로 구분)</label>
+                            <textarea id="${modalId}-site-img-urls" class="pmh-input-text" style="height:55px; resize:vertical;" placeholder="https://... (엔터로 여러 개)"></textarea>
                         </div>
-                        <div class="pmh-form-group" style="margin-bottom:15px;">
+                        <div class="pmh-form-group">
                             <label class="pmh-form-label">정보 출처 URL</label>
                             <div style="display:flex; gap:6px;">
                                 <input type="text" id="${modalId}-info-url" class="pmh-input-text" readonly style="flex:1; background:#222; color:#aaa;">
@@ -9613,21 +9930,50 @@ GM_addStyle(`
                             </div>
                         </div>
 
-                        <!-- 소장 출연작 목록 (최하단 배치 & 내부 스크롤 해제) -->
+                        <!-- 통합 인물(Merged Sub-Actors) 관리 섹션 (FF meta_db 일치) -->
+                        <div id="${modalId}-merged-sub-actors-wrapper" class="pmh-form-group" style="display:none; background:rgba(0,123,255,0.05); border:1px solid rgba(0,123,255,0.25); border-radius:6px; padding:10px; margin-bottom:15px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span style="background:#007bff; color:#fff; font-size:10px; font-weight:bold; padding:2px 6px; border-radius:3px;">통합 인물</span>
+                                    <span id="${modalId}-merged-sub-count-text" style="color:#2f96b4; font-size:11.5px; font-weight:bold;">총 0개 ID 병합됨</span>
+                                </div>
+                                <button type="button" class="pmh-crop-btn" id="${modalId}-btn-toggle-sub-table" style="font-size:11px; padding:2px 8px;">상세 접기/펼치기</button>
+                            </div>
+                            <div id="${modalId}-merged-sub-badges-container" style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px;"></div>
+                            <div id="${modalId}-merged-sub-table-collapse" style="background:#16181b; border:1px solid #333; border-radius:4px; overflow-x:auto;">
+                                <table style="width:100%; border-collapse:collapse; font-size:12px; text-align:left; white-space:nowrap;">
+                                    <thead>
+                                        <tr style="background:#0d1117; border-bottom:1px solid #333; color:#aaa;">
+                                            <th style="padding:6px; text-align:center; width:50px;">사진</th>
+                                            <th style="padding:6px; width:110px;">식별 ID</th>
+                                            <th style="padding:6px;">원문명 / 한국어명</th>
+                                            <th style="padding:6px; text-align:center; width:70px;">상세</th>
+                                            <th style="padding:6px; text-align:center; width:170px;">관리</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="${modalId}-merged-sub-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- 소장 출연작 목록 -->
                         <div class="pmh-form-group" style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.08); padding:10px; border-radius:4px; margin-bottom:0;">
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                                 <label class="pmh-form-label" style="margin:0; color:#fff;">소장 출연작 목록 <span class="pmh-db-badge" style="background:#28a745; color:#fff;" id="${modalId}-works-count">0편</span></label>
                                 <div style="display:flex; gap:6px;">
-                                    <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="${modalId}-btn-sync-works" title="실제 소장 메타와 대조하여 최신 제목으로 갱신"><i class="fas fa-sync-alt"></i> 출연작 검증/갱신</button>
+                                    <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="${modalId}-btn-sync-works" title="실제 소장 메타와 대조하여 오매칭을 정제하고 최신 제목으로 갱신"><i class="fas fa-sync-alt"></i> 출연작 검증/갱신</button>
                                 </div>
                             </div>
                             <div id="${modalId}-works-container" style="display:flex; flex-direction:column; gap:4px; width:100%;"></div>
                         </div>
                     </div>
                 </div>
+
+                <!-- 푸터 툴바 -->
                 <div class="pmh-db-footer">
                     <div style="display:flex; gap:6px;">
                         <button type="button" class="pmh-crop-btn" id="${modalId}-btn-json"><i class="fas fa-code"></i> JSON</button>
+                        <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="${modalId}-btn-crop-person"><i class="fas fa-crop-alt"></i> 사진 편집</button>
                     </div>
                     <div style="display:flex; gap:8px;">
                         <button type="button" class="pmh-crop-btn pmh-person-modal-cancel">취소</button>
@@ -9655,201 +10001,432 @@ GM_addStyle(`
             isMouseDownOnBackdrop = false;
         };
 
+        // 도메인별 동적 필드 노출 및 컬럼 비율 조정 함수
+        const applyDomainVisibility = (dom) => {
+            const domUpper = String(dom || 'JAV').toUpperCase();
+            const avSpecRow = m.querySelector(`#${modalId}-av-spec-row`);
+            const wrapLocal = m.querySelector(`#${modalId}-wrap-local-path`);
+            const wrapGoogle = m.querySelector(`#${modalId}-wrap-google-id`);
+            const wrapSite = m.querySelector(`#${modalId}-wrap-site-url`);
+
+            if (domUpper === 'JAV' || domUpper === 'WESTERN') {
+                avSpecRow.style.display = 'flex';
+            } else {
+                avSpecRow.style.display = 'none';
+            }
+
+            if (domUpper === 'WESTERN') {
+                wrapLocal.style.display = 'block'; wrapLocal.style.flex = '1';
+                wrapGoogle.style.display = 'none';
+                wrapSite.style.display = 'block'; wrapSite.style.flex = '1';
+            } else if (domUpper === 'GENERAL') {
+                wrapLocal.style.display = 'none';
+                wrapGoogle.style.display = 'none';
+                wrapSite.style.display = 'block'; wrapSite.style.flex = '1';
+            } else {
+                wrapLocal.style.display = 'block'; wrapLocal.style.flex = '1';
+                wrapGoogle.style.display = 'block'; wrapGoogle.style.flex = '1';
+                wrapSite.style.display = 'block'; wrapSite.style.flex = '1';
+            }
+        };
+
         let rawPersonData = null;
+        let photoList = [];
+        let curPhotoIdx = 0;
 
-        try {
-            const ret = await PmhFfBridge.callPersonApi(srvConfig, 'person_get_detailed', String(targetIdentifier), domain);
-            if (!ret || ret.ret !== 'success' || !ret.data) throw new Error(ret?.msg || "인물 데이터 조회 실패");
-
-            const p = ret.data;
-            rawPersonData = p;
-            const extra = (typeof p.extra_info === 'string') ? JSON.parse(p.extra_info || '{}') : (p.extra_info || {});
-            const media = (typeof p.media_src === 'string') ? JSON.parse(p.media_src || '{}') : (p.media_src || {});
-
-            m.querySelector(`#${modalId}-title`).innerText = `[${p.name_ko || p.name_org || targetIdentifier}] 인물 상세 정보 편집`;
-            m.querySelector(`#${modalId}-domain`).value = p.domain || domain;
-            m.querySelector(`#${modalId}-idx`).value = p.person_idx || targetIdentifier;
-            m.querySelector(`#${modalId}-name-org`).value = p.name_org || '';
-            m.querySelector(`#${modalId}-name-ko`).value = p.name_ko || '';
-            m.querySelector(`#${modalId}-name-en`).value = p.name_en || '';
-            m.querySelector(`#${modalId}-aliases`).value = (p.aliases && Array.isArray(p.aliases)) ? p.aliases.join(', ') : (p.other_names || '');
-            m.querySelector(`#${modalId}-birth`).value = extra.birth || '';
-            m.querySelector(`#${modalId}-height`).value = (extra.height && parseInt(extra.height, 10) > 0) ? String(extra.height) : '';
-            m.querySelector(`#${modalId}-blood`).value = extra.blood || '';
-            m.querySelector(`#${modalId}-agency`).value = extra.agency || '';
-            m.querySelector(`#${modalId}-hobby`).value = extra.hobby || '';
-            m.querySelector(`#${modalId}-body`).value = extra.body_size || '';
-            m.querySelector(`#${modalId}-bra`).value = extra.bra_size || '';
-            m.querySelector(`#${modalId}-debut`).value = extra.debut || '';
-
-            const sitePhotos = Array.isArray(media.site_img_urls) ? media.site_img_urls.filter(Boolean) : [];
-            m.querySelector(`#${modalId}-site-img-urls`).value = sitePhotos.join('\n');
-
-            const infoUrl = extra.info_url || p.info_url || '';
-            m.querySelector(`#${modalId}-info-url`).value = infoUrl;
-            m.querySelector(`#${modalId}-btn-open-source`).onclick = () => { if (infoUrl) window.open(infoUrl, '_blank'); else toastr.warning("출처 URL이 없습니다."); };
-
-            // 사진 캐러셀 목록
-            const photoList = [];
-            if (p.thumb) photoList.push({ url: p.thumb, type: '대표 사진', is_primary: true });
-            sitePhotos.forEach((u, uIdx) => {
-                if (u && !photoList.some(it => it.url === u)) {
-                    photoList.push({ url: u, type: `사이트 #${uIdx + 1}`, is_primary: false });
-                }
+        // 대표 소스 라벨 뱃지 갱신 헬퍼
+        const updatePrimarySourceLabelBadges = (activeKey) => {
+            ['local-path', 'google-id', 'site-url'].forEach(k => {
+                const lbl = m.querySelector(`#${modalId}-lbl-${k}`);
+                if (!lbl) return;
+                const oldBadge = lbl.querySelector('.pmh-primary-badge');
+                if (oldBadge) oldBadge.remove();
             });
 
-            let curPhotoIdx = 0;
+            let targetLblId = '';
+            if (activeKey === 'local_img_path') {
+                targetLblId = `${modalId}-lbl-local-path`;
+            } else if (activeKey === 'google_fileid') {
+                targetLblId = `${modalId}-lbl-google-id`;
+            } else if (activeKey && activeKey.startsWith('site_img_url')) {
+                targetLblId = `${modalId}-lbl-site-url`;
+            }
+
+            if (targetLblId) {
+                const lbl = m.querySelector(`#${targetLblId}`);
+                if (lbl) {
+                    const b = document.createElement('span');
+                    b.className = 'pmh-primary-badge';
+                    b.style.cssText = 'background:#28a745; color:#fff; font-size:10px; padding:1px 5px; border-radius:3px; margin-left:6px; font-weight:bold;';
+                    b.innerText = '대표';
+                    lbl.appendChild(b);
+                }
+            }
+        };
+
+        const renderPhotoItem = (idx) => {
             const pImg = m.querySelector(`#${modalId}-preview-img`);
             const pType = m.querySelector(`#${modalId}-badge-type`);
             const pCounter = m.querySelector(`#${modalId}-counter`);
+            if (photoList.length === 0) {
+                pImg.src = '';
+                pType.innerText = 'No Photo';
+                pCounter.innerText = '0 / 0';
+                return;
+            }
+            curPhotoIdx = (idx + photoList.length) % photoList.length;
+            const item = photoList[curPhotoIdx];
+            pImg.src = getFfMediaProxyUrl(srvConfig, item.url, '', 'image', domain);
+            pType.innerText = item.type;
+            pCounter.innerText = `${curPhotoIdx + 1} / ${photoList.length}`;
 
-            const renderPhotoItem = (idx) => {
-                if (photoList.length === 0) {
-                    pImg.src = '';
-                    pType.innerText = 'No Photo';
-                    pCounter.innerText = '0 / 0';
-                    return;
+            if (item.is_primary) {
+                pType.style.background = 'rgba(0, 123, 255, 0.85)';
+                pType.style.border = '1px solid rgba(255, 255, 255, 0.4)';
+            } else {
+                pType.style.background = 'rgba(0, 0, 0, 0.55)';
+                pType.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+            }
+        };
+
+        const loadPersonDataInPlace = async () => {
+            const loadingDiv = m.querySelector(`#${modalId}-loading`);
+            const formDiv = m.querySelector(`#${modalId}-form`);
+            loadingDiv.style.display = 'flex';
+            formDiv.style.display = 'none';
+
+            try {
+                const ret = await PmhFfBridge.callPersonApi(srvConfig, 'person_get_detailed', String(targetIdentifier), domain);
+                if (!ret || ret.ret !== 'success' || !ret.data) throw new Error(ret?.msg || "인물 데이터 조회 실패");
+
+                const p = ret.data;
+                rawPersonData = p;
+                const extra = (typeof p.extra_info === 'string') ? JSON.parse(p.extra_info || '{}') : (p.extra_info || {});
+                const media = (typeof p.media_src === 'string') ? JSON.parse(p.media_src || '{}') : (p.media_src || {});
+
+                m.querySelector(`#${modalId}-title`).innerText = `[${p.name_ko || p.name_org || targetIdentifier}] 인물 상세 정보 편집`;
+                m.querySelector(`#${modalId}-id-val`).value = p.id || '';
+                m.querySelector(`#${modalId}-domain`).value = p.domain || domain;
+                m.querySelector(`#${modalId}-idx`).value = p.person_idx || targetIdentifier;
+                m.querySelector(`#${modalId}-name-org`).value = p.name_org || '';
+                m.querySelector(`#${modalId}-name-ko`).value = p.name_ko || '';
+                m.querySelector(`#${modalId}-name-en`).value = p.name_en || '';
+                m.querySelector(`#${modalId}-aliases`).value = (p.aliases && Array.isArray(p.aliases)) ? p.aliases.join(', ') : (p.other_names || '');
+                m.querySelector(`#${modalId}-thumb-val`).value = p.thumb || '';
+                m.querySelector(`#${modalId}-selected-primary-url`).value = '';
+
+                m.querySelector(`#${modalId}-birth`).value = extra.birth || '';
+                m.querySelector(`#${modalId}-height`).value = (extra.height && parseInt(extra.height, 10) > 0) ? String(extra.height) : '';
+                m.querySelector(`#${modalId}-blood`).value = extra.blood || '';
+                m.querySelector(`#${modalId}-agency`).value = extra.agency || '';
+                m.querySelector(`#${modalId}-hobby`).value = extra.hobby || '';
+                m.querySelector(`#${modalId}-body`).value = extra.body_size || '';
+                m.querySelector(`#${modalId}-bra`).value = extra.bra_size || '';
+                m.querySelector(`#${modalId}-debut`).value = extra.debut || '';
+
+                const localVal = (media.local_img_path || '').trim();
+                const googleVal = (media.google_fileid || '').trim();
+                const siteVal = (media.site_img_url || '').trim();
+
+                m.querySelector(`#${modalId}-local-path`).value = localVal;
+                m.querySelector(`#${modalId}-google-id`).value = googleVal;
+                m.querySelector(`#${modalId}-site-url`).value = siteVal;
+
+                const sitePhotos = Array.isArray(media.site_img_urls) ? media.site_img_urls.filter(Boolean) : [];
+                m.querySelector(`#${modalId}-site-img-urls`).value = sitePhotos.join('\n');
+
+                const infoUrl = extra.info_url || p.info_url || '';
+                m.querySelector(`#${modalId}-info-url`).value = infoUrl;
+                m.querySelector(`#${modalId}-btn-open-source`).onclick = () => { if (infoUrl) window.open(infoUrl, '_blank'); else toastr.warning("출처 URL이 없습니다."); };
+
+                applyDomainVisibility(p.domain || domain);
+                m.querySelector(`#${modalId}-domain`).onchange = (e) => applyDomainVisibility(e.target.value);
+
+                // 사진 캐러셀 구성 및 대표 소스 판별
+                photoList = [];
+                const sourcesMap = {};
+                if (localVal) {
+                    const resolvedLocal = media.local_img_url || extra.local_img_url || formatActorLocalUrl(localVal, p.domain);
+                    if (resolvedLocal) sourcesMap['local_img_path'] = { url: resolvedLocal, type: 'SERVER', key: 'local_img_path' };
                 }
-                curPhotoIdx = (idx + photoList.length) % photoList.length;
-                const item = photoList[curPhotoIdx];
-                pImg.src = getFfMediaProxyUrl(srvConfig, item.url, '', 'image', domain);
-                pType.innerText = item.type;
-                pCounter.innerText = `${curPhotoIdx + 1} / ${photoList.length}`;
-            };
-            renderPhotoItem(0);
-
-            m.querySelector(`#${modalId}-btn-prev`).onclick = () => renderPhotoItem(curPhotoIdx - 1);
-            m.querySelector(`#${modalId}-btn-next`).onclick = () => renderPhotoItem(curPhotoIdx + 1);
-
-            m.querySelector(`#${modalId}-btn-set-primary`).onclick = () => {
-                if (photoList.length === 0) return;
-                const cur = photoList[curPhotoIdx];
-                m.querySelector(`#${modalId}-thumb-val`).value = cur.url;
-                m.querySelector(`#${modalId}-selected-primary-url`).value = cur.url;
-                photoList.forEach((it, i) => it.is_primary = (i === curPhotoIdx));
-                toastr.success(`[${cur.type}] 이미지가 대표 사진으로 지정되었습니다.`);
-            };
-
-            pImg.onclick = () => {
-                if (photoList.length > 0) {
-                    const proxyPhotos = photoList.map(item => ({ ...item, url: getFfMediaProxyUrl(srvConfig, item.url, '', 'image', domain) }));
-                    openImageEnlargeModal(proxyPhotos, curPhotoIdx, `[${p.name_ko || p.name_org}] 프로필 사진`);
+                if (googleVal) {
+                    sourcesMap['google_fileid'] = { url: `https://drive.google.com/thumbnail?id=${googleVal}`, type: 'GOOGLE', key: 'google_fileid' };
                 }
-            };
+                sitePhotos.forEach((u, uIdx) => {
+                    if (u && u.startsWith('http')) {
+                        const lbl = (p.domain === 'WESTERN' ? 'SITE' : (p.domain === 'GENERAL' ? 'WEB' : 'AVDBS'));
+                        sourcesMap[`site_img_url_${uIdx}`] = { url: u, type: (sitePhotos.length > 1 ? `${lbl} #${uIdx + 1}` : lbl), key: 'site_img_url' };
+                    }
+                });
 
-            // 소장 출연작 목록 렌더링
-            const worksMap = p.works_detailed || p.works || {};
-            let totalWorks = 0;
-            const worksContainer = m.querySelector(`#${modalId}-works-container`);
-            worksContainer.innerHTML = '';
+                let activeKey = null;
+                const curThumb = (p.thumb || '').trim();
+                if (localVal && localVal.includes('_user.') && sourcesMap['local_img_path']) activeKey = 'local_img_path';
+                else if (curThumb) {
+                    for (const sk in sourcesMap) {
+                        if (sourcesMap[sk].url === curThumb || (localVal && curThumb.includes(localVal.split('/').pop()))) {
+                            activeKey = sk; break;
+                        }
+                    }
+                }
+                if (!activeKey) activeKey = Object.keys(sourcesMap)[0] || null;
 
-            for (const cat in worksMap) {
-                const rawList = worksMap[cat];
-                if (Array.isArray(rawList) && rawList.length > 0) {
-                    const sortedList = rawList.slice().sort((a, b) => {
-                        const tA = (typeof a === 'object' && a) ? (a.title || a.ui_code || a.code || '') : String(a);
-                        const tB = (typeof b === 'object' && b) ? (b.title || b.ui_code || b.code || '') : String(b);
-                        return tA.localeCompare(tB, 'ko');
-                    });
+                if (activeKey && sourcesMap[activeKey]) photoList.push({ ...sourcesMap[activeKey], is_primary: true });
+                Object.keys(sourcesMap).forEach(k => {
+                    if (k !== activeKey) photoList.push({ ...sourcesMap[k], is_primary: false });
+                });
 
-                    totalWorks += sortedList.length;
+                updatePrimarySourceLabelBadges(sourcesMap[activeKey]?.key || activeKey);
+                renderPhotoItem(0);
 
-                    sortedList.forEach(it => {
-                        const wCode = (typeof it === 'object' && it) ? (it.code || '') : String(it);
-                        const wUiCode = (typeof it === 'object' && it) ? (it.ui_code || wCode) : wCode;
-                        const wTitle = (typeof it === 'object' && it) ? (it.title || '') : '';
-                        const wYear = (typeof it === 'object' && it && it.year) ? ` (${it.year})` : '';
+                // 통합 인물(Merged Sub-Actors) 렌더링
+                const mergedSubWrapper = m.querySelector(`#${modalId}-merged-sub-actors-wrapper`);
+                let subList = (extra.merged_sub_actors && Array.isArray(extra.merged_sub_actors)) ? extra.merged_sub_actors : [];
+                if (subList.length === 0 && extra.alt_actor_indices && extra.alt_actor_indices.length > 1) {
+                    subList = extra.alt_actor_indices.map(aid => ({ actor_id: aid, name_org: p.name_org, name_ko: p.name_ko, site_img_url: p.thumb }));
+                }
 
-                        const workRow = document.createElement('div');
-                        workRow.className = 'pmh-db-badge';
-                        workRow.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:6px 10px; width:100%; box-sizing:border-box; margin-bottom:2px; cursor:pointer;';
-                        workRow.innerHTML = `
-                            <div style="display:flex; align-items:center; gap:6px; min-width:0; flex-grow:1;">
-                                <span style="background:#2f96b4; color:#fff; font-size:10px; padding:1px 4px; border-radius:3px; flex-shrink:0;">${cat}</span>
-                                <span style="color:#e5a00d; font-weight:bold; font-size:11.5px; flex-shrink:0;">${wUiCode}</span>
-                                <span style="color:#ddd; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:11.5px;">${wTitle}${wYear}</span>
-                            </div>
-                            <span style="color:#777; font-size:11px; flex-shrink:0;"><i class="fas fa-edit"></i></span>
+                if (subList.length > 1) {
+                    mergedSubWrapper.style.display = 'block';
+                    m.querySelector(`#${modalId}-merged-sub-count-text`).innerText = `총 ${subList.length}개 ID 병합됨`;
+
+                    const badgesContainer = m.querySelector(`#${modalId}-merged-sub-badges-container`);
+                    const tbody = m.querySelector(`#${modalId}-merged-sub-tbody`);
+                    badgesContainer.innerHTML = '';
+                    tbody.innerHTML = '';
+
+                    const currentMasterIdx = (p.person_idx || '').trim();
+
+                    subList.forEach(subItem => {
+                        const sId = subItem.actor_id || '-';
+                        const isMaster = (sId === currentMasterIdx);
+                        const bColor = isMaster ? 'background:#007bff; color:#fff;' : 'background:#222; color:#ccc; border:1px solid #444;';
+
+                        badgesContainer.insertAdjacentHTML('beforeend', `
+                            <span style="font-size:11px; padding:2px 6px; border-radius:3px; ${bColor}">${sId}${isMaster ? ' [대표]' : ''}</span>
+                        `);
+
+                        const subImg = subItem.site_img_url ? `<img src="${subItem.site_img_url}" style="width:30px; height:30px; object-fit:cover; border-radius:3px;">` : '-';
+                        const subRow = document.createElement('tr');
+                        subRow.style.cssText = 'border-bottom:1px solid #222;';
+                        subRow.innerHTML = `
+                            <td style="padding:6px; text-align:center;">${subImg}</td>
+                            <td style="padding:6px; font-weight:bold; color:${isMaster ? '#e5a00d' : '#fff'};">${sId}${isMaster ? ' <span style="font-size:10px; background:#007bff; color:#fff; padding:1px 4px; border-radius:3px;">대표</span>' : ''}</td>
+                            <td style="padding:6px; color:#ddd;">${subItem.name_org || '-'}${subItem.name_ko ? ` (${subItem.name_ko})` : ''}</td>
+                            <td style="padding:6px; text-align:center;"><button type="button" class="pmh-crop-btn pmh-btn-sub-detail" style="font-size:11px; padding:2px 6px;">🔗 상세</button></td>
+                            <td style="padding:6px; text-align:center;">
+                                ${!isMaster ? `
+                                    <button type="button" class="pmh-crop-btn pmh-btn-sub-master" style="font-size:11px; padding:2px 6px; margin-right:4px;">★ 대표 지정</button>
+                                    <button type="button" class="pmh-crop-btn pmh-btn-sub-split" style="font-size:11px; padding:2px 6px; color:#bd362f !important;">✂ 그룹 분리</button>
+                                ` : '<span style="font-size:11px; color:#777;">현재 대표 인물</span>'}
+                            </td>
                         `;
 
-                        workRow.onclick = (e) => {
-                            e.stopPropagation();
-                            openPmhMetaDbModal(null, activeServerId, wCode, wTitle);
+                        // 서브 인물 상세 팝업 오픈 (다중 레이어 스택)
+                        subRow.querySelector('.pmh-btn-sub-detail').onclick = () => {
+                            openPmhPersonDbModal(sId, p.domain, srvConfig, activeServerId);
                         };
-                        worksContainer.appendChild(workRow);
+
+                        if (!isMaster) {
+                            subRow.querySelector('.pmh-btn-sub-master').onclick = async () => {
+                                if (!confirm(`[${sId}] 인물을 이 레코드의 새로운 대표 ID 및 프로필로 지정하시겠습니까?`)) return;
+                                toastr.info("대표 인물 전환 요청 중...");
+                                const sRes = await PmhFfBridge.callPersonApi(srvConfig, 'person_sub_set_master', String(p.id || p.person_idx), sId);
+                                if (sRes && sRes.ret === 'success') {
+                                    toastr.success(sRes.msg || "대표 지정 성공");
+                                    await loadPersonDataInPlace();
+                                } else {
+                                    toastr.warning(sRes?.msg || "대표 지정 실패");
+                                }
+                            };
+
+                            subRow.querySelector('.pmh-btn-sub-split').onclick = async () => {
+                                if (!confirm(`[${sId}] 인물을 현재 그룹에서 분리하여 독립된 별도의 레코드로 분리하시겠습니까?\n(분리 후 재동기화 시에도 다시 합쳐지지 않습니다)`)) return;
+                                toastr.info("그룹 분리 요청 중...");
+                                const spRes = await PmhFfBridge.callPersonApi(srvConfig, 'person_sub_split', String(p.id || p.person_idx), sId);
+                                if (spRes && spRes.ret === 'success') {
+                                    toastr.success(spRes.msg || "그룹 분리 성공");
+                                    await loadPersonDataInPlace();
+                                } else {
+                                    toastr.warning(spRes?.msg || "그룹 분리 실패");
+                                }
+                            };
+                        }
+                        tbody.appendChild(subRow);
                     });
+
+                    m.querySelector(`#${modalId}-btn-toggle-sub-table`).onclick = () => {
+                        const tbl = m.querySelector(`#${modalId}-merged-sub-table-collapse`);
+                        tbl.style.display = (tbl.style.display === 'none') ? 'block' : 'none';
+                    };
+                } else {
+                    mergedSubWrapper.style.display = 'none';
                 }
-            }
 
-            m.querySelector(`#${modalId}-works-count`).innerText = `${totalWorks}편`;
-            if (totalWorks === 0) {
-                worksContainer.innerHTML = '<span style="color:#777; font-size:11px; padding:6px 0;">등록된 소장 출연작이 없습니다.</span>';
-            }
+                // 소장 출연작 렌더링 (클릭 시 작품 메타 모달 팝업 직결)
+                const worksMap = p.works_detailed || p.works || {};
+                let totalWorks = 0;
+                const worksContainer = m.querySelector(`#${modalId}-works-container`);
+                worksContainer.innerHTML = '';
 
-            m.querySelector(`#${modalId}-btn-sync-works`).onclick = async () => {
-                const btn = m.querySelector(`#${modalId}-btn-sync-works`);
-                btn.disabled = true;
-                btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 검증 중...`;
-                try {
-                    const syncRet = await PmhFfBridge.callPersonApi(srvConfig, 'person_verify_works', String(targetIdentifier), domain);
-                    if (syncRet && syncRet.ret === 'success') {
-                        toastr.success(syncRet.msg || "출연작 검증 및 동기화가 완료되었습니다.");
-                        closeThisModal();
-                        openPmhPersonDbModal(targetIdentifier, domain, srvConfig, activeServerId);
-                    } else {
-                        toastr.warning(syncRet?.msg || "출연작 검증 실패");
+                for (const cat in worksMap) {
+                    const rawList = worksMap[cat];
+                    if (Array.isArray(rawList) && rawList.length > 0) {
+                        const sortedList = rawList.slice().sort((a, b) => {
+                            const tA = (typeof a === 'object' && a) ? (a.title || a.ui_code || a.code || '') : String(a);
+                            const tB = (typeof b === 'object' && b) ? (b.title || b.ui_code || b.code || '') : String(b);
+                            return tA.localeCompare(tB, 'ko');
+                        });
+
+                        totalWorks += sortedList.length;
+
+                        sortedList.forEach(it => {
+                            const wCode = (typeof it === 'object' && it) ? (it.code || '') : String(it);
+                            const wUiCode = (typeof it === 'object' && it) ? (it.ui_code || wCode) : wCode;
+                            const wTitle = (typeof it === 'object' && it) ? (it.title || '') : '';
+                            const wYear = (typeof it === 'object' && it && it.year) ? ` (${it.year})` : '';
+
+                            const workRow = document.createElement('div');
+                            workRow.className = 'pmh-db-badge';
+                            workRow.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:6px 10px; width:100%; box-sizing:border-box; margin-bottom:2px; cursor:pointer;';
+                            workRow.innerHTML = `
+                                <div style="display:flex; align-items:center; gap:6px; min-width:0; flex-grow:1;">
+                                    <span style="background:#2f96b4; color:#fff; font-size:10px; padding:1px 4px; border-radius:3px; flex-shrink:0;">${cat}</span>
+                                    <span style="color:#e5a00d; font-weight:bold; font-size:11.5px; flex-shrink:0;">${wUiCode}</span>
+                                    <span style="color:#ddd; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:11.5px;">${wTitle}${wYear}</span>
+                                </div>
+                                <span style="color:#777; font-size:11px; flex-shrink:0;"><i class="fas fa-edit"></i></span>
+                            `;
+
+                            workRow.onclick = (e) => {
+                                e.stopPropagation();
+                                openPmhMetaDbModal(null, activeServerId, wCode, wTitle);
+                            };
+                            worksContainer.appendChild(workRow);
+                        });
                     }
-                } catch (e) {
-                    toastr.error(`오류 발생: ${e.message || e}`);
-                } finally {
-                    btn.disabled = false;
-                    btn.innerHTML = `<i class="fas fa-sync-alt"></i> 출연작 검증/갱신`;
                 }
-            };
 
-            // 인물 데이터 JSON 원본 전용 뷰어 모달 오픈
-            m.querySelector(`#${modalId}-btn-json`).onclick = () => {
-                const heightVal = parseInt(m.querySelector(`#${modalId}-height`).value, 10);
-                const sitePhotosText = m.querySelector(`#${modalId}-site-img-urls`).value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
-                const aliasesText = m.querySelector(`#${modalId}-aliases`).value.trim();
+                m.querySelector(`#${modalId}-works-count`).innerText = `${totalWorks}편`;
+                if (totalWorks === 0) {
+                    worksContainer.innerHTML = '<span style="color:#777; font-size:11px; padding:6px 0;">등록된 소장 출연작이 없습니다.</span>';
+                }
 
-                const currentPersonPayload = {
-                    ...(rawPersonData || p || {}),
-                    id: rawPersonData?.id || p?.id || null,
-                    domain: m.querySelector(`#${modalId}-domain`).value,
-                    person_idx: m.querySelector(`#${modalId}-idx`).value.trim(),
-                    name_org: m.querySelector(`#${modalId}-name-org`).value.trim(),
-                    name_ko: m.querySelector(`#${modalId}-name-ko`).value.trim(),
-                    name_en: m.querySelector(`#${modalId}-name-en`).value.trim(),
-                    thumb: m.querySelector(`#${modalId}-thumb-val`).value.trim() || rawPersonData?.thumb || p?.thumb || '',
-                    selected_primary_url: m.querySelector(`#${modalId}-selected-primary-url`).value.trim(),
-                    aliases: aliasesText ? aliasesText.split(',').map(s => s.trim()).filter(Boolean) : [],
-                    birth: m.querySelector(`#${modalId}-birth`).value.trim(),
-                    height: (heightVal > 0) ? heightVal : null,
-                    blood: m.querySelector(`#${modalId}-blood`).value.trim(),
-                    agency: m.querySelector(`#${modalId}-agency`).value.trim(),
-                    hobby: m.querySelector(`#${modalId}-hobby`).value.trim(),
-                    body_size: m.querySelector(`#${modalId}-body`).value.trim(),
-                    bra_size: m.querySelector(`#${modalId}-bra`).value.trim(),
-                    debut: m.querySelector(`#${modalId}-debut`).value.trim(),
-                    site_img_urls: sitePhotosText,
-                    info_url: m.querySelector(`#${modalId}-info-url`).value.trim()
+                // 출연작 검증 갱신 핸들러 (실시간 인-플레이스 갱신)
+                m.querySelector(`#${modalId}-btn-sync-works`).onclick = async () => {
+                    const btn = m.querySelector(`#${modalId}-btn-sync-works`);
+                    btn.disabled = true;
+                    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 검증 중...`;
+                    try {
+                        const syncRet = await PmhFfBridge.callPersonApi(srvConfig, 'person_verify_works', String(targetIdentifier), domain);
+                        if (syncRet && syncRet.ret === 'success') {
+                            toastr.success(syncRet.msg || "출연작 검증 및 동기화가 완료되었습니다.");
+                            await loadPersonDataInPlace();
+                        } else {
+                            toastr.warning(syncRet?.msg || "출연작 검증 실패");
+                        }
+                    } catch (e) {
+                        toastr.error(`오류 발생: ${e.message || e}`);
+                    } finally {
+                        btn.disabled = false;
+                        btn.innerHTML = `<i class="fas fa-sync-alt"></i> 출연작 검증/갱신`;
+                    }
                 };
 
-                const displayName = currentPersonPayload.name_ko || currentPersonPayload.name_org || currentPersonPayload.name_en || targetIdentifier;
-                openPmhJsonViewerModal(`[${displayName}] 인물 데이터 JSON 원본`, currentPersonPayload);
-            };
+                // 캐러셀 네비게이션 및 대표 지정
+                m.querySelector(`#${modalId}-btn-prev`).onclick = () => renderPhotoItem(curPhotoIdx - 1);
+                m.querySelector(`#${modalId}-btn-next`).onclick = () => renderPhotoItem(curPhotoIdx + 1);
 
-            m.querySelector(`#${modalId}-loading`).style.display = 'none';
-            m.querySelector(`#${modalId}-form`).style.display = 'block';
+                m.querySelector(`#${modalId}-btn-set-primary`).onclick = () => {
+                    if (photoList.length === 0) return;
+                    const cur = photoList[curPhotoIdx];
+                    m.querySelector(`#${modalId}-thumb-val`).value = cur.url;
+                    m.querySelector(`#${modalId}-selected-primary-url`).value = cur.url;
+                    photoList.forEach((it, i) => it.is_primary = (i === curPhotoIdx));
+                    updatePrimarySourceLabelBadges(cur.key);
+                    renderPhotoItem(curPhotoIdx);
+                    toastr.success(`[${cur.type}] 이미지가 대표 사진으로 지정되었습니다.`);
+                };
 
-        } catch (err) {
-            errorLog("[Person DB Modal] 로드 실패:", err);
-            toastr.error(`인물 데이터 조회 오류: ${err.message || err}`);
-            closeThisModal();
-            return;
-        }
+                m.querySelector(`#${modalId}-preview-img`).onclick = () => {
+                    if (photoList.length > 0) {
+                        const proxyPhotos = photoList.map(item => ({ ...item, url: getFfMediaProxyUrl(srvConfig, item.url, '', 'image', domain) }));
+                        openImageEnlargeModal(proxyPhotos, curPhotoIdx, `[${p.name_ko || p.name_org}] 프로필 사진`);
+                    }
+                };
 
+                // JSON 보기
+                m.querySelector(`#${modalId}-btn-json`).onclick = () => {
+                    const heightVal = parseInt(m.querySelector(`#${modalId}-height`).value, 10);
+                    const sitePhotosText = m.querySelector(`#${modalId}-site-img-urls`).value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+                    const aliasesText = m.querySelector(`#${modalId}-aliases`).value.trim();
+
+                    const currentPersonPayload = {
+                        ...(rawPersonData || p || {}),
+                        id: m.querySelector(`#${modalId}-id-val`).value ? parseInt(m.querySelector(`#${modalId}-id-val`).value, 10) : null,
+                        domain: m.querySelector(`#${modalId}-domain`).value,
+                        person_idx: m.querySelector(`#${modalId}-idx`).value.trim(),
+                        name_org: m.querySelector(`#${modalId}-name-org`).value.trim(),
+                        name_ko: m.querySelector(`#${modalId}-name-ko`).value.trim(),
+                        name_en: m.querySelector(`#${modalId}-name-en`).value.trim(),
+                        thumb: m.querySelector(`#${modalId}-thumb-val`).value.trim(),
+                        selected_primary_url: m.querySelector(`#${modalId}-selected-primary-url`).value.trim(),
+                        aliases: aliasesText ? aliasesText.split(',').map(s => s.trim()).filter(Boolean) : [],
+                        birth: m.querySelector(`#${modalId}-birth`).value.trim(),
+                        height: (heightVal > 0) ? heightVal : null,
+                        blood: m.querySelector(`#${modalId}-blood`).value.trim(),
+                        agency: m.querySelector(`#${modalId}-agency`).value.trim(),
+                        hobby: m.querySelector(`#${modalId}-hobby`).value.trim(),
+                        body_size: m.querySelector(`#${modalId}-body`).value.trim(),
+                        bra_size: m.querySelector(`#${modalId}-bra`).value.trim(),
+                        debut: m.querySelector(`#${modalId}-debut`).value.trim(),
+                        site_img_urls: sitePhotosText,
+                        info_url: m.querySelector(`#${modalId}-info-url`).value.trim()
+                    };
+
+                    const displayName = currentPersonPayload.name_ko || currentPersonPayload.name_org || targetIdentifier;
+                    openPmhJsonViewerModal(`[${displayName}] 인물 데이터 JSON 원본`, currentPersonPayload);
+                };
+
+                // 푸터 사진 편집 (크롭 모달 직결 연동)
+                m.querySelector(`#${modalId}-btn-crop-person`).onclick = () => {
+                    const activeThumb = photoList[curPhotoIdx]?.url || p.thumb || '';
+                    if (!activeThumb) return toastr.warning("편집할 사진이 없습니다.");
+
+                    const pDomain = m.querySelector(`#${modalId}-domain`).value || 'JAV';
+                    const pIdx = m.querySelector(`#${modalId}-idx`).value.trim();
+                    const pNameKo = m.querySelector(`#${modalId}-name-ko`).value.trim();
+                    const pNameOrg = m.querySelector(`#${modalId}-name-org`).value.trim();
+
+                    currentCropItemData = {
+                        targetType: 'person',
+                        personId: m.querySelector(`#${modalId}-id-val`).value || pIdx,
+                        code: pIdx,
+                        domain: pDomain,
+                        title: pNameKo || pNameOrg || pIdx,
+                        serverId: activeServerId
+                    };
+                    customUploadPayload = null;
+
+                    document.getElementById('pmh-crop-title').innerText = `[${pNameKo || pNameOrg || pIdx}] 프로필 사진 크롭 에디터`;
+                    pmhCropModal.style.display = 'flex';
+                    setCropAspectRatio(3 / 4, 'pmh-crop-ratio-portrait');
+                    loadCropImage(getFfMediaProxyUrl(srvConfig, activeThumb, '', 'image', pDomain));
+                };
+
+                loadingDiv.style.display = 'none';
+                formDiv.style.display = 'block';
+
+            } catch (err) {
+                errorLog("[Person DB Modal] 로드 실패:", err);
+                toastr.error(`인물 데이터 조회 오류: ${err.message || err}`);
+                closeThisModal();
+            }
+        };
+
+        await loadPersonDataInPlace();
+
+        // 저장 버튼 핸들러
         m.querySelector(`#${modalId}-btn-save`).onclick = async function() {
             if (!rawPersonData) return;
             const btn = this;
@@ -9861,7 +10438,7 @@ GM_addStyle(`
                 const sitePhotosText = m.querySelector(`#${modalId}-site-img-urls`).value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
 
                 const payload = {
-                    id: rawPersonData.id || null,
+                    id: m.querySelector(`#${modalId}-id-val`).value ? parseInt(m.querySelector(`#${modalId}-id-val`).value, 10) : null,
                     domain: m.querySelector(`#${modalId}-domain`).value,
                     person_idx: m.querySelector(`#${modalId}-idx`).value.trim(),
                     name_org: m.querySelector(`#${modalId}-name-org`).value.trim(),
@@ -9878,14 +10455,18 @@ GM_addStyle(`
                     body_size: m.querySelector(`#${modalId}-body`).value.trim(),
                     bra_size: m.querySelector(`#${modalId}-bra`).value.trim(),
                     debut: m.querySelector(`#${modalId}-debut`).value.trim(),
+                    local_img_path: m.querySelector(`#${modalId}-local-path`).value.trim(),
+                    google_fileid: m.querySelector(`#${modalId}-google-id`).value.trim(),
+                    site_img_url: m.querySelector(`#${modalId}-site-url`).value.trim(),
                     site_img_urls: sitePhotosText,
+                    info_url: m.querySelector(`#${modalId}-info-url`).value.trim(),
                     person_type: 'actor'
                 };
 
                 const ret = await PmhFfBridge.callPersonApi(srvConfig, 'person_save', JSON.stringify(payload));
                 if (!ret || ret.ret !== 'success') throw new Error(ret?.msg || "인물 정보 저장 실패");
 
-                toastr.success(`[${payload.name_ko || payload.name_org}] 인물 정보가 저장되었습니다.`);
+                toastr.success(`[${payload.name_ko || payload.name_org}] 인물 정보가 성공적으로 저장되었습니다.`);
                 closeThisModal();
 
             } catch (err) {
@@ -9929,6 +10510,7 @@ GM_addStyle(`
             const btnSrcP = document.getElementById('pmh-crop-src-p');
             if (btnSrcP) btnSrcP.classList.remove('pmh-crop-btn-active');
 
+            updateDirectSaveBtn();
             loadCropImage(currentCropItemData.plUrl);
         };
     }
@@ -9945,6 +10527,7 @@ GM_addStyle(`
             const btnSrcPl = document.getElementById('pmh-crop-src-pl');
             if (btnSrcPl) btnSrcPl.classList.remove('pmh-crop-btn-active');
 
+            updateDirectSaveBtn();
             loadCropImage(currentCropItemData.pUrl);
         };
     }
@@ -10087,12 +10670,102 @@ GM_addStyle(`
         infoLog(`[Crop Modal] 2열 상시 URL 입력창을 통한 이미지 로드: ${rawUrl}`);
         loadCropImage(rawUrl, true);
         toastr.info("URL 이미지를 불러오는 중입니다...");
+        updateDirectSaveBtn();
     }
 
     if (btnApplyCropUrl) {
         btnApplyCropUrl.onclick = function(e) {
             e.preventDefault();
             applyDirectCropUrl();
+        };
+    }
+
+    // FF direct_save 호출 및 후속 갱신 핸들러
+    const btnDirectSave = document.getElementById('pmh-btn-direct-save');
+    if (btnDirectSave) {
+        btnDirectSave.onclick = async function(e) {
+            e.preventDefault();
+            if (!currentCropItemData || !customUploadPayload || customUploadPayload.type !== 'url') return;
+
+            const { serverId, code, module } = currentCropItemData;
+            const srvConfig = getServerConfig(serverId);
+            if (!srvConfig) return toastr.error("서버 설정을 찾을 수 없습니다.");
+
+            const inputCropUrl = document.getElementById('pmh-input-crop-url');
+            const rawUrl = inputCropUrl ? inputCropUrl.value.trim() : '';
+            if (!rawUrl) return toastr.warning("저장할 이미지 URL이 없습니다.");
+
+            const isP = (currentCropItemData.currentSource === 'p');
+            const imageType = isP ? 'p' : 'pl';
+            const typeLabel = isP ? 'p_user' : 'pl_user';
+
+            const origHtml = btnDirectSave.innerHTML;
+            btnDirectSave.disabled = true;
+            btnDirectSave.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 저장 중...`;
+
+            try {
+                const payload = {
+                    code: code,
+                    type: imageType,
+                    url: rawUrl
+                };
+
+                infoLog(`[Crop Modal] 💾 FF direct_save 요청 전송:`, payload);
+
+                const saveRes = await makeRequest(
+                    `${srvConfig.relayUrl}/ff_metadata/api/${module}/direct_save`,
+                    'POST',
+                    payload,
+                    ClientSettings.masterApiKey,
+                    null,
+                    180000
+                );
+
+                infoLog(`[Crop Modal] ✅ FF direct_save 응답 수신:`, saveRes);
+
+                if (saveRes && saveRes.ret === 'success') {
+                    toastr.success(`[${code}] ${typeLabel} 저장 및 DB 업데이트 완료!`);
+
+                    const reqUrl = `${srvConfig.relayUrl}/ff_metadata/api/${module}/info?code=${encodeURIComponent(code)}&call=plex&_t=${Date.now()}`;
+                    const infoRes = await makeRequest(reqUrl, 'GET', null, ClientSettings.masterApiKey, null, 180000);
+
+                    let plUrl = '';
+                    if (infoRes.thumb) {
+                        for (const t of infoRes.thumb) {
+                            if (t.aspect === 'landscape') { plUrl = t.value; break; }
+                        }
+                    }
+                    if (!plUrl && infoRes.fanart && infoRes.fanart.length > 0) plUrl = infoRes.fanart[0];
+                    if (!plUrl) plUrl = infoRes.poster_url;
+
+                    let pUrl = infoRes.poster_url || '';
+                    if (!pUrl && infoRes.thumb) {
+                        for (const t of infoRes.thumb) {
+                            if (t.aspect === 'poster') { pUrl = t.value; break; }
+                        }
+                    }
+                    if (!pUrl && plUrl) pUrl = plUrl;
+
+                    currentCropItemData.plUrl = plUrl || pUrl;
+                    currentCropItemData.pUrl = pUrl || plUrl;
+
+                    customUploadPayload = null;
+                    if (inputCropUrl) inputCropUrl.value = '';
+                    updateDirectSaveBtn();
+
+                    const targetReloadUrl = isP ? currentCropItemData.pUrl : currentCropItemData.plUrl;
+                    loadCropImage(targetReloadUrl);
+                } else {
+                    throw new Error(saveRes?.msg || "저장에 실패했습니다.");
+                }
+            } catch (err) {
+                errorLog("[Crop Modal] ❌ direct_save 실패:", err);
+                toastr.error(`저장 실패: ${err.message || err}`);
+            } finally {
+                btnDirectSave.disabled = false;
+                btnDirectSave.innerHTML = origHtml;
+                updateDirectSaveBtn();
+            }
         };
     }
 
@@ -10151,6 +10824,45 @@ GM_addStyle(`
 
             try {
                 const cropData = cropperInstance.getData(true);
+                if (currentCropItemData.targetType === 'person') {
+                    const personId = currentCropItemData.personId || code;
+                    const personDomain = currentCropItemData.domain || 'JAV';
+
+                    let croppedBase64 = '';
+                    try {
+                        const canvas = cropperInstance.getCroppedCanvas();
+                        if (canvas) croppedBase64 = canvas.toDataURL('image/jpeg', 0.95);
+                    } catch(e) {}
+
+                    const personPayload = {
+                        command: 'person_crop_save',
+                        arg1: personId,
+                        arg2: JSON.stringify(cropData),
+                        arg3: croppedBase64 ? JSON.stringify({ type: 'canvas', data: croppedBase64 }) : (customUploadPayload ? JSON.stringify(customUploadPayload) : ''),
+                        domain: personDomain,
+                        image_url: (customUploadPayload && customUploadPayload.type === 'url') ? customUploadPayload.url : ''
+                    };
+
+                    infoLog(`[Crop Modal] 💾 FF person_crop_save 요청 전송: PersonID=${personId}, Domain=${personDomain}`);
+                    const res = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/person_api`, 'POST', personPayload, ClientSettings.masterApiKey, null, 60000);
+
+                    if (res && res.ret === 'success') {
+                        toastr.success(`[${currentCropItemData.title || personId}] 프로필 사진 저장 완료!`);
+                        closeCropModal();
+
+                        const activePersonModal = document.querySelector('.pmh-card-person_db');
+                        if (activePersonModal && res.new_url) {
+                            const bustedUrl = res.new_url + (res.new_url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+                            activePersonModal.querySelector('input[id$="-thumb-val"]').value = res.new_url;
+                            const pImg = activePersonModal.querySelector('img[id$="-preview-img"]');
+                            if (pImg) pImg.src = bustedUrl;
+                        }
+                    } else {
+                        throw new Error(res?.msg || "프로필 사진 저장 실패");
+                    }
+                    return;
+                }
+
                 const payload = { 
                     code: code, 
                     crop_data: cropData,
