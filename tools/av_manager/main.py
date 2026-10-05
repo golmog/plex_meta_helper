@@ -18,6 +18,53 @@ from pmh_core import compile_jav_rules, extract_jav_pid, normalize_pid_for_compa
 def normalize_pid(pid_str):
     return normalize_pid_for_comparison(pid_str)
 
+def find_local_meta_json(dir_name, base_name, raw_pid=None, files_in_dir=None, cfg=None, compiled_rules=None):
+    """DB 품번(1MOON-009), 숫자 접두사 제거(moon-009), 파일명 추출 품번을 순차 대조하여 로컬 JSON 탐색"""
+    candidates = []
+
+    # DB 제목 내 품번 원본 (예: 1moon-009.json)
+    if raw_pid:
+        p_clean = str(raw_pid).strip().lower()
+        candidates.append(f"{p_clean}.json")
+
+        # 라벨 분류용 숫자 접두사 제거 폴백 (예: 1MOON-009 -> moon-009.json, 298GOOD-026 -> good-026.json)
+        stripped_pid = re.sub(r'^\d+', '', p_clean)
+        if stripped_pid and stripped_pid != p_clean:
+            candidates.append(f"{stripped_pid}.json")
+
+    # 실제 비디오 파일명에서 정규식으로 추출한 품번 (예: 파일명이 [M-Team] moon-009-C 1080p.mp4 인 경우 moon-009.json)
+    if base_name:
+        if cfg and compiled_rules:
+            try:
+                f_pids = extract_jav_pid(base_name, cfg, compiled_rules)
+                for f_l, f_n in f_pids:
+                    candidates.append(f"{f_l.lower()}-{f_n.lower()}.json")
+                    candidates.append(f"{f_l.lower()}{f_n.lower()}.json")
+            except Exception: pass
+
+        # 파일명 자체 (예: moon-009.json)
+        b_clean = base_name.lower().strip()
+        candidates.append(f"{b_clean}.json")
+
+    # 중복 제거 (우선순위 순서 보존)
+    seen = set()
+    unique_candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+
+    # 디렉터리 파일 캐시(files_in_dir)가 제공된 경우 O(1) 메모리 검색
+    if files_in_dir is not None:
+        for c_name in unique_candidates:
+            if c_name in files_in_dir:
+                return os.path.join(dir_name, c_name), [os.path.join(dir_name, c) for c in unique_candidates]
+        return None, [os.path.join(dir_name, c) for c in unique_candidates]
+
+    # 디스크 실존 검사 (os.path.exists)
+    for c_name in unique_candidates:
+        target_path = os.path.join(dir_name, c_name)
+        if os.path.exists(target_path):
+            return target_path, [os.path.join(dir_name, c) for c in unique_candidates]
+
+    return None, [os.path.join(dir_name, c) for c in unique_candidates]
+
 # =====================================================================
 # 디스코드 알림 기본 템플릿
 # =====================================================================
@@ -72,10 +119,9 @@ def get_ui(core_api=None):
                 "options": [
                     {"value": "mismatch", "label": "품번 불일치 및 오매칭 검출"},
                     {"value": "dupes", "label": "품번 기준 분리/중복 등록 검출"},
-                    {"value": "actor", "label": "배우 이름 한글화 대상 검출"},
-                    {"value": "user_poster", "label": "유저 포스터 일괄 적용 (이미지 서버 사용시)"},
-                    {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"},
+                    {"value": "meta_sync", "label": "FF 메타 DB / 유저 포스터 동기화"},
                     {"value": "llm_translation", "label": "LLM (Ollama) 번역 미적용 항목 검출 및 리매칭"},
+                    {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"},
                     {"value": "preview_clip", "label": "일괄 프리뷰 클립 생성 (트레일러 없는 영상)"}
                 ]
             },
@@ -133,14 +179,6 @@ def get_ui(core_api=None):
                 "default": 1
             },
             
-            {"id": "s_h_opts", "type": "header", "label": "<i class='fas fa-cogs'></i> 처리 옵션"},
-            {
-                "id": "actors_db_path",
-                "type": "text",
-                "label": "배우 DB (actors.db) 파일 경로",
-                "default": "/data/dev/metadata/files/jav_actors2.db",
-                "placeholder": "/data/dev/metadata/files/jav_actors2.db"
-            },
             {
                 "id": "image_server_path",
                 "type": "text",
@@ -154,17 +192,6 @@ def get_ui(core_api=None):
                 "label": "포스터 웹 접근 주소 (미리보기 용 URL)",
                 "default": "",
                 "placeholder": "예) https://ff.your-server.com/images"
-            },
-            {"id": "s_h_db", "type": "header", "label": f"<div style='display:flex; flex-direction:column; gap:4px;'><span style='font-size:14px;'><i class='fas fa-database'></i> 포스터 적용 이력 영구 DB 관리</span><span style='font-size:11px; color:#888; font-weight:normal;'><i class='fas fa-folder-open'></i> DB 경로: {history_db_path}</span></div>"},
-            {
-                "id": "btn_clear_history_db",
-                "type": "sub_action",
-                "action_type": "clear_poster_history",
-                "label": "적용 이력 초기화 (DB 삭제)",
-                "color": "#bd362f",
-                "icon": "fas fa-trash-alt",
-                "msg_pos": "right",
-                "width": "auto"
             },
 
             {"id": "s_h_cron", "type": "header", "label": "<i class='fas fa-clock'></i> 자동 실행 스케줄러"},
@@ -262,28 +289,6 @@ def run(data, core_api):
             else:
                 return {"status": "error", "message": "캐시된 대상이 없습니다. 먼저 조회해주세요."}, 400
 
-    if action == 'clear_poster_history':
-        try:
-            base_dir = core_api['config'].get('base_dir', '')
-            deleted_any = False
-            
-            for db_name in ['av_manager_poster_history.db', 'jav_manager_poster_history.db']:
-                db_path = os.path.join(base_dir, 'task_logs', db_name)
-                for ext in ["", "-wal", "-shm"]:
-                    target_path = db_path + ext
-                    if os.path.exists(target_path):
-                        try:
-                            os.remove(target_path)
-                            deleted_any = True
-                        except OSError: pass
-
-            if deleted_any:
-                return {"status": "success", "message": "포스터 이력 DB가 완전히 삭제되었습니다."}, 200
-            else:
-                return {"status": "success", "message": "삭제할 파일이 없습니다. (이미 초기화됨)"}, 200
-        except Exception as e:
-            return {"status": "error", "message": f"DB 삭제 실패: {str(e)}"}, 500
-
     return {"status": "error", "message": f"지원하지 않는 명령입니다 ({action})"}, 400
 
 # =====================================================================
@@ -352,46 +357,284 @@ def make_ff_preview_clip(global_config, code, cat, video_path):
     except Exception as e:
         return False, f"FF 통신 실패: {e}"
 
-# ==============================================================================
-# 포스터 이력 영구 DB 관리 헬퍼 (로컬 SQLite)
-# ==============================================================================
-def _init_history_db(db_path):
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    with sqlite3.connect(db_path, timeout=5.0) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS poster_history (
-                section_id TEXT,
-                pid TEXT,
-                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (section_id, pid)
-            )
-        """)
+def fetch_ff_meta_info(global_config, code=None, media_path=None):
+    """FF 메타데이터 info API를 호출하여 최신 메타 JSON을 가져옴 (media_path 자동 파싱 지원)"""
+    mate_url = global_config.get('mate_url', '').rstrip('/')
+    mate_apikey = global_config.get('mate_apikey', '')
+    if not mate_url or not mate_apikey:
+        return None
 
-def _get_applied_posters(db_path):
-    applied = set()
-    
-    # 신규 DB 및 구버전(jav_manager) DB 모두 탐색하여 마이그레이션 호환
-    db_paths_to_check = [db_path]
-    legacy_path = db_path.replace('av_manager_', 'jav_manager_')
-    if legacy_path != db_path: db_paths_to_check.append(legacy_path)
+    query_params = {'apikey': mate_apikey}
+    if code: query_params['code'] = code
+    if media_path: query_params['media_path'] = media_path
 
-    for p in db_paths_to_check:
-        if os.path.exists(p):
-            try:
-                with sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5.0) as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT section_id, pid FROM poster_history")
-                    for row in c.fetchall():
-                        applied.add(f"{row[0]}_{row[1]}")
-            except: pass
-    return applied
+    # 카테고리 모듈 판별 (C: jav_censored, E: jav_uncensored, W: western)
+    module = 'jav_censored'
+    if code:
+        prefix = code[0].upper()
+        if prefix == 'E': module = 'jav_uncensored'
+        elif prefix == 'W': module = 'western'
 
-def _mark_poster_applied(db_path, section_id, pid):
-    _init_history_db(db_path)
+    target_url = f"{mate_url}/metadata/api/{module}/info?{urllib.parse.urlencode(query_params)}"
     try:
-        with sqlite3.connect(db_path, timeout=5.0) as conn:
-            conn.execute("INSERT OR REPLACE INTO poster_history (section_id, pid) VALUES (?, ?)", (str(section_id), str(pid)))
-    except Exception: pass
+        req = urllib.request.Request(
+            target_url,
+            headers={
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlexMetaHelper/1.0'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_text = response.read().decode('utf-8')
+            return json.loads(res_text)
+    except Exception:
+        return None
+
+def fetch_ff_meta_batch(global_config, category, codes_list):
+    """FF 메타데이터 DB의 info_batch API를 호출하여 대량(최대 100건)의 메타데이터를 일괄 조회"""
+    if not codes_list:
+        return {}
+
+    mate_url = global_config.get('mate_url', '').rstrip('/')
+    mate_apikey = global_config.get('mate_apikey', '')
+    if not mate_url or not mate_apikey:
+        return {}
+
+    # 소문자 모듈명 정규화 (jav_censored / jav_uncensored / western)
+    cat_lower = str(category).lower()
+    if cat_lower in ['jav_cen', 'c']:
+        target_cat = 'jav_censored'
+    elif cat_lower in ['jav_uncen', 'e']:
+        target_cat = 'jav_uncensored'
+    elif cat_lower in ['western', 'w']:
+        target_cat = 'western'
+    else:
+        target_cat = cat_lower
+
+    params = urllib.parse.urlencode({'apikey': mate_apikey})
+    target_url = f"{mate_url}/metadata/api/meta_db/info_batch?{params}"
+
+    payload = {
+        'category': target_cat,
+        'codes': codes_list,
+        'apikey': mate_apikey
+    }
+
+    try:
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            target_url,
+            data=data,
+            method='POST',
+            headers={
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-API-Key': mate_apikey,
+                'apikey': mate_apikey,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PlexMetaHelper/1.0'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
+            res_text = response.read().decode('utf-8')
+            res_json = json.loads(res_text)
+            if res_json.get('ret') == 'success' and isinstance(res_json.get('data'), dict):
+                return res_json.get('data')
+            return {}
+    except Exception:
+        return {}
+
+def query_ff_meta_direct_pg(meta_db_api, category, codes_list):
+    """코어의 범용 meta_db 인터페이스를 통해 툴이 정의한 최적화 SQL로 대량 메타데이터를 직접 고속 조회"""
+    if not codes_list or not meta_db_api or not meta_db_api.get('is_enabled') or not meta_db_api['is_enabled']():
+        return {}
+
+    # 카테고리 명칭 정규화 (JAV_CEN, JAV_UNCEN, WESTERN)
+    cat_upper = str(category).upper()
+    if cat_upper in ['JAV_CEN', 'C']:
+        target_cat = 'JAV_CEN'
+    elif cat_upper in ['JAV_UNCEN', 'E']:
+        target_cat = 'JAV_UNCEN'
+    elif cat_upper in ['WESTERN', 'W']:
+        target_cat = 'WESTERN'
+    else:
+        target_cat = cat_upper
+
+    # B-Tree 인덱스를 완벽히 타도록 파이썬에서 대문자 및 원본 코드를 합쳐 유니크 튜플로 사전 구성
+    candidate_codes = set()
+    for c in codes_list:
+        if c:
+            cs = str(c).strip()
+            if cs:
+                candidate_codes.add(cs)
+                candidate_codes.add(cs.upper())
+
+    if not candidate_codes:
+        return {}
+
+    codes_tuple = tuple(candidate_codes)
+
+    sql = """
+        SELECT 
+            mi.id,
+            mi.code,
+            mi.ui_code,
+            mi.title,
+            mi.tagline,
+            mi.plot,
+            mi.poster_url,
+            mi.extra_info,
+            EXISTS(
+                SELECT 1 FROM meta_media mm 
+                WHERE mm.item_id = mi.id AND mm.is_user = TRUE AND mm.media_type = 'poster'
+            ) AS has_user_p,
+            EXISTS(
+                SELECT 1 FROM meta_media mm 
+                WHERE mm.item_id = mi.id AND mm.is_user = TRUE AND mm.media_type = 'landscape'
+            ) AS has_user_pl
+        FROM meta_item mi
+        WHERE mi.category = %s 
+          AND (mi.code IN %s OR mi.ui_code IN %s)
+    """
+
+    params = (target_cat, codes_tuple, codes_tuple)
+    rows = meta_db_api['query'](sql, params)
+    if not rows:
+        return {}
+
+    result_map = {}
+    for r in rows:
+        c_code = r.get('code') or ''
+        c_ui = r.get('ui_code') or ''
+        extra_info = r.get('extra_info') if isinstance(r.get('extra_info'), dict) else {}
+
+        # 썸네일 리스트 조립 (유저 포스터 등록 여부 반영)
+        thumbs = []
+        stem_name = (c_ui or c_code).lower()
+        if r.get('has_user_pl'):
+            thumbs.append({'aspect': 'landscape', 'value': f"{stem_name}_pl_user.jpg"})
+
+        p_val = r.get('poster_url') or ''
+        if r.get('has_user_p'):
+            p_val = f"{stem_name}_p_user.jpg"
+        if p_val:
+            thumbs.append({'aspect': 'poster', 'value': p_val})
+
+        # 배우 목록 추출 (extra_info['_actors'] 정규화 데이터 활용)
+        raw_actors = extra_info.get('_actors') or extra_info.get('actor_cache') or []
+        actors_list = []
+        for a in raw_actors:
+            if isinstance(a, dict):
+                a_ko = a.get('name_ko', '').strip()
+                a_org = a.get('name_org', '').strip()
+                actors_list.append({
+                    'name': a_ko or a_org,
+                    'name_ko': a_ko,
+                    'name_org': a_org,
+                    'name_en': a.get('name_en', '').strip(),
+                    'actor_idx': str(a.get('actor_idx') or '').strip()
+                })
+
+        item_meta = {
+            'code': c_code,
+            'ui_code': c_ui,
+            'title': r.get('title') or '',
+            'tagline': r.get('tagline') or '',
+            'plot': r.get('plot') or '',
+            'thumb': thumbs,
+            'actor': actors_list,
+            'extra_info': extra_info
+        }
+
+        if c_code:
+            result_map[c_code.lower()] = item_meta
+        if c_ui:
+            result_map[c_ui.lower()] = item_meta
+
+    return result_map
+
+def detect_meta_diff(local_json, ff_json):
+    """로컬 JSON과 FF 메타 DB JSON을 대조하여 갱신 사유 목록(배우 한글화/유저 포스터/LLM 번역)을 반환"""
+    diff_reasons = []
+    if not ff_json:
+        return diff_reasons
+
+    # 배우 이름 한글화 여부 정밀 대조
+    local_actors = local_json.get('actor') or []
+    ff_actors = ff_json.get('actor') or []
+    has_actor_diff = False
+
+    for ff_act in ff_actors:
+        if not isinstance(ff_act, dict): continue
+        ff_name = ff_act.get('name', '').strip()
+        ff_ko = ff_act.get('name_ko', '').strip()
+        ff_org = ff_act.get('name_org', '').strip()
+
+        # FF DB에 한글 표기가 존재하는 배우 기준
+        target_kr = ff_ko or ff_name
+        if not re.search(r'[가-힣]', target_kr):
+            continue
+
+        matched_loc = None
+        for loc_act in local_actors:
+            if not isinstance(loc_act, dict): continue
+            loc_name = loc_act.get('name', '').strip()
+            loc_org = loc_act.get('name_org', '').strip()
+            loc_idx = loc_act.get('actor_idx', '').strip()
+            ff_idx = ff_act.get('actor_idx', '').strip()
+
+            if (ff_idx and loc_idx and ff_idx == loc_idx) or \
+               (ff_org and loc_org and ff_org == loc_org) or \
+               (loc_name in [ff_name, ff_ko, ff_org]):
+                matched_loc = loc_act
+                break
+
+        if matched_loc:
+            loc_name = matched_loc.get('name', '').strip()
+            # 로컬의 표시 이름(name)에 한글이 없거나 FF의 한글 이름과 일치하지 않는 경우
+            if not re.search(r'[가-힣]', loc_name) or loc_name != target_kr:
+                has_actor_diff = True
+                break
+        else:
+            if not local_actors:
+                has_actor_diff = True
+                break
+
+    if has_actor_diff:
+        diff_reasons.append("배우 정보 업데이트")
+
+    # 유저 포스터/썸네일 갱신 여부 대조
+    local_thumbs = local_json.get('thumb') or []
+    ff_thumbs = ff_json.get('thumb') or []
+
+    local_thumb_urls = {t.get('value', '') for t in local_thumbs if isinstance(t, dict)}
+    ff_thumb_urls = {t.get('value', '') for t in ff_thumbs if isinstance(t, dict)}
+
+    has_user_poster_in_ff = any('_user.jpg' in u for u in ff_thumb_urls)
+    has_user_poster_in_loc = any('_user.jpg' in u for u in local_thumb_urls)
+
+    if (has_user_poster_in_ff and not has_user_poster_in_loc) or (ff_thumb_urls and local_thumb_urls != ff_thumb_urls):
+        diff_reasons.append("유저 포스터")
+
+    # 번역 내용(줄거리/부제/제목) 실질적 텍스트 차이 대조
+    loc_plot = str(local_json.get('plot', '')).strip()
+    ff_plot = str(ff_json.get('plot', '')).strip()
+    loc_tagline = str(local_json.get('tagline', '')).strip()
+    ff_tagline = str(ff_json.get('tagline', '')).strip()
+    loc_title = str(local_json.get('title', '')).strip()
+    ff_title = str(ff_json.get('title', '')).strip()
+
+    is_content_diff = False
+    if ff_plot and loc_plot != ff_plot:
+        is_content_diff = True
+    elif ff_tagline and loc_tagline != ff_tagline:
+        is_content_diff = True
+    elif ff_title and loc_title != ff_title:
+        is_content_diff = True
+
+    if is_content_diff:
+        diff_reasons.append("번역 내용 차이")
+
+    return diff_reasons
 
 
 # =====================================================================
@@ -502,12 +745,12 @@ def worker(task_data, core_api, start_index):
                 task.update_state('completed', 100, 100)
                 return
 
-            # 1. 1회성 임시 필터 (조회 탭)
+            # 1회성 임시 필터 (조회 탭)
             ui_filter_fields = task_data.get('filter_fields', ['guid', 'title'])
             filter_include_raw = task_data.get('filter_include', '')
             filter_exclude_raw = task_data.get('filter_exclude', '')
             
-            # 2. 고정 전역 필터 (환경설정 탭)
+            #고정 전역 필터 (환경설정 탭)
             fixed_filter_cron_only = task_data.get('fixed_filter_cron_only', False)
             fixed_filter_fields = task_data.get('fixed_filter_fields', ['title', 'path'])
             fixed_filter_include_raw = task_data.get('fixed_filter_include', '')
@@ -572,7 +815,7 @@ def worker(task_data, core_api, start_index):
 
                 skip_item = False
                 
-                # 1. 고정 필터 검사
+                # 고정 필터 검사
                 if apply_fixed_filters and (fixed_inc_rules or fixed_exc_rules):
                     fixed_texts = _get_texts(fixed_filter_fields)
                     if fixed_inc_rules and not _is_match(fixed_inc_rules, fixed_texts): skip_item = True
@@ -580,7 +823,7 @@ def worker(task_data, core_api, start_index):
 
                 if skip_item: continue
 
-                # 2. 수동 임시 필터 검사
+                # 수동 임시 필터 검사
                 if ui_inc_rules or ui_exc_rules:
                     ui_texts = _get_texts(ui_filter_fields)
                     if ui_inc_rules and not _is_match(ui_inc_rules, ui_texts): skip_item = True
@@ -634,7 +877,7 @@ def worker(task_data, core_api, start_index):
             {"key": "action", "label": "실행", "width": "10%", "align": "center", "header_align": "center", "type": "action_btn"}
         ]
 
-        # ----- [1] 불일치/오매칭 검사 -----
+        # 불일치/오매칭 검사
         if mode == "mismatch":
             for idx, item in enumerate(all_items):
                 if task.is_cancelled(): break
@@ -694,7 +937,7 @@ def worker(task_data, core_api, start_index):
                         "reason": reason, "op_action": op_action, "raw_path": files[0]
                     })
 
-        # ----- [2] 분리된 중복 검사 -----
+        # 분리된 중복 검사
         elif mode == "dupes":
             pid_item_map = defaultdict(list)
             for idx, item in enumerate(all_items):
@@ -740,162 +983,349 @@ def worker(task_data, core_api, start_index):
                             "op_action": "match", "raw_path": item['raw_path']
                         })
 
-        # ----- [3] 배우 이름 한글화 -----
-        elif mode == "actor":
-            db_path = task_data.get('actors_db_path')
-            if not db_path or not os.path.exists(db_path):
-                task.log("오류: 환경 설정에서 올바른 배우 DB(actors.db) 경로를 입력하세요.")
-                task.update_state('error')
-                return
-                
-            task.log("배우 DB 메모리 캐싱 중...")
-            actor_cache = {}
-            try:
-                # actors.db는 로컬 독립 SQLite 파일이므로 안전하게 연결
-                with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
-                    con.row_factory = sqlite3.Row
-                    rows = con.execute("SELECT inner_name_kr, inner_name_cn, actor_onm FROM actors").fetchall()
-                    for r in rows:
-                        kr_name = r['inner_name_kr']
-                        if not kr_name: continue
-                        names_to_check = set()
-                        if r['inner_name_cn']: names_to_check.add(r['inner_name_cn'])
-                        if r['actor_onm']:
-                            names_to_check.update(re.findall(r'\(([^)]+)\)', r['actor_onm']))
-                        for n in names_to_check:
-                            actor_cache[n] = kr_name
-            except Exception as e:
-                task.log(f"배우 DB 접속 실패: {e}")
-                task.update_state('error')
-                return
-
-            if not actor_cache:
-                task.log("배우 DB에서 파싱할 데이터가 없습니다.")
-                task.update_state('error')
-                return
-
-            task.log("Plex DB에서 배우 메타데이터 대조 중 (최적화 쿼리 실행)...")
-            hit_reasons = defaultdict(list)
-            try:
-                tag_query = f"""
-                    SELECT tg.metadata_item_id, t.tag 
-                    FROM taggings tg 
-                    JOIN tags t ON tg.tag_id = t.id 
-                    JOIN metadata_items mi ON mi.id = tg.metadata_item_id
-                    WHERE t.tag_type = 6 AND mi.library_section_id IN ({placeholders}) AND mi.metadata_type = 1
-                """
-                res = core_api['query'](tag_query, tuple(clean_sec_ids))
-                
-                for row in res:
-                    m_id = row.get('metadata_item_id')
-                    orig_actor = row.get('tag')
-                    if orig_actor in actor_cache and actor_cache[orig_actor] != orig_actor:
-                        hit_reasons[m_id].append(f"{orig_actor} → {actor_cache[orig_actor]}")
-            except Exception as e:
-                task.log(f"태그 쿼리 중 오류: {e}")
-            
-            task.log("검출된 항목을 정리하는 중...")
-            for item in all_items:
-                if task.is_cancelled(): break
-                if item['id'] in hit_reasons:
-                    result_data.append({
-                        "id": item['id'], "section_name": item['section_name'], "title": item['title'], 
-                        "reason": f"{', '.join(hit_reasons[item['id']][:3])}" + (" 외" if len(hit_reasons[item['id']]) > 3 else ""),
-                        "op_action": "match", "raw_path": item.get('all_files', '').split('|||')[0]
-                    })
-
-        # ----- [4] 유저 포스터 일괄 적용 (영구 DB 캐시) -----
-        elif mode == "user_poster":
+        # 메타데이터 및 유저 포스터 통합 동기화 모드
+        elif mode == "meta_sync":
             img_root = task_data.get('image_server_path')
             web_url_root = task_data.get('image_web_url', '').rstrip('/')
-            
-            if not img_root or not os.path.exists(img_root):
-                task.log("오류: 환경 설정에서 올바른 포스터 경로를 입력하세요.")
-                task.update_state('error')
-                return
-                
-            task.log(f"이미지 서버 경로({img_root}) 스캔 중...")
-            
-            user_posters = defaultdict(lambda: {'preview': '', 'files': []})
+
+            user_posters_disk = defaultdict(lambda: {'preview': '', 'files': []})
             poster_regex = re.compile(r'^([a-zA-Z0-9\-]+)_(p|pl)_user\.jpg$', re.IGNORECASE)
-            
-            try:
-                for root, _, files in os.walk(img_root):
-                    if task.is_cancelled(): break
-                    for f in files:
-                        pid_match = poster_regex.match(f)
-                        if pid_match:
-                            raw_pid = pid_match.group(1).lower()
-                            rel_dir = os.path.relpath(root, img_root)
-                            rel_path = f if rel_dir == '.' else f"{rel_dir}/{f}".replace('\\', '/')
-                            
-                            if not user_posters[raw_pid]['preview']:
-                                user_posters[raw_pid]['preview'] = rel_path
-                            if f not in user_posters[raw_pid]['files']:
-                                user_posters[raw_pid]['files'].append(f)
-            except Exception as e:
-                task.log(f"포스터 경로 스캔 오류: {e}")
-                task.update_state('error')
-                return
 
-            if not user_posters:
-                task.log("폴더 내에 유효한 _p_user.jpg 또는 _pl_user.jpg 파일이 없습니다.")
-                task.update_state('error')
-                return
+            # 이미지 서버 로컬 경로 직접 스캔 (수동 파일 교체 건 감지)
+            if img_root and os.path.exists(img_root):
+                task.log(f"이미지 서버 경로({img_root})에서 유저 포스터 파일 확인 중...")
+                try:
+                    for root, _, files in os.walk(img_root):
+                        if task.is_cancelled(): break
+                        for f in files:
+                            pid_match = poster_regex.match(f)
+                            if pid_match:
+                                raw_pid = pid_match.group(1).lower()
+                                rel_dir = os.path.relpath(root, img_root)
+                                rel_path = f if rel_dir == '.' else f"{rel_dir}/{f}".replace('\\', '/')
+                                if not user_posters_disk[raw_pid]['preview']:
+                                    user_posters_disk[raw_pid]['preview'] = rel_path
+                                if f not in user_posters_disk[raw_pid]['files']:
+                                    user_posters_disk[raw_pid]['files'].append(f)
+                except Exception as e:
+                    task.log(f"⚠️ 포스터 경로 스캔 중 오류 (무시 후 계속): {e}")
 
-            history_db_path = os.path.join(core_api['config'].get('base_dir', ''), 'task_logs', 'av_manager_poster_history.db')
-            applied_posters = _get_applied_posters(history_db_path)
-            
-            task.log(f"스캔 완료. {len(user_posters):,}개의 고유 품번 포스터와 대조를 시작합니다. (이전 적용 완료: {len(applied_posters):,}건 제외)")
-            
-            title_regex = re.compile(r'^\[([A-Za-z0-9\-_]+)\]')
-            
-            skip_count = 0
+            meta_db = core_api.get('meta_db')
+            is_pg_ready = False
+
+            # 메타 DB 설정 활성화 시 사전 접속 테스트 헬퍼 실행 후 선제적 분기 결정
+            if meta_db and meta_db.get('is_enabled') and meta_db['is_enabled']():
+                task.log("🔍 [MetaDB Check] 외부 메타 PostgreSQL 연결 상태를 사전 검증합니다...")
+                test_fn = meta_db.get('test_connection')
+                if test_fn:
+                    is_ok, test_msg = test_fn()
+                    if is_ok:
+                        is_pg_ready = True
+                        task.log(f"   ✅ [MetaDB Check] {test_msg}")
+                    else:
+                        task.log(f"   ⚠️ [MetaDB Check] PostgreSQL 연결 실패 ({test_msg}). FF HTTP 모드로 자동 전환합니다.")
+                else:
+                    is_pg_ready = True
+
+            # 동적 배치 제어 컨텍스트 (PostgreSQL 검증 성공 시 500건, 실패/미사용 시 100건)
+            sync_context = {
+                'use_direct_pg': is_pg_ready,
+                'batch_size': 500 if is_pg_ready else 100
+            }
+
+            if sync_context['use_direct_pg']:
+                task.log("⚡ [MetaDB Direct] 외부 메타 PostgreSQL 직결 엔진 가동 (500건 초고속 일괄 쿼리)")
+            else:
+                task.log("🌐 [MetaDB HTTP] FF HTTP 배치 API 모드로 대조를 시작합니다 (100건 단위 요청)")
+
+            batch_buckets = defaultdict(list)
+            dir_cache = {}
+
+            def get_dir_files(d_path):
+                if d_path not in dir_cache:
+                    try:
+                        dir_cache[d_path] = set(f.lower() for f in os.listdir(d_path))
+                    except Exception:
+                        dir_cache[d_path] = set()
+                return dir_cache[d_path]
+
+            def flush_meta_sync_batch(cat, items_chunk):
+                if not items_chunk: return
+                codes_to_query = [it['target_code'] for it in items_chunk if it.get('target_code')]
+                if not codes_to_query: return
+
+                batch_data = {}
+                # 코어의 PostgreSQL 직결 질의 1순위 시도
+                if sync_context['use_direct_pg']:
+                    try:
+                        batch_data = query_ff_meta_direct_pg(meta_db, cat, codes_to_query)
+                    except Exception as pg_err:
+                        if task: task.log(f"   ⚠️ [MetaDB Direct] PostgreSQL 질의 실패 ({pg_err}). FF HTTP API(100건)로 안전 폴백합니다.")
+                        batch_data = {}
+
+                # PostgreSQL 미설정이거나 직결 쿼리 실패 시 기존 FF HTTP 배치 API로 안전하게 자동 폴백
+                if not batch_data:
+                    if sync_context['use_direct_pg']:
+                        sync_context['use_direct_pg'] = False
+                        sync_context['batch_size'] = 100
+
+                    HTTP_CHUNK_LIMIT = 100
+                    batch_data = {}
+                    for i in range(0, len(codes_to_query), HTTP_CHUNK_LIMIT):
+                        sub_codes = codes_to_query[i:i + HTTP_CHUNK_LIMIT]
+                        chunk_resp = fetch_ff_meta_batch(core_api['config'], cat, sub_codes)
+                        if chunk_resp and isinstance(chunk_resp, dict):
+                            batch_data.update(chunk_resp)
+
+                ff_lookup = {}
+                if isinstance(batch_data, dict):
+                    for k, v in batch_data.items():
+                        if not isinstance(v, dict): continue
+                        ff_lookup[str(k).lower()] = v
+                        if v.get('code'): ff_lookup[str(v['code']).lower()] = v
+                        if v.get('ui_code'): ff_lookup[str(v['ui_code']).lower()] = v
+
+                for it in items_chunk:
+                    req_code = (it.get('target_code') or '').lower()
+                    ff_json = ff_lookup.get(req_code)
+
+                    # FF 메타 DB에 데이터가 존재하지 않는 항목은 스킵
+                    if not ff_json:
+                        continue
+
+                    # 매칭된 항목에 대해서만 로컬 JSON을 지연 로딩(Lazy Load)하여 메모리 및 파일 I/O 절약
+                    target_json_path = it.get('target_json_path')
+                    local_json = {}
+                    if target_json_path and os.path.exists(target_json_path):
+                        try:
+                            with open(target_json_path, 'r', encoding='utf-8') as jf:
+                                local_json = json.load(jf) or {}
+                        except Exception:
+                            local_json = {}
+
+                    reasons = []
+
+                    # 1. 디스크 유저 포스터 미적용 여부 검사
+                    if it.get('_has_disk_poster'):
+                        reasons.append("유저 포스터")
+
+                    # 2. 로컬 JSON 유무 및 FF 메타 DB 정밀 Diff 대조
+                    if not target_json_path:
+                        if "유저 포스터" not in reasons:
+                            reasons.append("로컬 JSON 없음")
+                    else:
+                        diff_res = detect_meta_diff(local_json, ff_json)
+                        for r in diff_res:
+                            if r not in reasons:
+                                reasons.append(r)
+
+                    if reasons:
+                        reason_label = " ".join([f"[{r}]" for r in reasons])
+
+                        preview_img = it.get('img_url', '')
+                        if not preview_img and ff_json:
+                            ff_thumbs = ff_json.get('thumb') or []
+                            for t in ff_thumbs:
+                                if isinstance(t, dict):
+                                    val = t.get('value', '')
+                                    if '_user.jpg' in val:
+                                        preview_img = val
+                                        break
+                                    elif not preview_img:
+                                        preview_img = val
+
+                        result_data.append({
+                            "id": it['id'],
+                            "section_name": it['section_name'],
+                            "title": it['db_title'] or it.get('title', ''),
+                            "reason": reason_label,
+                            "img_url": preview_img,
+                            "op_action": "match",
+                            "_target_json": target_json_path or (it['json_candidates'][0] if it['json_candidates'] else ""),
+                            "_raw_db_pid": it.get('_raw_db_pid', ''),
+                            "_raw_sec_id": it.get('_raw_sec_id', ''),
+                            "_poster_files": it.get('_poster_files', ''),
+                            "_has_disk_poster": it.get('_has_disk_poster', False),
+                            "raw_path": it['raw_path']
+                        })
+
             for idx, item in enumerate(all_items):
                 if task.is_cancelled(): break
-                if idx > 0 and idx % 10000 == 0: 
-                    task.log(f"  ...대조 중: {idx:,} / {total_items:,} 완료 (스킵: {skip_count:,})")
+                if idx > 0 and idx % 500 == 0: 
+                    task.log(f"  ...메타데이터 및 DB 대조 중: {idx:,} / {total_items:,} 완료 (검출: {len(result_data):,}건)")
+                    task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
+
+                # 메모리 누수 방지를 위해 캐시가 3,000개 폴더를 초과하면 주기적으로 리셋
+                if len(dir_cache) > 3000:
+                    dir_cache.clear()
+
+                files_raw = item.get('all_files')
+                if not files_raw: continue
+                
+                fpath = files_raw.split('|||')[0]
+                dir_name = os.path.dirname(fpath)
+                fname = os.path.basename(fpath)
+                base_name = os.path.splitext(fname)[0]
+
+                db_title = item.get('title', '').strip()
+                match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
+                raw_pid = match.group(1) if match else ""
+                
+                # 메모리 상의 디렉터리 파일 목록으로 YAML 존재 여부 O(1) 초고속 확인
+                files_in_dir = get_dir_files(dir_name)
+                base_lower = base_name.lower()
+                pid_lower = raw_pid.lower() if raw_pid else ""
+
+                if f"{base_lower}.yaml" in files_in_dir or f"{base_lower}.yml" in files_in_dir:
+                    continue
+                if pid_lower and (f"{pid_lower}.yaml" in files_in_dir or f"{pid_lower}.yml" in files_in_dir):
+                    continue
+
+                # YAML 후보에도 접두사 숫자 제거 품번 추가 확인 (예: 1MOON-009 -> moon-009.yaml)
+                if raw_pid:
+                    stripped_pid = re.sub(r'^\d+', '', pid_lower)
+                    if stripped_pid and stripped_pid != pid_lower:
+                        if f"{stripped_pid}.yaml" in files_in_dir or f"{stripped_pid}.yml" in files_in_dir:
+                            continue
+
+                # DB 품번(1MOON-009), 접두사 숫자 제거(moon-009), 파일명 추출 품번을 순차 대조하여 JSON 탐색
+                target_json_path, json_candidates = find_local_meta_json(
+                    dir_name, base_name, raw_pid=raw_pid, files_in_dir=files_in_dir, cfg=cfg, compiled_rules=compiled_rules
+                )
+
+                # 정확한 DB 매칭을 위해 고유 식별 코드(code) 1순위 추출
+                guid = str(item.get('guid') or '').strip()
+                sjva_code, sjva_cat = extract_sjva_code_and_cat(guid)
+
+                target_code = sjva_code or raw_pid
+                if not target_code:
+                    continue
+
+                cat = sjva_cat or ('JAV_UNCEN' if target_code.upper().startswith('E') else ('WESTERN' if target_code.upper().startswith('W') else 'JAV_CEN'))
+
+                # 디스크 유저 포스터 파일 존재 여부 검사
+                sec_id = str(item.get('section_id', ''))
+                db_pid_key = pid_lower if pid_lower else target_code.lower()
+                has_disk_poster = False
+                poster_files = []
+                preview_img_url = ""
+
+                if user_posters_disk and db_pid_key in user_posters_disk:
+                    p_info = user_posters_disk[db_pid_key]
+                    disk_files = p_info.get('files', [])
+                    # 로컬 JSON이 없거나 디스크에 유저 이미지가 있으면 대상 후보 표시
+                    has_disk_poster = True
+                    poster_files = disk_files
+                    if web_url_root and p_info.get('preview'):
+                        preview_img_url = f"{web_url_root}/{urllib.parse.quote(str(p_info['preview']), safe='/')}"
+
+                queue_entry = {
+                    'id': item['id'],
+                    'section_name': item['section_name'],
+                    'db_title': db_title or item.get('title', ''),
+                    'target_code': target_code,
+                    'raw_path': fpath,
+                    'target_json_path': target_json_path,
+                    'json_candidates': json_candidates,
+                    '_raw_db_pid': db_pid_key,
+                    '_raw_sec_id': sec_id,
+                    '_poster_files': json.dumps(poster_files) if poster_files else '',
+                    '_has_disk_poster': has_disk_poster,
+                    'img_url': preview_img_url
+                }
+
+                batch_buckets[cat].append(queue_entry)
+
+                # 동적 배치 크기(직결 500건 / 폴백 시 100건) 도달 시 일괄 쿼리 실행
+                if len(batch_buckets[cat]) >= sync_context['batch_size']:
+                    flush_meta_sync_batch(cat, batch_buckets[cat])
+                    batch_buckets[cat].clear()
+
+            for cat, queued_items in batch_buckets.items():
+                if queued_items:
+                    flush_meta_sync_batch(cat, queued_items)
+            batch_buckets.clear()
+            dir_cache.clear()
+
+        # LLM (Ollama) 번역 메타데이터 검증
+        elif mode == "llm_translation":
+            for idx, item in enumerate(all_items):
+                if task.is_cancelled(): break
+                if idx > 0 and idx % 1000 == 0: 
+                    task.log(f"  ...JSON 메타데이터 검증 중: {idx:,} / {total_items:,} 완료")
                     task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
                 
-                db_title = item.get('title', '').strip()
-                t_match = title_regex.match(db_title)
+                files_raw = item.get('all_files')
+                if not files_raw: continue
                 
-                if t_match:
-                    db_pid = t_match.group(1).lower()
-                    sec_id = str(item.get('section_id', ''))
-                    
-                    if f"{sec_id}_{db_pid}" in applied_posters:
-                        skip_count += 1
-                        continue
-                    
-                    if db_pid in user_posters:
-                        poster_info = user_posters[db_pid]
-                        if isinstance(poster_info, dict):
-                            rel_path = poster_info.get('preview', '')
-                            poster_files = poster_info.get('files', [])
+                fpath = files_raw.split('|||')[0]
+                dir_name = os.path.dirname(fpath)
+                
+                db_title = item.get('title', '').strip()
+                match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
+                
+                base_name = os.path.splitext(os.path.basename(fpath))[0]
+                yaml_candidates = [
+                    os.path.join(dir_name, f"{base_name}.yaml"),
+                    os.path.join(dir_name, f"{base_name}.yml")
+                ]
+                if match:
+                    raw_pid = match.group(1)
+                    db_pid_lower = raw_pid.lower()
+                    yaml_candidates.extend([
+                        os.path.join(dir_name, f"{db_pid_lower}.yaml"),
+                        os.path.join(dir_name, f"{db_pid_lower}.yml"),
+                        os.path.join(dir_name, f"{raw_pid}.yaml"),
+                        os.path.join(dir_name, f"{raw_pid}.yml")
+                    ])
+                    # 접두사 숫자 제거 YAML 후보 추가
+                    stripped_pid = re.sub(r'^\d+', '', db_pid_lower)
+                    if stripped_pid and stripped_pid != db_pid_lower:
+                        yaml_candidates.extend([
+                            os.path.join(dir_name, f"{stripped_pid}.yaml"),
+                            os.path.join(dir_name, f"{stripped_pid}.yml")
+                        ])
+
+                # sjva 에이전트 최우선 참조 대상인 YAML 파일이 존재하면 수동 관리 대상이므로 스킵
+                if any(os.path.exists(y) for y in set(yaml_candidates)):
+                    continue
+
+                # DB 품번(1MOON-009), 접두사 숫자 제거(moon-009), 파일명 추출 품번을 순차 대조하여 JSON 탐색
+                target_json, _ = find_local_meta_json(
+                    dir_name, base_name, raw_pid=raw_pid, files_in_dir=None, cfg=cfg, compiled_rules=compiled_rules
+                )
+
+                reason = ""
+                if not target_json or not os.path.exists(target_json):
+                    reason = "JSON 메타 파일 없음"
+                else:
+                    try:
+                        with open(target_json, 'r', encoding='utf-8') as f:
+                            json_data = json.load(f)
+                        
+                        extra_info = json_data.get("extra_info") or {}
+                        ai_trans = str(extra_info.get("ai_translator", ""))
+                        
+                        if "ollama" not in ai_trans.lower():
+                            reason = f"구버전/일반 번역 ({ai_trans or '기본값'})"
                         else:
-                            rel_path = str(poster_info)
-                            poster_files = [os.path.basename(rel_path)]
+                            continue
+                            
+                    except Exception:
+                        reason = "JSON 파싱 오류 (구조 손상)"
 
-                        safe_rel_path = urllib.parse.quote(str(rel_path), safe='/')
-                        img_url = f"{web_url_root}/{safe_rel_path}"
-                        
-                        result_data.append({
-                            "id": item['id'], 
-                            "section_name": item['section_name'], 
-                            "_raw_db_pid": db_pid,
-                            "_raw_sec_id": sec_id,
-                            "_poster_files": json.dumps(poster_files),
-                            "title": db_title, 
-                            "reason": "적용 가능",
-                            "img_url": img_url,
-                            "op_action": "match",
-                            "raw_path": item.get('all_files', '').split('|||')[0]
-                        })
-                        
-            task.log(f"  -> 영구 DB 이력 필터링으로 총 {skip_count:,}개의 아이템 처리를 스킵했습니다.")
+                if reason:
+                    result_data.append({
+                        "id": item['id'], 
+                        "section_name": item['section_name'], 
+                        "title": db_title, 
+                        "reason": reason, 
+                        "op_action": "match",
+                        "_target_json": target_json,
+                        "raw_path": fpath
+                    })
 
-        # ----- [5] 파일명 처리 오류 (Prefix vs 대괄호 속성 불일치) -----
+        # 파일명 처리 오류 (Prefix vs 대괄호 속성 불일치)
         elif mode == "file_error":
             for idx, item in enumerate(all_items):
                 if task.is_cancelled(): break
@@ -941,82 +1371,7 @@ def worker(task_data, core_api, start_index):
                         "raw_path": matched_fpath
                     })
 
-        # ----- [6] LLM (Ollama) 번역 메타데이터 검증 -----
-        elif mode == "llm_translation":
-            for idx, item in enumerate(all_items):
-                if task.is_cancelled(): break
-                if idx > 0 and idx % 1000 == 0: 
-                    task.log(f"  ...JSON 메타데이터 검증 중: {idx:,} / {total_items:,} 완료")
-                    task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
-                
-                files_raw = item.get('all_files')
-                if not files_raw: continue
-                
-                fpath = files_raw.split('|||')[0]
-                dir_name = os.path.dirname(fpath)
-                
-                db_title = item.get('title', '').strip()
-                match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
-                
-                base_name = os.path.splitext(os.path.basename(fpath))[0]
-                yaml_candidates = [
-                    os.path.join(dir_name, f"{base_name}.yaml"),
-                    os.path.join(dir_name, f"{base_name}.yml")
-                ]
-                if match:
-                    raw_pid = match.group(1)
-                    db_pid_lower = raw_pid.lower()
-                    yaml_candidates.extend([
-                        os.path.join(dir_name, f"{db_pid_lower}.yaml"),
-                        os.path.join(dir_name, f"{db_pid_lower}.yml"),
-                        os.path.join(dir_name, f"{raw_pid}.yaml"),
-                        os.path.join(dir_name, f"{raw_pid}.yml")
-                    ])
-
-                # sjva 에이전트 최우선 참조 대상인 YAML 파일이 존재하면 LLM 검사 대상에서 제외하고 통과
-                if any(os.path.exists(y) for y in set(yaml_candidates)):
-                    continue
-
-                reason = ""
-                if match:
-                    # JAV: '품번(소문자).json'
-                    db_pid = match.group(1).lower()
-                    target_json = os.path.join(dir_name, f"{db_pid}.json")
-                else:
-                    # 타이틀에 품번 포맷이 없는 경우 (서양 AV 등) '영상파일명.json'
-                    base_name = os.path.splitext(os.path.basename(fpath))[0]
-                    target_json = os.path.join(dir_name, f"{base_name}.json")
-
-                if not os.path.exists(target_json):
-                    reason = "JSON 메타 파일 없음"
-                else:
-                    try:
-                        with open(target_json, 'r', encoding='utf-8') as f:
-                            json_data = json.load(f)
-                        
-                        extra_info = json_data.get("extra_info") or {}
-                        ai_trans = str(extra_info.get("ai_translator", ""))
-                        
-                        if "ollama" not in ai_trans.lower():
-                            reason = f"구버전/일반 번역 ({ai_trans or '기본값'})"
-                        else:
-                            continue
-                            
-                    except Exception:
-                        reason = "JSON 파싱 오류 (구조 손상)"
-
-                if reason:
-                    result_data.append({
-                        "id": item['id'], 
-                        "section_name": item['section_name'], 
-                        "title": db_title, 
-                        "reason": reason, 
-                        "op_action": "match",
-                        "_target_json": target_json,
-                        "raw_path": fpath
-                    })
-
-        # ----- [7] 일괄 프리뷰 클립 생성 (트레일러 없는 영상) -----
+        # 일괄 프리뷰 클립 생성 (트레일러 없는 영상)
         elif mode == "preview_clip":
             for idx, item in enumerate(all_items):
                 if task.is_cancelled(): break
@@ -1145,8 +1500,8 @@ def worker(task_data, core_api, start_index):
         task.log(f"❌ Plex 서버 연결 실패: {str(e)}")
         return
 
-    # 유저 포스터 모드 시 FF 로컬 메타 DB 선행 동기화
-    if mode == "user_poster":
+    # 유저 포스터 또는 메타 동기화 모드 시 디스크 유저 이미지 파일 FF 로컬 메타 DB 선행 동기화
+    if mode in ["user_poster", "meta_sync"]:
         all_sync_files = set()
         for it in pending_items:
             raw_p_files = it.get('_poster_files')
@@ -1155,7 +1510,7 @@ def worker(task_data, core_api, start_index):
                     p_list = json.loads(raw_p_files) if isinstance(raw_p_files, str) else raw_p_files
                     all_sync_files.update(p_list)
                 except: pass
-            else:
+            elif it.get('_has_disk_poster'):
                 raw_pid = it.get('_raw_db_pid')
                 if raw_pid:
                     all_sync_files.add(f"{raw_pid}_p_user.jpg")
@@ -1281,14 +1636,15 @@ def worker(task_data, core_api, start_index):
                                 item_has_error = True
 
                 if op_action == 'match':
-                    if mode == "llm_translation":
+                    # 메타 동기화 모드 시 최신 메타 반영을 위해 구버전 로컬 JSON 파일 자동 삭제
+                    if mode in ["llm_translation", "meta_sync"]:
                         target_json = item.get('_target_json')
                         if target_json and os.path.exists(target_json):
                             try:
                                 os.remove(target_json)
-                                task.log(f"  -> 🗑️ 새로운 LLM 번역을 위해 기존 JSON 메타데이터 삭제 완료")
+                                task.log(f"  -> 🗑️ 메타데이터 갱신을 위해 기존 JSON 삭제 완료: {os.path.basename(target_json)}")
                             except Exception as e:
-                                task.log(f"  -> ⚠️ 기존 JSON 삭제 실패 (권한 문제 의심): {e}")
+                                task.log(f"  -> ⚠️ 기존 JSON 삭제 실패: {e}")
 
                     do_unm = task_data.get('opt_unmatch_first', True)
                     skip_sim = task_data.get('opt_skip_sim_check', False)
@@ -1308,7 +1664,7 @@ def worker(task_data, core_api, start_index):
                                         plex_item.unmatch()
                                         time.sleep(1.0)
                                     except: pass
-                                do_unm = False 
+                                do_unm = False
                             else:
                                 processed_pids.add(pid)
 
@@ -1335,12 +1691,6 @@ def worker(task_data, core_api, start_index):
                     
                     if success:
                         task.log(f"  -> ✅ 매칭 처리 완료: {msg}")
-                        if mode == "user_poster":
-                            _raw_db_pid = item.get('_raw_db_pid')
-                            _raw_sec_id = item.get('_raw_sec_id')
-                            if _raw_db_pid and _raw_sec_id:
-                                _mark_poster_applied(history_db_path, _raw_sec_id, _raw_db_pid)
-                                task.log(f"  -> 💾 영구 DB에 포스터 적용 이력 저장 완료 ({_raw_sec_id}_{_raw_db_pid})")
                     else:
                         task.log(f"  -> ❌ 매칭 실패/반려: {msg}")
                         item_has_error = True
@@ -1367,14 +1717,13 @@ def worker(task_data, core_api, start_index):
                 task.log(f"✅ 단일 실행 작업 완료! (소요시간: {elapsed_str})")
             else:
                 task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
-                mode_label = "품번 불일치/오매칭 복구" if mode == "mismatch" else "중복 아이템 재매칭" if mode == "dupes" else "배우 한글화 갱신" if mode == "actor" else "유저 포스터 일괄 갱신"
+                mode_label = "품번 불일치/오매칭 복구" if mode == "mismatch" else "중복 아이템 재매칭" if mode == "dupes" else "FF 메타데이터 DB 동기화" if mode == "meta_sync" else "LLM 미적용 항목 검출 및 리매칭" if mode == "llm_translation" else "배우 정보 업데이트" if mode == "actor" else "유저 포스터 일괄 갱신"
                 if mode == "file_error": mode_label = "파일명 오류 항목(수동 확인/작업 필요)"
-                if mode == "llm_translation": mode_label = "LLM 미적용 항목 검출 및 리매칭"
                 if mode == "preview_clip": mode_label = "일괄 프리뷰 클립 생성 (트레일러 없는 영상)"
 
                 tool_vars = {"total": f"{total:,}", "elapsed_time": elapsed_str, "scan_mode_label": mode_label}
                 core_api['notify']("AV 매니저 완료", DEFAULT_DISCORD_TEMPLATE, "#e5a00d", tool_vars)
-            
+
     finally:
         current_state = core_api['task'].load(include_target_items=False)
         if current_state:
