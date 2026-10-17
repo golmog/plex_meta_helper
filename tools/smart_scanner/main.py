@@ -980,24 +980,19 @@ def worker(task_data, core_api, start_index):
     if task_data.get('_is_single'):
         items = task_data.get('target_items', [])
     else:
-        status_filter = "('pending', 'error')" if retry_errors else "('pending')"
-        with core_api['cache'].transaction_session() as conn:
-            c = conn.cursor()
-            c.execute(f"SELECT * FROM data WHERE pmh_status IN {status_filter} ORDER BY pmh_id LIMIT -1 OFFSET ?", (progress,))
-            rows = c.fetchall()
-            cols = [desc[0] for desc in c.description] if c.description else []
-            items = []
-            for r in rows:
-                rd = dict(zip(cols, r))
-                rd['id'] = str(rd.get('rating_key', rd.get('id', '')))
-                rd['rating_key'] = rd['id']
-                if isinstance(rd.get('files'), str):
-                    try: rd['files'] = json.loads(rd['files'])
-                    except: rd['files'] = []
-                elif not rd.get('files'): rd['files'] = []
-                rd['m_type'] = int(rd.get('m_type', 1))
-                rd['fix_type'] = rd.get('fix_type', 'analyze')
-                items.append(rd)
+        items = []
+        for rd in pmh_core.load_pending_tool_items(core_api['cache'], retry_errors):
+            rd['id'] = str(rd.get('rating_key', rd.get('id', '')))
+            rd['rating_key'] = rd['id']
+            if isinstance(rd.get('files'), str):
+                try: rd['files'] = json.loads(rd['files'])
+                except: rd['files'] = []
+            elif not rd.get('files'): rd['files'] = []
+            rd['m_type'] = int(rd.get('m_type', 1))
+            rd['fix_type'] = rd.get('fix_type', 'analyze')
+            items.append(rd)
+
+        progress = max(0, total - len(items))
 
     if total == 0:
         task.update_state('completed', 0, 0)
