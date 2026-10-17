@@ -258,6 +258,7 @@ window.PmhUICore = {
             sessionId: 'sess_' + Math.random().toString(36).substring(2, 9),
             pollTimer: null,
             idleWatchTimer: null,
+            lastSeenProgress: -1,
             currentPage: isNaN(initialPage) ? 1 : initialPage,
             itemsPerPage: config.uiSchema.saved_options?.items_per_page || 10,
             sortKey: config.uiSchema.saved_options?._sort_key || null,
@@ -1243,7 +1244,14 @@ window.PmhUICore = {
                 logBox.innerHTML = s.logs ? s.logs.join('<br>') : '';
                 logBox.scrollTop = logBox.scrollHeight;
 
-                const hasProgress = (s.completed_items && s.completed_items.length > 0);
+                const hasCompletedItems = Boolean(s.completed_items && s.completed_items.length > 0);
+                const isProgressAdvanced = Boolean(ctx.lastSeenProgress !== undefined && s.progress > ctx.lastSeenProgress);
+                ctx.lastSeenProgress = s.progress;
+
+                const resEl = ctx.c.querySelector('#pmh_data_table_res');
+                const isTableActive = Boolean(resEl && resEl.style.display !== 'none' && resEl.querySelector('table'));
+                const hasProgress = hasCompletedItems || (isTableActive && isProgressAdvanced);
+
                 if (hasProgress && ctx.autoRefresh) {
                     triggerDebouncedPageReload(false);
                 }

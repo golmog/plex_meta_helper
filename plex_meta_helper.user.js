@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.131
+// @version      0.9.132
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -485,7 +485,8 @@ GM_addStyle(`
     // 비디오 모달 팝업 본체
     function showVideoModal(videoUrl, title) {
         let m = document.getElementById('pmh-video-modal');
-        if (m) {
+        if (m?.pmhClose) m.pmhClose();
+        else if (m) {
             const oldV = m.querySelector('video');
             if (oldV) { oldV.pause(); oldV.removeAttribute('src'); oldV.load(); }
             m.remove();
@@ -510,14 +511,14 @@ GM_addStyle(`
                 <div class="pmh-resizer pmh-resizer-se"></div><div class="pmh-resizer pmh-resizer-sw"></div>
 
                 <div id="pmh-video-modal-header" style="background:rgba(0,0,0,0.75); padding:10px 15px; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; cursor:move;">
-                    <span id="pmh-video-modal-title" style="color:#e5a00d; font-weight:bold; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:10px;"><i class="fas fa-film" style="margin-right:6px;"></i><span id="pmh-video-modal-title-text">${title || '예고편 / 프리뷰 재생'}</span></span>
+                    <span id="pmh-video-modal-title" style="color:#e5a00d; font-weight:bold; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:10px;"><i class="fas fa-film" style="margin-right:6px;"></i><span id="pmh-video-modal-title-text"></span></span>
                     <button type="button" id="pmh-video-modal-close" style="background:none; border:none; color:#aaa; font-size:18px; cursor:pointer; padding:2px 6px; transition:color 0.2s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#aaa'"><i class="fas fa-times"></i></button>
                 </div>
 
                 <div id="pmh-video-modal-body" style="flex-grow:1; min-height:0; display:flex; justify-content:center; align-items:center; background:#000; position:relative; overflow:hidden;">
                     <div id="pmh-video-modal-spinner" style="position:absolute; top:0; left:0; width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:#e5a00d; z-index:5; background:rgba(0,0,0,0.6);">
                         <i class="fas fa-spinner fa-spin" style="font-size:32px;"></i>
-                        <span style="font-size:12px; color:#aaa;">Plex 스트림 주소 확인 중...</span>
+                        <span style="font-size:12px; color:#aaa;">영상 재생 주소 확인 중...</span>
                     </div>
                     <div id="pmh-video-modal-error" style="position:absolute; top:0; left:0; width:100%; height:100%; display:none; flex-direction:column; align-items:center; justify-content:center; color:#bd362f; font-size:13px; padding:20px; text-align:center; line-height:1.5; z-index:6; background:#000;"></div>
                     <video id="pmh-video-modal-player" controls autoplay playsinline style="width:100%; height:100%; object-fit:contain; outline:none; display:none;"></video>
@@ -530,6 +531,7 @@ GM_addStyle(`
             </div>
         `;
         document.body.appendChild(m);
+        m.querySelector('#pmh-video-modal-title-text').textContent = title || '예고편 / 프리뷰 재생';
 
         const card = m.querySelector('#pmh-video-modal-card');
         const header = m.querySelector('#pmh-video-modal-header');
@@ -539,6 +541,7 @@ GM_addStyle(`
 
         // 개별 컨트롤러에서 포커스를 즉시 뺏어 모달 카드로 회수하는 헬퍼
         const blurPlayer = () => {
+            if (!m.isConnected) return;
             if (player) player.blur();
             if (document.activeElement && document.activeElement !== card) {
                 try { document.activeElement.blur(); } catch (e) {}
@@ -562,7 +565,7 @@ GM_addStyle(`
             };
 
             player.onerror = () => {
-                if (player.getAttribute('src')) {
+                if (document.getElementById('pmh-video-modal') === m && player.getAttribute('src')) {
                     setVideoModalError("동영상을 재생할 수 없습니다. (비디오 코덱 미지원 또는 스트림 연결 실패)");
                 }
             };
@@ -611,6 +614,7 @@ GM_addStyle(`
             }
         };
 
+        m.pmhClose = closeModal;
         document.addEventListener('keydown', handleKeyDown, true);
         document.addEventListener('keyup', handleKeyUp, true);
 
@@ -625,7 +629,206 @@ GM_addStyle(`
             setVideoModalSource(videoUrl, title);
         }
 
-        setTimeout(blurPlayer, 100);
+        setTimeout(() => { if (m.isConnected) blurPlayer(); }, 100);
+        return m;
+    }
+
+    function invalidateFfItemCache(serverId, itemId) {
+        if (!serverId || !itemId) return;
+        for (const prefix of ['D', 'L', 'F']) deleteMemoryCache(`${prefix}_${serverId}_${itemId}`);
+        if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(String(itemId));
+        const cast = injectDetailPersonButtons.current;
+        if (cast?.serverId === serverId && String(cast.itemId) === String(itemId)) injectDetailPersonButtons.current = null;
+    }
+
+    function getFfNodeBase(srvConfig) {
+        return String(srvConfig?.ff_ddns || window._pmh_latest_ping_results?.[srvConfig?.machineIdentifier]?.ff_ddns || '').trim().replace(/\/+$/, '');
+    }
+
+    function getCleanFfImageUrl(value) {
+        let clean = String(value || '').trim();
+        for (let i = 0; i < 8; i++) {
+            if (!/\/metadata\/normal\/jav_image(?:_un)?\?/.test(clean)) break;
+            try {
+                const next = new URL(clean, 'https://pmh-relative.invalid').searchParams.get('url');
+                if (!next || next === clean) break;
+                clean = next.trim();
+            } catch (err) { break; }
+        }
+        return clean;
+    }
+
+    function isGoogleMediaUrl(value) {
+        try {
+            const host = new URL(getCleanFfImageUrl(value)).hostname;
+            return host === 'drive.google.com' || /(^|\.)googleusercontent\.com$/i.test(host);
+        } catch (err) { return false; }
+    }
+
+    function getDriveImageId(value) {
+        try {
+            const url = new URL(getCleanFfImageUrl(value));
+            if (url.hostname !== 'drive.google.com' && !/(^|\.)googleusercontent\.com$/i.test(url.hostname)) return '';
+            return url.searchParams.get('id') || url.pathname.match(/\/d\/([^/]+)/)?.[1]?.split('=')[0] || '';
+        } catch (err) { return ''; }
+    }
+
+    function getFfImageIdentity(value, srvConfig) {
+        const clean = getCleanFfImageUrl(value);
+        const driveId = getDriveImageId(clean);
+        if (driveId) return `gdrive:${driveId}`;
+        try {
+            const base = getFfNodeBase(srvConfig);
+            const url = new URL(base && clean.startsWith('/') ? base + clean : clean, base || 'https://pmh-relative.invalid');
+            url.searchParams.delete('_t');
+            return url.href;
+        } catch (err) { return clean; }
+    }
+
+    function requireFfEntity(entity) {
+        if (!Number.isInteger(entity?.schema?.db_schema_version) || entity.schema.db_schema_version < 1 || entity.schema.json_format_version !== 1) {
+            throw new Error('FF 메타 DB 스키마와 마이그레이션 상태를 확인하세요.');
+        }
+        return entity;
+    }
+
+    function formatActorLocalUrl(path, domain) {
+        if (!path) return '';
+        if (/^https?:\/\//i.test(path) || path.startsWith('/images/')) return path;
+        const parts = path.replace(/\\/g, '/').split('/').filter(Boolean).slice(-2);
+        return `/images/${domain === 'WESTERN' ? 'western' : 'jav'}/actors/${parts.join('/')}`;
+    }
+
+    function buildPersonImageGallery(person, srvConfig) {
+        const official = person.media_src?.official || {};
+        const custom = person.media_src?.custom || {};
+        const sources = [];
+        const add = (key, value, type, isLocal = false) => {
+            if (!value || /^(null|none|403|404|deprecated|unavailable)$/i.test(value)) return;
+            const url = isLocal ? formatActorLocalUrl(value, person.domain) : value;
+            sources.push({ key, url, type, is_final: !key.startsWith('site_img_url') });
+        };
+        const drive = id => id ? `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=s0` : '';
+        if (person.domain === 'JAV') {
+            add('local_img_path', official.local_img_path, 'GDS LOCAL', true);
+            add('google_fileid', drive(official.google_fileid), 'GDS');
+        }
+        add('cached_local_img_path', official.cached_local_img_path, 'CACHE SERVER', true);
+        add('official_cached_google_fileid', drive(official.official_cached_google_fileid), 'CACHE GDRIVE');
+        add('custom_local_img_path', custom.local_img_path, 'USER SERVER', true);
+        add('custom_user_google_fileid', drive(custom.custom_user_google_fileid), 'USER GDRIVE');
+        const photos = [...new Set([official.site_img_url, ...(person.photo_urls || []), ...(official.site_img_urls || [])].filter(Boolean))];
+        photos.forEach((url, i) => add(`site_img_url_${i}`, url, `SITE #${i + 1}`));
+        const primary = getFfImageIdentity(person.thumb, srvConfig);
+        let marked = false;
+        sources.forEach(source => {
+            source.is_primary = !marked && getFfImageIdentity(source.url, srvConfig) === primary;
+            if (source.is_primary) marked = true;
+        });
+        if (person.thumb && !marked) sources.unshift({ key: 'active_thumb', url: person.thumb, type: '현재 대표', is_primary: true, is_final: true });
+        return sources.sort((a, b) => Number(b.is_primary) - Number(a.is_primary));
+    }
+
+    function getFfStoredVideoUrl(asset, category, srvConfig, referenceUrl = '') {
+        if (!asset) return '';
+        const endpoint = category === 'JAV_UNCEN' ? 'jav_video_un' : 'jav_video';
+        const params = new URLSearchParams();
+        if (asset.storage_type === 'gdrive' && asset.google_fileid) {
+            params.set('mode', 'preview_gdrive'); params.set('fileid', asset.google_fileid); params.set('cat', category);
+        } else if (asset.storage_type === 'local' && asset.local_path) {
+            params.set('mode', 'preview_local'); params.set('path', asset.local_path);
+        } else return '';
+        const raw = `/metadata/normal/${endpoint}?${params}`;
+        if (!getFfNodeBase(srvConfig)) {
+            for (const candidate of [referenceUrl, asset.stream_url]) {
+                try {
+                    const url = new URL(candidate);
+                    const prefix = url.pathname.split('/metadata/normal/');
+                    if (/^https?:$/.test(url.protocol) && prefix.length === 2) {
+                        return resolveTrailerPlaybackUrl(raw, null, { ff_ddns: url.origin + prefix[0] });
+                    }
+                } catch (err) { /* No browser-accessible FF origin in this candidate. */ }
+            }
+        }
+        return resolveTrailerPlaybackUrl(raw, null, srvConfig);
+    }
+
+    function getFfImageAsset(entity, kind, url, srvConfig) {
+        if (!url) return null;
+        const assets = [...(entity.media || []), ...(entity.extra_info?._storage_media || [])];
+        const matches = assets.filter(asset => asset.media_type === kind &&
+            ((asset.gdrive_fileid && asset.gdrive_fileid === getDriveImageId(url)) ||
+             (asset.url && getFfImageIdentity(asset.url, srvConfig) === getFfImageIdentity(url, srvConfig))));
+        return matches.find(asset => asset.relative_path) || matches[0] || null;
+    }
+
+    function getFfStoredImages(entity, row = {}) {
+        // The DB snapshot is authoritative even when one or both URLs are empty.
+        if (entity.stored_images) return {
+            poster_url: entity.stored_images.poster_url || '',
+            landscape_url: entity.stored_images.landscape_url || ''
+        };
+        // Same fallback as FF for responses without a stored_images snapshot.
+        const thumbs = Array.isArray(entity.thumb) ? entity.thumb : [];
+        return {
+            poster_url: thumbs.find(image => image?.aspect === 'poster')?.value || entity.poster_url || row.poster_url || '',
+            landscape_url: thumbs.find(image => image?.aspect === 'landscape')?.value || entity.landscape_url || ''
+        };
+    }
+
+    function buildFfMetaEditPayload(entity, values, actors) {
+        const payload = JSON.parse(JSON.stringify(entity));
+        const stored = getFfStoredImages(entity);
+        const poster = values.posterFinal ?? stored.poster_url;
+        const landscape = values.landscapeFinal ?? stored.landscape_url;
+        payload.thumb = [];
+        if (landscape) payload.thumb.push({ aspect: 'landscape', value: landscape, site: payload.site });
+        if (poster) payload.thumb.push({ aspect: 'poster', value: poster, site: payload.site });
+        payload.poster_url = poster;
+        payload.landscape_url = landscape;
+        for (const key of ['ui_code', 'title', 'tagline', 'plot', 'studio', 'series', 'director', 'premiered']) payload[key] = values[key];
+        for (const key of ['year', 'runtime', 'rating']) payload[key] = Number(values[key]) || 0;
+        payload.genre = values.genres.split(',').map(value => value.trim()).filter(Boolean);
+        payload.actor = actors;
+        payload.ratings = payload.rating > 0 ? [{ name: payload.site, value: payload.rating, votes: payload.rating_votes || 0, max: 5 }] : [];
+        payload.original = payload.original || {};
+        payload.original.thumb = { ...(payload.original.thumb || {}), poster: values.poster, landscape: values.landscape };
+        payload.original.fanart = values.fanarts.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+        payload.original.extras = values.trailer ? [{ content_url: values.trailer, content_type: 'trailer' }] : [];
+        if (Object.hasOwn(payload.original, 'trailer')) payload.original.trailer = values.trailer;
+        // Stored video identity/paths and final extras belong to FF. Never copy one video's URL onto another.
+        const extra = payload.extra_info || {};
+        if (!extra.preview_clip && !extra.trailer_video) {
+            payload.extras = values.trailer ? [{ mode: 'mp4', title: payload.title, content_url: values.trailer, content_type: 'trailer' }] : [];
+        }
+        return payload;
+    }
+
+    function buildFfCropPayload(context, cropData, upload) {
+        const source = context.currentSource === 'p' ? 'p' : 'pl';
+        const raw = getCleanFfImageUrl(getFfMediaProxyUrl(context.srvConfig, context.sourceUrl || '', context.site || '', 'image', context.category || 'JAV_CEN'));
+        const crop = { ...cropData, source_type: source };
+        if (/^https?:\/\//i.test(raw)) crop.crop_url = raw;
+        const payload = { code: context.code, crop_data: crop };
+        if (upload?.data) payload[source === 'p' ? 'p_base64' : 'pl_base64'] = upload.data;
+        return payload;
+    }
+
+    function buildFfPersonSavePayload(person, values) {
+        const payload = { id: person.id, domain: person.domain, person_type: person.person_type || 'actor' };
+        for (const key of ['person_idx', 'name_org', 'name_ko', 'name_en', 'gender', 'thumb', 'selected_primary_url', 'aliases', 'birth', 'blood', 'agency', 'hobby', 'body_size', 'bra_size', 'debut', 'info_url']) payload[key] = values[key];
+        payload.height = Number(values.height) > 0 ? Number(values.height) : null;
+        payload.media_src = JSON.parse(JSON.stringify(person.media_src));
+        payload.site_img_url = values.site_img_url;
+        payload.site_img_urls = values.site_img_urls;
+        payload.custom_user_google_fileid = payload.media_src.custom?.custom_user_google_fileid || '';
+        if (person.domain === 'JAV') {
+            payload.local_img_path = values.local_img_path;
+            payload.google_fileid = values.google_fileid;
+        }
+        if (person.domain === 'JAV' && !payload.name_ko) throw new Error('JAV 인물은 한국어 표기명이 필수입니다.');
+        if (!payload.name_org && !payload.name_ko) throw new Error('원문 이름 또는 한국어 표기명을 입력하세요.');
+        return payload;
     }
 
     // 사이트 원본 미디어 URL을 노드의 FF_DDNS 기반 다이렉트 프록시 주소로 조합
@@ -634,34 +837,60 @@ GM_addStyle(`
         const clean = rawUrl.trim();
         if (!clean) return '';
 
-        let ffBase = (srvConfig && srvConfig.ff_ddns) ? srvConfig.ff_ddns : '';
-        if (!ffBase && window._pmh_latest_ping_results && srvConfig && srvConfig.machineIdentifier) {
-            ffBase = window._pmh_latest_ping_results[srvConfig.machineIdentifier]?.ff_ddns || '';
-        }
-        if (!ffBase && ServerConfig.SERVERS && ServerConfig.SERVERS.length > 0) {
-            ffBase = ServerConfig.SERVERS[0]?.ff_ddns || '';
-        }
-        ffBase = ffBase.replace(/\/+$/, '');
-
-        if (!ffBase) {
+        const ffBase = getFfNodeBase(srvConfig);
+        const raw = getCleanFfImageUrl(clean);
+        if (isGoogleMediaUrl(raw)) return mediaType === 'image' && getDriveImageId(raw) ? `https://drive.google.com/thumbnail?id=${encodeURIComponent(getDriveImageId(raw))}&sz=s0` : raw;
+        if (isLocalServerMediaUrl(raw, srvConfig)) return raw.startsWith('/') && ffBase ? ffBase + raw : raw;
+        if (clean.includes('/metadata/normal/')) {
+            if (clean.startsWith('/') && ffBase) return ffBase + clean;
             return clean;
         }
+        if (!ffBase) return raw;
+        const routePath = mediaType === 'video' ? (category === 'JAV_UNCEN' ? 'jav_video_un' : 'jav_video') : (category === 'JAV_UNCEN' ? 'jav_image_un' : 'jav_image');
+        if (/^https?:\/\//i.test(raw)) return `${ffBase}/metadata/normal/${routePath}?site=${encodeURIComponent(site)}&url=${encodeURIComponent(raw)}`;
+        return raw.startsWith('/') ? ffBase + raw : raw;
+    }
 
-        const isUncen = (category === 'JAV_UNCEN');
-        const routePath = (mediaType === 'video') ? (isUncen ? 'jav_video_un' : 'jav_video') : (isUncen ? 'jav_image_un' : 'jav_image');
+    // FF common.js의 이미지 출처별 뱃지 색상과 투명도를 공유한다.
+    function styleFfImageBadge(badge, image = {}, srvConfig = null) {
+        const type = String(image.type || '').toUpperCase();
+        const url = image.url || '';
+        const isDrive = type.includes('GDRIVE') || type.includes('GDS') || isGoogleMediaUrl(url);
+        const isLocal = !isDrive && (type.includes('SERVER') || type.includes('LOCAL') || isLocalServerMediaUrl(url, srvConfig));
+        badge.style.background = isDrive ? 'rgba(15, 157, 88, 0.55)' : isLocal ? 'rgba(0, 123, 255, 0.55)' : 'rgba(0, 0, 0, 0.55)';
+        badge.style.color = isDrive || isLocal ? '#ffffff' : '#e0e6ed';
+        badge.style.border = `1px solid ${isDrive || isLocal ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.15)'}`;
+        badge.style.backdropFilter = 'blur(4px)';
+    }
 
-        if (clean.startsWith('http://') || clean.startsWith('https://')) {
-            if (clean.includes('/metadata/normal/')) {
-                return clean;
+    // 영상/인물 편집 모달과 라이트박스에서 앞뒤 한 장씩 미리 요청
+    function preloadAdjacentModalImages(images, index, resolveUrl = null) {
+        if (!Array.isArray(images) || images.length < 2) return;
+        const getUrl = item => resolveUrl ? resolveUrl(item) : (typeof item === 'string' ? item : (item?.url || item?.src || ''));
+        const currentIndex = ((index % images.length) + images.length) % images.length;
+        const currentUrl = getUrl(images[currentIndex]);
+        // Share a bounded cache between the editors and lightbox, using their exact display URLs.
+        const cache = preloadAdjacentModalImages.cache || (preloadAdjacentModalImages.cache = new Map());
+        for (const adjacentIndex of [(currentIndex + 1) % images.length, (currentIndex - 1 + images.length) % images.length]) {
+            const url = getUrl(images[adjacentIndex]);
+            if (!url || url === currentUrl) continue;
+            if (cache.has(url)) {
+                const image = cache.get(url);
+                cache.delete(url);
+                cache.set(url, image);
+                continue;
             }
-            return `${ffBase}/metadata/normal/${routePath}?site=${encodeURIComponent(site || '')}&url=${encodeURIComponent(clean)}`;
+            const image = new Image();
+            image.referrerPolicy = 'no-referrer';
+            image.decoding = 'async';
+            image.fetchPriority = 'low';
+            image.onerror = () => {
+                if (cache.get(url) === image) cache.delete(url);
+            };
+            cache.set(url, image);
+            while (cache.size > 8) cache.delete(cache.keys().next().value);
+            image.src = url;
         }
-
-        if (clean.startsWith('/images/')) {
-            return `${ffBase}${clean}`;
-        }
-
-        return clean;
     }
 
     // 모달에 실제 스트림 주소를 주입하고 자동 재생을 시작하는 헬퍼
@@ -700,7 +929,7 @@ GM_addStyle(`
         const errEl = m.querySelector('#pmh-video-modal-error');
         if (errEl) {
             errEl.style.display = 'flex';
-            errEl.innerHTML = `<i class="fas fa-exclamation-triangle" style="font-size:24px; margin-bottom:8px; color:#bd362f;"></i><div>${errMsg}</div>`;
+            errEl.textContent = errMsg;
         }
     }
 
@@ -1772,7 +2001,7 @@ GM_addStyle(`
             if (!plexSrv) return resolve(null);
             const req = GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${plexSrv.url}/library/metadata/${itemId}?includeMarkers=1&X-Plex-Token=${plexSrv.token}`,
+                url: `${plexSrv.url}/library/metadata/${itemId}?includeMarkers=1&includeExtras=1&X-Plex-Token=${plexSrv.token}`,
                 headers: { 'Accept': 'application/json' },
                 timeout: 10000,
                 onload: r => {
@@ -2014,13 +2243,14 @@ GM_addStyle(`
 
         const guid = meta.guid || "";
         return {
-            type: (meta.type === 'movie' || meta.type === 'episode') ? 'video' : 'directory',
+            type: ({ movie: 'video', episode: 'video', clip: 'video', album: 'album', track: 'audio' })[meta.type] || 'directory',
             itemId: itemId, guid: guid, duration: meta.duration || 0,
             librarySectionID: meta.librarySectionID || null,
             versions: versions, markers: markers,
             g: guid.split('://')[1]?.split('?')[0] || guid, raw_g: guid, p: p, tags: tags,
             part_id: versions.length > 0 ? versions[0].part_id : null,
-            sub_id: best_sub_id, sub_url: best_sub_url
+            sub_id: best_sub_id, sub_url: best_sub_url,
+            trailer_id: selectPlexTrailer(meta)?.ratingKey || null
         };
     }
 
@@ -2311,24 +2541,26 @@ GM_addStyle(`
 
     // FF 메타데이터 및 인물 DB API 전용 중계 브릿지
     const PmhFfBridge = {
-        callMetaApi: async function(targetSrv, command, arg1, arg2, arg3) {
+        callMetaApi: async function(targetSrv, command, arg1, arg2, arg3, options = {}) {
             const payload = {
+                ...(options.fields || {}),
                 command: command,
                 arg1: arg1 || '',
                 arg2: arg2 || '',
                 arg3: arg3 || ''
             };
-            return await makeRequest(`${targetSrv.relayUrl}/ff_metadata/meta_api`, 'POST', payload, ClientSettings.masterApiKey, null, 30000);
+            return await makeRequest(`${targetSrv.relayUrl}/ff_metadata/meta_api`, 'POST', payload, ClientSettings.masterApiKey, null, options.timeout || (/save|delete|reset|refresh/.test(command) ? 180000 : 30000));
         },
 
-        callPersonApi: async function(targetSrv, command, arg1, arg2, arg3) {
+        callPersonApi: async function(targetSrv, command, arg1, arg2, arg3, options = {}) {
             const payload = {
+                ...(options.fields || {}),
                 command: command,
                 arg1: arg1 || '',
                 arg2: arg2 || '',
                 arg3: arg3 || ''
             };
-            return await makeRequest(`${targetSrv.relayUrl}/ff_metadata/person_api`, 'POST', payload, ClientSettings.masterApiKey, null, 30000);
+            return await makeRequest(`${targetSrv.relayUrl}/ff_metadata/person_api`, 'POST', payload, ClientSettings.masterApiKey, null, options.timeout || (/save|delete|reset|refresh/.test(command) ? 180000 : 30000));
         }
     };
 
@@ -3834,7 +4066,7 @@ GM_addStyle(`
                 }
             }
 
-            if (info.trailer_id) {
+            if (info.trailer_id || getAvTrailerContext(info, srvConfig)) {
                 const targetServerId = srvConfig ? srvConfig.machineIdentifier : link?.getAttribute('href')?.match(/\/server\/([a-f0-9]+)\//)?.[1];
                 const plexSrv = extractPlexServerInfo(targetServerId);
 
@@ -3842,7 +4074,7 @@ GM_addStyle(`
                     const tBtn = document.createElement('a');
                     tBtn.href = '#';
                     tBtn.className = 'plex-list-play-external plex-list-trailer-btn';
-                    tBtn.title = '예고편 / 프리뷰 재생';
+                    tBtn.title = '예고편 / 프리뷰 확인 및 재생';
                     tBtn.innerHTML = '<i class="fas fa-film" style="color:#e5a00d;"></i>';
 
                     tBtn.addEventListener('click', async (e) => {
@@ -3858,54 +4090,9 @@ GM_addStyle(`
 
                         displayTitle = displayTitle || `Item ${id}`;
 
-                        showVideoModal("", `${displayTitle} (예고편)`);
-
-                        try {
-                            const metaRes = await new Promise((resolve, reject) => {
-                                GM_xmlhttpRequest({
-                                    method: 'GET',
-                                    url: `${plexSrv.url}/library/metadata/${info.trailer_id}?X-Plex-Token=${plexSrv.token}`,
-                                    headers: { 'Accept': 'application/json' },
-                                    timeout: 6000,
-                                    onload: (r) => {
-                                        if (r.status === 200) {
-                                            try { resolve(JSON.parse(r.responseText)); }
-                                            catch (err) { reject(err); }
-                                        } else {
-                                            reject(new Error(`Plex API 응답 오류 (HTTP ${r.status})`));
-                                        }
-                                    },
-                                    onerror: () => reject(new Error("Plex 서버 네트워크 연결 실패")),
-                                    ontimeout: () => reject(new Error("Plex 서버 응답 시간 초과"))
-                                });
-                            });
-
-                            const trailerMeta = metaRes?.MediaContainer?.Metadata?.[0];
-                            const part = trailerMeta?.Media?.[0]?.Part?.[0];
-
-                            if (!part || !part.key) {
-                                throw new Error("트레일러 미디어 스트림 키를 찾지 못했습니다.");
-                            }
-
-                            let trailerStreamUrl = String(part.key).trim();
-
-                            if (trailerStreamUrl.startsWith('http://') || trailerStreamUrl.startsWith('https://')) {
-                                // FF 메타데이터 서버 등 외부 지오 프록시/원격 스트림인 경우 원본 URL 그대로 사용
-                                infoLog(`[List] Trailer remote stream URL detected: ${trailerStreamUrl}`);
-                            } else {
-                                // Plex 서버 내부 미디어 파트(/library/parts/...)인 경우 Plex 서버 주소 및 토큰 연결
-                                const streamPath = trailerStreamUrl.startsWith('/') ? trailerStreamUrl : `/${trailerStreamUrl}`;
-                                const delimiter = streamPath.includes('?') ? '&' : '?';
-                                trailerStreamUrl = `${plexSrv.url}${streamPath}${delimiter}X-Plex-Token=${plexSrv.token}`;
-                                infoLog(`[List] Trailer local part stream connected: ${trailerStreamUrl}`);
-                            }
-
-                            setVideoModalSource(trailerStreamUrl, `${displayTitle} (예고편)`);
-
-                        } catch (err) {
-                            errorLog(`[List] Trailer playback error:`, err);
-                            setVideoModalError(`예고편을 불러오지 못했습니다: ${err.message || err}`);
-                        }
+                        await playTrailerInModal(info.trailer_id, displayTitle, plexSrv, {
+                            itemId: id, srvConfig, avContext: getAvTrailerContext(info, srvConfig)
+                        });
                     });
                     wrapper.appendChild(tBtn);
                 }
@@ -5630,6 +5817,10 @@ GM_addStyle(`
         const srvConfig = getServerConfig(serverId);
         const session = currentRenderSession;
         const cacheKey = srvConfig ? `D_${serverId}_${itemId}` : `F_${serverId}_${itemId}`;
+        if (isManualRefresh) {
+            injectDetailPersonButtons.current = null;
+            document.querySelectorAll('.pmh-detail-person-btn').forEach(removeDetailPersonButton);
+        }
 
         isFetchingDetail = true;
         let hasDisplayedCache = false;
@@ -5752,6 +5943,7 @@ GM_addStyle(`
                 currentDisplayedItemId = itemId;
             } else {
                 injectDetailPosterToolbar(data, serverId, srvConfig);
+                injectDetailPersonButtons(data, serverId, srvConfig);
             }
         } catch (e) {
             const box = document.getElementById('plex-guid-box');
@@ -6124,6 +6316,23 @@ GM_addStyle(`
         </div>`;
 
         container.insertAdjacentHTML('afterend', boxHtml);
+
+        const avContext = getAvTrailerContext(data, srvConfig);
+        if (data.trailer_id || avContext) {
+            const trailerButton = document.createElement('a');
+            trailerButton.href = '#';
+            trailerButton.id = 'pmh-btn-play-trailer';
+            trailerButton.style.cssText = 'color:#e5a00d; margin-left:10px; text-decoration:none;';
+            trailerButton.textContent = '▶ 예고편 / 프리뷰';
+            trailerButton.title = '현재 등록된 대표 영상을 확인하고 재생합니다.';
+            trailerButton.onclick = event => {
+                event.preventDefault(); event.stopPropagation();
+                playTrailerInModal(data.trailer_id, '예고편 / 프리뷰', plexSrv, {
+                    itemId: data.itemId, srvConfig, avContext
+                });
+            };
+            document.getElementById('pmh-btn-refresh-data')?.parentElement.appendChild(trailerButton);
+        }
 
         let abortDetailRefresh = false;
 
@@ -6790,52 +6999,337 @@ GM_addStyle(`
 
         // 포스터 하단 액션 툴바(갤러리, 크롭, DB수정) 주입 호출
         injectDetailPosterToolbar(data, serverId, srvConfig);
+        injectDetailPersonButtons(data, serverId, srvConfig);
     }
 
-    // Plex 트레일러 ID를 받아 PMH 비디오 모달로 재생하는 공용 헬퍼
-    async function playTrailerInModal(trailerId, title, plexSrv) {
-        if (!trailerId || !plexSrv) return;
-        showVideoModal("", title);
+    function normalizeFfActorName(value) {
+        return String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+    }
 
-        try {
-            const metaRes = await new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: `${plexSrv.url}/library/metadata/${trailerId}?X-Plex-Token=${plexSrv.token}`,
-                    headers: { 'Accept': 'application/json' },
-                    timeout: 8000,
-                    onload: (r) => {
-                        if (r.status === 200) {
-                            try { resolve(JSON.parse(r.responseText)); }
-                            catch (err) { reject(err); }
-                        } else {
-                            reject(new Error(`Plex API 응답 오류 (HTTP ${r.status})`));
-                        }
-                    },
-                    onerror: () => reject(new Error("Plex 서버 통신 실패")),
-                    ontimeout: () => reject(new Error("Plex 서버 응답 시간 초과"))
-                });
-            });
-
-            const trailerMeta = metaRes?.MediaContainer?.Metadata?.[0];
-            const part = trailerMeta?.Media?.[0]?.Part?.[0];
-
-            if (!part || !part.key) {
-                throw new Error("트레일러 미디어 스트림 키를 찾지 못했습니다.");
+    function buildFfActorNameIndex(actors) {
+        const names = new Map();
+        for (const actor of Array.isArray(actors) ? actors : []) {
+            if (!actor || typeof actor !== 'object') continue;
+            const personIdx = String(actor.actor_idx || actor.person_idx || '').trim();
+            if (!personIdx) continue;
+            for (const value of [actor.name_ko, actor.name_org, actor.name_en, actor.name]) {
+                const name = normalizeFfActorName(value);
+                if (!name) continue;
+                if (!names.has(name)) names.set(name, personIdx);
+                else if (names.get(name)?.toLowerCase() !== personIdx.toLowerCase()) names.set(name, null);
             }
-
-            let trailerStreamUrl = String(part.key).trim();
-            if (!trailerStreamUrl.startsWith('http://') && !trailerStreamUrl.startsWith('https://')) {
-                const streamPath = trailerStreamUrl.startsWith('/') ? trailerStreamUrl : `/${trailerStreamUrl}`;
-                const delimiter = streamPath.includes('?') ? '&' : '?';
-                trailerStreamUrl = `${plexSrv.url}${streamPath}${delimiter}X-Plex-Token=${plexSrv.token}`;
-            }
-
-            setVideoModalSource(trailerStreamUrl, title);
-        } catch (err) {
-            errorLog(`[Trailer Modal] 재생 오류:`, err);
-            setVideoModalError(`예고편을 불러오지 못했습니다: ${err.message || err}`);
         }
+        return names;
+    }
+
+    function findDetailCastNames() {
+        const names = new Set();
+        // New Plex builds hash their CSS classes. The native actor filter link is stable.
+        for (const anchor of document.querySelectorAll('a[href*="actor"]')) {
+            let href = anchor.getAttribute('href') || '';
+            for (let i = 0; i < 3; i++) {
+                try {
+                    const decoded = decodeURIComponent(href);
+                    if (decoded === href) break;
+                    href = decoded;
+                } catch (err) { break; }
+            }
+            if (/\/library\/sections\/\d+\/all\?/.test(href) && /[?&]actor=\d+(?:[&#]|$)/.test(href) && anchor.textContent.trim()) names.add(anchor);
+        }
+        const roots = new Set(document.querySelectorAll('[data-testid="metadata-cast"], [data-testid="metadata-roles"], [class*="CastHub-"], [class*="CastAndCrew-"], [class*="RoleCard-container-"], [class*="CastCard-container-"]'));
+        for (const heading of document.querySelectorAll('h2, h3, [class*="HubTitle-title"], [data-testid="hubTitle"]')) {
+            if (!/^(출연진(?:\s*및\s*제작진)?|cast(?:\s*(?:&|and)\s*crew)?)$/i.test(heading.textContent.trim())) continue;
+            const hub = heading.closest('section, [class*="Hub-hub-"], [class*="Hub-container-"], [data-testid^="hub-"]');
+            if (hub) roots.add(hub);
+        }
+        for (const root of roots) {
+            const candidates = root.querySelectorAll('[data-testid="metadataTitleLink"], [data-testid="metadata-title-link"], [class*="RoleCard-name-"], [class*="RoleCard-title-"], [class*="CastCard-name-"], [class*="MetadataPosterCardTitle-"], [class*="TitleLink-title-"]');
+            for (const candidate of candidates) {
+                if (candidate.closest('.pmh-detail-person-btn')) continue;
+                // Prefer the innermost title so nested title wrappers get one icon.
+                if ([...candidates].some(other => other !== candidate && candidate.contains(other))) continue;
+                names.add(candidate.closest('a') || candidate);
+            }
+        }
+        return [...names];
+    }
+
+    function removeDetailPersonButton(button) {
+        button.remove();
+    }
+
+    async function fetchDetailCastActors(srvConfig, av, isCurrent = () => true) {
+        try {
+            const response = await makeRequest(`${srvConfig.relayUrl}/meta_db/cast?code=${encodeURIComponent(av.code)}&category=${encodeURIComponent(av.category)}`,
+                'GET', null, ClientSettings.masterApiKey, null, 2500);
+            if (!isCurrent()) return null;
+            if (response?.ret === 'success' && response.source === 'meta_db' &&
+                String(response.code || '').toLowerCase() === av.code.toLowerCase() && response.category === av.category &&
+                Array.isArray(response.actors) && response.actors.some(actor => actor?.actor_idx)) {
+                return { actors: response.actors, source: 'meta_db' };
+            }
+        } catch (err) { /* Direct DB unavailable or older PMH backend: keep the existing FF path. */ }
+        if (!isCurrent()) return null;
+        const response = await PmhFfBridge.callMetaApi(srvConfig, 'get_meta_by_code', av.code, av.category);
+        if (!isCurrent()) return null;
+        const row = response?.data;
+        if (response?.ret !== 'success' || String(row?.code || '').toLowerCase() !== av.code.toLowerCase() || row?.category !== av.category) throw new Error('FF 작품 정보 불일치');
+        const entity = requireFfEntity(typeof row.json_data === 'string' ? JSON.parse(row.json_data) : row.json_data);
+        return { actors: entity.actor, source: 'ff_api' };
+    }
+
+    async function injectDetailPersonButtons(data = null, serverId = null, srvConfig = null) {
+        const ids = extractIds();
+        const clearButtons = () => document.querySelectorAll('.pmh-detail-person-btn').forEach(removeDetailPersonButton);
+        if (data) {
+            const av = getAvTrailerContext(data, srvConfig);
+            if (!av || !state.detailInfo) {
+                injectDetailPersonButtons.current = null;
+                clearButtons();
+                return;
+            }
+            const itemId = String(data.itemId || ids.itemId || '');
+            const key = JSON.stringify([currentRenderSession, serverId, itemId, av.code, av.category]);
+            if (injectDetailPersonButtons.current?.key !== key) {
+                clearButtons();
+                injectDetailPersonButtons.current = { key, serverId, itemId, srvConfig, av,
+                    session: currentRenderSession, loaded: false, loading: false, names: new Map() };
+            }
+        }
+        const context = injectDetailPersonButtons.current;
+        const isCurrent = () => context === injectDetailPersonButtons.current && state.detailInfo &&
+            context.session === currentRenderSession && extractIds().serverId === context.serverId &&
+            String(extractIds().itemId) === context.itemId;
+        if (!context || !isCurrent()) { clearButtons(); return; }
+        let targets = findDetailCastNames();
+        if (!targets.length || context.loading) return;
+        if (!context.loaded) {
+            context.loading = true;
+            try {
+                const result = await fetchDetailCastActors(context.srvConfig, context.av, isCurrent);
+                if (!isCurrent()) return;
+                context.names = buildFfActorNameIndex(result?.actors);
+                context.source = result?.source;
+            } catch (err) {
+                if (isCurrent()) warnLog('[Cast] FF 인물 바로가기를 확인하지 못했습니다.');
+            } finally {
+                context.loaded = true;
+                context.loading = false;
+            }
+            if (!isCurrent()) return;
+            targets = findDetailCastNames();
+        }
+        const active = new Set();
+        for (const name of targets) {
+            const personIdx = context.names.get(normalizeFfActorName(name.textContent));
+            if (!personIdx) continue;
+            const anchor = name.closest('a, button') || name;
+            const nameText = normalizeFfActorName(name.textContent);
+            const nameSpans = [...anchor.querySelectorAll('span')].filter(span =>
+                !span.closest('.pmh-detail-person-btn') && normalizeFfActorName(span.textContent) === nameText);
+            const label = nameSpans.at(-1) || name;
+            let button = label.querySelector('.pmh-detail-person-btn');
+            if (!button) {
+                // Keep the shortcut inline with the name inside the native link.
+                button = document.createElement('span');
+                button.setAttribute('role', 'button');
+                button.tabIndex = 0;
+                button.className = 'pmh-detail-person-btn';
+                button.style.cssText = 'display:inline-flex; align-items:center; justify-content:center; width:auto; margin:0 0 0 8px; padding:0; border:0; background:transparent; color:#e5a00d; cursor:pointer; font-size:inherit; line-height:1; vertical-align:middle;';
+                button.innerHTML = '<i class="fas fa-address-card" aria-hidden="true"></i>';
+                label.appendChild(button);
+            }
+            const signature = `${context.key}:${personIdx}`;
+            if (button.dataset.pmhPerson !== signature) {
+                button.dataset.pmhPerson = signature;
+                button.title = 'FF 인물 정보 열기';
+                button.setAttribute('aria-label', `${name.textContent.trim()} · FF 인물 정보 열기`);
+                button.onclick = event => {
+                    event.preventDefault(); event.stopPropagation();
+                    if (isCurrent()) openPmhPersonDbModal(personIdx, context.av.category === 'WESTERN' ? 'WESTERN' : 'JAV', context.srvConfig, context.serverId);
+                };
+                button.onkeydown = event => {
+                    if (event.key === 'Enter' || event.key === ' ') button.onclick(event);
+                };
+            }
+            active.add(button);
+        }
+        document.querySelectorAll('.pmh-detail-person-btn').forEach(button => { if (!active.has(button)) removeDetailPersonButton(button); });
+    }
+
+    // AV만 FF 대표 영상을 조회한다. 쇼/음악 및 일반 Plex extra는 Plex 경로를 유지한다.
+    function getAvTrailerContext(info, srvConfig) {
+        if (!info || !srvConfig || (info.type && info.type !== 'video' && info.type !== 'movie')) return null;
+        const enabled = srvConfig.ff_metadb_use || window._pmh_latest_ping_results?.[srvConfig.machineIdentifier]?.ff_metadb_use;
+        if (!enabled) return null;
+        const code = extractSjvaAgentCode(info.raw_g || info.guid || info.g || '');
+        const module = getFfModuleFromCode(code);
+        const category = { jav_censored: 'JAV_CEN', jav_uncensored: 'JAV_UNCEN', western: 'WESTERN' }[module];
+        return category ? { code, category } : null;
+    }
+
+    // FF 영상은 FF가 스트리밍한다. Plex 토큰을 외부 주소에 붙이지 않는다.
+    function resolveTrailerPlaybackUrl(rawUrl, plexSrv, srvConfig) {
+        const clean = String(rawUrl || '').trim();
+        if (!clean) throw new Error('영상 재생 주소가 없습니다.');
+        const isAbsolute = /^https?:\/\//i.test(clean);
+        if ((/^[a-z][a-z\d+.-]*:/i.test(clean) && !isAbsolute) || clean.startsWith('//') || clean.includes('\\')) {
+            throw new Error('지원하지 않는 영상 주소입니다.');
+        }
+        const parsed = new URL(clean, 'https://pmh-relative.invalid/');
+        const ffPath = parsed.pathname.match(/\/metadata\/normal\/jav_video(?:_un)?$/i);
+        if (ffPath) {
+            const ffBase = (srvConfig?.ff_ddns || window._pmh_latest_ping_results?.[srvConfig?.machineIdentifier]?.ff_ddns || '').replace(/\/+$/, '');
+            if (ffBase) {
+                if (!/^https?:\/\//i.test(ffBase)) throw new Error('FF_DDNS에 HTTP(S) 주소를 설정하세요.');
+                return ffBase + ffPath[0] + parsed.search;
+            }
+            if (!/^https?:\/\//i.test(clean)) throw new Error('FF 영상 재생에는 접근 가능한 FF_DDNS 설정이 필요합니다.');
+        }
+        if (/^https?:\/\//i.test(clean)) return clean;
+        if (!plexSrv?.url) throw new Error('Plex 서버 주소를 찾지 못했습니다.');
+        const url = new URL(clean.replace(/^\/+/, ''), plexSrv.url.replace(/\/+$/, '') + '/');
+        url.searchParams.set('X-Plex-Token', plexSrv.token);
+        return url.href;
+    }
+
+    function selectPlexTrailer(metadata) {
+        const extras = metadata?.Extras?.Metadata || [];
+        return extras.filter(extra => Number(extra.extraType) === 1 || extra.type === 'trailer')
+            .sort((a, b) => Number(/\[preview\]/i.test(b.title || '')) - Number(/\[preview\]/i.test(a.title || '')))[0] || null;
+    }
+
+    function getFfTrailerPlayback(row, context, plexSrv, srvConfig) {
+        if (!row || String(row.code).toLowerCase() !== context.code.toLowerCase() || row.category !== context.category) {
+            throw new Error('FF가 요청한 작품과 다른 메타데이터를 반환했습니다.');
+        }
+        const entity = typeof row.json_data === 'string' ? JSON.parse(row.json_data) : row.json_data;
+        if (!Number.isInteger(entity?.schema?.db_schema_version) || entity.schema.db_schema_version < 1 || entity.schema.json_format_version !== 1) {
+            throw new Error('FF 메타 DB 스키마와 마이그레이션 상태를 확인하세요.');
+        }
+        // 최종 extras의 선택과 우선순위는 FF가 결정한다.
+        const video = (entity.extras || []).find(extra => extra.content_type === 'trailer' && extra.content_url);
+        if (!video) return null;
+        const extra = entity.extra_info || {};
+        const stored = asset => asset && (asset.google_fileid || asset.local_path);
+        const label = stored(extra.preview_clip) ? '프리뷰' : stored(extra.trailer_video) ? '저장된 트레일러' : '공식 트레일러';
+        return { url: resolveTrailerPlaybackUrl(video.content_url, plexSrv, srvConfig), label };
+    }
+
+    function fetchPlexTrailerMetadata(itemId, plexSrv) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${plexSrv.url}/library/metadata/${encodeURIComponent(itemId)}?includeExtras=1&X-Plex-Token=${encodeURIComponent(plexSrv.token)}`,
+                headers: { Accept: 'application/json' }, timeout: 10000,
+                onload: response => {
+                    if (response.status !== 200) return reject(new Error(`Plex API 응답 오류 (HTTP ${response.status})`));
+                    try {
+                        const metadata = JSON.parse(response.responseText).MediaContainer?.Metadata?.[0];
+                        if (!metadata) throw new Error('Plex 미디어 정보를 찾지 못했습니다.');
+                        resolve(metadata);
+                    } catch (err) { reject(err); }
+                },
+                onerror: () => reject(new Error('Plex 서버 통신 실패')),
+                ontimeout: () => reject(new Error('Plex 서버 응답 시간 초과'))
+            });
+        });
+    }
+
+    // 대표 영상 조회와 선택한 extra 재생을 구분한다. 조회 결과는 연 모달에만 반영한다.
+    async function playTrailerInModal(trailerId, title, plexSrv, options = {}) {
+        const modal = showVideoModal('', title);
+        const isCurrent = () => document.getElementById('pmh-video-modal') === modal;
+        let ffFailure = null;
+        try {
+            if (options.avContext) {
+                try {
+                    const { code, category } = options.avContext;
+                    const response = await PmhFfBridge.callMetaApi(options.srvConfig, 'get_meta_by_code', code, category);
+                    if (!isCurrent()) return;
+                    if (response?.ret !== 'success') throw new Error(response?.msg || 'FF 영상 조회 실패');
+                    const playback = getFfTrailerPlayback(response.data, options.avContext, plexSrv, options.srvConfig);
+                    if (playback) {
+                        setVideoModalSource(playback.url, `${title} (${playback.label})`);
+                        return;
+                    }
+                    setVideoModalError('FF 메타 DB에 등록된 트레일러 또는 프리뷰가 없습니다.');
+                    return;
+                } catch (err) {
+                    if (!isCurrent()) return;
+                    ffFailure = err;
+                    if (!trailerId && !options.itemId) throw err;
+                    toastr.warning('FF 영상을 확인하지 못해 Plex에 등록된 예고편을 조회합니다.');
+                }
+            }
+            if (!plexSrv) throw new Error('Plex 서버 정보를 찾지 못했습니다.');
+            if (!trailerId && options.itemId) {
+                const parent = await fetchPlexTrailerMetadata(options.itemId, plexSrv);
+                if (!isCurrent()) return;
+                trailerId = selectPlexTrailer(parent)?.ratingKey;
+            }
+            if (!trailerId) throw ffFailure || new Error('등록된 트레일러 또는 프리뷰가 없습니다.');
+            const metadata = await fetchPlexTrailerMetadata(trailerId, plexSrv);
+            if (!isCurrent()) return;
+            const part = metadata.Media?.flatMap(media => media.Part || []).find(part => part.key);
+            if (!part) throw new Error('트레일러 미디어 스트림 키를 찾지 못했습니다.');
+            const label = /\[preview\]/i.test(metadata.title || '') ? '프리뷰' : '예고편';
+            setVideoModalSource(resolveTrailerPlaybackUrl(part.key, plexSrv, options.srvConfig), `${title} (${label})`);
+        } catch (err) {
+            if (isCurrent()) setVideoModalError(`영상을 불러오지 못했습니다: ${err.message || err}`);
+        }
+    }
+
+    function getPlexMetadataId(value) {
+        let decoded = String(value || '');
+        for (let i = 0; i < 3; i++) {
+            const match = decoded.match(/\/(?:library\/)?metadata\/(\d+)(?=[/?&#]|$)/);
+            if (match) return match[1];
+            try {
+                const next = decodeURIComponent(decoded);
+                if (next === decoded) break;
+                decoded = next;
+            } catch (err) { break; }
+        }
+        return null;
+    }
+
+    function injectTrailerHubButtons() {
+        const { serverId } = extractIds();
+        document.querySelectorAll('div[data-testid="cellItem"]').forEach(cell => {
+            const existing = cell.querySelector('.pmh-trailer-hub-btn');
+            const trailerSpan = Array.from(cell.querySelectorAll('span')).find(span => {
+                const text = (span.getAttribute('title') || span.textContent || '').trim();
+                return /^(예고편|트레일러|프리뷰|trailer|preview)$/i.test(text);
+            });
+            const link = cell.querySelector('a[href*="metadata"]');
+            const trailerId = getPlexMetadataId(link?.getAttribute('href')) ||
+                getPlexMetadataId(cell.querySelector('img[src*="metadata"]')?.src);
+            const identity = `${serverId}:${trailerId}`;
+            if (!trailerSpan || !trailerId) {
+                existing?.remove();
+                return;
+            }
+            if (existing?.dataset.identity === identity && existing.parentElement === trailerSpan) return;
+            existing?.remove();
+            const mainTitleEl = cell.querySelector('span[class*="MetadataPosterCardTitle"]:not([title="예고편"]):not([title="Trailer"])') || cell.querySelector('button[aria-label]');
+            const mainTitle = mainTitleEl?.getAttribute('aria-label') || mainTitleEl?.getAttribute('title') || mainTitleEl?.textContent?.trim() || '예고편 / 프리뷰';
+            const playBtn = document.createElement('a');
+            playBtn.href = '#';
+            playBtn.className = 'pmh-trailer-hub-btn';
+            playBtn.dataset.identity = identity;
+            playBtn.style.cssText = 'color:#e5a00d; margin-left:6px; font-size:13px; text-decoration:none; cursor:pointer; display:inline-flex; align-items:center; vertical-align:middle;';
+            playBtn.innerHTML = '<i class="fas fa-play-circle"></i>';
+            playBtn.title = '선택한 예고편 / 프리뷰 재생';
+            playBtn.onclick = event => {
+                event.preventDefault(); event.stopPropagation();
+                // 특정 extra를 선택했으므로 FF의 다른 대표 영상으로 대체하지 않는다.
+                playTrailerInModal(trailerId, mainTitle, extractPlexServerInfo(serverId), {
+                    srvConfig: getServerConfig(serverId)
+                });
+            };
+            trailerSpan.appendChild(playBtn);
+        });
     }
 
     // 상세페이지 Plex 포스터 카드 하단 전용 액션 툴바
@@ -7010,95 +7504,36 @@ GM_addStyle(`
         const clean = url.trim();
         if (!clean || clean.includes('/metadata/normal/')) return false;
 
-        let imgServerUrl = (srvConfig && srvConfig.av_image_server_url) ? srvConfig.av_image_server_url : '';
-        if (!imgServerUrl && srvConfig && srvConfig.machineIdentifier && window._pmh_latest_ping_results) {
-            imgServerUrl = window._pmh_latest_ping_results[srvConfig.machineIdentifier]?.av_image_server_url || '';
-        }
-        if (!imgServerUrl && ServerConfig.SERVERS && ServerConfig.SERVERS.length > 0) {
-            imgServerUrl = ServerConfig.SERVERS[0]?.av_image_server_url || '';
-        }
-        imgServerUrl = (imgServerUrl || '').trim().replace(/\/+$/, '');
-
-        if (imgServerUrl && clean.startsWith(imgServerUrl)) {
-            return true;
-        }
-
-        return false;
+        if (clean.startsWith('/images/')) return true;
+        const bases = [srvConfig?.av_image_server_url,
+            window._pmh_latest_ping_results?.[srvConfig?.machineIdentifier]?.av_image_server_url, getFfNodeBase(srvConfig)].filter(Boolean);
+        return bases.some(base => clean.startsWith(String(base).replace(/\/+$/, '') + '/'));
     }
 
     // FF 메타데이터 json_data 및 row로부터 갤러리 목록 집계
     function buildGalleryListFromRow(row, jd, srvConfig) {
-        const item_gallery = [];
-        const added_keys = new Set();
-        jd = jd || {};
-
-        let list_p_url = '';
-        let list_pl_url = '';
-
-        if (jd.thumb && Array.isArray(jd.thumb)) {
-            const p_item = jd.thumb.find(t => t && t.aspect === 'poster');
-            if (p_item && p_item.value) list_p_url = p_item.value;
-            const pl_item = jd.thumb.find(t => t && t.aspect === 'landscape');
-            if (pl_item && pl_item.value) list_pl_url = pl_item.value;
-        }
-        if (!list_p_url && row.poster_url) list_p_url = row.poster_url;
-
-        const orig_thumb = (jd.original && jd.original.thumb) ? jd.original.thumb : {};
-        const raw_site_p = orig_thumb.poster || '';
-        const raw_site_pl = orig_thumb.landscape || '';
-
-        if (list_p_url && !added_keys.has(list_p_url)) {
-            const isLocalP = isLocalServerMediaUrl(list_p_url, srvConfig);
-            item_gallery.push({
-                url: list_p_url,
-                type: isLocalP ? 'Poster' : 'Poster (Site)',
-                is_final: isLocalP
-            });
-            added_keys.add(list_p_url);
-        }
-
-        if (list_pl_url && !added_keys.has(list_pl_url)) {
-            const isLocalPl = isLocalServerMediaUrl(list_pl_url, srvConfig);
-            item_gallery.push({
-                url: list_pl_url,
-                type: isLocalPl ? 'Landscape' : 'Landscape (Site)',
-                is_final: isLocalPl
-            });
-            added_keys.add(list_pl_url);
-        }
-
-        const localFanarts = (jd.fanart && Array.isArray(jd.fanart)) ? jd.fanart : [];
-        localFanarts.forEach((fa_url, fa_i) => {
-            if (fa_url && !added_keys.has(fa_url)) {
-                const isLocalFa = isLocalServerMediaUrl(fa_url, srvConfig);
-                item_gallery.push({
-                    url: fa_url,
-                    type: isLocalFa ? `Local Art #${fa_i + 1}` : `Art #${fa_i + 1}`,
-                    is_final: isLocalFa
-                });
-                added_keys.add(fa_url);
-            }
-        });
-
-        if (raw_site_p && !added_keys.has(raw_site_p)) {
-            item_gallery.push({ url: raw_site_p, type: 'Poster (Site)', is_final: false });
-            added_keys.add(raw_site_p);
-        }
-
-        if (raw_site_pl && !added_keys.has(raw_site_pl)) {
-            item_gallery.push({ url: raw_site_pl, type: 'Landscape (Site)', is_final: false });
-            added_keys.add(raw_site_pl);
-        }
-
-        const origFanarts = (jd.original && Array.isArray(jd.original.fanart)) ? jd.original.fanart : [];
-        origFanarts.forEach((ofa_url, ofa_i) => {
-            if (ofa_url && !added_keys.has(ofa_url)) {
-                item_gallery.push({ url: ofa_url, type: `Site Art #${ofa_i + 1}`, is_final: false });
-                added_keys.add(ofa_url);
-            }
-        });
-
-        return item_gallery;
+        const gallery = [], seen = new Set();
+        const add = (url, kind, label, final) => {
+            if (!url) return;
+            const identity = getFfImageIdentity(url, srvConfig);
+            if (seen.has(identity)) return;
+            seen.add(identity);
+            const asset = getFfImageAsset(jd, kind, url, srvConfig);
+            const storage = isGoogleMediaUrl(url) ? 'GDrive' : isLocalServerMediaUrl(url, srvConfig) ? 'Server' : 'Site';
+            gallery.push({ url, type: `${label} (${storage}${asset?.is_user ? ' · User' : ''})`,
+                is_final: final && (storage !== 'Site' || Boolean(asset?.relative_path)),
+                relative_path: asset?.relative_path || '', is_user: Boolean(asset?.is_user) });
+        };
+        const stored = getFfStoredImages(jd, row);
+        add(stored.poster_url, 'poster', 'Poster', true);
+        add(stored.landscape_url, 'landscape', 'Landscape', true);
+        (jd.fanart || []).forEach((url, i) => add(url, 'fanart', `Art #${i + 1}`, true));
+        const originalPoster = jd.original?.thumb?.poster;
+        const originalLandscape = jd.original?.thumb?.landscape;
+        if (!isLocalServerMediaUrl(originalPoster, srvConfig)) add(originalPoster, 'poster', 'Poster original', false);
+        if (!isLocalServerMediaUrl(originalLandscape, srvConfig)) add(originalLandscape, 'landscape', 'Landscape original', false);
+        (jd.original?.fanart || []).forEach((url, i) => add(url, 'fanart', `Art original #${i + 1}`, false));
+        return gallery;
     }
 
     // 이미지 갤러리 라이트박스 모달
@@ -7134,7 +7569,7 @@ GM_addStyle(`
             <div style="width: 100%; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; background: rgba(10, 12, 14, 0.85); border-bottom: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; box-sizing: border-box;">
                 <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
                     <span style="color: #e5a00d; font-weight: bold; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><i class="fas fa-images" style="margin-right: 6px;"></i>${titleText}</span>
-                    <span id="pmh-lightbox-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: bold; background: #2f96b4; color: #fff; flex-shrink: 0;"></span>
+                    <span id="pmh-lightbox-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: bold; background: rgba(0,0,0,0.55); color: #e0e6ed; flex-shrink: 0;"></span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 15px; flex-shrink: 0;">
                     <span id="pmh-lightbox-counter" style="font-size: 13px; font-weight: bold; color: #e5a00d;">1 / 1</span>
@@ -7191,13 +7626,15 @@ GM_addStyle(`
             img.onerror = () => finishLoad(false);
 
             img.src = item.url;
+            preloadAdjacentModalImages(gallery, curIdx);
             if (img.complete) {
                 finishLoad(img.naturalWidth > 0);
             }
 
             counter.innerText = `${curIdx + 1} / ${gallery.length}`;
-            badge.innerText = item.type || 'Image';
-            badge.style.background = item.is_final ? '#2f96b4' : '#555';
+            badge.innerText = `${item.is_primary ? '★ ' : ''}${item.type || 'Image'}`;
+            badge.title = item.relative_path || '';
+            styleFfImageBadge(badge, item);
             openOrig.href = item.url;
 
             if (gallery.length <= 1) {
@@ -7249,6 +7686,8 @@ GM_addStyle(`
             globalAbortFlag = true;
 
             currentRenderSession++;
+            injectDetailPersonButtons.current = null;
+            document.querySelectorAll('.pmh-detail-person-btn').forEach(removeDetailPersonButton);
             sessionRevalidated.clear();
             abortAllRequests();
 
@@ -7283,47 +7722,9 @@ GM_addStyle(`
 
         checkAndInjectMultiSelectBar();
 
-        // 상세페이지 하단 허브의 '예고편' 텍스트 바로 옆에 인라인 모달 재생 아이콘 결속
         if (window.location.hash.includes('/details?key=')) {
-            const trailerCells = document.querySelectorAll('div[data-testid="cellItem"]');
-            trailerCells.forEach(cell => {
-                if (cell.querySelector('.pmh-trailer-hub-btn')) return;
-
-                const trailerSpan = Array.from(cell.querySelectorAll('span')).find(s => {
-                    const t = (s.getAttribute('title') || s.textContent || '').trim();
-                    return t === '예고편' || t.toLowerCase() === 'trailer';
-                });
-                if (!trailerSpan) return;
-
-                const img = cell.querySelector('img[src*="metadata"]');
-                if (!img) return;
-
-                const decodedSrc = decodeURIComponent(img.src);
-                const m = decodedSrc.match(/\/metadata\/(\d+)\/thumb/);
-                const trailerId = m ? m[1] : null;
-                if (!trailerId) return;
-
-                const mainTitleEl = cell.querySelector('span[class*="MetadataPosterCardTitle"]:not([title="예고편"]):not([title="Trailer"])') || cell.querySelector('button[aria-label]');
-                const mainTitle = mainTitleEl?.getAttribute('aria-label') || mainTitleEl?.getAttribute('title') || mainTitleEl?.textContent?.trim() || '예고편';
-
-                const playBtn = document.createElement('a');
-                playBtn.className = 'pmh-trailer-hub-btn';
-                playBtn.style.cssText = 'color:#e5a00d; margin-left:6px; font-size:13px; text-decoration:none !important; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; vertical-align:middle; line-height:1; position:relative; top:-1px; transition:transform 0.15s, color 0.15s;';
-                playBtn.innerHTML = '<i class="fas fa-play-circle"></i>';
-                playBtn.title = 'PMH 비디오 모달로 예고편 재생';
-
-                playBtn.addEventListener('mouseenter', () => { playBtn.style.transform = 'scale(1.25)'; playBtn.style.color = '#ffc107'; });
-                playBtn.addEventListener('mouseleave', () => { playBtn.style.transform = 'scale(1)'; playBtn.style.color = '#e5a00d'; });
-
-                playBtn.onclick = (e) => {
-                    e.preventDefault(); e.stopPropagation();
-                    const { serverId } = extractIds();
-                    const plexSrv = extractPlexServerInfo(serverId);
-                    playTrailerInModal(trailerId, `${mainTitle} (예고편)`, plexSrv);
-                };
-
-                trailerSpan.appendChild(playBtn);
-            });
+            injectTrailerHubButtons();
+            injectDetailPersonButtons();
         }
 
         if (!observerPending) {
@@ -8100,7 +8501,10 @@ GM_addStyle(`
     // =========================================================================
     let cropperInstance = null;
     let customUploadPayload = null; 
-    let currentCropItemData = null; 
+    let currentCropItemData = null;
+    let cropLoadRevision = 0;
+    let cropImageRequest = null;
+    let cropBlobUrl = null;
 
     // GUID 또는 텍스트에서 식별 코드 추출
     function extractSjvaAgentCode(rawGuid) {
@@ -8203,7 +8607,7 @@ GM_addStyle(`
         if (!srv && ServerConfig.SERVERS && ServerConfig.SERVERS.length > 0) {
             srv = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId) || ServerConfig.SERVERS[0];
         }
-        if (!srv || !srv.av_image_server_use) {
+        if (!srv || !(srv.av_image_server_use || srv.ff_metadb_use || window._pmh_latest_ping_results?.[srv.machineIdentifier]?.ff_metadb_use)) {
             return false;
         }
 
@@ -8364,7 +8768,7 @@ GM_addStyle(`
                                 <input type="file" id="pmh-upload-pl" accept="image/*" style="display:none;">
                             </label>
                             <label class="pmh-crop-btn pmh-crop-btn-success" style="cursor:pointer;" title="이미 완성된 세로형 포스터를 직접 등록합니다. (_p_user 단독 교체)">
-                                <i class="fas fa-file-image"></i> 세로(P) 등록
+                                <i class="fas fa-file-image"></i> <span id="pmh-upload-p-label">세로(P) 등록</span>
                                 <input type="file" id="pmh-upload-p" accept="image/*" style="display:none;">
                             </label>
                         </div>
@@ -8390,6 +8794,11 @@ GM_addStyle(`
 
     // 모달 닫기 함수
     function closeCropModal() {
+        cropLoadRevision++;
+        if (cropImageRequest) cropImageRequest.abort();
+        cropImageRequest = null;
+        if (cropBlobUrl) URL.revokeObjectURL(cropBlobUrl);
+        cropBlobUrl = null;
         if (cropperInstance) { 
             cropperInstance.destroy(); 
             cropperInstance = null; 
@@ -8434,7 +8843,7 @@ GM_addStyle(`
         if (!btnDirectSave) return;
 
         const urlVal = inputCropUrl ? inputCropUrl.value.trim() : '';
-        if (customUploadPayload && customUploadPayload.type === 'url' && urlVal) {
+        if (currentCropItemData?.targetType !== 'person' && customUploadPayload && customUploadPayload.type === 'url' && urlVal) {
             const isP = currentCropItemData && currentCropItemData.currentSource === 'p';
             const label = isP ? 'p_user 저장' : 'pl_user 저장';
             btnDirectSave.innerHTML = `<i class="fas fa-save"></i> ${label}`;
@@ -8453,92 +8862,90 @@ GM_addStyle(`
     }
 
     // 이미지 바이너리 로드 및 Cropper 인스턴스화 모듈
-    function loadCropImage(targetUrl, isCustomUrl = false) {
-        if (!targetUrl) return;
+    function updateCropTargetUI() {
+        const person = currentCropItemData?.targetType === 'person';
+        for (const id of ['pmh-crop-src-pl', 'pmh-crop-src-p']) {
+            const button = document.getElementById(id);
+            if (button) button.style.setProperty('display', person ? 'none' : 'inline-flex', 'important');
+        }
+        const landscapeUpload = document.getElementById('pmh-upload-pl')?.closest('label');
+        if (landscapeUpload) landscapeUpload.style.setProperty('display', person ? 'none' : 'inline-flex', 'important');
+        const uploadLabel = document.getElementById('pmh-upload-p-label');
+        if (uploadLabel) uploadLabel.textContent = person ? '프로필 사진 업로드' : '세로(P) 등록';
+        const url = document.getElementById('pmh-input-crop-url');
+        if (url) url.value = '';
+        for (const id of ['pmh-upload-pl', 'pmh-upload-p']) {
+            const input = document.getElementById(id);
+            if (input) input.value = '';
+        }
+        const save = document.getElementById('pmh-btn-crop-save');
+        if (save) { save.disabled = true; save.innerHTML = '<i class="fas fa-save"></i> 저장 및 리매칭'; }
+        updateDirectSaveBtn();
+    }
 
+    function loadCropImage(targetUrl, isCustomUrl = false) {
+        if (!targetUrl || !currentCropItemData) return;
+        const context = currentCropItemData;
+        const revision = ++cropLoadRevision;
         const imgEl = document.getElementById('pmh-cropper-target-img');
         const spinner = document.getElementById('pmh-crop-spinner');
+        const save = document.getElementById('pmh-btn-crop-save');
         if (!imgEl || !spinner) return;
-
-        spinner.style.display = 'block';
-        imgEl.style.opacity = '0';
-
-        infoLog(`[Crop Modal] 🚀 이미지 로드 시작: ${targetUrl}`);
-
-        if (isCustomUrl) {
-            customUploadPayload = { type: 'url', url: targetUrl };
-        }
-
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: targetUrl,
-            responseType: "blob",
-            headers: { "Referer": "" },
-            timeout: 30000,
-            onload: (blobRes) => {
-                if (blobRes.status >= 200 && blobRes.status < 300 && blobRes.response) {
-                    const blob = blobRes.response;
-                    const blobUrl = URL.createObjectURL(blob);
-
-                    const initCropper = () => {
-                        spinner.style.display = 'none';
-                        imgEl.style.opacity = '1';
-
-                        if (cropperInstance) {
-                            cropperInstance.destroy();
-                            cropperInstance = null;
-                        }
-
-                        const TargetCropper = getCropperClass();
-                        const activeRatio = getSelectedCropAspectRatio();
-                        const activeDragMode = $('#pmh-crop-mode-crop').hasClass('pmh-crop-btn-active') ? 'crop' : 'move';
-
-                        cropperInstance = new TargetCropper(imgEl, {
-                            aspectRatio: activeRatio,
-                            viewMode: 1,
-                            dragMode: activeDragMode,
-                            autoCropArea: 1,
-                            responsive: true,
-                            restore: false,
-                            checkCrossOrigin: false,
-                            zoomable: true,
-                            rotatable: true,
-                            scalable: true,
-                            wheelZoomRatio: 0.08
-                        });
-                    };
-
-                    imgEl.onload = initCropper;
-                    imgEl.onerror = () => {
-                        spinner.style.display = 'none';
-                        errorLog("[Crop Modal] ❌ Blob 이미지 렌더링 실패");
-                        toastr.error("이미지를 불러오지 못했습니다.");
-                    };
-                    imgEl.src = blobUrl;
-
-                    if (imgEl.complete) initCropper();
-
-                } else {
-                    spinner.style.display = 'none';
-                    errorLog("[Crop Modal] ❌ 이미지 응답 오류:", blobRes.status);
-                    toastr.error(`이미지 다운로드 실패 (HTTP ${blobRes.status})`);
-                }
+        if (cropImageRequest) cropImageRequest.abort();
+        if (cropperInstance) { cropperInstance.destroy(); cropperInstance = null; }
+        if (cropBlobUrl) URL.revokeObjectURL(cropBlobUrl);
+        cropBlobUrl = null;
+        context.sourceUrl = targetUrl;
+        spinner.style.display = 'block'; imgEl.style.opacity = '0';
+        if (save) save.disabled = true;
+        if (isCustomUrl) customUploadPayload = { type: 'url', url: targetUrl };
+        updateDirectSaveBtn();
+        const current = () => currentCropItemData === context && revision === cropLoadRevision;
+        const fail = message => {
+            if (!current()) return;
+            spinner.style.display = 'none';
+            toastr.error(message);
+        };
+        const install = url => {
+            if (!current()) return;
+            let installed = false;
+            imgEl.onload = () => {
+                if (!current() || installed) return;
+                installed = true;
+                const Cropper = getCropperClass();
+                if (!Cropper) return fail('Cropper.js를 불러오지 못했습니다.');
+                cropperInstance = new Cropper(imgEl, {
+                    aspectRatio: getSelectedCropAspectRatio(), viewMode: 1,
+                    dragMode: $('#pmh-crop-mode-crop').hasClass('pmh-crop-btn-active') ? 'crop' : 'move',
+                    autoCropArea: 1, responsive: true, restore: false, checkCrossOrigin: false,
+                    zoomable: true, rotatable: true, scalable: true, wheelZoomRatio: 0.08
+                });
+                spinner.style.display = 'none'; imgEl.style.opacity = '1';
+                if (save) save.disabled = false;
+            };
+            imgEl.onerror = () => fail('이미지를 표시하지 못했습니다.');
+            imgEl.src = url;
+            if (imgEl.complete && imgEl.naturalWidth) imgEl.onload();
+        };
+        if (targetUrl.startsWith('data:image/')) { install(targetUrl); return; }
+        const category = context.category || (context.domain === 'WESTERN' ? 'WESTERN' : 'JAV_CEN');
+        const srvConfig = context.srvConfig || getServerConfig(context.serverId);
+        cropImageRequest = GM_xmlhttpRequest({
+            method: 'GET', url: getFfMediaProxyUrl(srvConfig, targetUrl, context.site || '', 'image', category),
+            responseType: 'blob', timeout: 30000,
+            onload: response => {
+                if (!current()) return;
+                if (response.status < 200 || response.status >= 300 || !response.response) return fail(`이미지 다운로드 실패 (HTTP ${response.status})`);
+                cropBlobUrl = URL.createObjectURL(response.response);
+                install(cropBlobUrl);
             },
-            onerror: (err) => {
-                spinner.style.display = 'none';
-                errorLog("[Crop Modal] ❌ 네트워크 오류:", err);
-                toastr.error("이미지 서버에 연결할 수 없습니다.");
-            },
-            ontimeout: () => {
-                spinner.style.display = 'none';
-                errorLog("[Crop Modal] ❌ 요청 시간 초과");
-                toastr.error("이미지 로딩 시간이 초과되었습니다.");
-            }
+            onerror: () => fail('이미지 서버에 연결할 수 없습니다.'),
+            ontimeout: () => fail('이미지 로딩 시간이 초과되었습니다.')
         });
     }
 
     // 모달 열기 및 크롭 에디터 구동
-    async function openPosterCropModal(itemId, serverId, rawGuid, optTitle = '') {
+    async function openPosterCropModal(itemId, serverId, rawGuid, optTitle = '', onSaved = null) {
         infoLog(`[Crop Modal] 🎬 포스터 편집 진입 -> Item ID: ${itemId}, Server ID: ${serverId}, Raw GUID: ${rawGuid}`);
 
         const srvConfig = getServerConfig(serverId);
@@ -8559,7 +8966,9 @@ GM_addStyle(`
             return toastr.warning("지원하지 않는 AV 코드 형식입니다. (C, E, W만 지원)");
         }
 
-        currentCropItemData = { itemId, serverId, code: cleanCode, module: moduleName };
+        currentCropItemData = { itemId, serverId, code: cleanCode, module: moduleName, srvConfig, onSaved, category: { jav_censored: 'JAV_CEN', jav_uncensored: 'JAV_UNCEN', western: 'WESTERN' }[moduleName] };
+        const context = currentCropItemData;
+        updateCropTargetUI();
         customUploadPayload = null;
 
         updateDirectSaveBtn();
@@ -8583,12 +8992,11 @@ GM_addStyle(`
                 throw new Error("Cropper.js 라이브러리를 초기화하지 못했습니다.");
             }
 
-            const reqUrl = `${srvConfig.relayUrl}/ff_metadata/api/${moduleName}/info?code=${encodeURIComponent(cleanCode)}&call=plex`;
-            infoLog(`[Crop Modal] 📡 FF info API 요청 (180초 타임아웃): ${reqUrl}`);
-
-            const infoRes = await makeRequest(reqUrl, 'GET', null, ClientSettings.masterApiKey, null, 180000);
-            infoLog(`[Crop Modal] ✅ FF info 응답 수신:`, infoRes);
-
+            const result = await PmhFfBridge.callMetaApi(srvConfig, 'get_meta_by_code', cleanCode, context.category);
+            if (currentCropItemData !== context) return;
+            if (result?.ret !== 'success' || result.data?.code?.toLowerCase() !== cleanCode.toLowerCase()) throw new Error(result?.msg || 'FF 메타 DB에 해당 작품이 없습니다.');
+            const infoRes = requireFfEntity(typeof result.data.json_data === 'string' ? JSON.parse(result.data.json_data) : result.data.json_data);
+            context.site = infoRes.site || '';
             let plUrl = '';
             if (infoRes.thumb) {
                 for (const t of infoRes.thumb) {
@@ -8622,6 +9030,7 @@ GM_addStyle(`
             loadCropImage(currentCropItemData.plUrl);
 
         } catch (err) {
+            if (currentCropItemData !== context) return;
             errorLog("[Crop Modal] ❌ 모달 로드 예외 발생:", err);
             toastr.error(`이미지 로드 실패: ${err.message || err}`);
             closeCropModal();
@@ -8631,7 +9040,6 @@ GM_addStyle(`
     // =========================================================================
     // PMH 영상 DB 편집 모달 및 클린 리매칭 자동 연계 로직
     // =========================================================================
-    let currentEditMetaContext = null;
 
     // 출연 배우 검색 및 추가 모달 (FF meta_db actorSearchModal 규격 일치)
     function openPmhActorSearchModal(category, srvConfig, onSelectCallback) {
@@ -8915,16 +9323,18 @@ GM_addStyle(`
     }
 
     async function openPmhMetaDbModal(itemId, serverId, rawGuid, optTitle = '') {
+        let currentEditMetaContext = null;
         let srvConfig = getServerConfig(serverId);
         if (!srvConfig && ServerConfig.SERVERS && ServerConfig.SERVERS.length > 0) {
-            srvConfig = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId) || ServerConfig.SERVERS[0];
+            srvConfig = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId);
         }
         if (!srvConfig) return toastr.error("서버 설정을 찾을 수 없습니다.");
 
         const cleanCode = extractSjvaAgentCode(rawGuid) || rawGuid;
         if (!cleanCode) return toastr.warning("식별 코드를 확인할 수 없습니다.");
 
-        const moduleName = getFfModuleFromCode(cleanCode) || 'jav_censored';
+        const moduleName = getFfModuleFromCode(cleanCode);
+        if (!moduleName) return toastr.warning('AV 메타데이터만 편집할 수 있습니다.');
         const catMap = { 'jav_censored': 'JAV_CEN', 'jav_uncensored': 'JAV_UNCEN', 'western': 'WESTERN' };
         const category = catMap[moduleName] || 'JAV_CEN';
 
@@ -8967,7 +9377,7 @@ GM_addStyle(`
                         <div style="display:flex; gap:15px; margin-bottom:15px;">
                             <div style="width:380px; height:380px; flex-shrink:0; display:flex; flex-direction:column; justify-content:space-between; background:#111; padding:8px; border-radius:6px; border:1px solid #333; box-sizing:border-box;">
                                 <div style="width:100%; height:328px; background:#000; border-radius:4px; overflow:hidden; display:flex; justify-content:center; align-items:center; position:relative;">
-                                    <span id="${modalId}-p-type" style="position:absolute; top:6px; left:6px; z-index:3; font-size:10px; padding:2px 6px; border-radius:3px; background:rgba(0,123,255,0.75); color:#fff; font-weight:bold;">Poster</span>
+                                    <span id="${modalId}-p-type" style="position:absolute; top:6px; left:6px; z-index:3; font-size:10px; padding:2px 6px; border-radius:3px; background:rgba(0,0,0,0.55); color:#e0e6ed; font-weight:bold;">Poster</span>
                                     <img id="${modalId}-p-img" referrerpolicy="no-referrer" src="" style="max-width:100%; max-height:100%; object-fit:contain; cursor:pointer;" title="클릭하여 라이트박스로 크게 보기">
                                 </div>
                                 <div style="display:flex; justify-content:space-between; align-items:center; height:36px; padding:0 4px;">
@@ -9127,13 +9537,15 @@ GM_addStyle(`
                             <button type="button" class="pmh-crop-btn" id="${modalId}-btn-img-menu"><i class="fas fa-image"></i> 이미지 관리 ▾</button>
                             <div id="${modalId}-img-dropdown" style="display:none; position:absolute; bottom:100%; left:0; margin-bottom:4px; background:#1a1d21; border:1px solid #444; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.8); z-index:10; min-width:160px; overflow:hidden;">
                                 <a href="#" id="${modalId}-action-crop" style="display:block; padding:8px 12px; color:#ddd; font-size:12px; text-decoration:none;" onmouseover="this.style.background='#333'" onmouseout="this.style.background='transparent'">✏️ 포스터 크롭 에디터</a>
-                                <a href="#" id="${modalId}-action-sync-img" style="display:block; padding:8px 12px; color:#2f96b4; font-size:12px; text-decoration:none;" onmouseover="this.style.background='#333'" onmouseout="this.style.background='transparent'">🔄 이미지 재동기화</a>
+                                <a href="#" id="${modalId}-action-sync-img" title="기존 저장 미디어를 재사용하여 동기화" style="display:block; padding:8px 12px; color:#2f96b4; font-size:12px; text-decoration:none;" onmouseover="this.style.background='#333'" onmouseout="this.style.background='transparent'">🔄 이미지/미디어 동기화</a>
+                                <a href="#" id="${modalId}-action-reprocess-img" title="기존 미디어를 재사용하지 않고 다시 처리" style="display:block; padding:8px 12px; color:#e5a00d; font-size:12px; text-decoration:none;" onmouseover="this.style.background='#333'" onmouseout="this.style.background='transparent'">🔁 이미지/미디어 재처리</a>
                             </div>
                         </div>
 
                         <div style="position:relative; display:inline-block;" id="${modalId}-wrap-meta-tools">
                             <button type="button" class="pmh-crop-btn" id="${modalId}-btn-meta-menu"><i class="fas fa-sync-alt"></i> 메타 갱신 ▾</button>
                             <div id="${modalId}-meta-dropdown" style="display:none; position:absolute; bottom:100%; left:0; margin-bottom:4px; background:#1a1d21; border:1px solid #444; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.8); z-index:10; min-width:180px; overflow:hidden;">
+                                <a href="#" id="${modalId}-action-missing-inplace" style="display:block; padding:8px 12px; color:#2f96b4; font-size:12px; text-decoration:none;" onmouseover="this.style.background='#333'" onmouseout="this.style.background='transparent'">🩹 현재 사이트 누락 정보 갱신</a>
                                 <a href="#" id="${modalId}-action-inplace" style="display:block; padding:8px 12px; color:#ddd; font-size:12px; text-decoration:none;" onmouseover="this.style.background='#333'" onmouseout="this.style.background='transparent'">📌 현재 사이트 제자리 갱신</a>
                                 <a href="#" id="${modalId}-action-autosearch" style="display:block; padding:8px 12px; color:#51a351; font-size:12px; text-decoration:none;" onmouseover="this.style.background='#333'" onmouseout="this.style.background='transparent'">🔍 전체 우선순위 자동 재검색</a>
                             </div>
@@ -9148,6 +9560,20 @@ GM_addStyle(`
             </div>
         `;
         document.body.appendChild(m);
+        for (const kind of ['poster', 'landscape']) {
+            m.querySelector(`#${modalId}-${kind}-url-final`).insertAdjacentHTML('afterend',
+                `<input id="${modalId}-${kind}-path" class="pmh-input-text" readonly style="margin-top:4px;" placeholder="저장 상대 경로 없음">`);
+        }
+        m.querySelector(`#${modalId}-preview-info`).insertAdjacentHTML('beforebegin',
+            `<input id="${modalId}-preview-path" class="pmh-input-text" readonly placeholder="프리뷰 저장 상대 경로 없음">`);
+        m.querySelector(`#${modalId}-trailer-url`).insertAdjacentHTML('afterend', `
+            <div id="${modalId}-saved-trailer-box" style="margin-top:8px;">
+                <span class="pmh-form-label">저장된 공식 트레일러</span>
+                <button class="pmh-crop-btn" id="${modalId}-btn-play-saved-trailer">▶ 재생</button>
+                <button class="pmh-crop-btn" id="${modalId}-btn-delete-saved-trailer">삭제</button>
+                <input class="pmh-input-text" id="${modalId}-saved-trailer-url" readonly placeholder="트레일러 재생 주소">
+                <input class="pmh-input-text" id="${modalId}-saved-trailer-path" readonly placeholder="트레일러 저장 상대 경로 없음">
+            </div>`);
         m.style.display = 'flex';
 
         const card = m.querySelector(`#${modalId}-card`);
@@ -9182,16 +9608,31 @@ GM_addStyle(`
             else el.style.setProperty('display', 'none', 'important');
         };
 
+        const collectMetaPayload = () => {
+            if (!currentEditMetaContext) throw new Error('메타데이터를 먼저 불러오세요.');
+            const value = suffix => m.querySelector(`#${modalId}-${suffix}`).value.trim();
+            const values = {};
+            for (const key of ['ui-code', 'tagline', 'plot', 'studio', 'series', 'director', 'premiered', 'year', 'runtime', 'rating', 'genres', 'fanarts']) values[key.replace('-', '_')] = value(key);
+            values.title = value('input-title') || cleanCode;
+            values.poster = value('poster-url'); values.landscape = value('landscape-url'); values.trailer = value('trailer-url');
+            values.posterFinal = value('poster-url-final'); values.landscapeFinal = value('landscape-url-final');
+            return buildFfMetaEditPayload(currentEditMetaContext.jd, values, currentEditMetaContext.actors || []);
+        };
+        let loadRevision = 0;
         // 모달 내부 인플레이스(In-Place) 즉시 데이터 로드 및 렌더러 함수
         const loadModalDataInPlace = async (showToastOnSuccess = false) => {
+            if (!m.isConnected) return;
             const loadingDiv = m.querySelector(`#${modalId}-loading`);
             const formDiv = m.querySelector(`#${modalId}-form`);
 
+            const revision = ++loadRevision;
+            m.querySelector(`#${modalId}-btn-save`).disabled = true;
             loadingDiv.style.display = 'flex';
             formDiv.style.display = 'none';
 
             try {
                 const res = await PmhFfBridge.callMetaApi(srvConfig, 'get_meta_by_code', cleanCode, category);
+                if (!m.isConnected || revision !== loadRevision) return;
                 const resCode = res?.data?.code || '';
                 const isExactMatch = (resCode.toLowerCase() === cleanCode.toLowerCase());
 
@@ -9208,7 +9649,7 @@ GM_addStyle(`
                 const row = res.data;
                 let jd = row.json_data;
                 if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch (e) { jd = {}; } }
-                if (!jd) jd = {};
+                requireFfEntity(jd);
 
                 currentEditMetaContext = { row, jd, itemId, serverId, cleanCode, category, srvConfig, modalId };
 
@@ -9229,25 +9670,26 @@ GM_addStyle(`
                 m.querySelector(`#${modalId}-input-title`).value = row.title || jd.title || '';
 
                 const origThumb = (jd.original && jd.original.thumb) ? jd.original.thumb : {};
-                m.querySelector(`#${modalId}-poster-url`).value = origThumb.poster || '';
-                m.querySelector(`#${modalId}-poster-url-final`).value = row.poster_url || '';
-                m.querySelector(`#${modalId}-landscape-url`).value = origThumb.landscape || '';
-
-                let finalPl = '';
-                if (jd.thumb && Array.isArray(jd.thumb)) {
-                    const plItem = jd.thumb.find(t => t && t.aspect === 'landscape');
-                    if (plItem) finalPl = plItem.value;
-                }
-                m.querySelector(`#${modalId}-landscape-url-final`).value = finalPl;
+                const storedImages = getFfStoredImages(jd, row);
+                m.querySelector(`#${modalId}-poster-url`).value = isLocalServerMediaUrl(origThumb.poster, srvConfig) ? '' : (origThumb.poster || '');
+                m.querySelector(`#${modalId}-poster-url-final`).value = storedImages.poster_url;
+                m.querySelector(`#${modalId}-landscape-url`).value = isLocalServerMediaUrl(origThumb.landscape, srvConfig) ? '' : (origThumb.landscape || '');
+                m.querySelector(`#${modalId}-landscape-url-final`).value = storedImages.landscape_url;
 
                 const fanarts = (jd.original && Array.isArray(jd.original.fanart)) ? jd.original.fanart : (jd.fanart || []);
                 m.querySelector(`#${modalId}-fanarts`).value = fanarts.join('\n');
 
+                for (const kind of ['poster', 'landscape']) {
+                    const finalUrl = m.querySelector(`#${modalId}-${kind}-url-final`).value;
+                    const asset = getFfImageAsset(jd, kind, finalUrl, srvConfig);
+                    m.querySelector(`#${modalId}-${kind}-path`).value = asset?.relative_path || '';
+                    m.querySelector(`#${modalId}-${kind}-url-final`).onclick = () => {
+                        if (finalUrl) openImageEnlargeModal([{ url: getFfMediaProxyUrl(srvConfig, finalUrl, row.site, 'image', category), type: kind, relative_path: asset?.relative_path }]);
+                    };
+                }
                 // 공식 예고편 제어
-                let officialTrailerUrl = '';
-                if (jd.original && Array.isArray(jd.original.extras) && jd.original.extras[0]) officialTrailerUrl = jd.original.extras[0].content_url || '';
-                if (!officialTrailerUrl && jd.extras && Array.isArray(jd.extras) && jd.extras[0]) officialTrailerUrl = jd.extras[0].content_url || '';
-                if (officialTrailerUrl.includes('mode=preview_')) officialTrailerUrl = '';
+                const officialTrailerUrl = (jd.original?.extras || []).find(extra => extra.content_type === 'trailer' && extra.content_url)?.content_url ||
+                    (typeof jd.original?.trailer === 'string' ? jd.original.trailer : '');
 
                 m.querySelector(`#${modalId}-trailer-url`).value = officialTrailerUrl;
 
@@ -9268,85 +9710,48 @@ GM_addStyle(`
 
                 m.querySelector(`#${modalId}-trailer-url`).oninput = (e) => updateTrailerBtn(e.target.value.trim());
 
-                // 자체 프리뷰 클립 제어
-                const extraData = (jd.extra_info && typeof jd.extra_info === 'object') ? jd.extra_info : (row.extra_info || {});
+                const extraData = jd.extra_info || {};
                 const previewClip = extraData.preview_clip;
-                const btnPlayPreview = m.querySelector(`#${modalId}-btn-play-preview`);
                 const btnCreatePreview = m.querySelector(`#${modalId}-btn-create-preview`);
-                const btnDeletePreview = m.querySelector(`#${modalId}-btn-delete-preview`);
-                const badgePreviewStatus = m.querySelector(`#${modalId}-badge-preview-status`);
-                const divPreviewBox = m.querySelector(`#${modalId}-div-preview-box`);
-                const previewUrlInput = m.querySelector(`#${modalId}-preview-url`);
-                const previewInfoDiv = m.querySelector(`#${modalId}-preview-info`);
-
-                let previewStreamUrl = '';
-                if (previewClip) {
-                    const isUncen = (category === 'JAV_UNCEN');
-                    const videoEndpoint = isUncen ? 'jav_video_un' : 'jav_video';
-                    let ffBase = (srvConfig && srvConfig.ff_ddns) ? srvConfig.ff_ddns : '';
-                    if (!ffBase) ffBase = `${srvConfig.relayUrl}/ff_metadata`;
-                    ffBase = ffBase.replace(/\/+$/, '');
-
-                    if (previewClip.storage_type === 'gdrive' && previewClip.google_fileid) {
-                        previewStreamUrl = `${ffBase}/metadata/normal/${videoEndpoint}?mode=preview_gdrive&fileid=${previewClip.google_fileid}&cat=${category}`;
-                    } else if (previewClip.local_path) {
-                        previewStreamUrl = `${ffBase}/metadata/normal/${videoEndpoint}?mode=preview_local&path=${encodeURIComponent(previewClip.local_path)}`;
+                const bindStoredVideo = (kind, asset) => {
+                    const preview = kind === 'preview';
+                    const prefix = preview ? 'preview' : 'saved-trailer';
+                    const label = preview ? '프리뷰' : '저장된 트레일러';
+                    const play = m.querySelector(`#${modalId}-btn-play-${prefix}`);
+                    const remove = m.querySelector(`#${modalId}-btn-delete-${prefix}`);
+                    const present = Boolean(asset && (asset.google_fileid || asset.local_path));
+                    let url = '', playbackError = '';
+                    if (present) {
+                        try { url = getFfStoredVideoUrl(asset, category, srvConfig, jd.extras?.find(extra => extra.content_type === 'trailer')?.content_url); }
+                        catch (err) { playbackError = err.message; }
                     }
-                }
-
-                previewUrlInput.value = previewStreamUrl;
-
-                const hasValidPreview = !!(previewClip && (previewClip.google_fileid || previewClip.local_path));
-                if (hasValidPreview) {
-                    setBtnDisplay(btnPlayPreview, true);
-                    setBtnDisplay(btnDeletePreview, true);
-                    btnCreatePreview.innerHTML = '<i class="fas fa-bolt"></i> 프리뷰 재생성';
-                    setBtnDisplay(btnCreatePreview, true);
-
-                    badgePreviewStatus.style.background = '#28a745';
-                    badgePreviewStatus.style.color = '#fff';
-                    badgePreviewStatus.innerText = '등록됨';
-                    divPreviewBox.style.setProperty('display', 'block', 'important');
-
-                    const storageLabel = (previewClip.storage_type === 'gdrive') ? '구글 드라이브' : '로컬 디스크';
-                    previewInfoDiv.innerText = `🎞️ 프리뷰 클립 등록됨: [${storageLabel}] ${previewClip.duration || 60}초 (${previewClip.created_time || ''})`;
-                    previewInfoDiv.style.setProperty('display', 'block', 'important');
-
-                    btnPlayPreview.onclick = (e) => {
-                        e.preventDefault();
-                        if (previewStreamUrl) showVideoModal(previewStreamUrl, `[프리뷰] ${row.title || cleanCode}`);
-                    };
-
-                    btnDeletePreview.onclick = async (e) => {
-                        e.preventDefault();
-                        if (!confirm("⚠️ 등록된 프리뷰 클립 파일을 완전히 삭제하시겠습니까?")) return;
-                        btnDeletePreview.disabled = true;
+                    setBtnDisplay(play, present); setBtnDisplay(remove, present);
+                    play.disabled = !url; play.title = playbackError || `${label} 재생`;
+                    const box = m.querySelector(`#${modalId}-${preview ? 'div-preview-box' : 'saved-trailer-box'}`);
+                    box.style.display = present ? 'block' : 'none';
+                    m.querySelector(`#${modalId}-${prefix}-url`).value = url;
+                    m.querySelector(`#${modalId}-${prefix}-path`).value = asset?.relative_path || '';
+                    play.onclick = () => { if (url) showVideoModal(url, `[${label}] ${row.title || cleanCode}`); };
+                    remove.onclick = async () => {
+                        if (!confirm(`${label} 파일과 메타 정보를 삭제하시겠습니까?`)) return;
+                        remove.disabled = true;
                         try {
-                            const delRes = await PmhFfBridge.callMetaApi(srvConfig, 'delete_preview_clip', cleanCode, category);
-                            if (delRes && delRes.ret === 'success') {
-                                toastr.success("프리뷰 클립이 삭제되었습니다.");
-                                await loadModalDataInPlace();
-                            } else {
-                                toastr.warning(delRes?.msg || "삭제 실패");
-                            }
-                        } catch (err) {
-                            toastr.error(`오류 발생: ${err.message || err}`);
-                        } finally {
-                            btnDeletePreview.disabled = false;
-                        }
+                            const res = await PmhFfBridge.callMetaApi(srvConfig, 'delete_preview_clip', cleanCode, category, kind);
+                            if (res?.ret !== 'success') throw new Error(res?.msg || '삭제 실패');
+                            invalidateFfItemCache(serverId, itemId);
+                            await loadModalDataInPlace();
+                        } catch (err) { toastr.error(err.message || String(err)); }
+                        finally { remove.disabled = false; }
                     };
-                } else {
-                    setBtnDisplay(btnPlayPreview, false);
-                    setBtnDisplay(btnDeletePreview, false);
-                    btnCreatePreview.innerHTML = '<i class="fas fa-bolt"></i> 프리뷰 생성';
-                    setBtnDisplay(btnCreatePreview, true);
-
-                    badgePreviewStatus.style.background = '#444';
-                    badgePreviewStatus.style.color = '#ccc';
-                    badgePreviewStatus.innerText = '미생성';
-                    divPreviewBox.style.setProperty('display', 'none', 'important');
-                    previewInfoDiv.style.setProperty('display', 'none', 'important');
-                }
+                    return url;
+                };
+                const previewStreamUrl = bindStoredVideo('preview', previewClip);
+                bindStoredVideo('trailer', extraData.trailer_video);
+                const hasPreview = Boolean(previewClip && (previewClip.google_fileid || previewClip.local_path));
+                const hasTrailer = Boolean(extraData.trailer_video && (extraData.trailer_video.google_fileid || extraData.trailer_video.local_path));
+                m.querySelector(`#${modalId}-badge-preview-status`).textContent = hasPreview && hasTrailer ? '트레일러 · 프리뷰 저장됨' : hasPreview ? '프리뷰 저장됨' : hasTrailer ? '트레일러 저장됨' : '미저장';
+                btnCreatePreview.textContent = hasPreview ? '프리뷰 재생성' : '프리뷰 생성';
+                m.querySelector(`#${modalId}-preview-info`).textContent = hasPreview ? `${previewClip.storage_type === 'gdrive' ? 'Google Drive' : '로컬'} · ${previewClip.duration || 0}초` : '';
 
                 // 모달 자체 독립 프리뷰 생성/재생성 핸들러
                 btnCreatePreview.onclick = async (e) => {
@@ -9392,11 +9797,12 @@ GM_addStyle(`
                                     _do_unmatch_first: true,
                                     _skip_sim_check: true
                                 }).then(() => {
-                                    deleteMemoryCache(`D_${serverId}_${itemId}`);
+                                    invalidateFfItemCache(serverId, itemId);
                                     if (typeof processDetail === 'function') processDetail(true);
                                 }).catch(err => warnLog(`[Preview Clip] 리매칭 백그라운드 오류: ${err}`));
                             }
 
+                            invalidateFfItemCache(serverId, itemId);
                             await loadModalDataInPlace(true);
                         } else {
                             toastr.error(res?.msg || "프리뷰 클립 생성 실패", "오류");
@@ -9405,7 +9811,7 @@ GM_addStyle(`
                         errorLog("[Preview Clip] 프리뷰 생성 중 오류:", err);
                         toastr.error(`오류 발생: ${err.message || err}`, "오류");
                     } finally {
-                        btnCreatePreview.innerHTML = origHtml;
+                        if (m.isConnected && revision === loadRevision) btnCreatePreview.innerHTML = origHtml;
                         delete btnCreatePreview.dataset.processing;
                     }
                 };
@@ -9429,30 +9835,21 @@ GM_addStyle(`
 
                 const renderThumbPreview = (idx) => {
                     if (galleryList.length === 0) {
-                        pImg.src = getFfMediaProxyUrl(srvConfig, row.poster_url, row.site, 'image', category) || '';
-                        pType.innerText = 'Poster';
-                        pType.style.background = 'rgba(0, 123, 255, 0.75)';
-                        pType.style.color = '#ffffff';
-                        pType.style.border = '1px solid rgba(255, 255, 255, 0.3)';
+                        pImg.src = '';
+                        pType.innerText = 'No Image';
+                        styleFfImageBadge(pType);
                         pCounter.innerText = '0 / 0';
                         return;
                     }
                     pIdx = (idx + galleryList.length) % galleryList.length;
                     const curItem = galleryList[pIdx];
                     pImg.src = getFfMediaProxyUrl(srvConfig, curItem.url, row.site, 'image', category);
+                    preloadAdjacentModalImages(galleryList, pIdx,
+                        item => getFfMediaProxyUrl(srvConfig, item.url, row.site, 'image', category));
                     pType.innerText = curItem.type || 'Poster';
                     pCounter.innerText = `${pIdx + 1} / ${galleryList.length}`;
 
-                    // 로컬 서버 최종본은 파란색, 사이트 원본은 어두운 반투명 검은색 뱃지로 분기
-                    if (curItem.is_final) {
-                        pType.style.background = 'rgba(0, 123, 255, 0.75)';
-                        pType.style.color = '#ffffff';
-                        pType.style.border = '1px solid rgba(255, 255, 255, 0.3)';
-                    } else {
-                        pType.style.background = 'rgba(0, 0, 0, 0.55)';
-                        pType.style.color = '#e0e6ed';
-                        pType.style.border = '1px solid rgba(255, 255, 255, 0.15)';
-                    }
+                    styleFfImageBadge(pType, curItem, srvConfig);
                 };
 
                 renderThumbPreview(0);
@@ -9519,65 +9916,54 @@ GM_addStyle(`
 
                 // 하단 드롭다운 인플레이스(In-Place) 즉시 갱신 연계
                 m.querySelector(`#${modalId}-btn-json`).onclick = () => {
-                    const currentPayload = {
-                        ...jd,
-                        code: cleanCode,
-                        ui_code: m.querySelector(`#${modalId}-ui-code`).value.trim() || cleanCode,
-                        site: m.querySelector(`#${modalId}-site`).value.trim() || row.site || '',
-                        title: m.querySelector(`#${modalId}-input-title`).value.trim() || row.title || cleanCode,
-                        tagline: m.querySelector(`#${modalId}-tagline`).value.trim(),
-                        plot: m.querySelector(`#${modalId}-plot`).value.trim(),
-                        studio: m.querySelector(`#${modalId}-studio`).value.trim(),
-                        series: m.querySelector(`#${modalId}-series`).value.trim(),
-                        director: m.querySelector(`#${modalId}-director`).value.trim(),
-                        premiered: m.querySelector(`#${modalId}-premiered`).value.trim(),
-                        year: parseInt(m.querySelector(`#${modalId}-year`).value, 10) || 0,
-                        runtime: parseInt(m.querySelector(`#${modalId}-runtime`).value, 10) || 0,
-                        rating: parseFloat(m.querySelector(`#${modalId}-rating`).value) || 0.0,
-                        genre: m.querySelector(`#${modalId}-genres`).value.split(',').map(g => g.trim()).filter(Boolean),
-                        actor: currentEditMetaContext.actors || []
-                    };
-                    openPmhJsonViewerModal(`[${cleanCode}] 메타데이터 JSON 원본`, currentPayload);
+                    const jsonOutput = collectMetaPayload();
+                    // Match FF's JSON export: its display fallback must not enter the DB save payload.
+                    if (!jsonOutput.thumb.some(image => image.aspect === 'poster' && image.value)) {
+                        const landscape = jsonOutput.thumb.find(image => image.aspect === 'landscape' && image.value);
+                        if (landscape) {
+                            jsonOutput.thumb.push({ ...landscape, aspect: 'poster' });
+                            jsonOutput.poster_url = landscape.value;
+                        }
+                    }
+                    delete jsonOutput.stored_images;
+                    openPmhJsonViewerModal(`[${cleanCode}] 메타데이터 JSON 원본`, jsonOutput);
                 };
-                m.querySelector(`#${modalId}-action-crop`).onclick = (e) => { e.preventDefault(); openPosterCropModal(itemId, serverId, rawGuid, optTitle); };
-                m.querySelector(`#${modalId}-action-sync-img`).onclick = async (e) => {
-                    e.preventDefault();
-                    toastr.info("이미지 재동기화를 요청합니다...");
-                    await PmhFfBridge.callMetaApi(srvConfig, 'db_refresh_image_only', cleanCode);
-                    toastr.success("이미지 재동기화 완료");
-                    await loadModalDataInPlace();
+                m.querySelector(`#${modalId}-action-crop`).onclick = (e) => { e.preventDefault(); openPosterCropModal(itemId, serverId, rawGuid, optTitle, () => loadModalDataInPlace()); };
+                const refreshMeta = async (command, mediaAction = '') => {
+                    try {
+                        const result = await PmhFfBridge.callMetaApi(srvConfig, command, cleanCode, category, mediaAction);
+                        if (result?.ret !== 'success') throw new Error(result?.msg || '메타데이터 갱신 실패');
+                        invalidateFfItemCache(serverId, itemId);
+                        await loadModalDataInPlace();
+                    } catch (err) { toastr.error(err.message || String(err)); }
                 };
-                m.querySelector(`#${modalId}-action-inplace`).onclick = async (e) => {
-                    e.preventDefault();
-                    toastr.info("현재 사이트 제자리 갱신 요청 중...");
-                    await PmhFfBridge.callMetaApi(srvConfig, 'db_refresh_in_place', cleanCode);
-                    toastr.success("제자리 갱신 완료");
-                    await loadModalDataInPlace();
-                };
-                m.querySelector(`#${modalId}-action-autosearch`).onclick = async (e) => {
-                    e.preventDefault();
-                    toastr.info("전체 사이트 자동 재검색 갱신 중...");
-                    await PmhFfBridge.callMetaApi(srvConfig, 'db_refresh_auto_search', cleanCode);
-                    toastr.success("재검색 갱신 완료");
-                    await loadModalDataInPlace();
-                };
+                for (const [id, command, mediaAction] of [['sync-img', 'db_refresh_image_only', 'reuse'],
+                    ['reprocess-img', 'db_refresh_image_only', 'replace'], ['missing-inplace', 'db_refresh_missing_in_place'],
+                    ['inplace', 'db_refresh_in_place'], ['autosearch', 'db_refresh_auto_search']]) {
+                    m.querySelector(`#${modalId}-action-${id}`).onclick = event => { event.preventDefault(); return refreshMeta(command, mediaAction); };
+                }
 
                 loadingDiv.style.display = 'none';
                 formDiv.style.display = 'block';
+                m.querySelector(`#${modalId}-btn-save`).disabled = false;
 
                 if (showToastOnSuccess) {
                     toastr.success("모달 데이터가 즉시 갱신되었습니다.");
                 }
 
             } catch (err) {
+                if (!m.isConnected) return;
                 errorLog("[Meta DB Modal] 로드 실패:", err);
                 toastr.error(`데이터 조회 오류: ${err.message || err}`);
                 closeThisModal();
             }
         };
 
+        m.pmhReload = loadModalDataInPlace;
         // 초기 데이터 로드 시작
         await loadModalDataInPlace(false);
+
+        if (!m.isConnected) return;
 
         // DB 저장 버튼 핸들러 (Plex 리매칭을 블로킹하지 않고 즉시 닫힘 처리)
         m.querySelector(`#${modalId}-btn-save`).onclick = async function() {
@@ -9588,51 +9974,7 @@ GM_addStyle(`
 
             try {
                 const { row, jd, cleanCode, srvConfig, itemId, serverId } = currentEditMetaContext;
-                const payload = JSON.parse(JSON.stringify(jd));
-
-                payload.code = cleanCode;
-                payload.ui_code = m.querySelector(`#${modalId}-ui-code`).value.trim() || cleanCode;
-                payload.title = m.querySelector(`#${modalId}-input-title`).value.trim() || row.title || cleanCode;
-                payload.tagline = m.querySelector(`#${modalId}-tagline`).value.trim();
-                payload.plot = m.querySelector(`#${modalId}-plot`).value.trim();
-                payload.studio = m.querySelector(`#${modalId}-studio`).value.trim();
-                payload.series = m.querySelector(`#${modalId}-series`).value.trim();
-                payload.director = m.querySelector(`#${modalId}-director`).value.trim();
-                payload.premiered = m.querySelector(`#${modalId}-premiered`).value.trim();
-                payload.year = parseInt(m.querySelector(`#${modalId}-year`).value, 10) || 0;
-                payload.runtime = parseInt(m.querySelector(`#${modalId}-runtime`).value, 10) || 0;
-                payload.rating = parseFloat(m.querySelector(`#${modalId}-rating`).value) || 0.0;
-
-                const genreText = m.querySelector(`#${modalId}-genres`).value.trim();
-                payload.genre = genreText ? genreText.split(',').map(g => g.trim()).filter(Boolean) : [];
-                payload.actor = currentEditMetaContext.actors;
-
-                const editedTrailer = m.querySelector(`#${modalId}-trailer-url`).value.trim();
-                if (editedTrailer) {
-                    payload.original.extras = [{ content_url: editedTrailer, content_type: 'trailer' }];
-                    payload.extras = [{
-                        mode: 'mp4',
-                        title: payload.title || payload.tagline,
-                        content_url: getFfMediaProxyUrl(srvConfig, editedTrailer, row.site, 'video', category),
-                        content_type: 'trailer'
-                    }];
-                } else {
-                    payload.original.extras = [];
-                    payload.extras = [];
-                }
-
-                const previewUrlVal = m.querySelector(`#${modalId}-preview-url`).value.trim();
-                if (payload.extra_info && payload.extra_info.preview_clip) {
-                    if (previewUrlVal) payload.extra_info.preview_clip.stream_url = previewUrlVal;
-                    if (!editedTrailer && previewUrlVal) {
-                        payload.extras = [{
-                            mode: 'mp4',
-                            title: '[Preview] ' + (payload.title || payload.tagline || cleanCode),
-                            content_url: previewUrlVal,
-                            content_type: 'trailer'
-                        }];
-                    }
-                }
+                const payload = collectMetaPayload();
 
                 // FF DB에 즉시 저장
                 const saveRes = await PmhFfBridge.callMetaApi(srvConfig, 'db_edit_save', cleanCode, JSON.stringify(payload));
@@ -9643,7 +9985,7 @@ GM_addStyle(`
                 closeThisModal();
 
                 // 상세페이지 캐시 무효화
-                deleteMemoryCache(`D_${serverId}_${itemId}`);
+                invalidateFfItemCache(serverId, itemId);
 
                 // Plex 클린 리매칭은 백그라운드 비동기로 넘겨 완료 시 상세 화면 자동 갱신
                 const plexSrv = extractPlexServerInfo(serverId);
@@ -9654,7 +9996,7 @@ GM_addStyle(`
                         _skip_sim_check: true
                     }).then(() => {
                         infoLog(`[Meta DB Save] 백그라운드 Plex 리매칭 완료 (Item: ${itemId})`);
-                        deleteMemoryCache(`D_${serverId}_${itemId}`);
+                        invalidateFfItemCache(serverId, itemId);
                         if (typeof processDetail === 'function') processDetail(true);
                     }).catch(err => {
                         warnLog(`[Meta DB Save] 백그라운드 Plex 리매칭 실패: ${err.message || err}`);
@@ -9767,11 +10109,45 @@ GM_addStyle(`
         };
     }
 
-    // 인물 DB 편집 모달
-    async function openPmhPersonDbModal(targetIdentifier, domain, srvConfig, serverId) {
+    function buildMergedPersonSnapshot(master, identifier) {
+        const code = String(identifier || '').trim().toLowerCase();
+        if (!code || code === String(master.person_idx || '').trim().toLowerCase()) return null;
+        const details = Array.isArray(master.merged_details) ? master.merged_details : [];
+        const detail = details.find(item => item && String(item.actor_id || '').trim().toLowerCase() === code);
+        if (!detail) return null;
+        const raw = JSON.parse(JSON.stringify(detail));
+        const source = raw.media_src || {};
+        const official = { ...(source.official || {}) };
+        official.local_img_path ??= raw.local_img_path || '';
+        official.google_fileid ??= raw.google_fileid || '';
+        official.site_img_url ??= raw.site_img_url || '';
+        official.site_img_urls ??= raw.site_img_urls || (official.site_img_url ? [official.site_img_url] : []);
+        const photoUrls = raw.photo_urls || official.site_img_urls;
+        const thumb = raw.thumb || raw.thumb_url || official.site_img_url ||
+            (official.google_fileid ? `https://drive.google.com/thumbnail?id=${encodeURIComponent(official.google_fileid)}&sz=s0` : '') ||
+            (official.local_img_path ? formatActorLocalUrl(official.local_img_path, master.domain) : '');
+        return {
+            ...raw, schema: master.schema, id: null, domain: master.domain, person_idx: raw.actor_id,
+            name_org: raw.name_org || '', name_ko: raw.name_ko || '', name_en: raw.name_en || '',
+            birth_date: raw.birth_date ?? raw.birth ?? '', debut_date: raw.debut_date ?? raw.debut ?? '',
+            height: raw.height ?? raw.profile_height ?? null, blood_type: raw.blood_type ?? raw.blood ?? '',
+            cup_size: raw.cup_size ?? raw.bra_size ?? '', gender: raw.gender || 'unknown',
+            thumb, photo_urls: photoUrls, media_src: { official, custom: { ...(source.custom || {}) } },
+            extra_info: { ...(raw.extra_info || {}), hobby: raw.hobby || raw.specialty || raw.extra_info?.hobby || raw.extra_info?.specialty || '', source_origin: 'merged_sub_view' },
+            merged_details: [], alt_indices: [], works: raw.works || {}, works_detailed: raw.works_detailed || {},
+            source_data: raw.source_data || {}, manual_data: raw.manual_data || {}
+        };
+    }
+
+    // 인물 DB 편집 모달. 병합 서브 기록은 대표의 스냅샷만 사용하는 읽기 전용 뷰다.
+    async function openPmhPersonDbModal(targetIdentifier, domain, srvConfig, serverId, options = {}) {
+        if (!['JAV', 'WESTERN'].includes(domain) || !srvConfig) return toastr.warning('AV 인물과 연결 서버를 확인하세요.');
+        const isReadOnly = Boolean(options.mergedParent);
+        const mergedSnapshot = isReadOnly ? buildMergedPersonSnapshot(options.mergedParent, targetIdentifier) : null;
+        if (isReadOnly && !mergedSnapshot) return toastr.warning('이 서브 인물의 보관된 상세 기록이 없습니다.');
         infoLog(`[Person DB Modal] 👤 인물 DB 모달 호출: [${targetIdentifier}] (${domain})`);
 
-        const activeServerId = serverId || srvConfig?.machineIdentifier || srvConfig?.id || (ServerConfig.SERVERS[0]?.machineIdentifier);
+        const activeServerId = serverId || srvConfig.machineIdentifier || srvConfig.id;
 
         window._pmh_top_z_index = (window._pmh_top_z_index || 10000010) + 10;
         const currentZIndex = window._pmh_top_z_index;
@@ -9805,18 +10181,19 @@ GM_addStyle(`
                         <span>FF 인물 DB에서 정보를 조회하고 있습니다...</span>
                     </div>
                     <div id="${modalId}-form" style="display:none;">
+                        <div id="${modalId}-readonly-notice" style="display:none; padding:8px; margin-bottom:12px; color:#e5a00d; border:1px solid #555; border-radius:4px;"></div>
                         <input type="hidden" id="${modalId}-id-val">
                         <input type="hidden" id="${modalId}-thumb-val">
                         <input type="hidden" id="${modalId}-selected-primary-url">
 
                         <!-- 상단 프로필 사진 캐러셀(좌) + 입력 폼(우) -->
                         <div style="display:flex; gap:15px; margin-bottom:15px;">
-                            <div style="width:260px; height:430px; flex-shrink:0; display:flex; flex-direction:column; justify-content:space-between; background:#111; padding:8px; border-radius:6px; border:1px solid #333; box-sizing:border-box;">
-                                <div style="width:100%; height:375px; background:#000; border-radius:4px; overflow:hidden; display:flex; justify-content:center; align-items:center; position:relative;">
-                                    <span id="${modalId}-badge-type" style="position:absolute; top:6px; left:6px; z-index:3; font-size:10px; padding:2px 6px; border-radius:3px; background:rgba(0,123,255,0.75); color:#fff; font-weight:bold;">SERVER</span>
-                                    <img id="${modalId}-preview-img" referrerpolicy="no-referrer" src="" style="max-width:100%; max-height:100%; object-fit:cover; cursor:pointer;" title="클릭하여 라이트박스로 크게 보기">
+                            <div id="${modalId}-photo-panel" style="width:33.333%; min-width:260px; min-height:430px; margin-bottom:10px; align-self:stretch; flex-shrink:0; display:flex; flex-direction:column; gap:8px; background:#111; padding:8px; border-radius:6px; border:1px solid #333; box-sizing:border-box;">
+                                <div id="${modalId}-photo-stage" style="width:100%; flex:1; min-height:370px; background:#000; border-radius:4px; overflow:hidden; display:flex; justify-content:center; align-items:center; position:relative;">
+                                    <span id="${modalId}-badge-type" style="position:absolute; top:6px; left:6px; z-index:3; font-size:10px; padding:2px 6px; border-radius:3px; background:rgba(0,0,0,0.55); color:#e0e6ed; font-weight:bold;">SERVER</span>
+                                    <img id="${modalId}-preview-img" referrerpolicy="no-referrer" src="" style="position:absolute; inset:0; width:100%; height:100%; object-fit:contain; cursor:pointer;" title="클릭하여 라이트박스로 크게 보기">
                                 </div>
-                                <div style="display:flex; justify-content:space-between; align-items:center; height:36px; padding:0 2px;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; height:36px; flex-shrink:0; padding:0 2px;">
                                     <button type="button" class="pmh-crop-btn" id="${modalId}-btn-prev" style="padding:0 8px !important;">&lt; 이전</button>
                                     <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="${modalId}-btn-set-primary" style="font-size:10.5px; padding:0 6px !important;" title="현재 사진을 대표 사진으로 설정">★ 대표 지정</button>
                                     <span id="${modalId}-counter" style="font-size:11px; font-weight:bold; color:#2f96b4;">0 / 0</span>
@@ -9827,13 +10204,17 @@ GM_addStyle(`
                             <!-- 프로필 속성 폼 -->
                             <div style="flex-grow:1; display:flex; flex-direction:column; gap:8px;">
                                 <div style="display:flex; gap:10px;">
-                                    <div class="pmh-form-group" style="width:130px; margin:0;">
+                                    <div class="pmh-form-group" style="flex:1; margin:0;">
                                         <label class="pmh-form-label">도메인 (Domain)</label>
                                         <select id="${modalId}-domain" class="pmh-input-select">
                                             <option value="JAV">JAV</option>
                                             <option value="WESTERN">WESTERN</option>
                                             <option value="GENERAL">GENERAL</option>
                                         </select>
+                                    </div>
+                                    <div class="pmh-form-group" style="flex:1; margin:0;">
+                                        <label class="pmh-form-label">성별 (Gender)</label>
+                                        <select id="${modalId}-gender" class="pmh-input-select"><option value="female">여성 (Female ♀)</option><option value="male">남성 (Male ♂)</option><option value="trans">트랜스 (Trans)</option><option value="unknown">미상</option></select>
                                     </div>
                                     <div class="pmh-form-group" style="flex:1; margin:0;">
                                         <label class="pmh-form-label">고유 식별코드 (Code/ID)</label>
@@ -9882,9 +10263,6 @@ GM_addStyle(`
                                     <label class="pmh-form-label">별칭 / 예명 목록 (쉼표 구분)</label>
                                     <input type="text" id="${modalId}-aliases" class="pmh-input-text" placeholder="예명 또는 별칭">
                                 </div>
-                            </div>
-                        </div>
-
                         <!-- AV 스펙 영역 (JAV / WESTERN 전용) -->
                         <div id="${modalId}-av-spec-row" style="display:flex; gap:10px; margin-bottom:12px; background:rgba(255,255,255,0.02); border:1px dashed rgba(255,255,255,0.1); padding:8px; border-radius:4px;">
                             <div class="pmh-form-group" style="flex:2; margin:0;">
@@ -9901,25 +10279,33 @@ GM_addStyle(`
                             </div>
                         </div>
 
-                        <!-- 미디어 소스 경로 및 URL 영역 (도메인별 동적 배치) -->
-                        <div id="${modalId}-media-sources-row" style="display:flex; gap:10px; margin-bottom:10px;">
-                            <div class="pmh-form-group" id="${modalId}-wrap-local-path" style="flex:1; margin:0;">
-                                <label class="pmh-form-label" id="${modalId}-lbl-local-path">로컬 상대 경로 (local_img_path)</label>
-                                <input type="text" id="${modalId}-local-path" class="pmh-input-text" placeholder="초성/이름_PA123.jpg">
-                            </div>
-                            <div class="pmh-form-group" id="${modalId}-wrap-google-id" style="flex:1; margin:0;">
-                                <label class="pmh-form-label" id="${modalId}-lbl-google-id">Google FileID (google_fileid)</label>
-                                <input type="text" id="${modalId}-google-id" class="pmh-input-text" placeholder="구글 드라이브 ID">
-                            </div>
-                            <div class="pmh-form-group" id="${modalId}-wrap-site-url" style="flex:1; margin:0;">
-                                <label class="pmh-form-label" id="${modalId}-lbl-site-url">사이트 원본 URL (site_img_url)</label>
-                                <input type="text" id="${modalId}-site-url" class="pmh-input-text" placeholder="https://...">
                             </div>
                         </div>
 
-                        <!-- 프로필 이미지 및 정보 출처 URL -->
+                        <!-- FF와 동일한 GDS / 로컬 / 구글 드라이브 경로·URL 쌍 -->
+                        <div id="${modalId}-media-sources-row">
+                            <div id="${modalId}-gds-image-fields" style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:10px;">
+                                <div class="pmh-form-group" id="${modalId}-wrap-local-path" style="margin:0;">
+                                    <label class="pmh-form-label" id="${modalId}-lbl-local-path">파일 상대 경로 (GDS)</label>
+                                    <input type="text" id="${modalId}-local-path" class="pmh-input-text" placeholder="GDS 파일 상대 경로 없음">
+                                </div>
+                                <div class="pmh-form-group" style="margin:0;">
+                                    <label class="pmh-form-label" id="${modalId}-lbl-gds-url">GDS 썸네일 URL</label>
+                                    <input id="${modalId}-gds-url" class="pmh-input-text" readonly placeholder="GDS 썸네일 URL 없음">
+                                </div>
+                            </div>
+                            <input type="hidden" id="${modalId}-google-id"><input type="hidden" id="${modalId}-custom-google-id"><input type="hidden" id="${modalId}-site-url">
+                            <div id="${modalId}-storage-local-row" style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:10px;">
+                                <div><label class="pmh-form-label" id="${modalId}-lbl-cache-local-path">파일 상대 경로 (로컬)</label><input id="${modalId}-cache-local-path" class="pmh-input-text" readonly placeholder="로컬 이미지 상대 경로 없음"></div>
+                                <div><label class="pmh-form-label" id="${modalId}-lbl-cache-local-url">이미지 서버 URL</label><input id="${modalId}-cache-local-url" class="pmh-input-text" readonly placeholder="이미지 서버 URL 없음"></div>
+                            </div>
+                            <div id="${modalId}-storage-drive-row" style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:10px;">
+                                <div><label class="pmh-form-label" id="${modalId}-lbl-cache-remote-path">파일 상대 경로 (구글 드라이브)</label><input id="${modalId}-cache-remote-path" class="pmh-input-text" readonly placeholder="구글 드라이브 이미지 상대 경로 없음"></div>
+                                <div><label class="pmh-form-label" id="${modalId}-lbl-cache-drive-url">구글 드라이브 썸네일 URL</label><input id="${modalId}-cache-drive-url" class="pmh-input-text" readonly placeholder="구글 드라이브 썸네일 URL 없음"></div>
+                            </div>
+                        </div>
                         <div class="pmh-form-group">
-                            <label class="pmh-form-label">프로필 이미지 URLs (줄바꿈으로 구분)</label>
+                            <label class="pmh-form-label" id="${modalId}-lbl-site-url">프로필 이미지 URLs (줄바꿈으로 구분)</label>
                             <textarea id="${modalId}-site-img-urls" class="pmh-input-text" style="height:55px; resize:vertical;" placeholder="https://... (엔터로 여러 개)"></textarea>
                         </div>
                         <div class="pmh-form-group">
@@ -9970,10 +10356,19 @@ GM_addStyle(`
                 </div>
 
                 <!-- 푸터 툴바 -->
-                <div class="pmh-db-footer">
-                    <div style="display:flex; gap:6px;">
-                        <button type="button" class="pmh-crop-btn" id="${modalId}-btn-json"><i class="fas fa-code"></i> JSON</button>
+                <div class="pmh-db-footer" id="${modalId}-footer" style="flex-wrap:wrap; gap:8px;">
+                    <div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px;">
+                        <button type="button" class="pmh-crop-btn" id="${modalId}-btn-json"><i class="fas fa-code"></i> JSON 보기</button>
                         <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="${modalId}-btn-crop-person"><i class="fas fa-crop-alt"></i> 사진 편집</button>
+                        <button type="button" class="pmh-crop-btn" id="${modalId}-btn-refresh-site" style="display:none;" title="서양 인물의 원본 사이트(StashDB, TPDB)에서 최신 정보를 조회합니다.">🔄 사이트 정보 갱신</button>
+                        <div id="${modalId}-reset-wrapper" style="position:relative;">
+                            <button type="button" class="pmh-crop-btn" id="${modalId}-btn-reset-menu" aria-expanded="false">사용자 데이터 초기화 ▾</button>
+                            <div id="${modalId}-reset-dropdown" style="display:none; position:absolute; bottom:100%; left:0; margin-bottom:4px; min-width:190px; background:#1a1d21; border:1px solid #444; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.8); z-index:20;">
+                                <button type="button" class="pmh-crop-btn" data-reset="text" style="display:block; width:100%; text-align:left; border:0;">텍스트 편집 초기화</button>
+                                <button type="button" class="pmh-crop-btn" data-reset="image" style="display:block; width:100%; text-align:left; border:0;">사용자 이미지 초기화</button>
+                                <button type="button" class="pmh-crop-btn" data-reset="all" style="display:block; width:100%; text-align:left; border:0; border-top:1px solid #444; color:#d9534f;">전체 사용자 데이터 초기화</button>
+                            </div>
+                        </div>
                     </div>
                     <div style="display:flex; gap:8px;">
                         <button type="button" class="pmh-crop-btn pmh-person-modal-cancel">취소</button>
@@ -9983,6 +10378,39 @@ GM_addStyle(`
             </div>
         `;
         document.body.appendChild(m);
+        m.querySelector(`#${modalId}-domain`).disabled = true;
+        const resetDropdown = m.querySelector(`#${modalId}-reset-dropdown`);
+        const resetToggle = m.querySelector(`#${modalId}-btn-reset-menu`);
+        const closeResetMenu = () => {
+            resetDropdown.style.display = 'none';
+            resetToggle.setAttribute('aria-expanded', 'false');
+        };
+        resetToggle.onclick = event => {
+            event.preventDefault(); event.stopPropagation();
+            if (isReadOnly) return;
+            const expanded = resetDropdown.style.display !== 'block';
+            resetDropdown.style.display = expanded ? 'block' : 'none';
+            resetToggle.setAttribute('aria-expanded', String(expanded));
+        };
+        m.onclick = closeResetMenu;
+        const applyReadOnlyState = () => {
+            if (!isReadOnly) return;
+            const notice = m.querySelector(`#${modalId}-readonly-notice`);
+            notice.textContent = `대표 ${options.mergedParent.person_idx}의 merged_details에 보관된 서브 기록입니다. 읽기 전용입니다.`;
+            notice.style.display = 'block';
+            m.querySelectorAll('input, textarea').forEach(field => { field.readOnly = true; });
+            m.querySelectorAll('select').forEach(field => { field.disabled = true; });
+            for (const id of ['btn-save', 'btn-crop-person', 'btn-set-primary', 'btn-sync-works', 'btn-refresh-site', 'btn-reset-menu']) {
+                const button = m.querySelector(`#${modalId}-${id}`);
+                button.disabled = true;
+                button.style.display = 'none';
+            }
+            m.querySelector(`#${modalId}-reset-wrapper`).style.display = 'none';
+            closeResetMenu();
+            m.querySelectorAll('[data-reset]').forEach(button => { button.disabled = true; button.style.display = 'none'; });
+            m.querySelector('.pmh-person-modal-cancel').textContent = '닫기';
+        };
+        applyReadOnlyState();
         m.style.display = 'flex';
 
         const card = m.querySelector(`#${modalId}-card`);
@@ -10005,52 +10433,43 @@ GM_addStyle(`
         const applyDomainVisibility = (dom) => {
             const domUpper = String(dom || 'JAV').toUpperCase();
             const avSpecRow = m.querySelector(`#${modalId}-av-spec-row`);
-            const wrapLocal = m.querySelector(`#${modalId}-wrap-local-path`);
-            const wrapGoogle = m.querySelector(`#${modalId}-wrap-google-id`);
-            const wrapSite = m.querySelector(`#${modalId}-wrap-site-url`);
-
-            if (domUpper === 'JAV' || domUpper === 'WESTERN') {
-                avSpecRow.style.display = 'flex';
-            } else {
-                avSpecRow.style.display = 'none';
-            }
-
-            if (domUpper === 'WESTERN') {
-                wrapLocal.style.display = 'block'; wrapLocal.style.flex = '1';
-                wrapGoogle.style.display = 'none';
-                wrapSite.style.display = 'block'; wrapSite.style.flex = '1';
-            } else if (domUpper === 'GENERAL') {
-                wrapLocal.style.display = 'none';
-                wrapGoogle.style.display = 'none';
-                wrapSite.style.display = 'block'; wrapSite.style.flex = '1';
-            } else {
-                wrapLocal.style.display = 'block'; wrapLocal.style.flex = '1';
-                wrapGoogle.style.display = 'block'; wrapGoogle.style.flex = '1';
-                wrapSite.style.display = 'block'; wrapSite.style.flex = '1';
-            }
+            avSpecRow.style.display = ['JAV', 'WESTERN'].includes(domUpper) ? 'flex' : 'none';
+            m.querySelector(`#${modalId}-gds-image-fields`).style.display = domUpper === 'JAV' ? 'grid' : 'none';
         };
 
         let rawPersonData = null;
         let photoList = [];
         let curPhotoIdx = 0;
+        let shownCustomLocal = false;
+        let shownCustomDrive = false;
 
+        const collectPersonPayload = () => {
+            if (isReadOnly) throw new Error('서브 인물 기록은 읽기 전용입니다.');
+            if (!rawPersonData) throw new Error('인물 데이터를 먼저 불러오세요.');
+            const value = suffix => m.querySelector(`#${modalId}-${suffix}`).value.trim();
+            return buildFfPersonSavePayload(rawPersonData, {
+                person_idx: value('idx'), name_org: value('name-org'), name_ko: value('name-ko'), name_en: value('name-en'),
+                gender: value('gender'), thumb: value('thumb-val'), selected_primary_url: value('selected-primary-url'),
+                aliases: value('aliases'), birth: value('birth'), height: value('height'), blood: value('blood'),
+                agency: value('agency'), hobby: value('hobby'), body_size: value('body'), bra_size: value('bra'),
+                debut: value('debut'), info_url: value('info-url'), local_img_path: value('local-path'),
+                google_fileid: value('google-id'), site_img_url: value('site-url'),
+                site_img_urls: value('site-img-urls').split(/\r?\n/).map(v => v.trim()).filter(Boolean)
+            });
+        };
+        let loadRevision = 0;
         // 대표 소스 라벨 뱃지 갱신 헬퍼
         const updatePrimarySourceLabelBadges = (activeKey) => {
-            ['local-path', 'google-id', 'site-url'].forEach(k => {
-                const lbl = m.querySelector(`#${modalId}-lbl-${k}`);
-                if (!lbl) return;
-                const oldBadge = lbl.querySelector('.pmh-primary-badge');
-                if (oldBadge) oldBadge.remove();
-            });
-
-            let targetLblId = '';
-            if (activeKey === 'local_img_path') {
-                targetLblId = `${modalId}-lbl-local-path`;
-            } else if (activeKey === 'google_fileid') {
-                targetLblId = `${modalId}-lbl-google-id`;
-            } else if (activeKey && activeKey.startsWith('site_img_url')) {
-                targetLblId = `${modalId}-lbl-site-url`;
-            }
+            const labelMap = {
+                local_img_path: 'local-path', google_fileid: 'gds-url',
+                cached_local_img_path: shownCustomLocal ? null : 'cache-local-url',
+                official_cached_google_fileid: shownCustomDrive ? null : 'cache-drive-url',
+                custom_local_img_path: shownCustomLocal ? 'cache-local-url' : null,
+                custom_user_google_fileid: shownCustomDrive ? 'cache-drive-url' : null
+            };
+            m.querySelectorAll('.pmh-primary-badge').forEach(badge => badge.remove());
+            const suffix = activeKey?.startsWith('site_img_url') ? 'site-url' : labelMap[activeKey];
+            const targetLblId = suffix ? `${modalId}-lbl-${suffix}` : '';
 
             if (targetLblId) {
                 const lbl = m.querySelector(`#${targetLblId}`);
@@ -10071,40 +10490,44 @@ GM_addStyle(`
             if (photoList.length === 0) {
                 pImg.src = '';
                 pType.innerText = 'No Photo';
+                styleFfImageBadge(pType);
                 pCounter.innerText = '0 / 0';
                 return;
             }
             curPhotoIdx = (idx + photoList.length) % photoList.length;
             const item = photoList[curPhotoIdx];
             pImg.src = getFfMediaProxyUrl(srvConfig, item.url, '', 'image', domain);
+            preloadAdjacentModalImages(photoList, curPhotoIdx,
+                photo => getFfMediaProxyUrl(srvConfig, photo.url, '', 'image', domain));
             pType.innerText = item.type;
             pCounter.innerText = `${curPhotoIdx + 1} / ${photoList.length}`;
 
-            if (item.is_primary) {
-                pType.style.background = 'rgba(0, 123, 255, 0.85)';
-                pType.style.border = '1px solid rgba(255, 255, 255, 0.4)';
-            } else {
-                pType.style.background = 'rgba(0, 0, 0, 0.55)';
-                pType.style.border = '1px solid rgba(255, 255, 255, 0.15)';
-            }
+            styleFfImageBadge(pType, item, srvConfig);
         };
 
         const loadPersonDataInPlace = async () => {
+            if (!m.isConnected) return;
             const loadingDiv = m.querySelector(`#${modalId}-loading`);
             const formDiv = m.querySelector(`#${modalId}-form`);
+            const revision = ++loadRevision;
+            m.querySelector(`#${modalId}-btn-save`).disabled = true;
             loadingDiv.style.display = 'flex';
             formDiv.style.display = 'none';
 
             try {
-                const ret = await PmhFfBridge.callPersonApi(srvConfig, 'person_get_detailed', String(targetIdentifier), domain);
+                const ret = isReadOnly ? { ret: 'success', data: JSON.parse(JSON.stringify(mergedSnapshot)) } :
+                    await PmhFfBridge.callPersonApi(srvConfig, 'person_get_detailed', String(targetIdentifier), domain);
+                if (!m.isConnected || revision !== loadRevision) return;
                 if (!ret || ret.ret !== 'success' || !ret.data) throw new Error(ret?.msg || "인물 데이터 조회 실패");
 
-                const p = ret.data;
+                const p = requireFfEntity(ret.data);
                 rawPersonData = p;
-                const extra = (typeof p.extra_info === 'string') ? JSON.parse(p.extra_info || '{}') : (p.extra_info || {});
-                const media = (typeof p.media_src === 'string') ? JSON.parse(p.media_src || '{}') : (p.media_src || {});
+                const extra = p.extra_info || {};
+                const media = p.media_src || {};
+                const official = media.official || {};
+                const custom = media.custom || {};
 
-                m.querySelector(`#${modalId}-title`).innerText = `[${p.name_ko || p.name_org || targetIdentifier}] 인물 상세 정보 편집`;
+                m.querySelector(`#${modalId}-title`).innerText = `[${p.name_ko || p.name_org || targetIdentifier}] ${isReadOnly ? '서브 인물 기록 · 읽기 전용' : '인물 상세 정보 편집'}`;
                 m.querySelector(`#${modalId}-id-val`).value = p.id || '';
                 m.querySelector(`#${modalId}-domain`).value = p.domain || domain;
                 m.querySelector(`#${modalId}-idx`).value = p.person_idx || targetIdentifier;
@@ -10115,77 +10538,87 @@ GM_addStyle(`
                 m.querySelector(`#${modalId}-thumb-val`).value = p.thumb || '';
                 m.querySelector(`#${modalId}-selected-primary-url`).value = '';
 
-                m.querySelector(`#${modalId}-birth`).value = extra.birth || '';
-                m.querySelector(`#${modalId}-height`).value = (extra.height && parseInt(extra.height, 10) > 0) ? String(extra.height) : '';
-                m.querySelector(`#${modalId}-blood`).value = extra.blood || '';
-                m.querySelector(`#${modalId}-agency`).value = extra.agency || '';
+                m.querySelector(`#${modalId}-birth`).value = p.birth_date || '';
+                m.querySelector(`#${modalId}-height`).value = (p.height && parseInt(p.height, 10) > 0) ? String(p.height) : '';
+                m.querySelector(`#${modalId}-blood`).value = p.blood_type || '';
+                m.querySelector(`#${modalId}-agency`).value = p.agency || '';
                 m.querySelector(`#${modalId}-hobby`).value = extra.hobby || '';
-                m.querySelector(`#${modalId}-body`).value = extra.body_size || '';
-                m.querySelector(`#${modalId}-bra`).value = extra.bra_size || '';
-                m.querySelector(`#${modalId}-debut`).value = extra.debut || '';
+                m.querySelector(`#${modalId}-body`).value = p.body_size || '';
+                m.querySelector(`#${modalId}-bra`).value = p.cup_size || '';
+                m.querySelector(`#${modalId}-debut`).value = p.debut_date || '';
 
-                const localVal = (media.local_img_path || '').trim();
-                const googleVal = (media.google_fileid || '').trim();
-                const siteVal = (media.site_img_url || '').trim();
+                const localVal = (official.local_img_path || '').trim();
+                const googleVal = (official.google_fileid || '').trim();
+                const siteVal = (official.site_img_url || '').trim();
 
                 m.querySelector(`#${modalId}-local-path`).value = localVal;
                 m.querySelector(`#${modalId}-google-id`).value = googleVal;
                 m.querySelector(`#${modalId}-site-url`).value = siteVal;
 
-                const sitePhotos = Array.isArray(media.site_img_urls) ? media.site_img_urls.filter(Boolean) : [];
+                const rawSitePhotos = p.photo_urls?.length ? p.photo_urls : (official.site_img_urls || []);
+                const sitePhotos = rawSitePhotos.filter(url => typeof url === 'string' && url.trim().startsWith('http') && !isLocalServerMediaUrl(url, srvConfig));
+                if (siteVal && siteVal.startsWith('http') && !isLocalServerMediaUrl(siteVal, srvConfig) && !sitePhotos.includes(siteVal)) sitePhotos.unshift(siteVal);
                 m.querySelector(`#${modalId}-site-img-urls`).value = sitePhotos.join('\n');
 
-                const infoUrl = extra.info_url || p.info_url || '';
+                const infoUrl = p.info_url || '';
                 m.querySelector(`#${modalId}-info-url`).value = infoUrl;
                 m.querySelector(`#${modalId}-btn-open-source`).onclick = () => { if (infoUrl) window.open(infoUrl, '_blank'); else toastr.warning("출처 URL이 없습니다."); };
 
+                const siteRefresh = m.querySelector(`#${modalId}-btn-refresh-site`);
+                const canRefreshSite = !isReadOnly && p.domain === 'WESTERN';
+                siteRefresh.style.display = canRefreshSite ? '' : 'none';
+                siteRefresh.disabled = !canRefreshSite;
+                siteRefresh.onclick = async () => {
+                    if (!canRefreshSite) return;
+                    siteRefresh.disabled = true;
+                    try {
+                        const result = await PmhFfBridge.callPersonApi(srvConfig, 'person_refresh_from_site', String(p.person_idx || p.id), p.domain);
+                        if (result?.ret !== 'success') throw new Error(result?.msg || '사이트 정보 갱신 실패');
+                        await loadPersonDataInPlace();
+                    } catch (err) { toastr.error(err.message || String(err)); }
+                    finally { siteRefresh.disabled = !canRefreshSite; }
+                };
+                m.querySelector(`#${modalId}-gender`).value = p.gender || 'unknown';
+                const driveUrl = id => id ? `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=s0` : '';
+                const localUrl = path => path ? getFfMediaProxyUrl(srvConfig, formatActorLocalUrl(path, p.domain), '', 'image', p.domain) : '';
+                shownCustomLocal = Boolean((custom.local_img_path || '').trim());
+                shownCustomDrive = Boolean((custom.remote_img_path || '').trim() || (custom.custom_user_google_fileid || '').trim());
+                const selectedLocal = shownCustomLocal ? custom.local_img_path : official.cached_local_img_path;
+                const selectedRemote = shownCustomDrive ? custom.remote_img_path : official.remote_img_path;
+                const selectedDriveId = shownCustomDrive ? custom.custom_user_google_fileid : official.official_cached_google_fileid;
+                const storageValues = {
+                    'gds-url': p.domain === 'JAV' ? driveUrl(official.google_fileid) : '',
+                    'custom-google-id': custom.custom_user_google_fileid || '',
+                    'cache-local-path': selectedLocal || '', 'cache-local-url': localUrl(selectedLocal),
+                    'cache-remote-path': selectedRemote || '', 'cache-drive-url': driveUrl(selectedDriveId)
+                };
+                for (const [id, value] of Object.entries(storageValues)) m.querySelector(`#${modalId}-${id}`).value = value;
+                for (const [id, text, customSelected] of [
+                    ['cache-local-path', '파일 상대 경로 (로컬)', shownCustomLocal],
+                    ['cache-local-url', '이미지 서버 URL', shownCustomLocal],
+                    ['cache-remote-path', '파일 상대 경로 (구글 드라이브)', shownCustomDrive],
+                    ['cache-drive-url', '구글 드라이브 썸네일 URL', shownCustomDrive]
+                ]) m.querySelector(`#${modalId}-lbl-${id}`).textContent = text + (customSelected ? ' · 사용자 이미지' : '');
                 applyDomainVisibility(p.domain || domain);
                 m.querySelector(`#${modalId}-domain`).onchange = (e) => applyDomainVisibility(e.target.value);
 
                 // 사진 캐러셀 구성 및 대표 소스 판별
-                photoList = [];
-                const sourcesMap = {};
-                if (localVal) {
-                    const resolvedLocal = media.local_img_url || extra.local_img_url || formatActorLocalUrl(localVal, p.domain);
-                    if (resolvedLocal) sourcesMap['local_img_path'] = { url: resolvedLocal, type: 'SERVER', key: 'local_img_path' };
-                }
-                if (googleVal) {
-                    sourcesMap['google_fileid'] = { url: `https://drive.google.com/thumbnail?id=${googleVal}`, type: 'GOOGLE', key: 'google_fileid' };
-                }
-                sitePhotos.forEach((u, uIdx) => {
-                    if (u && u.startsWith('http')) {
-                        const lbl = (p.domain === 'WESTERN' ? 'SITE' : (p.domain === 'GENERAL' ? 'WEB' : 'AVDBS'));
-                        sourcesMap[`site_img_url_${uIdx}`] = { url: u, type: (sitePhotos.length > 1 ? `${lbl} #${uIdx + 1}` : lbl), key: 'site_img_url' };
-                    }
-                });
-
-                let activeKey = null;
-                const curThumb = (p.thumb || '').trim();
-                if (localVal && localVal.includes('_user.') && sourcesMap['local_img_path']) activeKey = 'local_img_path';
-                else if (curThumb) {
-                    for (const sk in sourcesMap) {
-                        if (sourcesMap[sk].url === curThumb || (localVal && curThumb.includes(localVal.split('/').pop()))) {
-                            activeKey = sk; break;
-                        }
-                    }
-                }
-                if (!activeKey) activeKey = Object.keys(sourcesMap)[0] || null;
-
-                if (activeKey && sourcesMap[activeKey]) photoList.push({ ...sourcesMap[activeKey], is_primary: true });
-                Object.keys(sourcesMap).forEach(k => {
-                    if (k !== activeKey) photoList.push({ ...sourcesMap[k], is_primary: false });
-                });
-
-                updatePrimarySourceLabelBadges(sourcesMap[activeKey]?.key || activeKey);
+                photoList = buildPersonImageGallery(p, srvConfig);
+                updatePrimarySourceLabelBadges(photoList.find(source => source.is_primary)?.key);
                 renderPhotoItem(0);
 
                 // 통합 인물(Merged Sub-Actors) 렌더링
                 const mergedSubWrapper = m.querySelector(`#${modalId}-merged-sub-actors-wrapper`);
-                let subList = (extra.merged_sub_actors && Array.isArray(extra.merged_sub_actors)) ? extra.merged_sub_actors : [];
-                if (subList.length === 0 && extra.alt_actor_indices && extra.alt_actor_indices.length > 1) {
-                    subList = extra.alt_actor_indices.map(aid => ({ actor_id: aid, name_org: p.name_org, name_ko: p.name_ko, site_img_url: p.thumb }));
+                let subList = Array.isArray(p.merged_details) ? p.merged_details : [];
+                if (subList.length === 0 && p.alt_indices && p.alt_indices.length > 1) {
+                    subList = p.alt_indices.map(aid => ({ actor_id: aid }));
                 }
 
+                const masterCode = String(p.person_idx || '').trim().toLowerCase();
+                if (subList.some(item => String(item.actor_id || '').trim().toLowerCase() !== masterCode) &&
+                    !subList.some(item => String(item.actor_id || '').trim().toLowerCase() === masterCode)) {
+                    subList = [{ actor_id: p.person_idx, name_org: p.name_org, name_ko: p.name_ko, site_img_url: p.thumb }, ...subList];
+                }
                 if (subList.length > 1) {
                     mergedSubWrapper.style.display = 'block';
                     m.querySelector(`#${modalId}-merged-sub-count-text`).innerText = `총 ${subList.length}개 ID 병합됨`;
@@ -10199,7 +10632,8 @@ GM_addStyle(`
 
                     subList.forEach(subItem => {
                         const sId = subItem.actor_id || '-';
-                        const isMaster = (sId === currentMasterIdx);
+                        const isMaster = String(sId).trim().toLowerCase() === currentMasterIdx.toLowerCase();
+                        const hasSnapshot = (p.merged_details || []).some(item => String(item.actor_id || '').trim().toLowerCase() === String(sId).trim().toLowerCase());
                         const bColor = isMaster ? 'background:#007bff; color:#fff;' : 'background:#222; color:#ccc; border:1px solid #444;';
 
                         badgesContainer.insertAdjacentHTML('beforeend', `
@@ -10213,7 +10647,7 @@ GM_addStyle(`
                             <td style="padding:6px; text-align:center;">${subImg}</td>
                             <td style="padding:6px; font-weight:bold; color:${isMaster ? '#e5a00d' : '#fff'};">${sId}${isMaster ? ' <span style="font-size:10px; background:#007bff; color:#fff; padding:1px 4px; border-radius:3px;">대표</span>' : ''}</td>
                             <td style="padding:6px; color:#ddd;">${subItem.name_org || '-'}${subItem.name_ko ? ` (${subItem.name_ko})` : ''}</td>
-                            <td style="padding:6px; text-align:center;"><button type="button" class="pmh-crop-btn pmh-btn-sub-detail" style="font-size:11px; padding:2px 6px;">🔗 상세</button></td>
+                            <td style="padding:6px; text-align:center;">${!isMaster && hasSnapshot ? '<button type="button" class="pmh-crop-btn pmh-btn-sub-detail" style="font-size:11px; padding:2px 6px;">🔗 상세</button>' : ''}</td>
                             <td style="padding:6px; text-align:center;">
                                 ${!isMaster ? `
                                     <button type="button" class="pmh-crop-btn pmh-btn-sub-master" style="font-size:11px; padding:2px 6px; margin-right:4px;">★ 대표 지정</button>
@@ -10223,9 +10657,10 @@ GM_addStyle(`
                         `;
 
                         // 서브 인물 상세 팝업 오픈 (다중 레이어 스택)
-                        subRow.querySelector('.pmh-btn-sub-detail').onclick = () => {
-                            openPmhPersonDbModal(sId, p.domain, srvConfig, activeServerId);
-                        };
+                        if (!isMaster && hasSnapshot) {
+                            subRow.querySelector('.pmh-btn-sub-detail').onclick = () =>
+                                openPmhPersonDbModal(sId, p.domain, srvConfig, activeServerId, { mergedParent: p });
+                        }
 
                         if (!isMaster) {
                             subRow.querySelector('.pmh-btn-sub-master').onclick = async () => {
@@ -10314,6 +10749,7 @@ GM_addStyle(`
 
                 // 출연작 검증 갱신 핸들러 (실시간 인-플레이스 갱신)
                 m.querySelector(`#${modalId}-btn-sync-works`).onclick = async () => {
+                    if (isReadOnly) return;
                     const btn = m.querySelector(`#${modalId}-btn-sync-works`);
                     btn.disabled = true;
                     btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 검증 중...`;
@@ -10338,6 +10774,7 @@ GM_addStyle(`
                 m.querySelector(`#${modalId}-btn-next`).onclick = () => renderPhotoItem(curPhotoIdx + 1);
 
                 m.querySelector(`#${modalId}-btn-set-primary`).onclick = () => {
+                    if (isReadOnly) return;
                     if (photoList.length === 0) return;
                     const cur = photoList[curPhotoIdx];
                     m.querySelector(`#${modalId}-thumb-val`).value = cur.url;
@@ -10357,42 +10794,24 @@ GM_addStyle(`
 
                 // JSON 보기
                 m.querySelector(`#${modalId}-btn-json`).onclick = () => {
-                    const heightVal = parseInt(m.querySelector(`#${modalId}-height`).value, 10);
-                    const sitePhotosText = m.querySelector(`#${modalId}-site-img-urls`).value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
-                    const aliasesText = m.querySelector(`#${modalId}-aliases`).value.trim();
-
-                    const currentPersonPayload = {
-                        ...(rawPersonData || p || {}),
-                        id: m.querySelector(`#${modalId}-id-val`).value ? parseInt(m.querySelector(`#${modalId}-id-val`).value, 10) : null,
-                        domain: m.querySelector(`#${modalId}-domain`).value,
-                        person_idx: m.querySelector(`#${modalId}-idx`).value.trim(),
-                        name_org: m.querySelector(`#${modalId}-name-org`).value.trim(),
-                        name_ko: m.querySelector(`#${modalId}-name-ko`).value.trim(),
-                        name_en: m.querySelector(`#${modalId}-name-en`).value.trim(),
-                        thumb: m.querySelector(`#${modalId}-thumb-val`).value.trim(),
-                        selected_primary_url: m.querySelector(`#${modalId}-selected-primary-url`).value.trim(),
-                        aliases: aliasesText ? aliasesText.split(',').map(s => s.trim()).filter(Boolean) : [],
-                        birth: m.querySelector(`#${modalId}-birth`).value.trim(),
-                        height: (heightVal > 0) ? heightVal : null,
-                        blood: m.querySelector(`#${modalId}-blood`).value.trim(),
-                        agency: m.querySelector(`#${modalId}-agency`).value.trim(),
-                        hobby: m.querySelector(`#${modalId}-hobby`).value.trim(),
-                        body_size: m.querySelector(`#${modalId}-body`).value.trim(),
-                        bra_size: m.querySelector(`#${modalId}-bra`).value.trim(),
-                        debut: m.querySelector(`#${modalId}-debut`).value.trim(),
-                        site_img_urls: sitePhotosText,
-                        info_url: m.querySelector(`#${modalId}-info-url`).value.trim()
-                    };
+                    if (isReadOnly) {
+                        openPmhJsonViewerModal(`[${rawPersonData.person_idx}] 서브 인물 기록 · 읽기 전용`, rawPersonData);
+                        return;
+                    }
+                    const currentPersonPayload = collectPersonPayload();
 
                     const displayName = currentPersonPayload.name_ko || currentPersonPayload.name_org || targetIdentifier;
-                    openPmhJsonViewerModal(`[${displayName}] 인물 데이터 JSON 원본`, currentPersonPayload);
+                    openPmhJsonViewerModal(`[${displayName}] 인물 데이터 / 저장 요청`, { current: rawPersonData, request: currentPersonPayload });
                 };
 
                 // 푸터 사진 편집 (크롭 모달 직결 연동)
-                m.querySelector(`#${modalId}-btn-crop-person`).onclick = () => {
+                m.querySelector(`#${modalId}-btn-crop-person`).onclick = async () => {
+                    if (isReadOnly) return;
+                    if (!await ensureCropperLoaded()) return toastr.error('Cropper.js를 불러오지 못했습니다.');
                     const activeThumb = photoList[curPhotoIdx]?.url || p.thumb || '';
                     if (!activeThumb) return toastr.warning("편집할 사진이 없습니다.");
 
+                    if (!m.isConnected) return;
                     const pDomain = m.querySelector(`#${modalId}-domain`).value || 'JAV';
                     const pIdx = m.querySelector(`#${modalId}-idx`).value.trim();
                     const pNameKo = m.querySelector(`#${modalId}-name-ko`).value.trim();
@@ -10404,64 +10823,58 @@ GM_addStyle(`
                         code: pIdx,
                         domain: pDomain,
                         title: pNameKo || pNameOrg || pIdx,
-                        serverId: activeServerId
+                        serverId: activeServerId, srvConfig, onSaved: () => loadPersonDataInPlace()
                     };
                     customUploadPayload = null;
 
                     document.getElementById('pmh-crop-title').innerText = `[${pNameKo || pNameOrg || pIdx}] 프로필 사진 크롭 에디터`;
                     pmhCropModal.style.display = 'flex';
+                    updateCropTargetUI();
                     setCropAspectRatio(3 / 4, 'pmh-crop-ratio-portrait');
                     loadCropImage(getFfMediaProxyUrl(srvConfig, activeThumb, '', 'image', pDomain));
                 };
 
                 loadingDiv.style.display = 'none';
                 formDiv.style.display = 'block';
+                m.querySelector(`#${modalId}-btn-save`).disabled = isReadOnly;
+                applyReadOnlyState();
 
             } catch (err) {
+                if (!m.isConnected) return;
                 errorLog("[Person DB Modal] 로드 실패:", err);
                 toastr.error(`인물 데이터 조회 오류: ${err.message || err}`);
                 closeThisModal();
             }
         };
 
+        m.pmhReload = loadPersonDataInPlace;
+        m.querySelectorAll('[data-reset]').forEach(button => {
+            button.onclick = async () => {
+                closeResetMenu();
+                if (isReadOnly || !rawPersonData) return;
+                const type = button.dataset.reset;
+                if (!confirm(type === 'text' ? '수동 텍스트 편집을 초기화하시겠습니까?' : '사용자 이미지 파일 삭제를 포함하여 선택한 데이터를 초기화하시겠습니까?')) return;
+                button.disabled = true;
+                try {
+                    const res = await PmhFfBridge.callPersonApi(srvConfig, 'person_reset_user_data', String(rawPersonData.id), JSON.stringify({ reset_type: type }));
+                    if (res?.ret !== 'success') throw new Error(res?.msg || '초기화 실패');
+                    await loadPersonDataInPlace();
+                } catch (err) { toastr.error(err.message || String(err)); }
+                finally { button.disabled = false; }
+            };
+        });
         await loadPersonDataInPlace();
+        if (!m.isConnected) return;
 
         // 저장 버튼 핸들러
         m.querySelector(`#${modalId}-btn-save`).onclick = async function() {
-            if (!rawPersonData) return;
+            if (isReadOnly || !rawPersonData) return;
             const btn = this;
             btn.disabled = true;
             btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 저장 중...`;
 
             try {
-                const heightVal = parseInt(m.querySelector(`#${modalId}-height`).value, 10);
-                const sitePhotosText = m.querySelector(`#${modalId}-site-img-urls`).value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
-
-                const payload = {
-                    id: m.querySelector(`#${modalId}-id-val`).value ? parseInt(m.querySelector(`#${modalId}-id-val`).value, 10) : null,
-                    domain: m.querySelector(`#${modalId}-domain`).value,
-                    person_idx: m.querySelector(`#${modalId}-idx`).value.trim(),
-                    name_org: m.querySelector(`#${modalId}-name-org`).value.trim(),
-                    name_ko: m.querySelector(`#${modalId}-name-ko`).value.trim(),
-                    name_en: m.querySelector(`#${modalId}-name-en`).value.trim(),
-                    thumb: m.querySelector(`#${modalId}-thumb-val`).value.trim() || rawPersonData.thumb || '',
-                    selected_primary_url: m.querySelector(`#${modalId}-selected-primary-url`).value.trim(),
-                    aliases: m.querySelector(`#${modalId}-aliases`).value.trim(),
-                    birth: m.querySelector(`#${modalId}-birth`).value.trim(),
-                    height: (heightVal > 0) ? heightVal : null,
-                    blood: m.querySelector(`#${modalId}-blood`).value.trim(),
-                    agency: m.querySelector(`#${modalId}-agency`).value.trim(),
-                    hobby: m.querySelector(`#${modalId}-hobby`).value.trim(),
-                    body_size: m.querySelector(`#${modalId}-body`).value.trim(),
-                    bra_size: m.querySelector(`#${modalId}-bra`).value.trim(),
-                    debut: m.querySelector(`#${modalId}-debut`).value.trim(),
-                    local_img_path: m.querySelector(`#${modalId}-local-path`).value.trim(),
-                    google_fileid: m.querySelector(`#${modalId}-google-id`).value.trim(),
-                    site_img_url: m.querySelector(`#${modalId}-site-url`).value.trim(),
-                    site_img_urls: sitePhotosText,
-                    info_url: m.querySelector(`#${modalId}-info-url`).value.trim(),
-                    person_type: 'actor'
-                };
+                const payload = collectPersonPayload();
 
                 const ret = await PmhFfBridge.callPersonApi(srvConfig, 'person_save', JSON.stringify(payload));
                 if (!ret || ret.ret !== 'success') throw new Error(ret?.msg || "인물 정보 저장 실패");
@@ -10687,7 +11100,8 @@ GM_addStyle(`
             e.preventDefault();
             if (!currentCropItemData || !customUploadPayload || customUploadPayload.type !== 'url') return;
 
-            const { serverId, code, module } = currentCropItemData;
+            const context = currentCropItemData;
+            const { serverId, itemId, code, module } = context;
             const srvConfig = getServerConfig(serverId);
             if (!srvConfig) return toastr.error("서버 설정을 찾을 수 없습니다.");
 
@@ -10726,9 +11140,13 @@ GM_addStyle(`
                 if (saveRes && saveRes.ret === 'success') {
                     toastr.success(`[${code}] ${typeLabel} 저장 및 DB 업데이트 완료!`);
 
-                    const reqUrl = `${srvConfig.relayUrl}/ff_metadata/api/${module}/info?code=${encodeURIComponent(code)}&call=plex&_t=${Date.now()}`;
-                    const infoRes = await makeRequest(reqUrl, 'GET', null, ClientSettings.masterApiKey, null, 180000);
-
+                    invalidateFfItemCache(serverId, itemId);
+                    if (context.onSaved) await context.onSaved();
+                    if (currentCropItemData !== context) return;
+                    const result = await PmhFfBridge.callMetaApi(srvConfig, 'get_meta_by_code', code, context.category);
+                    if (currentCropItemData !== context) return;
+                    if (result?.ret !== 'success') throw new Error(result?.msg || '저장 후 조회 실패');
+                    const infoRes = requireFfEntity(result.data.json_data);
                     let plUrl = '';
                     if (infoRes.thumb) {
                         for (const t of infoRes.thumb) {
@@ -10782,12 +11200,18 @@ GM_addStyle(`
     const uploadPl = document.getElementById('pmh-upload-pl');
     if (uploadPl) {
         uploadPl.onchange = function(e) {
+            const context = currentCropItemData;
+            if (!context) return;
             const file = e.target.files[0];
             if (file) {
                 const reader = new FileReader();
                 reader.onload = (evt) => {
+                    if (currentCropItemData !== context) return;
                     customUploadPayload = { type: 'pl', data: evt.target.result };
-                    if (cropperInstance) cropperInstance.replace(evt.target.result);
+                    currentCropItemData.currentSource = 'pl';
+                    document.getElementById('pmh-crop-src-pl')?.classList.add('pmh-crop-btn-active');
+                    document.getElementById('pmh-crop-src-p')?.classList.remove('pmh-crop-btn-active');
+                    loadCropImage(evt.target.result);
                 };
                 reader.readAsDataURL(file);
             }
@@ -10797,12 +11221,18 @@ GM_addStyle(`
     const uploadP = document.getElementById('pmh-upload-p');
     if (uploadP) {
         uploadP.onchange = function(e) {
+            const context = currentCropItemData;
+            if (!context) return;
             const file = e.target.files[0];
             if (file) {
                 const reader = new FileReader();
                 reader.onload = (evt) => {
+                    if (currentCropItemData !== context) return;
                     customUploadPayload = { type: 'p', data: evt.target.result };
-                    if (cropperInstance) cropperInstance.replace(evt.target.result);
+                    currentCropItemData.currentSource = 'p';
+                    document.getElementById('pmh-crop-src-p')?.classList.add('pmh-crop-btn-active');
+                    document.getElementById('pmh-crop-src-pl')?.classList.remove('pmh-crop-btn-active');
+                    loadCropImage(evt.target.result);
                 };
                 reader.readAsDataURL(file);
             }
@@ -10815,8 +11245,10 @@ GM_addStyle(`
         btnCropSave.onclick = async function() {
             if (!cropperInstance || !currentCropItemData) return;
 
-            const { itemId, serverId, code, module } = currentCropItemData;
-            const srvConfig = getServerConfig(serverId);
+            const context = currentCropItemData;
+            const upload = customUploadPayload;
+            const { itemId, serverId, code, module } = context;
+            const srvConfig = context.srvConfig || getServerConfig(serverId);
             const btn = this;
 
             btn.disabled = true;
@@ -10824,62 +11256,21 @@ GM_addStyle(`
 
             try {
                 const cropData = cropperInstance.getData(true);
-                if (currentCropItemData.targetType === 'person') {
-                    const personId = currentCropItemData.personId || code;
-                    const personDomain = currentCropItemData.domain || 'JAV';
-
-                    let croppedBase64 = '';
-                    try {
-                        const canvas = cropperInstance.getCroppedCanvas();
-                        if (canvas) croppedBase64 = canvas.toDataURL('image/jpeg', 0.95);
-                    } catch(e) {}
-
-                    const personPayload = {
-                        command: 'person_crop_save',
-                        arg1: personId,
-                        arg2: JSON.stringify(cropData),
-                        arg3: croppedBase64 ? JSON.stringify({ type: 'canvas', data: croppedBase64 }) : (customUploadPayload ? JSON.stringify(customUploadPayload) : ''),
-                        domain: personDomain,
-                        image_url: (customUploadPayload && customUploadPayload.type === 'url') ? customUploadPayload.url : ''
-                    };
-
-                    infoLog(`[Crop Modal] 💾 FF person_crop_save 요청 전송: PersonID=${personId}, Domain=${personDomain}`);
-                    const res = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/person_api`, 'POST', personPayload, ClientSettings.masterApiKey, null, 60000);
-
-                    if (res && res.ret === 'success') {
-                        toastr.success(`[${currentCropItemData.title || personId}] 프로필 사진 저장 완료!`);
-                        closeCropModal();
-
-                        const activePersonModal = document.querySelector('.pmh-card-person_db');
-                        if (activePersonModal && res.new_url) {
-                            const bustedUrl = res.new_url + (res.new_url.includes('?') ? '&' : '?') + '_t=' + Date.now();
-                            activePersonModal.querySelector('input[id$="-thumb-val"]').value = res.new_url;
-                            const pImg = activePersonModal.querySelector('img[id$="-preview-img"]');
-                            if (pImg) pImg.src = bustedUrl;
-                        }
-                    } else {
-                        throw new Error(res?.msg || "프로필 사진 저장 실패");
-                    }
+                if (context.targetType === 'person') {
+                    const canvas = cropperInstance.getCroppedCanvas();
+                    if (!canvas) throw new Error('크롭 결과를 만들지 못했습니다.');
+                    const response = await PmhFfBridge.callPersonApi(srvConfig, 'person_crop_save',
+                        context.personId || code, JSON.stringify(cropData),
+                        JSON.stringify({ type: 'canvas', data: canvas.toDataURL('image/jpeg', 0.95) }),
+                        { fields: { domain: context.domain }, timeout: 180000 });
+                    if (response?.ret !== 'success') throw new Error(response?.msg || '프로필 사진 저장 실패');
+                    if (currentCropItemData === context) closeCropModal();
+                    if (context.onSaved) await context.onSaved();
+                    toastr.success('프로필 사진을 저장했습니다.');
                     return;
                 }
 
-                const payload = { 
-                    code: code, 
-                    crop_data: cropData,
-                    source_type: currentCropItemData.currentSource || 'pl'
-                };
-
-                if (customUploadPayload) {
-                    if (customUploadPayload.type === 'pl') {
-                        payload.pl_base64 = customUploadPayload.data;
-                    } else if (customUploadPayload.type === 'p') {
-                        payload.p_base64 = customUploadPayload.data;
-                    } else if (customUploadPayload.type === 'url') {
-                        payload.image_url = customUploadPayload.url;
-                        payload.source_type = 'url';
-                    }
-                }
-
+                const payload = buildFfCropPayload(context, cropData, upload);
                 infoLog(`[Crop Modal] 💾 FF crop_save 요청 전송:`, payload);
 
                 const saveRes = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/api/${module}/crop_save`, 'POST', payload, ClientSettings.masterApiKey, null, 180000);
@@ -10889,21 +11280,25 @@ GM_addStyle(`
                     throw new Error(saveRes.msg || "FF 포스터 저장 실패");
                 }
 
-                toastr.success("포스터 저장 성공! Plex 클린 리매칭을 시작합니다.", "FF 저장 완료");
-                closeCropModal();
+                invalidateFfItemCache(serverId, itemId);
+                if (currentCropItemData === context) closeCropModal();
+                if (context.onSaved) await context.onSaved();
+                toastr.success('포스터 저장 완료. Plex 리매칭을 시작합니다.');
 
                 triggerPlexMediaAction(itemId, 'match', extractPlexServerInfo(serverId), srvConfig, {
                     _try_refresh_first: false,
                     _do_unmatch_first: true,
                     _skip_sim_check: true
-                });
+                }).catch(err => toastr.warning(`이미지는 저장했지만 Plex 반영에 실패했습니다: ${err.message || err}`));
 
             } catch (err) {
                 errorLog("[Crop Modal] ❌ 포스터 저장 실패:", err);
                 toastr.error(`저장 실패: ${err.message || err}`);
             } finally {
-                btn.disabled = false;
-                btn.innerHTML = `<i class="fas fa-save"></i> 저장 및 리매칭`;
+                if (!currentCropItemData || currentCropItemData === context) {
+                    btn.disabled = false;
+                    btn.innerHTML = `<i class="fas fa-save"></i> 저장 및 리매칭`;
+                }
             }
         };
     }
@@ -10926,9 +11321,8 @@ GM_addStyle(`
             if (videoModal) {
                 e.preventDefault();
                 e.stopPropagation();
-                const v = videoModal.querySelector('video');
-                if (v) { v.pause(); v.src = ""; }
-                videoModal.remove();
+                if (videoModal.pmhClose) videoModal.pmhClose();
+                else videoModal.remove();
                 return;
             }
 

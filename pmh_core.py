@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.131"
+__version__ = "0.9.132"
 
 logger = logging.getLogger("PMH")
 
@@ -633,6 +633,23 @@ def _get_unique_show_folder_count(cursor, rating_key, db_type="sqlite3"):
     return len(root_paths)
 
 
+def _plex_trailer_id_sql(parent_alias="mi"):
+    """Select an actual Plex trailer, never a season, episode, album or track."""
+    return f"""(
+        SELECT trailer.id FROM metadata_items trailer
+        WHERE trailer.metadata_type = 5 AND trailer.id IN (
+            SELECT child.id FROM metadata_items child
+            WHERE child.parent_id = {parent_alias}.id AND child.metadata_type = 5
+            UNION
+            SELECT mr.related_metadata_item_id FROM metadata_relations mr
+            WHERE mr.metadata_item_id = {parent_alias}.id AND mr.relation_type = 0
+        )
+        ORDER BY CASE WHEN LOWER(COALESCE(trailer.title, '')) LIKE '%[preview]%' THEN 0 ELSE 1 END,
+                 trailer.id
+        LIMIT 1
+    )"""
+
+
 def handle_library_batch(data, max_batch_size, db_engine):
     if not data or 'ids' not in data:
         return {"error": "Invalid request"}, 400
@@ -659,20 +676,7 @@ def handle_library_batch(data, max_batch_size, db_engine):
                 (SELECT {group_fn}(ms.codec || '|' || COALESCE(ms.extra_data, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 1) as raw_stream_data,
                 (SELECT {group_fn}(ms.id || '|' || COALESCE(ms.language, 'und') || '|' || COALESCE(ms.codec, '') || '|' || COALESCE(ms.url, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 3) as sub_data,
                 mi.guid, mp.file, mp.id,
-                COALESCE(
-                    (SELECT mr.related_metadata_item_id FROM metadata_relations mr WHERE mr.metadata_item_id = mi.id AND mr.relation_type = 0 LIMIT 1),
-                    (SELECT mr.related_metadata_item_id FROM metadata_relations mr WHERE mr.metadata_item_id = mi.id LIMIT 1),
-                    (SELECT sub.id FROM metadata_items sub WHERE sub.parent_id = mi.id 
-                     ORDER BY 
-                       CASE 
-                         WHEN sub.metadata_type = 5 THEN 0 
-                         WHEN sub.title LIKE '%[preview]%' THEN 1 
-                         WHEN sub.title LIKE '%trailer%' THEN 2 
-                         WHEN sub.title LIKE '%예고편%' THEN 3 
-                         ELSE 4 
-                       END ASC, sub.id ASC 
-                     LIMIT 1)
-                ) as trailer_id
+                {_plex_trailer_id_sql()} as trailer_id
             FROM metadata_items mi
             LEFT JOIN media_items m ON m.metadata_item_id = mi.id
             LEFT JOIN media_parts mp ON mp.media_item_id = m.id
@@ -766,11 +770,12 @@ def handle_media_detail(rating_key, db_engine):
     total_duration = 0
     try:
         with db_engine.get_cursor() as cursor:
-            cursor.execute(f"SELECT metadata_type, guid, library_section_id FROM metadata_items WHERE id = {ph}", (rk_val,))
+            cursor.execute(f"SELECT metadata_type, guid, library_section_id, {_plex_trailer_id_sql()} FROM metadata_items mi WHERE mi.id = {ph}", (rk_val,))
             meta_row = cursor.fetchone()
             if not meta_row: 
                 return {"error": "Item not found"}, 404
             m_type, guid, lib_section_id = meta_row[0], meta_row[1], meta_row[2]
+            trailer_id = meta_row[3]
             
             if m_type in (2, 3, 8):
                 folder_paths, seen_paths = [], set()
@@ -901,7 +906,7 @@ def handle_media_detail(rating_key, db_engine):
                     "guid": guid, 
                     "duration": total_duration,
                     "librarySectionID": lib_section_id, 
-                    "versions": versions 
+                    "versions": versions, "trailer_id": trailer_id
                 }, 200
 
             if m_type == 9:
@@ -951,7 +956,7 @@ def handle_media_detail(rating_key, db_engine):
                 folder_paths.sort(key=natural_sort_key)
                 versions = [{"file": path, "parts": [{"path": path}]} for path in folder_paths]
                 
-                return { "type": "album", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions, "tracks": tracks }, 200
+                return { "type": "album", "itemId": rating_key, "guid": guid, "duration": None, "librarySectionID": lib_section_id, "versions": versions, "tracks": tracks, "trailer_id": trailer_id }, 200
 
             group_fn = "string_agg" if db_engine.db_type == "postgres" else "group_concat"
             query_media = f"""
@@ -1008,7 +1013,8 @@ def handle_media_detail(rating_key, db_engine):
             "type": "directory" if m_type in (2, 3) else "album" if m_type == 8 else "audio" if m_type == 10 else "video", 
             "itemId": rating_key, "guid": guid, 
             "duration": total_duration if m_type in (2, 3) else duration, 
-            "librarySectionID": lib_section_id, "versions": versions, "markers": markers 
+            "librarySectionID": lib_section_id, "versions": versions, "markers": markers,
+            "trailer_id": trailer_id
         }, 200
     except Exception as e:
         logger.error(f"Failed processing item {rating_key}: {e}")
@@ -1200,6 +1206,17 @@ class CoreTaskManager:
 # ==============================================================================
 # [코어 데이터 캐시 관리자]
 # ==============================================================================
+
+def load_pending_tool_items(cache, retry_errors=False):
+    """Completed rows are already filtered out; applying progress as OFFSET loses work."""
+    statuses = ('pending', 'error') if retry_errors else ('pending',)
+    with cache.transaction_session() as connection:
+        cursor = connection.cursor()
+        placeholders = ','.join('?' for _ in statuses)
+        cursor.execute(f'SELECT * FROM data WHERE pmh_status IN ({placeholders}) ORDER BY pmh_id', statuses)
+        columns = [column[0] for column in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 class CoreDataManager:
     def __init__(self, base_dir, tool_id, server_id="default", task_mgr=None):
@@ -1393,6 +1410,9 @@ class CoreDataManager:
                 c.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='data'")
                 if c.fetchone()[0] == 1:
                     c.execute(f"UPDATE data SET pmh_status = 'error' WHERE \"{key_column}\" = ?", (str(key_value),))
+
+        if getattr(self, 'task_mgr', None):
+            self.task_mgr.push_completed_item(str(key_value))
 
 
     def load_dashboard(self):
@@ -1890,6 +1910,50 @@ class UniversalMetaDatabaseEngine:
         return True, "Meta DB Execute Success"
 
 
+def lookup_meta_db_cast(global_config, code, category):
+    """Small read-only projection for detail shortcuts; FF still owns person editing."""
+    category = str(category or '').strip().upper()
+    code = str(code or '').strip()
+    if category not in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') or not code or len(code) > 100:
+        return {'ret': 'error', 'error_code': 'invalid_request'}, 400
+    unavailable = {'ret': 'unavailable', 'source': 'meta_db', 'code': code, 'category': category}
+    if str(global_config.get('meta_db_type', 'none')).lower() != 'postgres':
+        return dict(unavailable, reason='not_configured'), 200
+    try:
+        # Avoid installing drivers on the detail-page request path.
+        import psycopg2
+        engine = UniversalMetaDatabaseEngine(global_config)
+        if not engine.is_enabled():
+            return dict(unavailable, reason='connection_unavailable'), 200
+        with engine.get_cursor() as cursor:
+            cursor.execute('SET TRANSACTION READ ONLY')
+            cursor.execute("SET LOCAL statement_timeout = '1000ms'")
+            cursor.execute("SET LOCAL lock_timeout = '250ms'")
+            cursor.execute("SELECT schema_version, migration_state FROM meta_schema_version WHERE schema_name = %s", ('meta_db',))
+            status = cursor.fetchone()
+            if not status or status['schema_version'] != 1 or status['migration_state'] not in ('complete', 'backfilling'):
+                return dict(unavailable, reason='schema_not_ready'), 200
+            cursor.execute("""
+                SELECT p.person_idx AS actor_idx, p.name_ko, p.name_org, p.name_en
+                FROM meta_item i
+                JOIN meta_item_person_map m ON m.item_id = i.id
+                JOIN meta_person p ON p.id = m.person_id
+                WHERE i.code = %s AND i.category = %s AND p.domain = %s
+                  AND m.role_type = 'actor'
+                  AND p.person_idx IS NOT NULL AND TRIM(p.person_idx) <> ''
+                ORDER BY m.sort_order, m.id
+                LIMIT 1001
+            """, (code, category, 'WESTERN' if category == 'WESTERN' else 'JAV'))
+            actors = [dict(row) for row in cursor.fetchall()]
+        if not actors or len(actors) > 1000:
+            return dict(unavailable, reason='no_usable_relations'), 200
+        return {'ret': 'success', 'source': 'meta_db', 'code': code, 'category': category, 'actors': actors}, 200
+    except Exception as exc:
+        # Connection strings, credentials and raw SQL errors never enter the response/log.
+        logger.debug('[Cast] Direct Meta DB lookup unavailable (%s); using FF API fallback.', type(exc).__name__)
+        return dict(unavailable, reason='lookup_failed'), 200
+
+
 def create_db_api(global_config_or_path, sqlite_bin=None):
     if isinstance(global_config_or_path, dict):
         engine = UniversalPlexDatabaseEngine(global_config_or_path)
@@ -2246,6 +2310,9 @@ def dispatch_request(subpath, method, args, data, global_config):
             except URLError as e:
                 logger.error(f"FF Network Error: {e}")
                 return {"ret": "error", "msg": f"FF 서버 통신 실패: {str(e)}"}, 502
+
+        elif subpath == 'meta_db/cast' and method == 'GET':
+            return lookup_meta_db_cast(global_config, args.get('code'), args.get('category'))
 
         elif subpath.startswith('ff_metadata/') and method in ['GET', 'POST']:
             ff_url = global_config.get("mate_url")
@@ -2692,9 +2759,10 @@ def dispatch_request(subpath, method, args, data, global_config):
                             curr_progress = t_data.get('progress', 0)
                             curr_logs = t_data.get('logs', [])
                             curr_last_log = curr_logs[-1] if curr_logs else ""
+                            completed_batch = task_mgr.pop_completed_items()
 
                             if (curr_state != last_state or curr_progress != last_progress 
-                                    or curr_last_log != last_log_entry or ticks == 0):
+                                    or curr_last_log != last_log_entry or completed_batch or ticks == 0):
                                 last_state = curr_state
                                 last_progress = curr_progress
                                 last_log_entry = curr_last_log
@@ -2703,10 +2771,11 @@ def dispatch_request(subpath, method, args, data, global_config):
                                     'state': curr_state,
                                     'progress': curr_progress,
                                     'total': t_data.get('total', 0),
-                                    'logs': curr_logs
+                                    'logs': curr_logs,
+                                    'completed_items': completed_batch
                                 }
                                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                            
+
                             elif ticks % 6 == 0:
                                 yield ": keepalive\n\n"
 
@@ -3655,7 +3724,7 @@ def perform_smart_media_action(
                     score_msg = f"설정 기준값({threshold_score}점)"
 
                 tag_label = "Western AV" if is_western_av else ("JAV" if is_jav else "SJVA/AV")
-                if task_logger: task_logger(f"💡 [{tag_label} 모드] 순수 점수 기반 선별 ({score_msg})")
+                if task_logger: task_logger(f"💡 [{tag_label} 모드] 점수 기반 선별 ({score_msg})")
 
                 # 점수 내림차순 정렬
                 matches.sort(key=lambda x: int(_get_val(x, 'score', 0)), reverse=True)

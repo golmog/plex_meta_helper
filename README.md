@@ -8,26 +8,9 @@ Flask 백엔드는 실시간으로 Plex DB와 연동하고 프론트엔드의 �
 
 ## 업데이트
 
-v0.9.131 (2026-10-05): 서버 재시작 필요
-- FF 메타 DB를 PostgreSQL로 사용시 PMH에서 직접 조회 가능
-```yaml
-  # pmh_config.yaml에 추가
-
-  # [외부/FF 메타데이터 DB 엔진 설정] (postgres 또는 none)
-  # 활성화 시 플러그인 툴들이 HTTP API 대신 외부 PostgreSQL에 직접 질의하여 대량 작업을 고속 처리합니다.
-  META_DB_TYPE: "postgres"
-  META_PG_CONFIG:
-    HOST: "postgres"
-    PORT: 5432
-    DBNAME: "metadata"
-    USER: "metadata"
-    PASSWORD: "YOUR_PASSWORD"
-    SCHEMA: "public"
-```
-- 영상/배우 DB 편집 모달 개선
-- `AV 매니저` 툴 개선:
-  - 메타 관련 기능을 FF 메타 DB 연동 위주로 변경
-  - 기존 유저 포스터 이력 DB를 생성했다면 업데이트 전 UI에서 삭제하거나 수동 삭제 필요
+v0.9.132 (2026-10-18)
+- FF 메타 DB 스키마 변경, 기타 수정 대응
+- 기타 개선, 버그 수정
 
 v0.9.x
 - PostgreSQL 지원(번들 툴 포함): [plex-postgresql](https://github.com/cgnl/plex-postgresql) 대응

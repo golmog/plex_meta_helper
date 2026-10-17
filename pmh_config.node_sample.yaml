@@ -27,6 +27,16 @@ BASE:
 
   FF_METADB_USE: false
 
+  # 외부 메타 DB 직접 조회 (AV 상세 인물 바로가기 포함). 미설정/실패 시 FF API로 폴백.
+  META_DB_TYPE: "none"  # postgres 또는 none
+  META_PG_CONFIG:
+    HOST: "postgres"
+    PORT: 5432
+    DBNAME: "metadata"
+    USER: "metadata"
+    PASSWORD: "YOUR_PASSWORD"
+    SCHEMA: "public"
+
   DISCORD_WEBHOOK: ""
 
   ENABLE_FAIL2BAN: true

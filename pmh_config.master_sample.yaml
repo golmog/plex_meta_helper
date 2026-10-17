@@ -56,7 +56,8 @@ BASE:
   FF_METADB_USE: false
 
   # [외부/FF 메타데이터 DB 엔진 설정] (postgres 또는 none)
-  # 활성화 시 플러그인 툴들이 HTTP API 대신 외부 PostgreSQL에 직접 질의하여 대량 작업을 고속 처리합니다.
+  # 활성화 시 툴과 AV 상세 인물 바로가기가 외부 PostgreSQL을 직접 조회합니다.
+  # 인물 바로가기는 DB 미설정/조회 실패 시 기존 FF API로 폴백합니다.
   META_DB_TYPE: "none"
   META_PG_CONFIG:
     HOST: "postgres"
