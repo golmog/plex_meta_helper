@@ -610,13 +610,8 @@ def worker(task_data, core_api, start_index):
     if task_data.get('_is_single'):
         items = task_data.get('target_items', [])
     else:
-        status_filter = "('pending', 'error')" if retry_errors else "('pending')"
-        with core_api['cache'].transaction_session() as conn:
-            c = conn.cursor()
-            c.execute(f"SELECT * FROM data WHERE pmh_status IN {status_filter} ORDER BY pmh_id LIMIT -1 OFFSET ?", (progress,))
-            rows = c.fetchall()
-            cols = [desc[0] for desc in c.description] if c.description else []
-            items = [dict(zip(cols, row)) for row in rows]
+        items = pmh_core.load_pending_tool_items(core_api['cache'], retry_errors)
+        progress = max(0, total - len(items))
 
     if total == 0:
         task.update_state('completed', 0, 0)
