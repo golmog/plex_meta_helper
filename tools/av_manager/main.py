@@ -245,10 +245,11 @@ def run(data, core_api):
     if action == 'execute':
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
-            if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
+            if pmh_core.cache_resume_allowed(core_api['cache'], task_state, data, scheduled=True):
                 cached_page = core_api['cache'].load_page(1, 1)
                 if cached_page and cached_page.get('total_items', 0) > 0:
                     task_data = data.copy()
+                    task_data['_cache_revision'] = task_state['task_data']['_cache_revision']
                     task_data['_use_cache_db'] = True
                     task_data['total'] = cached_page.get('total_items')
                     task_data['_resume_start_index'] = task_state.get('progress', 0)
@@ -342,7 +343,7 @@ class FfApiError(RuntimeError):
         self.status = status
         self.payload = payload if isinstance(payload, dict) else {}
         self.error_code = self.payload.get('error_code')
-        self.retryable = status != 400
+        self.retryable = False  # Remote delivery/commit cannot be inferred from HTTP failure.
 
 
 def redact_ff_value(value, key):
@@ -358,6 +359,25 @@ def redact_ff_value(value, key):
 
 
 def ff_request(global_config, endpoint, payload, timeout=180, form=False):
+    def transport():
+        try:
+            return 200, _ff_request_raw(global_config, endpoint, payload, timeout, form)
+        except FfApiError as exc:
+            if exc.status is None: raise
+            return exc.status, exc.payload
+    task = global_config.get('_ff_task')
+    try:
+        status, result = pmh_core.guarded_ff_write(
+            global_config, endpoint, payload, transport,
+            run_id=getattr(task, 'run_id', None), cancelled=task.is_cancelled if task else None)
+    except pmh_core.FfWriteBlocked as exc:
+        raise FfApiError(str(exc), status=exc.status, payload=exc.payload or {'error_code': exc.state}) from None
+    if status != 200 or not isinstance(result, dict) or result.get('ret') != 'success':
+        raise FfApiError('FF 요청 실패', status=status, payload=redact_ff_value(result, global_config.get('mate_apikey')))
+    return result
+
+
+def _ff_request_raw(global_config, endpoint, payload, timeout=180, form=False):
     base = str(global_config.get('mate_url') or '').rstrip('/')
     key = global_config.get('mate_apikey')
     if not base or not key:
@@ -402,7 +422,7 @@ def ff_command(global_config, command, code='', category='', options=None):
     }, form=True)
 
 
-def check_ff_schema(global_config, categories):
+def check_ff_schema(global_config, categories, writable=True):
     result = ff_command(global_config, 'meta_db_schema_status')
     target = result.get('target_version')
     if result.get('schema_name') != 'meta_db' or target != 1:
@@ -410,14 +430,15 @@ def check_ff_schema(global_config, categories):
     statuses = {str(key).lower(): value for key, value in (result.get('data') or {}).items()}
     for category in set(categories) | {'PERSON'}:
         status = statuses.get(category.lower(), {})
-        if status.get('schema_version') != target or status.get('migration_state') not in ('complete', 'backfilling'):
+        if status.get('schema_version') != target or status.get('migration_state') not in (
+                ('complete',) if writable else ('complete', 'backfilling')):
             raise FfApiError(f'FF {category} DB의 마이그레이션 상태를 확인하세요.')
 
 
 def validate_ff_entity(entity, code, category):
     if not isinstance(entity, dict):
         raise FfApiError('FF 메타데이터 응답 형식 오류')
-    if str(entity.get('code') or '').casefold() != str(code).casefold() or entity.get('category') != category:
+    if str(entity.get('code') or '') != str(code) or entity.get('category') != category:
         raise FfApiError(f'FF 응답 작품 식별자가 Plex GUID와 다릅니다: {code} ({category})')
     schema = entity.get('schema') or {}
     if schema.get('db_schema_version') != 1 or schema.get('json_format_version') != 1:
@@ -515,7 +536,7 @@ def sync_ff_storage(config, entity, mode, task_data, task, completed, delay=0):
     if mode == 'ff_media_sync':
         options = {key: task_data.get('ff_sync_' + key, True)
                    for key in ('skip_existing', 'poster', 'landscape', 'fanart', 'trailer')}
-        requests = [((category, code.casefold()), 'api/meta_db/media_sync',
+        requests = [((category, code), 'api/meta_db/media_sync',
                      {'category': category, 'code': code, 'options': options})]
     else:
         domain = 'WESTERN' if category == 'WESTERN' else 'JAV'
@@ -545,10 +566,11 @@ def sync_ff_storage(config, entity, mode, task_data, task, completed, delay=0):
             try:
                 result = ff_request(config, endpoint, payload, timeout=300)
                 if mode == 'ff_media_sync':
-                    valid = result.get('category') == category and str(result.get('code') or '').casefold() == code.casefold()
+                    valid = result.get('category') == category and str(result.get('code') or '') == code
                 else:
                     valid = (result.get('domain') == payload['domain'] and
-                             str(result.get('requested_person_idx') or '').casefold() == identity[1] and
+                             (str(result.get('requested_person_idx') or '').casefold() == identity[1] or
+                              str(result.get('_pmh_reused_for') or '').casefold() == identity[1]) and
                              bool(result.get('person_idx')))
                 if not valid:
                     raise FfApiError('FF 저장소 동기화 응답 식별자가 요청과 다릅니다.')
@@ -594,10 +616,12 @@ def ff_snapshot_targets(plex_item, config):
     return targets
 
 
-def refresh_existing_ff_json(plex_item, entity, config):
+def refresh_existing_ff_json(plex_item, entity, config, cancel_checker=None):
     """Update existing caches atomically; FF remains the metadata authority."""
     targets = ff_snapshot_targets(plex_item, config)
+    updated = 0
     for target in sorted(targets):
+        if cancel_checker and cancel_checker(): break
         # Same-directory replacement keeps readers from observing a partial JSON.
         descriptor, temporary = tempfile.mkstemp(prefix='.pmh-meta-', dir=os.path.dirname(target))
         try:
@@ -607,10 +631,11 @@ def refresh_existing_ff_json(plex_item, entity, config):
                 os.fsync(stream.fileno())
             os.chmod(temporary, os.stat(target).st_mode & 0o777)
             os.replace(temporary, target)
+            updated += 1
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-    return len(targets)
+    return updated
 
 
 def apply_ff_to_plex(plex, plex_item, entity, task_data, core_api):
@@ -625,7 +650,7 @@ def apply_ff_to_plex(plex, plex_item, entity, task_data, core_api):
     method = task_data.get('ff_apply_method', 'refresh')
     if method not in ('refresh', 'match'):
         raise FfApiError('지원하지 않는 Plex 반영 방식입니다.')
-    updated = refresh_existing_ff_json(plex_item, entity, core_api['config'])
+    updated = refresh_existing_ff_json(plex_item, entity, core_api['config'], core_api['task'].is_cancelled)
     core_api['task'].log(f'  -> 기존 JSON 캐시 {updated}개 갱신. FF 최종 메타데이터를 Plex에 반영합니다.')
     return pmh_core.perform_smart_media_action(
         plex_url=plex._baseurl, plex_token=plex._token, rating_key=str(plex_item.ratingKey),
@@ -727,7 +752,6 @@ def worker(task_data, core_api, start_index):
         prefix = "[자동 실행] " if action == 'cron_run' else ""
         task.log(f"{prefix}데이터베이스에서 아이템 목록을 쿼리하는 중입니다. 잠시만 기다려주세요...")
         task.update_state('running', progress=0, total=100)
-        core_api['cache'].reset_db()
         
         section_ids = task_data.get('target_sections', [])
         clean_sec_ids = [int(x) for x in section_ids if str(x).isdigit()]
@@ -872,7 +896,7 @@ def worker(task_data, core_api, start_index):
             categories.discard(None)
             if categories:
                 try:
-                    check_ff_schema(cfg, categories)
+                    check_ff_schema(cfg, categories, mode != 'meta_sync')
                 except FfApiError as exc:
                     task.log(f'❌ FF 작업 사전 확인 실패: {exc}')
                     task.update_state('error')
@@ -1395,6 +1419,7 @@ def worker(task_data, core_api, start_index):
                 return
             
             action = 'execute'
+            task_data['action_type'] = 'execute'
             task_data['_use_cache_db'] = True
             task_data['total'] = len(result_data)
             task_data['_resume_start_index'] = 0
@@ -1445,7 +1470,7 @@ def worker(task_data, core_api, start_index):
         categories = {item.get('_sjva_cat') for item in pending_items if item.get('_sjva_cat')}
         if categories:
             try:
-                check_ff_schema(core_api['config'], categories)
+                check_ff_schema(core_api['config'], categories, mode != 'meta_sync')
             except FfApiError as exc:
                 task.log(f'❌ FF 작업 사전 확인 실패: {exc}')
                 task.update_state('error')
@@ -1492,6 +1517,7 @@ def worker(task_data, core_api, start_index):
                     else:
                         raise fetch_e
                 
+                if task.is_cancelled(): break
                 if op_action == 'split':
                     if len(plex_item.media) > 1:
                         plex_item.split()
@@ -1507,9 +1533,10 @@ def worker(task_data, core_api, start_index):
                     code, category = extract_sjva_code_and_cat(getattr(plex_item, 'guid', ''))
                     expected_code = item.get('_sjva_code') or code
                     expected_category = item.get('_sjva_cat') or category
-                    if not code or str(code).casefold() != str(expected_code).casefold() or category != expected_category:
+                    if not code or str(code) != str(expected_code) or category != expected_category:
                         raise FfApiError('검사 이후 Plex GUID가 변경되어 FF 작업을 중단합니다. 목록을 다시 조회하세요.')
                     ff_snapshot_targets(plex_item, core_api['config'])
+                    if task.is_cancelled(): break
                     if op_action == 'ff_heal' and (category, code) not in healed_codes:
                         ff_command(core_api['config'], 'db_refresh_missing_in_place', code, category)
                         healed_codes.add((category, code))
@@ -1544,7 +1571,17 @@ def worker(task_data, core_api, start_index):
                         task.log('  -> FF에 기존 대표 영상이 있어 재생성 없이 Plex에 반영합니다.')
                     if task.is_cancelled():
                         break
-                    success, msg, score = apply_ff_to_plex(plex, plex_item, latest, task_data, core_api)
+                    phase = pmh_core.FfWriteJournal(core_api['config'])
+                    phase_args = {'plex_id': str(plex_item.ratingKey), 'persons': [
+                        ('WESTERN' if category == 'WESTERN' else 'JAV', str(actor['actor_idx']))
+                        for actor in latest.get('actor') or [] if isinstance(actor, dict) and actor.get('actor_idx')]}
+                    phase.plex_phase(category, code, 'applying', **phase_args)
+                    try:
+                        success, msg, score = apply_ff_to_plex(plex, plex_item, latest, task_data, core_api)
+                    except Exception:
+                        phase.plex_phase(category, code, 'failed', **phase_args)
+                        raise
+                    phase.plex_phase(category, code, 'accepted' if success else 'failed', **phase_args)
                     task.log(f'  -> {"✅" if success else "❌"} Plex 반영: {msg}')
                     item_has_error = not success
 
@@ -1553,6 +1590,7 @@ def worker(task_data, core_api, start_index):
                     if mode == "llm_translation":
                         target_json = item.get('_target_json')
                         if target_json and os.path.exists(target_json):
+                            if task.is_cancelled(): break
                             try:
                                 os.remove(target_json)
                                 task.log(f"  -> 🗑️ 메타데이터 갱신을 위해 기존 JSON 삭제 완료: {os.path.basename(target_json)}")
