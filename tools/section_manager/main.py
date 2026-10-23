@@ -55,12 +55,13 @@ def get_plex_tv_shares(machine_id, token):
     except Exception as e:
         raise Exception(f"Plex.tv 통신 실패: {str(e)}")
 
-def restore_plex_tv_shares(machine_id, token, share_data):
+def restore_plex_tv_shares(machine_id, token, share_data, cancel_checker=None):
     """백업된 공유 정보를 바탕으로 갱신된 섹션 ID를 Plex.tv에 업데이트합니다."""
     success_cnt = 0
     fail_cnt = 0
     
     for share in share_data:
+        if cancel_checker and cancel_checker(): break
         url = f"https://plex.tv/api/servers/{machine_id}/shared_servers/{share['id']}"
         payload_tuples = []
         
@@ -495,8 +496,9 @@ def worker(task_data, core_api, start_progress):
             target_tables = []
             for t in tables_info:
                 if t['name'] == 'library_sections': continue
-                sql_def = t.get('sql', '')
-                if sql_def and ('"library_section_id"' in sql_def or ' library_section_id ' in sql_def):
+                # SQL whitespace/quoting is not a reliable column inventory.
+                columns = core_api['query']("SELECT name FROM pragma_table_info(?) WHERE name = 'library_section_id'", (t['name'],))
+                if columns:
                     target_tables.append(t['name'])
     except Exception as e:
         task.log(f"❌ 연관 테이블 분석 실패: {e}")
@@ -605,6 +607,7 @@ def worker(task_data, core_api, start_progress):
                     sql_lines.append(f"UPDATE \"{tbl}\" SET library_section_id = {orig_id} WHERE library_section_id = {tmp_id}")
 
             final_sql = ";\n".join(sql_lines)
+            if task.is_cancelled(): return
             try:
                 success, output = core_api['execute'](final_sql)
                 if not success: raise Exception(output or "롤백 트랜잭션 실패")
@@ -634,6 +637,7 @@ def worker(task_data, core_api, start_progress):
                 return
 
             task.log("🚀 [EXECUTE] SQLite DB 파일 복원 진행 중...")
+            if task.is_cancelled(): return
             try:
                 for ext in ["-wal", "-shm"]:
                     w_file = db_path + ext
@@ -659,7 +663,7 @@ def worker(task_data, core_api, start_progress):
             try:
                 with open(share_backup_file, 'r', encoding='utf-8') as f:
                     share_data = json.load(f)
-                s_cnt, f_cnt = restore_plex_tv_shares(task_data.get('machine_id'), task_data.get('plex_token'), share_data)
+                s_cnt, f_cnt = restore_plex_tv_shares(task_data.get('machine_id'), task_data.get('plex_token'), share_data, task.is_cancelled)
                 task.log(f"      - 친구 공유 권한 복원 완료: 성공 {s_cnt}명, 실패 {f_cnt}명")
             except Exception as e:
                 task.log(f"      - ⚠️ 친구 공유 권한 복원 중 오류: {e}")
@@ -767,6 +771,7 @@ def worker(task_data, core_api, start_progress):
         # 4-3. Universal DB 엔진을 통한 원자적 쓰기 실행
         task.log(f"   -> ⚡ DB 트랜잭션 쓰기 실행 중 ({'PostgreSQL 소켓' if is_postgres else 'Plex SQLite 바이너리'})...")
         task.update_state('running', progress=50, total=100)
+        if task.is_cancelled(): return
         try:
             success, output = core_api['execute'](final_sql)
             if not success: raise Exception(output or "DB 쓰기 실패")
@@ -806,7 +811,7 @@ def worker(task_data, core_api, start_progress):
                             updated_sections.append(changed_map.get(old_sec, old_sec))
                         share['section_ids'] = list(set(updated_sections))
                         
-                s_cnt, f_cnt = restore_plex_tv_shares(task_data.get('machine_id'), task_data.get('plex_token'), share_data)
+                s_cnt, f_cnt = restore_plex_tv_shares(task_data.get('machine_id'), task_data.get('plex_token'), share_data, task.is_cancelled)
                 task.log(f"      - 권한 업데이트 완료: 성공 {s_cnt}명, 실패 {f_cnt}명")
             except Exception as e:
                 task.log(f"      - ⚠️ 공유 권한 복구 중 오류 발생: {e}")
