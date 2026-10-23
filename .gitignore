@@ -5,6 +5,7 @@ __pycache__/
 tmp/
 logs/
 task_logs/
+ff_write_journal.sqlite3*
 
 # Agent-generated local tests, reports and temporary artifacts (not for distribution)
 /tests/

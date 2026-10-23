@@ -4,11 +4,13 @@
  * ==============================================================================
  */
 window.PmhUICore = {
+    confirmationModals: true,
     activeInstance: null,
 
     destroyActiveInstance: function() {
         if (this.activeInstance) {
             this.activeInstance.isDestroyed = true;
+            this.activeInstance.confirmAbortController?.abort();
             if (this.activeInstance.pollTimer) clearTimeout(this.activeInstance.pollTimer);
             if (this.activeInstance.reconnectTimer) clearTimeout(this.activeInstance.reconnectTimer);
             if (this.activeInstance.heartbeatTimer) clearInterval(this.activeInstance.heartbeatTimer);
@@ -56,6 +58,7 @@ window.PmhUICore = {
             document.removeEventListener('keydown', handleEscKey);
             m.remove();
         };
+        m.pmhClose = closeModal;
 
         const handleEscKey = (e) => {
             if (e.key === 'Escape' || e.keyCode === 27) {
@@ -193,7 +196,19 @@ window.PmhUICore = {
         return html;
     },
 
+    ensureApiSuccess: function(result) {
+        if (!result || result.error || result.status === 'error' || result.status === 'busy' || result.ret === 'error') {
+            throw new Error(result?.message || result?.msg || result?.error || '요청에 실패했습니다.');
+        }
+        return result;
+    },
+
     createToolInstance: function(config) {
+        const originalAdapter = config.apiAdapter;
+        const validate = this.ensureApiSuccess;
+        config = { ...config, apiAdapter: { ...originalAdapter,
+            run: async (...args) => validate(await originalAdapter.run(...args))
+        }};
         this.destroyActiveInstance();
 
         config.container = document.getElementById(config.container.id) || config.container;
@@ -271,6 +286,25 @@ window.PmhUICore = {
             autoHeightBeforeMonitor: null
         };
         this.activeInstance = ctx;
+        ctx.confirmAbortController = typeof AbortController === 'function' ? new AbortController() : null;
+        const confirmForContext = async options => {
+            const srvId = ctx.srvId, revision = ctx.cacheRevision, runId = ctx.runId, running = ctx.isRunning;
+            const toolId = config.toolId, serverIndex = config.activeServerIdx;
+            const serverStamp = JSON.stringify([currentSrv?.id, currentSrv?.machineIdentifier, currentSrv?.machine_id, currentSrv?.relayUrl]);
+            const isCurrent = () => !ctx.isDestroyed && ctx.c.isConnected && ctx.srvId === srvId && ctx.cacheRevision === revision &&
+                ctx.runId === runId && ctx.isRunning === running && config.toolId === toolId && config.activeServerIdx === serverIndex &&
+                config.servers[serverIndex] === currentSrv && JSON.stringify([currentSrv?.id, currentSrv?.machineIdentifier, currentSrv?.machine_id, currentSrv?.relayUrl]) === serverStamp;
+            if (!isCurrent()) return false;
+            if (typeof config.confirmAction !== 'function') {
+                config.toast.error('확인 UI가 준비되지 않아 작업을 취소했습니다. UI를 다시 열어주세요.');
+                return false;
+            }
+            try {
+                const accepted = await config.confirmAction({ ...options, owner:ctx.c, signal:ctx.confirmAbortController?.signal, isCurrent,
+                    details:[{label:'도구',value:`${ctx.ui.title || toolId} (${toolId})`},{label:'서버',value:`${ctx.srvName} (${srvId})`}] });
+                return accepted === true && isCurrent();
+            } catch (_) { config.toast.error('확인 UI 오류로 작업을 취소했습니다.'); return false; }
+        };
 
         const updateFormTabButtons = (running) => {
             ctx.isRunning = running;
@@ -414,7 +448,7 @@ window.PmhUICore = {
         ctx.c.innerHTML = html;
 
         const getFormData = () => {
-            let req = { _server_id: ctx.srvId, _server_name: ctx.srvName };
+            let req = { _server_id: ctx.srvId, _server_name: ctx.srvName, _cache_revision: ctx.cacheRevision };
             ctx.c.querySelectorAll('.pmh-dynamic-input, .pmh-dynamic-radio:checked').forEach(el => {
                 let key = el.name ? el.name.replace('pmh_rad_', '') : el.id.replace('pmh_inp_', '');
                 req[key] = (el.type === 'checkbox') ? el.checked : el.value;
@@ -665,6 +699,8 @@ window.PmhUICore = {
 
         const loadPage = async (page, sKey, sDir, customLimit = null, isSilent = false) => {
             if (ctx.isDestroyed) return;
+            const requestId = ctx.pageRequestId = (ctx.pageRequestId || 0) + 1;
+            const requestServer = ctx.srvId;
             ctx.currentPage = page; ctx.sortKey = sKey; ctx.sortDir = sDir;
             if (customLimit) ctx.itemsPerPage = customLimit;
 
@@ -688,7 +724,11 @@ window.PmhUICore = {
                 const req = { action_type: 'page', page: page, limit: ctx.itemsPerPage, sort_key: sKey, sort_dir: sDir, _server_id: ctx.srvId };
                 const r = await config.apiAdapter.run(req);
 
-                if (ctx.isDestroyed) return;
+                if (ctx.isDestroyed || requestId !== ctx.pageRequestId || requestServer !== ctx.srvId) return;
+                if (!r || r.status === 'error' || r.status === 'busy') throw new Error(r?.message || '조회 실패');
+                ctx.cacheRevision = r.cache_revision;
+                r._pmh_previous_result = Boolean(ctx.previewPending && r.cache_revision === ctx.previewBaseRevision);
+                if (ctx.previewPending && r.cache_revision && r.cache_revision !== ctx.previewBaseRevision) ctx.previewPending = false;
 
                 if (!r || r.total_items === 0) {
                     if (overlay) overlay.style.display = 'none';
@@ -713,7 +753,7 @@ window.PmhUICore = {
                 
                 renderTable(r);
             } catch(e) {
-                if (!ctx.isDestroyed && !isSilent) resEl.innerHTML = `<div style="color:#bd362f; text-align:center; padding:20px;">불러오기 실패: ${e}</div>`;
+                if (!ctx.isDestroyed && requestId === ctx.pageRequestId && requestServer === ctx.srvId && !isSilent) resEl.textContent = `불러오기 실패: ${e}`;
             }
         };
 
@@ -917,7 +957,7 @@ window.PmhUICore = {
                                 const btnAction = row.action_type || col.action_type || 'execute';
                                 const btnIcon = row.icon || col.icon || 'fas fa-play';
                                 const payload = JSON.stringify({action_type: btnAction, _is_single: true, ...row}).replace(/"/g, '&quot;');
-                                const delPayload = JSON.stringify({action_type: 'remove_cache_item', pmh_id: row.pmh_id, _server_id: ctx.srvId}).replace(/"/g, '&quot;');
+                                const delPayload = JSON.stringify({action_type: 'remove_cache_item', pmh_id: row.pmh_id, _server_id: ctx.srvId, _cache_revision: ctx.cacheRevision}).replace(/"/g, '&quot;');
                                 const delColor = isErr ? '#bd362f' : '#777';
                                 const delBtnHtml = `
                                     <button class="pmh-tbl-del-btn" data-payload="${delPayload}" style="background:none; border:none; color:${delColor}; cursor:pointer; font-size:13px; opacity:0.7; transition:all 0.2s; padding:0;" title="작업 목록에서 즉시 제거합니다." onmouseover="this.style.opacity='1'; this.style.color='#bd362f'; this.style.transform='scale(1.1)';" onmouseout="this.style.opacity='0.7'; this.style.color='${delColor}'; this.style.transform='scale(1)';">
@@ -1004,6 +1044,7 @@ window.PmhUICore = {
                     }
                 }
             }
+            if (res._pmh_previous_result) html = '<div style="padding:8px 12px;color:#e5a00d;border-left:3px solid #e5a00d;">이전 조회 결과입니다. 새 조회가 아직 완료되지 않았거나 실패했습니다.</div>' + html;
             resEl.innerHTML = html;
 
             updateFormTabButtons(ctx.isRunning);
@@ -1044,16 +1085,21 @@ window.PmhUICore = {
 
             const clearBtn = resEl.querySelector('#pmh_btn_clear_data');
             if (clearBtn) clearBtn.onclick = async () => {
-                if(confirm("조회된 데이터 목록을 비우시겠습니까?\n(환경 설정과 상태는 유지됩니다)")) {
-                    try {
-                        await config.apiAdapter.run({action_type: 'clear_data', _server_id: ctx.srvId});
-                        config.toast.info("목록이 비워졌습니다.");
-                        localStorage.setItem(`pmh_page_${config.toolId}_${ctx.srvId}`, "1");
+                if (clearBtn.disabled) return;
+                clearBtn.disabled = true;
+                try {
+                    if (await confirmForContext({ title:'조회 목록 비우기', subject:'현재 조회된 데이터 목록',
+                        consequences:['조회 결과 목록만 비웁니다. 환경 설정과 작업 상태는 유지됩니다.'], confirmLabel:'목록 비우기' })) {
+                        try {
+                            await config.apiAdapter.run({action_type: 'clear_data', _server_id: ctx.srvId, _cache_revision: ctx.cacheRevision});
+                            config.toast.info("목록이 비워졌습니다.");
+                            localStorage.setItem(`pmh_page_${config.toolId}_${ctx.srvId}`, "1");
                         
-                        resEl.innerHTML = '';
-                        loadPage(1, ctx.sortKey, ctx.sortDir);
-                    } catch(e){}
-                }
+                            resEl.innerHTML = '';
+                            loadPage(1, ctx.sortKey, ctx.sortDir);
+                        } catch(e){}
+                    }
+                } finally { clearBtn.disabled = false; }
             };
 
             resEl.querySelectorAll('.pmh-tbl-del-btn').forEach(b => b.onclick = async (e) => {
@@ -1103,6 +1149,7 @@ window.PmhUICore = {
                 try {
                     const r = await config.apiAdapter.run(req);
                     if (r.type === 'async_task') {
+                        ctx.runId = r.run_id;
                         config.toast.success("작업이 백그라운드에서 시작되었습니다.");
                         startPolling();
                         
@@ -1163,16 +1210,13 @@ window.PmhUICore = {
                 PmhLogger.warn(`[PMH UI] 작업 중단 API 호출 실패: ${e}`);
             }
 
-            setTimeout(() => {
-                if (ctx.isRunning) {
-                    if (ctx.streamAbortController) ctx.streamAbortController.abort();
-                    updateFormTabButtons(false);
-                }
-            }, 3000);
+            // Keep monitoring until the server confirms physical worker termination.
         };
 
         const startPolling = async () => {
             if (ctx.isDestroyed) return;
+            const monitoredRunId = ctx.runId;
+            const monitoredServer = ctx.srvId;
             if (ctx.pollTimer) clearTimeout(ctx.pollTimer);
             if (ctx.streamAbortController) ctx.streamAbortController.abort();
             if (ctx.heartbeatTimer) clearInterval(ctx.heartbeatTimer);
@@ -1236,7 +1280,11 @@ window.PmhUICore = {
 
             // UI 갱신 및 상태 종료 처리
             const updateUIWithData = (s) => {
+                if (ctx.isDestroyed || ctx.runId !== monitoredRunId || ctx.srvId !== monitoredServer ||
+                    (s?.server_id && s.server_id !== ctx.srvId) ||
+                    (s?.tool_id && s.tool_id !== config.toolId)) return false;
                 if (!s || s.state === 'not_found') return false;
+                if (ctx.runId && ctx.runId !== s.run_id) return false;
 
                 let percent = s.total > 0 ? Math.floor((s.progress / s.total) * 100) : (s.state === 'completed' ? 100 : 0);
                 progEl.innerText = `${s.progress} / ${s.total} (${percent}%)`;
@@ -1287,7 +1335,7 @@ window.PmhUICore = {
                     
                     return true;
                 } else {
-                    stateEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; 
+                    stateEl.innerHTML = s.state === 'cancelling' ? '<i class="fas fa-spinner fa-spin"></i> 안전하게 중단하는 중...' : '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
                     stateEl.style.color = '#e5a00d';
                     barEl.style.background = '#e5a00d';
                     return false;
@@ -1314,6 +1362,7 @@ window.PmhUICore = {
 
             // 지수 백오프 기반 스트림 자동 재연결 스케줄러
             const scheduleReconnect = (reason) => {
+                if (ctx.runId !== monitoredRunId || ctx.srvId !== monitoredServer) return;
                 if (ctx.isDestroyed || !ctx.isRunning || ctx.isCancelling) return;
                 if (ctx.reconnectTimer) return;
 
@@ -1321,6 +1370,7 @@ window.PmhUICore = {
                 if (retryCount > maxRetries) {
                     PmhLogger.error(`[PMH UI] [SSE] ❌ 최대 재연결 시도 횟수(${maxRetries}회) 초과. 모니터링 종료.`);
                     updateUIWithData({
+                        run_id: monitoredRunId,
                         state: 'error',
                         progress: 0,
                         total: 0,
@@ -1377,6 +1427,7 @@ window.PmhUICore = {
                 if (config.apiAdapter && typeof config.apiAdapter.getSignature === 'function') {
                     secureToken = await config.apiAdapter.getSignature();
                 }
+                if (ctx.isDestroyed || currentController.signal.aborted || ctx.streamAbortController !== currentController) return;
 
                 const activeSrvId = ctx.srvId || targetServerNode.machineIdentifier || targetServerNode.machine_id || 'default';
                 const streamUrl = `${srvRelay}/tool/${config.toolId}/stream?server_id=${encodeURIComponent(activeSrvId)}&session_id=${ctx.sessionId}&sig=${encodeURIComponent(secureToken)}&_t=${Date.now()}`;
@@ -1429,12 +1480,13 @@ window.PmhUICore = {
                     }
 
                     // 정상 스트림 마감 외에 소켓이 비정상 종료된 경우 재연결 트리거
-                    if (ctx.isRunning && !ctx.isCancelling && !ctx.isDestroyed) {
+                    if (ctx.streamAbortController === currentController && !currentController.signal.aborted &&
+                        ctx.isRunning && !ctx.isCancelling && !ctx.isDestroyed) {
                         scheduleReconnect("서버 스트림 연결 정상 종료 후 재확인");
                     }
 
                 }).catch((streamErr) => {
-                    if (ctx.streamAbortController && ctx.streamAbortController.signal.aborted) return;
+                    if (currentController.signal.aborted || ctx.streamAbortController !== currentController) return;
                     PmhLogger.warn(`[PMH UI] [SSE] 🔴 스트리밍 소켓 단절 (${streamErr.message})`);
 
                     // 에러 발생 시 즉시 포기하지 않고 자동 재연결 시도
@@ -1463,8 +1515,22 @@ window.PmhUICore = {
 
                 try {
                     PmhLogger.debug(`[PMH UI] 외부 작업 감시 상태 확인 중... (Tool: ${config.toolId}, Server: ${ctx.srvId})`);
+                    const watchedServer = ctx.srvId;
+                    const watchedTool = config.toolId;
                     const statusCheck = await config.apiAdapter.status(config.toolId);
-                    if (statusCheck && statusCheck.state === 'running') {
+                    if (ctx.isDestroyed || ctx.isRunning || ctx.srvId !== watchedServer || config.toolId !== watchedTool) return;
+                    if (statusCheck && statusCheck.run_id &&
+                        (!statusCheck.server_id || statusCheck.server_id === watchedServer) &&
+                        (!statusCheck.tool_id || statusCheck.tool_id === watchedTool) &&
+                        ['running', 'cancelling'].includes(statusCheck.state)) {
+                        if (ctx.streamAbortController) ctx.streamAbortController.abort();
+                        if (ctx.reconnectTimer) clearTimeout(ctx.reconnectTimer);
+                        ctx.reconnectTimer = null;
+                        ctx.runId = statusCheck.run_id;
+                        ctx.lastSeenProgress = undefined;
+                        if (ctx.heartbeatTimer) clearInterval(ctx.heartbeatTimer);
+                        ctx.heartbeatTimer = null;
+                        ctx.isCancelling = false;
                         PmhLogger.info(`[PMH UI] 📡 외부/백그라운드 작업 감지 (Tool: ${config.toolId}, Server: ${ctx.srvId}). 실시간 모니터링으로 전환합니다.`);
                         switchTab('pmh_tab_monitor');
                         startPolling();
@@ -1480,7 +1546,9 @@ window.PmhUICore = {
             }, 3500);
         };
 
-        if (ctx.ui.active_task && ctx.ui.active_task.state === 'running') {
+
+        if (ctx.ui.active_task && ['running', 'cancelling'].includes(ctx.ui.active_task.state)) {
+            ctx.runId = ctx.ui.active_task.run_id;
             switchTab('pmh_tab_monitor'); startPolling();
         } else {
             loadPage(ctx.currentPage, ctx.sortKey, ctx.sortDir);
@@ -1500,23 +1568,27 @@ window.PmhUICore = {
 
                 const isPreview = btn.dataset.action === 'preview';
                 if (isPreview) {
+                    ctx.pageRequestId = (ctx.pageRequestId || 0) + 1;
+                    ctx.previewPending = true;
+                    ctx.previewBaseRevision = ctx.cacheRevision;
                     const resForm = ctx.c.querySelector('#pmh_data_table_res');
                     if (resForm) {
                         resForm.style.display = 'none';
                         resForm.innerHTML = '';
                     }
-                    config.apiAdapter.run({action_type: 'clear_data', _server_id: ctx.srvId}).catch(()=>{});
                 }
 
                 try {
                     const req = getFormData(); 
                     req.action_type = btn.dataset.action;
                     
-                    await config.apiAdapter.run({...req, action_type: 'save_options'});
-                    
                     const r = await config.apiAdapter.run(req);
                     
-                    if (r.type === 'async_task') { 
+                    if (!r || r.status === 'error' || r.status === 'busy' || r.ret === 'error') {
+                        throw new Error(r?.message || r?.msg || '요청이 거절되었습니다.');
+                    }
+                    if (r.type === 'async_task') {
+                        ctx.runId = r.run_id;
                         config.toast.success("백그라운드 작업 시작!"); 
                         switchTab('pmh_tab_monitor'); 
                         startPolling(); 
@@ -1547,62 +1619,68 @@ window.PmhUICore = {
             e.preventDefault(); e.stopPropagation();
             if (ctx.isDestroyed) return;
 
-            if(confirm(`[${currentSrv.name}] 서버에 저장된 옵션과 결과, 작업 기록을 모두 초기화하시겠습니까?`)) {
-                try {
-                    localStorage.removeItem(`pmh_panel_geo_${config.toolId}`);
-                    localStorage.removeItem(`pmh_tool_cache_global_${config.toolId}`);
-                    localStorage.removeItem(`pmh_tool_cache_${config.toolId}`);
+            if (resetAllBtn?.disabled) return;
+            if (resetAllBtn) resetAllBtn.disabled = true;
+            try {
+                if (await confirmForContext({ severity:'danger', title:'도구 데이터 초기화', subject:'현재 도구의 서버 저장 데이터',
+                    consequences:['옵션·결과·작업 기록 및 화면/로컬 캐시를 초기화합니다.','실행 중 작업은 기존 서버 정책에 따라 거절될 수 있습니다.','Plex/FF의 메타데이터 및 미디어 파일은 삭제하지 않습니다.'], confirmLabel:'도구 데이터 초기화' })) {
+                    try {
+                        localStorage.removeItem(`pmh_panel_geo_${config.toolId}`);
+                        localStorage.removeItem(`pmh_tool_cache_global_${config.toolId}`);
+                        localStorage.removeItem(`pmh_tool_cache_${config.toolId}`);
 
-                    await config.apiAdapter.run({action_type: 'reset', _server_id: ctx.srvId});
-                    config.toast.success("설정 및 데이터 캐시가 초기화되었습니다.");
+                        await config.apiAdapter.run({action_type: 'reset', _server_id: ctx.srvId});
+                        config.toast.success("설정 및 데이터 캐시가 초기화되었습니다.");
 
-                } catch(e) {
-                    console.error("[PMH UI Core] 백그라운드 초기화 API 호출 실패 (무시됨):", e);
-                    config.toast.info("서버 응답 오류가 있었으나 로컬 화면은 초기화됩니다.");
-                } finally {
-                    const resForm = ctx.c.querySelector('#pmh_data_table_res');
-                    if (resForm) {
-                        resForm.style.display = 'none';
-                        resForm.innerHTML = '';
+                    } catch(e) {
+                        console.error("[PMH UI Core] 백그라운드 초기화 API 호출 실패 (무시됨):", e);
+                        config.toast.info("서버 응답 오류가 있었으나 로컬 화면은 초기화됩니다.");
+                    } finally {
+                        if (ctx.isDestroyed) return;
+                        const resForm = ctx.c.querySelector('#pmh_data_table_res');
+                        if (resForm) {
+                            resForm.style.display = 'none';
+                            resForm.innerHTML = '';
+                        }
+
+                        const resMonitorLogs = ctx.c.querySelector('#pmh_mon_logs');
+                        if (resMonitorLogs) resMonitorLogs.innerHTML = '로그 없음';
+
+                        const resMonitorState = ctx.c.querySelector('#pmh_mon_state');
+                        if (resMonitorState) {
+                            resMonitorState.innerHTML = '<i class="fas fa-info-circle"></i> 대기 중';
+                            resMonitorState.style.color = '#e5a00d';
+                        }
+
+                        const resMonitorProg = ctx.c.querySelector('#pmh_mon_prog');
+                        if (resMonitorProg) resMonitorProg.innerText = '0 / 0 (0%)';
+
+                        const resMonitorBar = ctx.c.querySelector('#pmh_mon_bar');
+                        if (resMonitorBar) resMonitorBar.style.width = '0%';
+
+                        const cancelBtn = ctx.c.querySelector('#pmh_btn_cancel');
+                        if (cancelBtn) cancelBtn.style.display = 'none';
+
+                        if (ctx.pollTimer) {
+                            clearTimeout(ctx.pollTimer);
+                            ctx.pollTimer = null;
+                        }
+                        ctx.isCancelling = false;
+
+                        const panel = document.getElementById('pmh-tool-panel');
+                        if (panel && !isMobileEnv) {
+                            panel.style.top = '80px';
+                            panel.style.left = '60%';
+                            panel.style.width = '450px';
+                            panel.style.height = 'auto';
+                        }
+
+                        switchTab('pmh_tab_form');
+
+                        loadPage(1, null, 'asc').catch(()=>{});
                     }
-
-                    const resMonitorLogs = ctx.c.querySelector('#pmh_mon_logs');
-                    if (resMonitorLogs) resMonitorLogs.innerHTML = '로그 없음';
-
-                    const resMonitorState = ctx.c.querySelector('#pmh_mon_state');
-                    if (resMonitorState) {
-                        resMonitorState.innerHTML = '<i class="fas fa-info-circle"></i> 대기 중';
-                        resMonitorState.style.color = '#e5a00d';
-                    }
-
-                    const resMonitorProg = ctx.c.querySelector('#pmh_mon_prog');
-                    if (resMonitorProg) resMonitorProg.innerText = '0 / 0 (0%)';
-
-                    const resMonitorBar = ctx.c.querySelector('#pmh_mon_bar');
-                    if (resMonitorBar) resMonitorBar.style.width = '0%';
-
-                    const cancelBtn = ctx.c.querySelector('#pmh_btn_cancel');
-                    if (cancelBtn) cancelBtn.style.display = 'none';
-
-                    if (ctx.pollTimer) {
-                        clearTimeout(ctx.pollTimer);
-                        ctx.pollTimer = null;
-                    }
-                    ctx.isCancelling = false;
-
-                    const panel = document.getElementById('pmh-tool-panel');
-                    if (panel && !isMobileEnv) {
-                        panel.style.top = '80px';
-                        panel.style.left = '60%';
-                        panel.style.width = '450px';
-                        panel.style.height = 'auto';
-                    }
-
-                    switchTab('pmh_tab_form');
-
-                    loadPage(1, null, 'asc').catch(()=>{});
                 }
-            }
+            } finally { if (resetAllBtn) resetAllBtn.disabled = false; }
         };
 
         if (resetAllBtn) resetAllBtn.addEventListener('click', handleReset);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.132
+// @version      0.9.133
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -235,6 +235,7 @@ GM_addStyle(`
         color: #ddd; font-size: 13px; line-height: 1.5; text-align: left;
     }
     .pmh-db-footer {
+        position: relative; z-index: 20;
         background: rgba(0, 0, 0, 0.85); padding: 8px 15px; border-top: 1px solid #333;
         display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
     }
@@ -246,6 +247,51 @@ GM_addStyle(`
     .pmh-db-badge:hover { border-color: #e5a00d; color: #fff; transform: scale(1.03); }
     .pmh-db-badge-del { color: #bd362f; margin-left: 4px; cursor: pointer; }
     .pmh-db-badge-del:hover { color: #ff6b6b; }
+
+    /* 공용 프롬프트: 기존 DB 모달 레이아웃과 조합하며 종류별 폭은 --pmh-prompt-width로 지정한다. */
+    .pmh-prompt .pmh-prompt-card { width:var(--pmh-prompt-width,760px); max-width:94vw; max-height:88vh; }
+    .pmh-prompt .pmh-prompt-header { cursor:default; border-bottom-color:rgba(229,160,13,.35); gap:12px; }
+    .pmh-prompt .pmh-prompt-heading { display:flex; align-items:center; gap:10px; color:#e5a00d; font-size:15px; }
+    .pmh-prompt .pmh-prompt-heading > i { padding:9px; border:1px solid rgba(229,160,13,.3); border-radius:6px; background:rgba(229,160,13,.1); }
+    .pmh-prompt .pmh-prompt-subtitle { color:#999; font-size:11px; font-weight:normal; margin-top:3px; }
+    .pmh-prompt .pmh-prompt-status { margin:0 0 12px; padding:9px 12px; border-left:3px solid #e5a00d; background:rgba(229,160,13,.08); border-radius:0 4px 4px 0; color:#f0ca7c; font-weight:600; }
+    .pmh-prompt .pmh-prompt-summary { color:#eee; font-size:14px; font-weight:600; line-height:1.6; }
+    .pmh-prompt .pmh-prompt-notice { margin:14px 0; padding:10px 12px; background:#1a1d21; border:1px solid #343a40; border-radius:5px; color:#aeb5bd; font-size:12px; line-height:1.8; }
+    .pmh-prompt .pmh-prompt-notice strong { color:#ddd; }
+    .pmh-prompt .pmh-prompt-info { color:#6bbcd0; }
+    .pmh-prompt .pmh-prompt-error { color:#ff8585; white-space:pre-wrap; }
+    .pmh-prompt .pmh-prompt-error:not(:empty) { padding:10px 12px; margin-bottom:12px; border:1px solid rgba(219,90,90,.4); border-radius:5px; background:rgba(189,54,47,.12); }
+    .pmh-prompt .pmh-prompt-badge { display:inline-flex; padding:2px 7px; border:1px solid rgba(255,255,255,.2); border-radius:4px; color:#e0e6ed; background:rgba(0,0,0,.55); font-size:11px; font-weight:600; }
+    .pmh-prompt .pmh-prompt-footer { justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+    .pmh-prompt .pmh-prompt-button-warning { color:#e5a00d !important; border-color:#87621e !important; background:rgba(229,160,13,.1) !important; }
+    .pmh-prompt .pmh-prompt-button-warning:enabled:hover { background:rgba(229,160,13,.22) !important; }
+    .pmh-prompt .pmh-prompt-button-danger { color:#fff !important; border-color:#bd4545 !important; background:#a83737 !important; font-weight:600 !important; }
+    .pmh-prompt .pmh-prompt-button-danger:enabled:hover { background:#c54646 !important; }
+    .pmh-prompt button:disabled { opacity:.4; cursor:not-allowed !important; }
+    .pmh-prompt button:focus-visible { outline:2px solid #e5a00d; outline-offset:3px; }
+    .pmh-action-prompt { overscroll-behavior:contain; }
+    .pmh-action-prompt .pmh-prompt-card { --pmh-prompt-width:580px; }
+    .pmh-action-prompt .pmh-db-body { overflow:auto; min-height:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .pmh-action-prompt dl { display:grid; grid-template-columns:minmax(75px,auto) 1fr; gap:8px 14px; font-size:12px; }
+    .pmh-action-prompt dt { color:#999; }
+    .pmh-action-prompt dd { margin:0; color:#eee; }
+    .pmh-action-prompt[data-severity="danger"] .pmh-prompt-heading { color:#ff8585; }
+
+    /* 삭제 전용: 연결 파일 목록, 저장소 구분, 파일별 유지/삭제 불가 사유. */
+    .pmh-delete-prompt .pmh-delete-file { border:1px solid #343a40; border-radius:6px; padding:11px 12px; margin:8px 0; background:#191c20; }
+    .pmh-delete-prompt .pmh-delete-file-head { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:8px; color:#aaa; font-size:11px; }
+    .pmh-delete-prompt .pmh-delete-storage-drive { background:rgba(15,157,88,.55); color:#fff; }
+    .pmh-delete-prompt .pmh-delete-storage-local { background:rgba(0,123,255,.55); color:#fff; }
+    .pmh-delete-prompt .pmh-delete-path { font-family:Consolas,monospace; color:#d5dae0; font-size:12px; line-height:1.6; }
+    .pmh-delete-prompt .pmh-delete-file-note { margin-top:7px; padding-top:7px; border-top:1px solid #343a40; font-size:12px; }
+
+    #pmh-video-key-feedback {
+        position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%);
+        padding: 8px 16px; border-radius: 8px; background: rgba(0,0,0,0.72);
+        color: #fff; font-size: 16px; font-weight: 600; white-space: nowrap;
+        pointer-events: none; opacity: 0; transition: opacity 0.15s ease; z-index: 4;
+    }
+    #pmh-video-key-feedback.visible { opacity: 1; }
 
     /* FontAwesome JS의 DOM 치환 간섭을 받지 않는 순수 CSS 라이트박스 스피너 */
     @keyframes pmhLightboxSpin {
@@ -482,6 +528,400 @@ GM_addStyle(`
         });
     }
 
+    function pmhTopModal() {
+        const layers = document.querySelectorAll('.pmh-stacked-modal, #pmh-video-modal, #pmh-lightbox-modal, #pmh-crop-modal, #pmh-actor-search-modal, #pmh-client-settings-modal, #pmh-image-modal');
+        let top = null, highest = -Infinity;
+        for (const layer of layers) {
+            const style = getComputedStyle(layer);
+            if (!layer.isConnected || style.display === 'none' || style.visibility === 'hidden') continue;
+            const z = Number(style.zIndex) || 0;
+            if (z >= highest) { top = layer; highest = z; }
+        }
+        return top;
+    }
+
+    function pmhServerStamp(servers) {
+        return JSON.stringify(servers.map(s => [s.id, s.machineIdentifier, s.machine_id, s.relayUrl]));
+    }
+
+    function pmhConfirmAction(options = {}) {
+        // A second caller never inherits the first caller's decision.
+        if (pmhConfirmAction.active) return Promise.resolve(false);
+        return new Promise(resolve => {
+            let modal, observer, settled = false, previousOverflow;
+            const opener = document.activeElement, owner = options.owner;
+            const valid = () => (!owner || owner.isConnected) && !options.signal?.aborted &&
+                (!options.isCurrent || options.isCurrent());
+            const finish = accepted => {
+                if (settled) return;
+                settled = true;
+                let result = false;
+                try { result = accepted === true && valid(); } catch (_) { /* fail closed */ }
+                observer?.disconnect();
+                document.removeEventListener('keydown', onKey, true);
+                document.removeEventListener('keyup', onKeyUp, true);
+                document.removeEventListener('focusin', onFocus, true);
+                window.removeEventListener('pagehide', cancel);
+                window.removeEventListener('hashchange', cancel);
+                window.removeEventListener('popstate', cancel);
+                options.signal?.removeEventListener('abort', cancel);
+                modal?.remove();
+                if (previousOverflow !== undefined) document.body.style.overflow = previousOverflow;
+                if (pmhConfirmAction.active === modal) pmhConfirmAction.active = null;
+                if (opener?.isConnected && (!pmhTopModal() || pmhTopModal().contains(opener))) opener.focus({ preventScroll:true });
+                resolve(result);
+            };
+            const cancel = () => finish(false);
+            const buttons = () => Array.from(modal.querySelectorAll('button:not(:disabled)'));
+            const onFocus = event => {
+                if (pmhTopModal() === modal && !modal.contains(event.target)) buttons()[0]?.focus({ preventScroll:true });
+            };
+            const onKeyUp = event => {
+                if (pmhTopModal() === modal) event.stopImmediatePropagation();
+            };
+            const onKey = event => {
+                if (pmhTopModal() !== modal) return;
+                event.stopImmediatePropagation();
+                if (event.key === 'Escape') { event.preventDefault(); cancel(); }
+                else if (event.key === 'Tab') {
+                    event.preventDefault();
+                    const list = buttons(), at = list.indexOf(document.activeElement);
+                    list[(at + (event.shiftKey ? -1 : 1) + list.length) % list.length]?.focus();
+                } else if (event.key === 'Enter' && document.activeElement !== modal.querySelector('[data-accept]')) {
+                    event.preventDefault(); cancel();
+                }
+            };
+            try {
+                if (!valid()) { finish(false); return; }
+                modal = document.createElement('div');
+                modal.className = 'pmh-db-modal pmh-stacked-modal pmh-prompt pmh-action-prompt';
+                modal.style.display = 'flex';
+                modal.dataset.severity = options.severity || 'normal';
+                const top = pmhTopModal();
+                window._pmh_top_z_index = Math.max(window._pmh_top_z_index || 10000050, Number(top && getComputedStyle(top).zIndex) || 0) + 20;
+                modal.style.zIndex = window._pmh_top_z_index;
+                modal.setAttribute('role', options.severity === 'danger' ? 'alertdialog' : 'dialog');
+                modal.setAttribute('aria-modal', 'true');
+                modal.setAttribute('aria-labelledby', 'pmh-action-title');
+                modal.setAttribute('aria-describedby', 'pmh-action-summary');
+                // Static markup only. All contextual values are rendered as text below.
+                modal.innerHTML = `<div class="pmh-db-card pmh-prompt-card">
+                    <div class="pmh-db-header pmh-prompt-header"><div class="pmh-prompt-heading"><span data-icon aria-hidden="true"></span><div><strong id="pmh-action-title"></strong><div class="pmh-prompt-subtitle"></div></div></div></div>
+                    <div class="pmh-db-body"><div id="pmh-action-summary" class="pmh-prompt-summary"></div><dl></dl><div class="pmh-prompt-notice"></div></div>
+                    <div class="pmh-db-footer pmh-prompt-footer"><button type="button" class="pmh-crop-btn" data-cancel></button><button type="button" class="pmh-crop-btn" data-accept></button></div></div>`;
+                modal.querySelector('[data-icon]').textContent = options.icon || (options.severity === 'danger' ? '⚠' : '◆');
+                modal.querySelector('#pmh-action-title').textContent = options.title || '작업 확인';
+                modal.querySelector('.pmh-prompt-subtitle').textContent = options.subtitle || '';
+                modal.querySelector('#pmh-action-summary').textContent = options.subject || options.summary || '';
+                for (const detail of options.details || []) {
+                    const label = document.createElement('dt'), value = document.createElement('dd');
+                    label.textContent = detail.label; value.textContent = String(detail.value ?? '확인되지 않음');
+                    modal.querySelector('dl').append(label, value);
+                }
+                modal.querySelector('.pmh-prompt-notice').textContent = (options.consequences || []).join('\n');
+                const accept = modal.querySelector('[data-accept]'), reject = modal.querySelector('[data-cancel]');
+                accept.textContent = options.confirmLabel || '계속'; reject.textContent = options.cancelLabel || '취소';
+                if (options.severity === 'danger' || options.severity === 'warning') accept.classList.add(`pmh-prompt-button-${options.severity}`);
+                accept.onclick = () => { accept.disabled = reject.disabled = true; finish(true); };
+                reject.onclick = cancel;
+                let backdropPress = null, backdropClick = false;
+                modal.onpointerdown = event => {
+                    backdropClick = false;
+                    backdropPress = event.button === 0 && event.isPrimary !== false && event.target === modal ?
+                        { id:event.pointerId, x:event.clientX, y:event.clientY, moved:false } : null;
+                };
+                modal.onpointermove = event => {
+                    if (backdropPress && event.pointerId === backdropPress.id &&
+                        (event.target !== modal || Math.hypot(event.clientX - backdropPress.x, event.clientY - backdropPress.y) > 8)) backdropPress.moved = true;
+                };
+                modal.onpointerup = event => {
+                    backdropClick = Boolean(backdropPress && event.pointerId === backdropPress.id && event.button === 0 &&
+                        event.target === modal && !backdropPress.moved &&
+                        Math.hypot(event.clientX - backdropPress.x, event.clientY - backdropPress.y) <= 8);
+                    backdropPress = null;
+                };
+                modal.onpointercancel = () => { backdropPress = null; backdropClick = false; };
+                modal.onclick = event => {
+                    if (event.target === modal && (event.detail === 0 || backdropClick)) cancel();
+                    backdropClick = false;
+                };
+                modal.pmhClose = cancel;
+                document.body.appendChild(modal);
+                previousOverflow = document.body.style.overflow;
+                document.body.style.overflow = 'hidden';
+                pmhConfirmAction.active = modal;
+                // Cancel pending pointer timers before the prompt takes focus.
+                document.getElementById('pmh-video-modal')?.pmhPointer?.reset();
+                observer = new MutationObserver(() => {
+                    if (!modal.isConnected || (owner && !owner.isConnected)) cancel();
+                });
+                observer.observe(document.body, { childList:true, subtree:true });
+                document.addEventListener('keydown', onKey, true);
+                document.addEventListener('keyup', onKeyUp, true);
+                document.addEventListener('focusin', onFocus, true);
+                for (const type of ['pagehide','hashchange','popstate']) window.addEventListener(type, cancel);
+                options.signal?.addEventListener('abort', cancel, { once:true });
+                reject.focus({ preventScroll:true });
+            } catch (_) {
+                finish(false);
+                toastr.error('확인창을 표시하지 못해 작업을 취소했습니다.');
+            }
+        });
+    }
+
+    function bindVideoModalKeyboard(modal, player, card, closeModal) {
+        const feedback = modal.querySelector('#pmh-video-key-feedback');
+        let feedbackTimer = null, controlsTimer = null, destroyed = false, keyRevision = 0;
+        const isCurrent = () => !destroyed && modal.isConnected && document.getElementById('pmh-video-modal') === modal &&
+            !document.hidden && pmhTopModal() === modal;
+        const keyFor = event => event.key === 'Spacebar' ? ' ' : (event.key ||
+            ({ 32: ' ', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown' })[event.keyCode]);
+        const accepts = event => {
+            if (!isCurrent() || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+            for (const element of [event.target, document.activeElement]) {
+                if (element && (element.isContentEditable || /^(input|textarea|select)$/i.test(element.tagName))) return false;
+            }
+            return modal.contains(event.target) || modal.contains(document.activeElement);
+        };
+        const showFeedback = (message, revision) => {
+            if (!isCurrent() || revision !== keyRevision || !feedback) return;
+            clearTimeout(feedbackTimer);
+            feedback.textContent = message;
+            feedback.classList.add('visible');
+            feedbackTimer = setTimeout(() => {
+                feedback.classList.remove('visible');
+                feedbackTimer = null;
+            }, 900);
+        };
+        const revealControls = () => {
+            clearTimeout(controlsTimer);
+            controlsTimer = setTimeout(() => {
+                controlsTimer = null;
+                if (isCurrent() && !modal.pmhPointer?.active && document.activeElement === player) {
+                    player.blur();
+                    card.focus({ preventScroll: true });
+                }
+            }, 2500);
+            if (!modal.pmhPointer?.active) {
+                if (document.activeElement === player) player.blur();
+                player.focus({ preventScroll: true });
+            }
+        };
+        const handleKeyDown = event => {
+            if (!isCurrent()) return;
+            if (event.key === 'Escape' || event.keyCode === 27) {
+                event.preventDefault(); event.stopImmediatePropagation();
+                closeModal();
+                return;
+            }
+            const key = keyFor(event);
+            if (!accepts(event) || ![' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) return;
+            event.preventDefault(); event.stopImmediatePropagation();
+            const revision = ++keyRevision;
+            revealControls();
+            if (key === ' ') {
+                if (player.paused) {
+                    try {
+                        Promise.resolve(player.play()).then(() => {
+                            if (!player.paused) showFeedback('재생', revision);
+                        }).catch(error => {
+                            if (error.name !== 'AbortError') showFeedback('재생할 수 없습니다', revision);
+                        });
+                    } catch (error) {
+                        if (error.name !== 'AbortError') showFeedback('재생할 수 없습니다', revision);
+                    }
+                } else {
+                    player.pause();
+                    showFeedback('일시정지', revision);
+                }
+            } else if (key === 'ArrowLeft' || key === 'ArrowRight') {
+                if (!Number.isFinite(player.duration) || player.duration <= 0 || !Number.isFinite(player.currentTime)) {
+                    showFeedback('영상 탐색 준비 중', revision);
+                    return;
+                }
+                const before = player.currentTime;
+                player.currentTime = Math.max(0, Math.min(player.duration, before + (key === 'ArrowRight' ? 5 : -5)));
+                const delta = Math.round((player.currentTime - before) * 10) / 10;
+                const seconds = Math.floor(player.currentTime);
+                let position = `${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+                if (seconds >= 3600) position = `${String(Math.floor(seconds / 3600)).padStart(2, '0')}:${position}`;
+                showFeedback(`${position} (${delta >= 0 ? '+' : ''}${delta})`, revision);
+            } else {
+                player.volume = Math.max(0, Math.min(1, Math.round((player.volume + (key === 'ArrowUp' ? 0.05 : -0.05)) * 100) / 100));
+                if (key === 'ArrowUp' && player.volume > 0) player.muted = false;
+                showFeedback(`볼륨 ${Math.round(player.volume * 100)}%${player.muted ? ' (음소거)' : ''}`, revision);
+            }
+        };
+        const handleKeyUp = event => {
+            if (accepts(event) && [' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(keyFor(event))) {
+                event.preventDefault(); event.stopImmediatePropagation();
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown, true);
+        document.addEventListener('keyup', handleKeyUp, true);
+        return {
+            get controlsVisible() { return controlsTimer !== null; },
+            showFeedback(message, held = false) {
+                showFeedback(message, ++keyRevision);
+                if (held) { clearTimeout(feedbackTimer); feedbackTimer = null; }
+            },
+            clearFeedback() {
+                clearTimeout(feedbackTimer); feedbackTimer = null;
+                if (feedback) {
+                    if (feedback.classList.contains('visible')) feedback.classList.remove('visible');
+                    if (feedback.textContent) feedback.textContent = '';
+                }
+            },
+            revealControls,
+            destroy() {
+                destroyed = true;
+                clearTimeout(feedbackTimer); clearTimeout(controlsTimer);
+                feedbackTimer = controlsTimer = null;
+                document.removeEventListener('keydown', handleKeyDown, true);
+                document.removeEventListener('keyup', handleKeyUp, true);
+                if (feedback) { feedback.classList.remove('visible'); feedback.textContent = ''; }
+            }
+        };
+    }
+
+    function bindVideoModalPointerControls(modal, player, keyboard) {
+        let drag = null, wheel = { axis:null, amount:0, timer:null, last:0 }, clickUntil = 0, destroyed = false;
+        const listeners = [];
+        const on = (target, name, fn, options = true) => {
+            target.addEventListener(name, fn, options);
+            listeners.push(() => target.removeEventListener(name, fn, options));
+        };
+        const current = () => !destroyed && modal.isConnected && !document.hidden && pmhTopModal() === modal &&
+            player.style.display !== 'none' && !player.error;
+        const canSeek = () => Number.isFinite(player.duration) && player.duration > 0 && Number.isFinite(player.currentTime);
+        const modified = e => e.ctrlKey || e.metaKey || e.altKey || e.shiftKey;
+        const clamp = time => Math.max(0, Math.min(player.duration, time));
+        const source = () => player.currentSrc || player.getAttribute('src') || '';
+        const picture = e => {
+            if (!current() || e.target !== player || modified(e) || !canSeek()) return false;
+            const r = player.getBoundingClientRect();
+            if (!(player.videoWidth > 0 && player.videoHeight > 0 && r.width > 0 && r.height > 0)) return false;
+            const scale = Math.min(r.width / player.videoWidth, r.height / player.videoHeight);
+            const width = player.videoWidth * scale, height = player.videoHeight * scale;
+            const x = r.left + (r.width - width) / 2, y = r.top + (r.height - height) / 2;
+            return e.clientX >= x && e.clientX <= x + width && e.clientY >= y && e.clientY < Math.min(y + height, r.bottom - 70);
+        };
+        const seekFeedback = (target, before, held = false) => {
+            const ticks = Math.round(target * 10);
+            let time = `${String(Math.floor(ticks / 600) % 60).padStart(2,'0')}:${((ticks % 600) / 10).toFixed(1).padStart(4,'0')}`;
+            if (ticks >= 36000) time = `${String(Math.floor(ticks / 36000)).padStart(2,'0')}:${time}`;
+            const delta = target - before;
+            keyboard.showFeedback(`${time} (${delta >= 0 ? '+' : ''}${delta.toFixed(1)}초)`, held);
+        };
+        const resetWheel = () => {
+            clearTimeout(wheel.timer);
+            wheel = { axis:null, amount:0, timer:null, last:0 };
+        };
+        const reset = () => {
+            const old = drag; drag = null; clickUntil = 0;
+            resetWheel();
+            if (old) {
+                clearTimeout(old.timer);
+                try { if (player.hasPointerCapture(old.id)) player.releasePointerCapture(old.id); } catch (_) {}
+            }
+            keyboard.clearFeedback();
+        };
+        on(document, 'wheel', e => {
+            if (!picture(e) || drag || !Number.isFinite(e.deltaX) || !Number.isFinite(e.deltaY)) return;
+            const axis = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? 'x' : 'y';
+            const delta = axis === 'x' ? e.deltaX : e.deltaY;
+            if (!delta || ![0,1,2].includes(e.deltaMode)) return;
+            if (axis === 'x' && ((delta > 0 && player.currentTime <= 0) || (delta < 0 && player.currentTime >= player.duration))) return;
+            if (axis === 'y' && ((delta > 0 && player.volume <= 0) || (delta < 0 && player.volume >= 1 && !player.muted))) return;
+            const now = Date.now();
+            if (wheel.axis !== axis || now - wheel.last >= 180) resetWheel();
+            wheel.axis = axis; wheel.last = now;
+            const pixels = delta * (e.deltaMode === 1 ? 100 / 3 : e.deltaMode === 2 ? 100 : 1);
+            wheel.amount = Math.max(-300, Math.min(300, wheel.amount + pixels));
+            e.preventDefault();
+            if (wheel.timer !== null || Math.abs(wheel.amount) < 100) return;
+            const input = wheel, src = source();
+            input.timer = setTimeout(() => {
+                input.timer = null;
+                if (wheel !== input || !current() || !canSeek() || src !== source()) { reset(); return; }
+                const steps = Math.trunc(input.amount / 100); input.amount -= steps * 100;
+                if (!steps) return;
+                keyboard.revealControls();
+                if (axis === 'x') {
+                    const before = player.currentTime, target = clamp(before - steps);
+                    if (target !== before) player.currentTime = target;
+                    seekFeedback(target, before);
+                } else {
+                    player.volume = Math.max(0, Math.min(1, Math.round((player.volume - steps * 0.01) * 100) / 100));
+                    if (steps < 0 && player.volume > 0) player.muted = false;
+                    keyboard.showFeedback(`볼륨 ${Math.round(player.volume * 100)}%${player.muted ? ' (음소거)' : ''}`);
+                }
+            }, 80);
+        }, { passive:false, capture:true });
+        on(document, 'pointerdown', e => {
+            if (e.pointerType !== 'mouse' || e.button !== 0 || !picture(e)) return;
+            reset();
+            drag = { id:e.pointerId, x:e.clientX, y:e.clientY, before:player.currentTime,
+                target:player.currentTime, src:source(), active:false, timer:null };
+        });
+        on(document, 'pointermove', e => {
+            const d = drag;
+            if (!d || e.pointerId !== d.id) return;
+            if (!(e.buttons & 1) || !current() || !canSeek() || modified(e) || d.src !== source()) { reset(); return; }
+            const dx = e.clientX - d.x;
+            if (!Number.isFinite(dx)) { reset(); return; }
+            if (!d.active) {
+                if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(e.clientY - d.y)) return;
+                d.active = true;
+                try { player.setPointerCapture(d.id); } catch (_) { reset(); return; }
+                keyboard.revealControls();
+            }
+            e.preventDefault();
+            d.target = clamp(d.before + dx / 10);
+            seekFeedback(d.target, d.before, true);
+            if (d.timer === null) d.timer = setTimeout(() => {
+                d.timer = null;
+                if (drag !== d) return;
+                if (!current() || !canSeek() || d.src !== source()) { reset(); return; }
+                const target = clamp(d.target);
+                if (player.currentTime !== target) player.currentTime = target;
+            }, 60);
+        });
+        on(document, 'pointerup', e => {
+            const d = drag;
+            if (!d || e.pointerId !== d.id) return;
+            if (!d.active || e.button !== 0 || !current() || !canSeek() || modified(e) || d.src !== source() || !Number.isFinite(e.clientX)) { reset(); return; }
+            const target = clamp(d.before + (e.clientX - d.x) / 10);
+            clearTimeout(d.timer); drag = null;
+            try { if (player.hasPointerCapture(d.id)) player.releasePointerCapture(d.id); } catch (_) {}
+            clickUntil = Date.now() + 400;
+            e.preventDefault();
+            if (player.currentTime !== target) player.currentTime = target;
+            keyboard.revealControls(); seekFeedback(target, d.before);
+        });
+        on(document, 'click', e => {
+            if (e.target === player && Date.now() < clickUntil) { clickUntil = 0; e.preventDefault(); e.stopImmediatePropagation(); }
+        });
+        for (const name of ['pointercancel','lostpointercapture']) on(document, name, e => {
+            if (drag && drag.id === e.pointerId) reset();
+        });
+        for (const name of ['loadstart','emptied','error']) on(player, name, reset);
+        on(document, 'visibilitychange', () => { if (document.hidden) reset(); });
+        // Capture-phase blur also observes focus changes inside the video. Only
+        // losing the browser window should cancel a pointer gesture.
+        on(window, 'blur', reset, false);
+        const observer = new MutationObserver(() => {
+            if (!modal.isConnected && modal.pmhClose) { modal.pmhClose(); return; }
+            if (!current()) reset();
+        });
+        observer.observe(document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['style','class'] });
+        return {
+            get active() { return Boolean(drag?.active); },
+            reset,
+            destroy() { if (destroyed) return; reset(); destroyed = true; observer.disconnect(); listeners.forEach(remove => remove()); }
+        };
+    }
+
     // 비디오 모달 팝업 본체
     function showVideoModal(videoUrl, title) {
         let m = document.getElementById('pmh-video-modal');
@@ -522,10 +962,11 @@ GM_addStyle(`
                     </div>
                     <div id="pmh-video-modal-error" style="position:absolute; top:0; left:0; width:100%; height:100%; display:none; flex-direction:column; align-items:center; justify-content:center; color:#bd362f; font-size:13px; padding:20px; text-align:center; line-height:1.5; z-index:6; background:#000;"></div>
                     <video id="pmh-video-modal-player" controls autoplay playsinline style="width:100%; height:100%; object-fit:contain; outline:none; display:none;"></video>
+                    <div id="pmh-video-key-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
                 </div>
 
                 <div style="background:rgba(0,0,0,0.75); padding:6px 15px; border-top:1px solid #333; display:flex; justify-content:space-between; align-items:center; font-size:11px; color:#777; flex-shrink:0;">
-                    <span><i class="fas fa-arrows-alt" style="margin-right:4px;"></i>헤더 드래그 이동 | 테두리 크기 조절 | Space: 재생·일시정지 | ESC: 닫기</span>
+                    <span><i class="fas fa-arrows-alt" style="margin-right:4px;"></i>헤더 이동 · 테두리 크기 조절 | Space: 재생·정지 | ←/→: 5초 | ↑/↓: 음량 5% | ESC: 닫기<br>세로 휠: 음량 1% / 가로 휠: 왼쪽 +1초·오른쪽 -1초 / 화면 드래그: 10px당 ±1초</span>
                     <span style="color:#e5a00d;">PMH Trailer Player</span>
                 </div>
             </div>
@@ -539,9 +980,16 @@ GM_addStyle(`
         makeVideoCardDraggable(card, header);
         makeVideoCardResizable(card);
 
-        // 개별 컨트롤러에서 포커스를 즉시 뺏어 모달 카드로 회수하는 헬퍼
+        let keyboard = null, closed = false;
+        const focusTimers = new Set();
+        const scheduleBlur = (delay = 50) => {
+            if (closed) return;
+            const timer = setTimeout(() => { focusTimers.delete(timer); blurPlayer(); }, delay);
+            focusTimers.add(timer);
+        };
+        // 키 조작으로 컨트롤을 표시하는 동안에는 포커스를 회수하지 않는다.
         const blurPlayer = () => {
-            if (!m.isConnected) return;
+            if (!m.isConnected || pmhTopModal() !== m || m.pmhPointer?.active || keyboard?.controlsVisible) return;
             if (player) player.blur();
             if (document.activeElement && document.activeElement !== card) {
                 try { document.activeElement.blur(); } catch (e) {}
@@ -571,52 +1019,26 @@ GM_addStyle(`
             };
 
             player.addEventListener('seeked', blurPlayer);
-            player.addEventListener('play', () => setTimeout(blurPlayer, 50));
-            player.addEventListener('pause', () => setTimeout(blurPlayer, 50));
-            player.addEventListener('pointerup', () => setTimeout(blurPlayer, 50));
-            player.addEventListener('mouseup', () => setTimeout(blurPlayer, 50));
-            m.addEventListener('pointerup', () => setTimeout(blurPlayer, 50));
+            player.addEventListener('play', () => scheduleBlur());
+            player.addEventListener('pause', () => scheduleBlur());
+            player.addEventListener('pointerup', () => scheduleBlur());
+            player.addEventListener('mouseup', () => scheduleBlur());
+            m.addEventListener('pointerup', () => scheduleBlur());
         }
 
         const closeModal = () => {
-            document.removeEventListener('keydown', handleKeyDown, true);
-            document.removeEventListener('keyup', handleKeyUp, true);
+            if (closed) return;
+            closed = true;
+            focusTimers.forEach(clearTimeout); focusTimers.clear();
+            m.pmhPointer?.destroy();
+            keyboard?.destroy();
             if (player) { player.pause(); player.removeAttribute('src'); player.load(); }
             m.remove();
         };
 
-        const handleKeyDown = (e) => {
-            if (e.key === 'Escape' || e.keyCode === 27) {
-                e.preventDefault();
-                e.stopPropagation();
-                closeModal();
-            } else if (e.key === ' ' || e.keyCode === 32) {
-                const tag = (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName.toLowerCase() : '';
-                if (tag !== 'input' && tag !== 'textarea') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (player) {
-                        if (player.paused) player.play();
-                        else player.pause();
-                    }
-                    blurPlayer();
-                }
-            }
-        };
-
-        const handleKeyUp = (e) => {
-            if (e.key === ' ' || e.keyCode === 32) {
-                const tag = (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName.toLowerCase() : '';
-                if (tag !== 'input' && tag !== 'textarea') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
-            }
-        };
-
         m.pmhClose = closeModal;
-        document.addEventListener('keydown', handleKeyDown, true);
-        document.addEventListener('keyup', handleKeyUp, true);
+        keyboard = bindVideoModalKeyboard(m, player, card, closeModal);
+        m.pmhPointer = bindVideoModalPointerControls(m, player, keyboard);
 
         m.addEventListener('mousedown', (e) => {
             if (e.target === m) closeModal();
@@ -629,7 +1051,7 @@ GM_addStyle(`
             setVideoModalSource(videoUrl, title);
         }
 
-        setTimeout(() => { if (m.isConnected) blurPlayer(); }, 100);
+        scheduleBlur(100);
         return m;
     }
 
@@ -897,6 +1319,7 @@ GM_addStyle(`
     function setVideoModalSource(videoUrl, title) {
         const m = document.getElementById('pmh-video-modal');
         if (!m) return;
+        m.pmhPointer?.reset();
 
         const titleText = m.querySelector('#pmh-video-modal-title-text');
         if (titleText && title) titleText.textContent = title;
@@ -919,6 +1342,7 @@ GM_addStyle(`
     function setVideoModalError(errMsg) {
         const m = document.getElementById('pmh-video-modal');
         if (!m) return;
+        m.pmhPointer?.reset();
 
         const sp = m.querySelector('#pmh-video-modal-spinner');
         if (sp) sp.style.display = 'none';
@@ -1326,6 +1750,7 @@ GM_addStyle(`
         });
 
         await Promise.all(promises);
+        for (const result of Object.values(results)) result.checked_at = Date.now();
         return results;
     }
 
@@ -1503,6 +1928,9 @@ GM_addStyle(`
 
     async function triggerServerUpdate(showStatusMsg, targetServers) {
         if (!targetServers || targetServers.length === 0) return true;
+        targetServers = targetServers.map(srv => ({ ...srv }));
+        const serverStamp = pmhServerStamp(ServerConfig.SERVERS);
+        const updateCurrent = () => pmhServerStamp(ServerConfig.SERVERS) === serverStamp;
 
         const spinner = `<i class="fas fa-spinner fa-spin" style="margin-right: 5px;"></i>`;
         log(`[Server Update] Dry-run check for ${targetServers.length} server(s)...`);
@@ -1553,20 +1981,27 @@ GM_addStyle(`
 
         let forceUpdate = false;
         const targetVer = targetServers[0].targetVer || GM_getValue('pmh_latest_version', '');
-        const verStr = targetVer ? `(v${targetVer}) ` : '';
 
         showStatusMsg(`<i class="fas fa-pause-circle" style="margin-right: 4px;"></i>사용자 확인 대기 중...`, '#f89406', 0);
 
         if (totalRunningCount > 0) {
-            const confirmed = confirm(`[경고] 현재 ${targetServers.length}대의 서버에서 총 ${totalRunningCount}개의 작업이 실행 중입니다.\n\n실행 중인 작업을 모두 강제로 중단하고 업데이트${verStr}를 진행하시겠습니까?`);
-            if (!confirmed) {
+            const confirmed = await pmhConfirmAction({ severity:'danger', title:'실행 작업 강제 중단 후 업데이트',
+                subject:`${targetServers.length}대 서버`, isCurrent:updateCurrent,
+                details:[{label:'대상 서버',value:targetServers.map(s => s.name || s.id || s.machineIdentifier || '확인되지 않음').join(', ')},
+                    {label:'실행 중',value:`총 ${totalRunningCount}개`},{label:'대상 버전',value:targetVer || '확인되지 않음'}],
+                consequences:['실행 중인 작업이 강제로 중단될 수 있습니다.','업데이트 후 서버(컨테이너)의 수동 재시작이 필요할 수 있습니다.'],
+                confirmLabel:'강제 중단 후 업데이트' });
+            if (!confirmed || !updateCurrent()) {
                 showStatusMsg(`<i class="fas fa-times-circle" style="margin-right: 4px;"></i>업데이트 취소됨`, '#bd362f', 4000);
                 return false;
             }
             forceUpdate = true;
         } else {
-            const confirmed = confirm(`실행 중인 작업이 없습니다. 안전하게 업데이트${verStr}를 진행하시겠습니까?\n\n(완료 후 서버(컨테이너)의 수동 재시작이 필요할 수 있습니다.)`);
-            if (!confirmed) {
+            const confirmed = await pmhConfirmAction({ title:'서버 업데이트', subject:`${targetServers.length}대 서버`, isCurrent:updateCurrent,
+                details:[{label:'대상 서버',value:targetServers.map(s => s.name || s.id || s.machineIdentifier || '확인되지 않음').join(', ')},
+                    {label:'실행 중',value:'0개'},{label:'대상 버전',value:targetVer || '확인되지 않음'}],
+                consequences:['업데이트 요청 후 서버(컨테이너)의 수동 재시작이 필요할 수 있습니다.'], confirmLabel:'업데이트' });
+            if (!confirmed || !updateCurrent()) {
                 showStatusMsg(`<i class="fas fa-times-circle" style="margin-right: 4px;"></i>업데이트 취소됨`, '#bd362f', 4000);
                 return false;
             }
@@ -1964,7 +2399,7 @@ GM_addStyle(`
                     } else {
                         try {
                             const errJson = JSON.parse(r.responseText);
-                            const errMsg = errJson.error || errJson.message || `서버 오류 (HTTP ${r.status})`;
+                            const errMsg = errJson.error || errJson.message || errJson.msg || `서버 오류 (HTTP ${r.status})`;
                             reject(new Error(errMsg));
                         } catch(e) {
                             reject(new Error(`서버 처리 실패 (HTTP ${r.status})`));
@@ -2599,6 +3034,7 @@ GM_addStyle(`
                 servers: ServerConfig.SERVERS,
                 availableServerIndices: availableServerIndices,
                 activeServerIdx: srvIdx,
+                confirmAction: pmhConfirmAction,
                 pathMappings: ClientSettings.pathMappings,
                 enableCatiaMapping: Boolean(ClientSettings.enableCatiaMapping),
                 catiaMappings: ServerConfig.CATIA_MAPPINGS,
@@ -3679,13 +4115,18 @@ GM_addStyle(`
             const delBtn = e.target.closest('.pmh-tool-delete-btn');
             if (delBtn) {
                 e.preventDefault(); e.stopPropagation();
-                if(confirm(`'${delBtn.dataset.name}' 툴을 삭제하시겠습니까?`)) {
+                const toolId = delBtn.dataset.id, toolName = delBtn.dataset.name;
+                const servers = ServerConfig.SERVERS.map(s => ({ ...s })), stamp = pmhServerStamp(servers);
+                const current = () => delBtn.isConnected && delBtn.dataset.id === toolId && pmhServerStamp(ServerConfig.SERVERS) === stamp;
+                if (await pmhConfirmAction({ severity:'danger', title:'도구 삭제', subject:toolName || toolId, owner:dropdown, isCurrent:current,
+                    details:[{label:'도구 ID',value:toolId},{label:'대상 서버',value:`${servers.length}대 · ${servers.map(s=>s.name || s.id || '확인되지 않음').join(', ')}`}],
+                    consequences:['대상 서버에서 도구를 사용할 수 없게 됩니다.','브라우저의 도구 캐시와 목록이 갱신됩니다.'], confirmLabel:'도구 삭제' }) && current()) {
                     dropdown.innerHTML = `<div style="padding:30px; text-align:center; color:#aaa;"><i class="fas fa-spinner fa-spin fa-2x" style="color:#e5a00d;"></i><br><br>삭제 및 정보 동기화 중...</div>`;
 
-                    GM_deleteValue(`pmh_tool_cache_${delBtn.dataset.id}`);
-                    await Promise.all(ServerConfig.SERVERS.map(srv => new Promise(async res => {
+                    GM_deleteValue(`pmh_tool_cache_${toolId}`);
+                    await Promise.all(servers.map(srv => new Promise(async res => {
                         try {
-                            await PmhToolAPI.call(srv, `/tools/${delBtn.dataset.id}`, "DELETE");
+                            await PmhToolAPI.call(srv, `/tools/${toolId}`, "DELETE");
                             res();
                         } catch(err) { res(); }
                     })));
@@ -4066,7 +4507,7 @@ GM_addStyle(`
                 }
             }
 
-            if (info.trailer_id || getAvTrailerContext(info, srvConfig)) {
+            if (info.trailer_id) {
                 const targetServerId = srvConfig ? srvConfig.machineIdentifier : link?.getAttribute('href')?.match(/\/server\/([a-f0-9]+)\//)?.[1];
                 const plexSrv = extractPlexServerInfo(targetServerId);
 
@@ -6283,6 +6724,11 @@ GM_addStyle(`
             <a href="#" id="pmh-btn-analyze" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="Plex에 미디어 분석을 요청합니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-search-plus" style="font-size: 10px; margin-right: 2px;"></i>미디어 분석</a>
         ` : '';
 
+        const deleteContext = getAvTrailerContext(data, srvConfig);
+        const deleteMetaBtnHtml = deleteContext ? `
+            <span style="opacity:0.3; color:#adb5bd; margin:0 4px;">|</span>
+            <a href="#" id="pmh-btn-delete-meta-db" style="color:#e07878; text-decoration:none;" title="메타 DB와 관련 파일의 삭제 범위를 확인합니다."><i class="fas fa-trash-alt" aria-hidden="true" style="font-size:10px; margin-right:2px;"></i>메타 DB 삭제</a>` : '';
+
         const boxHtml = `
         <div id="plex-guid-box" class="pmh-fade-update" style="margin-top: 15px; width: 100%; position: relative;">
 
@@ -6291,6 +6737,7 @@ GM_addStyle(`
                 <span style="margin-left: 12px; font-weight: normal; letter-spacing: -0.5px; font-size: 11px;">
                     <a href="#" id="pmh-btn-refresh-data" style="color: #adb5bd; text-decoration: none; transition: 0.2s;" title="DB 데이터를 다시 불러옵니다." onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#adb5bd'"><i class="fas fa-sync-alt" style="font-size: 10px; margin-right: 2px;"></i>정보 새로고침</a>
                     ${refreshMetaBtnHtml}
+                    ${deleteMetaBtnHtml}
                 </span>
             </div>
 
@@ -6317,22 +6764,10 @@ GM_addStyle(`
 
         container.insertAdjacentHTML('afterend', boxHtml);
 
-        const avContext = getAvTrailerContext(data, srvConfig);
-        if (data.trailer_id || avContext) {
-            const trailerButton = document.createElement('a');
-            trailerButton.href = '#';
-            trailerButton.id = 'pmh-btn-play-trailer';
-            trailerButton.style.cssText = 'color:#e5a00d; margin-left:10px; text-decoration:none;';
-            trailerButton.textContent = '▶ 예고편 / 프리뷰';
-            trailerButton.title = '현재 등록된 대표 영상을 확인하고 재생합니다.';
-            trailerButton.onclick = event => {
-                event.preventDefault(); event.stopPropagation();
-                playTrailerInModal(data.trailer_id, '예고편 / 프리뷰', plexSrv, {
-                    itemId: data.itemId, srvConfig, avContext
-                });
-            };
-            document.getElementById('pmh-btn-refresh-data')?.parentElement.appendChild(trailerButton);
-        }
+        document.getElementById('pmh-btn-delete-meta-db')?.addEventListener('click', event => {
+            event.preventDefault(); event.stopPropagation();
+            openPmhMetaDeleteModal(data, serverId, srvConfig);
+        });
 
         let abortDetailRefresh = false;
 
@@ -7006,6 +7441,15 @@ GM_addStyle(`
         return String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
     }
 
+    function getDetailCastName(element) {
+        const title = element.getAttribute?.('title');
+        if (title?.trim()) return title.trim();
+        if (!element.cloneNode) return element.textContent.trim();
+        const copy = element.cloneNode(true);
+        copy.querySelectorAll('.pmh-detail-person-btn').forEach(button => button.remove());
+        return copy.textContent.trim();
+    }
+
     function buildFfActorNameIndex(actors) {
         const names = new Map();
         for (const actor of Array.isArray(actors) ? actors : []) {
@@ -7121,12 +7565,13 @@ GM_addStyle(`
         }
         const active = new Set();
         for (const name of targets) {
-            const personIdx = context.names.get(normalizeFfActorName(name.textContent));
+            const actorName = getDetailCastName(name);
+            const personIdx = context.names.get(normalizeFfActorName(actorName));
             if (!personIdx) continue;
             const anchor = name.closest('a, button') || name;
-            const nameText = normalizeFfActorName(name.textContent);
+            const nameText = normalizeFfActorName(actorName);
             const nameSpans = [...anchor.querySelectorAll('span')].filter(span =>
-                !span.closest('.pmh-detail-person-btn') && normalizeFfActorName(span.textContent) === nameText);
+                !span.closest('.pmh-detail-person-btn') && normalizeFfActorName(getDetailCastName(span)) === nameText);
             const label = nameSpans.at(-1) || name;
             let button = label.querySelector('.pmh-detail-person-btn');
             if (!button) {
@@ -7136,14 +7581,14 @@ GM_addStyle(`
                 button.tabIndex = 0;
                 button.className = 'pmh-detail-person-btn';
                 button.style.cssText = 'display:inline-flex; align-items:center; justify-content:center; width:auto; margin:0 0 0 8px; padding:0; border:0; background:transparent; color:#e5a00d; cursor:pointer; font-size:inherit; line-height:1; vertical-align:middle;';
-                button.innerHTML = '<i class="fas fa-address-card" aria-hidden="true"></i>';
+                button.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M3 4h18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm4 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm-4 10h8v-1a4 4 0 0 0-8 0Zm11-8h6V7h-6Zm0 4h6v-2h-6Zm0 4h4v-2h-4Z"/></svg>';
                 label.appendChild(button);
             }
             const signature = `${context.key}:${personIdx}`;
             if (button.dataset.pmhPerson !== signature) {
                 button.dataset.pmhPerson = signature;
                 button.title = 'FF 인물 정보 열기';
-                button.setAttribute('aria-label', `${name.textContent.trim()} · FF 인물 정보 열기`);
+                button.setAttribute('aria-label', `${actorName} · FF 인물 정보 열기`);
                 button.onclick = event => {
                     event.preventDefault(); event.stopPropagation();
                     if (isCurrent()) openPmhPersonDbModal(personIdx, context.av.category === 'WESTERN' ? 'WESTERN' : 'JAV', context.srvConfig, context.serverId);
@@ -7157,10 +7602,20 @@ GM_addStyle(`
         document.querySelectorAll('.pmh-detail-person-btn').forEach(button => { if (!active.has(button)) removeDetailPersonButton(button); });
     }
 
+    function isFfMetaDbEnabledForServer(srv) {
+        if (!srv) return false;
+        const ping = window._pmh_latest_ping_results?.[srv.machineIdentifier];
+        const age = Date.now() - ping?.checked_at;
+        if (Number.isFinite(age) && age >= 0 && age <= 300000 && typeof ping.ff_metadb_use === 'boolean') {
+            return ping.ff_metadb_use;
+        }
+        return srv.ff_metadb_use === true;
+    }
+
     // AV만 FF 대표 영상을 조회한다. 쇼/음악 및 일반 Plex extra는 Plex 경로를 유지한다.
     function getAvTrailerContext(info, srvConfig) {
         if (!info || !srvConfig || (info.type && info.type !== 'video' && info.type !== 'movie')) return null;
-        const enabled = srvConfig.ff_metadb_use || window._pmh_latest_ping_results?.[srvConfig.machineIdentifier]?.ff_metadb_use;
+        const enabled = isFfMetaDbEnabledForServer(srvConfig);
         if (!enabled) return null;
         const code = extractSjvaAgentCode(info.raw_g || info.guid || info.g || '');
         const module = getFfModuleFromCode(code);
@@ -7653,6 +8108,7 @@ GM_addStyle(`
             document.removeEventListener('keydown', handleKeyNav, true);
             m.remove();
         };
+        m.pmhClose = closeLightbox;
 
         m.querySelector('#pmh-lightbox-close').onclick = (e) => { e.preventDefault(); e.stopPropagation(); closeLightbox(); };
         m.onclick = (e) => {
@@ -7660,6 +8116,7 @@ GM_addStyle(`
         };
 
         const handleKeyNav = (e) => {
+            if (pmhTopModal() !== m) return;
             if (e.key === 'ArrowLeft') {
                 e.preventDefault(); e.stopPropagation(); renderItem(curIdx - 1);
             } else if (e.key === 'ArrowRight') {
@@ -8155,20 +8612,22 @@ GM_addStyle(`
 
         btnSaveYaml.onclick = async () => {
             const serverId = yamlServerSelect.value;
-            const yamlContent = yamlEditor.value.trim();
+            const editorSnapshot = yamlEditor.value, yamlContent = editorSnapshot.trim();
             if (!yamlContent) return toastr.warning("저장할 내용이 없습니다.");
-
-            if (!confirm(`주의: YAML 문법이 잘못되면 해당 서버의 구동이 정지될 수 있습니다.\n\n정말로 [${yamlServerSelect.options[yamlServerSelect.selectedIndex].text}] 서버의 설정 파일을 덮어쓰고 즉시 코어를 리로드 하시겠습니까?`)) {
-                return;
-            }
+            const selected = ServerConfig.SERVERS.find(s => s.id === serverId);
+            if (!selected) return toastr.warning('대상 서버를 확인할 수 없습니다.');
+            const srv = { ...selected }, stamp = pmhServerStamp(ServerConfig.SERVERS);
+            const current = () => settingsModal.isConnected && yamlServerSelect.value === serverId && yamlEditor.value === editorSnapshot && pmhServerStamp(ServerConfig.SERVERS) === stamp;
+            if (!await pmhConfirmAction({ severity:'danger', title:'YAML 설정 적용 및 리로드', owner:settingsModal, isCurrent:current,
+                subject:srv.name || serverId, details:[{label:'서버 ID',value:serverId}],
+                consequences:['설정 파일을 덮어쓰고 즉시 코어를 리로드합니다.','YAML 문법이 잘못되면 해당 서버의 구동이 중단될 수 있습니다.'],
+                confirmLabel:'설정 적용 및 리로드' }) || !current()) return;
 
             const originalHtml = btnSaveYaml.innerHTML;
             btnSaveYaml.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 적용 중...';
             btnSaveYaml.disabled = true;
 
             try {
-                const srv = ServerConfig.SERVERS.find(s => s.id === serverId);
-                
                 await makeRequest(`${srv.relayUrl}/admin/config`, 'POST', { yaml: yamlContent }, ClientSettings.masterApiKey);
                 toastr.success("파일 저장 완료. 코어를 리로드합니다...", "저장 성공", {timeOut: 2000});
 
@@ -8192,7 +8651,12 @@ GM_addStyle(`
         };
 
         document.getElementById('pmh-settings-clear-cache').onclick = async () => {
-            if (confirm("브라우저/메모리 캐시를 초기화하고 서버 코어 모듈을 재시작하시겠습니까?\n(설정은 유지되며, 완료 후 페이지가 자동으로 새로고침됩니다.)")) {
+            const servers = ServerConfig.SERVERS.map(s => ({ ...s })), stamp = pmhServerStamp(servers);
+            const current = () => settingsModal.isConnected && pmhServerStamp(ServerConfig.SERVERS) === stamp;
+            if (await pmhConfirmAction({ severity:'warning', title:'캐시 초기화·코어 리로드', owner:settingsModal, isCurrent:current,
+                subject:`${servers.length}대 서버 · ${servers.map(s=>s.name || s.id || '확인되지 않음').join(', ')}`,
+                consequences:['브라우저/UI 메모리 및 공용 JS/CSS 캐시를 제거합니다.','설정은 유지됩니다. 서버 코어 리로드 요청 후 페이지가 새로고침됩니다.'],
+                confirmLabel:'캐시 초기화·재시작' }) && current()) {
                 const btn = document.getElementById('pmh-settings-clear-cache');
                 btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 초기화 중...';
                 btn.disabled = true;
@@ -8226,7 +8690,7 @@ GM_addStyle(`
 
                 try {
                     const secureToken = await generateSecureHeader(ClientSettings.masterApiKey);
-                    const reloadPromises = ServerConfig.SERVERS.map(srv => {
+                    const reloadPromises = servers.map(srv => {
                         return new Promise((resolve) => {
                             GM_xmlhttpRequest({
                                 method: "POST", url: `${srv.relayUrl}/admin/reload_core`,
@@ -8463,8 +8927,11 @@ GM_addStyle(`
             setTimeout(() => location.reload(), 500);
         };
 
-        document.getElementById('pmh-settings-factory-reset').onclick = () => {
-            if (confirm("⚠️ 경고: 정말로 공장 초기화를 진행하시겠습니까?\n\n이 작업은 캐시, 설정, 패널 위치 정보 등 PMH가 브라우저에 저장한 모든 데이터를 영구적으로 삭제합니다.\n(Plex 서버나 백엔드 데이터는 삭제되지 않습니다.)")) {
+        document.getElementById('pmh-settings-factory-reset').onclick = async () => {
+            if (await pmhConfirmAction({ severity:'danger', title:'PMH 브라우저 공장 초기화', owner:settingsModal,
+                subject:'이 브라우저에 저장된 PMH 데이터',
+                consequences:['PMH 로컬 설정·캐시·패널 위치 등 저장 데이터를 영구 삭제합니다. 복원이 어렵습니다.','Plex/FF 및 백엔드 서버의 데이터는 삭제하지 않습니다.','완료 후 브라우저 페이지가 새로고침됩니다.'],
+                confirmLabel:'공장 초기화' }) && settingsModal.isConnected) {
 
                 const btn = document.getElementById('pmh-settings-factory-reset');
                 btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 초기화 중...';
@@ -8531,36 +8998,6 @@ GM_addStyle(`
     }
 
     // 노드별 FF Meta DB 활성화 여부 판정 헬퍼
-    function isFfMetaDbActive(serverId, rawGuid) {
-        let srv = getServerConfig(serverId);
-        if (!srv && ServerConfig.SERVERS && ServerConfig.SERVERS.length > 0) {
-            srv = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId) || ServerConfig.SERVERS[0];
-        }
-        if (!srv) {
-            log(`[isFfMetaDbActive] ❌ 서버 설정 없음 (serverId: ${serverId})`);
-            return false;
-        }
-
-        const isMetaDbEnabled = !!(srv.ff_metadb_use || window._pmh_latest_ping_results?.[srv.machineIdentifier]?.ff_metadb_use);
-        if (!isMetaDbEnabled) {
-            log(`[isFfMetaDbActive] ❌ ff_metadb_use 비활성화됨 (Server: ${srv.name || srv.id})`);
-            return false;
-        }
-
-        if (rawGuid) {
-            const cleanCode = extractSjvaAgentCode(rawGuid);
-            if (!cleanCode) {
-                log(`[isFfMetaDbActive] ❌ GUID 코드 추출 실패 (rawGuid: ${rawGuid})`);
-                return false;
-            }
-            const moduleName = getFfModuleFromCode(cleanCode);
-            if (!moduleName) {
-                log(`[isFfMetaDbActive] ❌ 모듈 판정 실패 (cleanCode: ${cleanCode})`);
-                return false;
-            }
-        }
-        return true;
-    }
 
     // AV 미디어 판별 헬퍼 (단일 영화 + 이미지서버 On + C/E/W 코드)
     function isSectionMatched(sectionConfigStr, targetSectionId) {
@@ -8605,9 +9042,9 @@ GM_addStyle(`
 
         let srv = getServerConfig(serverId);
         if (!srv && ServerConfig.SERVERS && ServerConfig.SERVERS.length > 0) {
-            srv = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId) || ServerConfig.SERVERS[0];
+            srv = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId);
         }
-        if (!srv || !(srv.av_image_server_use || srv.ff_metadb_use || window._pmh_latest_ping_results?.[srv.machineIdentifier]?.ff_metadb_use)) {
+        if (!srv || !(srv.av_image_server_use || isFfMetaDbEnabledForServer(srv))) {
             return false;
         }
 
@@ -8630,14 +9067,14 @@ GM_addStyle(`
     function isFfMetaDbActive(serverId, rawGuid) {
         let srv = getServerConfig(serverId);
         if (!srv && ServerConfig.SERVERS && ServerConfig.SERVERS.length > 0) {
-            srv = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId) || ServerConfig.SERVERS[0];
+            srv = ServerConfig.SERVERS.find(s => s.machineIdentifier === serverId || s.id === serverId);
         }
         if (!srv) {
             log(`[isFfMetaDbActive] ❌ 서버 설정 없음 (serverId: ${serverId})`);
             return false;
         }
 
-        const isMetaDbEnabled = !!(srv.ff_metadb_use || window._pmh_latest_ping_results?.[srv.machineIdentifier]?.ff_metadb_use);
+        const isMetaDbEnabled = isFfMetaDbEnabledForServer(srv);
         if (!isMetaDbEnabled) {
             log(`[isFfMetaDbActive] ❌ ff_metadb_use 비활성화됨 (Server: ${srv.name || srv.id})`);
             return false;
@@ -8836,6 +9273,12 @@ GM_addStyle(`
         currentCropItemData = null;
     }
 
+    function showCropModal() {
+        window._pmh_top_z_index = (window._pmh_top_z_index || 10000050) + 20;
+        pmhCropModal.style.zIndex = window._pmh_top_z_index;
+        pmhCropModal.style.display = 'flex';
+    }
+
     // PL/P 선택 상태와 URL 로드 여부에 따라 direct_save 버튼 동적 노출/라벨 갱신 헬퍼
     function updateDirectSaveBtn() {
         const btnDirectSave = document.getElementById('pmh-btn-direct-save');
@@ -8984,7 +9427,7 @@ GM_addStyle(`
         imgEl.className = '';
         imgEl.style.cssText = 'display: block; max-width: 100%; opacity: 0;';
         spinner.style.display = 'block';
-        pmhCropModal.style.display = 'flex';
+        showCropModal();
 
         try {
             const CropperConstructor = await ensureCropperLoaded();
@@ -9619,6 +10062,7 @@ GM_addStyle(`
             return buildFfMetaEditPayload(currentEditMetaContext.jd, values, currentEditMetaContext.actors || []);
         };
         let loadRevision = 0;
+        let refreshInProgress = false;
         // 모달 내부 인플레이스(In-Place) 즉시 데이터 로드 및 렌더러 함수
         const loadModalDataInPlace = async (showToastOnSuccess = false) => {
             if (!m.isConnected) return;
@@ -9733,7 +10177,14 @@ GM_addStyle(`
                     m.querySelector(`#${modalId}-${prefix}-path`).value = asset?.relative_path || '';
                     play.onclick = () => { if (url) showVideoModal(url, `[${label}] ${row.title || cleanCode}`); };
                     remove.onclick = async () => {
-                        if (!confirm(`${label} 파일과 메타 정보를 삭제하시겠습니까?`)) return;
+                        const stamp = pmhServerStamp([srvConfig]);
+                        const current = () => m.isConnected && revision === loadRevision && pmhServerStamp([srvConfig]) === stamp;
+                        if (!await pmhConfirmAction({ severity:'danger', title:`${label} 삭제`, owner:m, isCurrent:current,
+                            subject:row.title || cleanCode, details:[{label:'작품 코드 / 분류',value:`${cleanCode} / ${category}`},
+                                {label:'종류',value:label},{label:'저장소',value:asset.storage_type === 'gdrive' ? 'Google Drive' : asset.storage_type === 'local' ? '로컬' : '확인되지 않음'},
+                                {label:'파일명',value:String(asset.relative_path || asset.local_path || '').split(/[\\/]/).pop() || '확인되지 않음'}],
+                            consequences:[`저장된 ${label} 파일과 해당 메타 참조를 삭제합니다. 원본 영상과 작품 DB 레코드는 유지됩니다.`],
+                            confirmLabel:'이 영상 삭제' }) || !current()) return;
                         remove.disabled = true;
                         try {
                             const res = await PmhFfBridge.callMetaApi(srvConfig, 'delete_preview_clip', cleanCode, category, kind);
@@ -9775,7 +10226,16 @@ GM_addStyle(`
                     }
 
                     const fileName = bestVideoPath.split(/[\\/]/).pop() || bestVideoPath;
-                    if (!confirm(`[${cleanCode}] 프리뷰 클립(몽타주) 생성을 요청하시겠습니까?\n\n• 대상: ${fileName}\n• 대기 시간: 최대 5분\n\n완료되면 Plex 클린 리매칭이 자동 수행됩니다.`)) return;
+                    const stamp = pmhServerStamp([srvConfig]);
+                    const sourcePath = () => {
+                        const cache = getMemoryCache(`D_${serverId}_${itemId}`) || {};
+                        return extraData.source_video_path || findBestVideoPath(cache.versions || []) || '';
+                    };
+                    const current = () => m.isConnected && revision === loadRevision && pmhServerStamp([srvConfig]) === stamp &&
+                        sourcePath() === bestVideoPath && btnCreatePreview.dataset.processing !== 'true';
+                    if (!await pmhConfirmAction({ severity:'warning', title:'프리뷰 클립 생성', owner:m, isCurrent:current,
+                        subject:row.title || cleanCode, details:[{label:'작품 코드 / 분류',value:`${cleanCode} / ${category}`},{label:'원본 파일명',value:fileName}],
+                        consequences:['대기 시간: 최대 5분','성공하면 Plex 클린 리매칭을 요청합니다.'], confirmLabel:'프리뷰 생성' }) || !current()) return;
 
                     btnCreatePreview.dataset.processing = 'true';
                     const origHtml = btnCreatePreview.innerHTML;
@@ -9784,7 +10244,7 @@ GM_addStyle(`
 
                     try {
                         const postPayload = { code: cleanCode, cat: category, video_path: bestVideoPath };
-                        infoLog(`[Preview Clip] FF make_preview_clip 요청 전송:`, postPayload);
+                        infoLog('[Preview Clip] FF make_preview_clip 요청 전송');
 
                         const res = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/api/meta_db/make_preview_clip`, 'POST', postPayload, ClientSettings.masterApiKey, null, 300000);
                         if (res && res.ret === 'success') {
@@ -9928,19 +10388,62 @@ GM_addStyle(`
                     delete jsonOutput.stored_images;
                     openPmhJsonViewerModal(`[${cleanCode}] 메타데이터 JSON 원본`, jsonOutput);
                 };
-                m.querySelector(`#${modalId}-action-crop`).onclick = (e) => { e.preventDefault(); openPosterCropModal(itemId, serverId, rawGuid, optTitle, () => loadModalDataInPlace()); };
-                const refreshMeta = async (command, mediaAction = '') => {
+                m.querySelector(`#${modalId}-action-crop`).onclick = (e) => {
+                    e.preventDefault(); e.stopPropagation(); imgDrop.style.display = 'none';
+                    if (refreshInProgress) return;
+                    return openPosterCropModal(itemId, serverId, rawGuid, optTitle, () => loadModalDataInPlace());
+                };
+                const refreshMeta = async (command, mediaAction, label, menu) => {
+                    if (refreshInProgress || !m.isConnected) return;
+                    refreshInProgress = true;
+                    const controls = ['btn-img-menu', 'btn-meta-menu', 'btn-save'].map(id => {
+                        const button = m.querySelector(`#${modalId}-${id}`);
+                        const saved = { button, disabled: button.disabled, html: button.innerHTML };
+                        button.disabled = true;
+                        return saved;
+                    });
+                    const activeButton = m.querySelector(`#${modalId}-btn-${menu}-menu`);
+                    activeButton.textContent = `${label} 처리 중…`;
+                    toastr.info(`${label} 작업을 시작했습니다.`, cleanCode);
                     try {
-                        const result = await PmhFfBridge.callMetaApi(srvConfig, command, cleanCode, category, mediaAction);
+                        const options = {};
+                        if (command === 'db_refresh_image_only' && mediaAction === 'replace') {
+                            const media = await makeRequest(`${srvConfig.relayUrl}/media/${encodeURIComponent(itemId)}`,
+                                'GET', null, ClientSettings.masterApiKey);
+                            const versions = (media?.versions || []).filter(version =>
+                                typeof version?.file === 'string' && version.file.trim() && !/^unknown path$/i.test(version.file.trim()));
+                            const mediaPath = findBestVideoPath(versions);
+                            if (!mediaPath) throw new Error('Plex 원본 영상 경로를 찾을 수 없습니다.');
+                            options.fields = { media_path: mediaPath };
+                            if (!m.isConnected) return;
+                        }
+                        const result = await PmhFfBridge.callMetaApi(srvConfig, command, cleanCode, category, mediaAction, options);
                         if (result?.ret !== 'success') throw new Error(result?.msg || '메타데이터 갱신 실패');
                         invalidateFfItemCache(serverId, itemId);
+                        toastr.success(`${label} 작업이 완료되었습니다.`, cleanCode);
+                        activeButton.textContent = '결과 불러오는 중…';
                         await loadModalDataInPlace();
-                    } catch (err) { toastr.error(err.message || String(err)); }
+                    } catch (err) {
+                        toastr.error(`${label} 실패: ${err.message || String(err)}`, cleanCode);
+                    } finally {
+                        refreshInProgress = false;
+                        if (m.isConnected) controls.forEach(({ button, disabled, html }) => {
+                            button.disabled = disabled;
+                            button.innerHTML = html;
+                        });
+                    }
                 };
-                for (const [id, command, mediaAction] of [['sync-img', 'db_refresh_image_only', 'reuse'],
-                    ['reprocess-img', 'db_refresh_image_only', 'replace'], ['missing-inplace', 'db_refresh_missing_in_place'],
-                    ['inplace', 'db_refresh_in_place'], ['autosearch', 'db_refresh_auto_search']]) {
-                    m.querySelector(`#${modalId}-action-${id}`).onclick = event => { event.preventDefault(); return refreshMeta(command, mediaAction); };
+                for (const [id, command, mediaAction, label, menu] of [
+                    ['sync-img', 'db_refresh_image_only', 'reuse', '이미지/미디어 동기화', 'img'],
+                    ['reprocess-img', 'db_refresh_image_only', 'replace', '이미지/미디어 재처리', 'img'],
+                    ['missing-inplace', 'db_refresh_missing_in_place', '', '현재 사이트 누락 정보 갱신', 'meta'],
+                    ['inplace', 'db_refresh_in_place', '', '현재 사이트 제자리 갱신', 'meta'],
+                    ['autosearch', 'db_refresh_auto_search', '', '전체 우선순위 자동 재검색', 'meta']]) {
+                    m.querySelector(`#${modalId}-action-${id}`).onclick = event => {
+                        event.preventDefault(); event.stopPropagation();
+                        imgDrop.style.display = refDrop.style.display = 'none';
+                        return refreshMeta(command, mediaAction, label, menu);
+                    };
                 }
 
                 loadingDiv.style.display = 'none';
@@ -10010,6 +10513,146 @@ GM_addStyle(`
                 btn.innerHTML = `<i class="fas fa-save"></i> DB 저장 및 리매칭`;
             }
         };
+    }
+
+    async function openPmhMetaDeleteModal(data, serverId, srvConfig) {
+        const context = getAvTrailerContext(data, srvConfig);
+        if (!context) return;
+        const existing = document.getElementById('pmh-meta-delete-modal');
+        if (existing) return;
+        const payload = JSON.stringify([{ kind: 'item', code: context.code, category: context.category }]);
+        window._pmh_top_z_index = (window._pmh_top_z_index || 10000050) + 20;
+        const m = document.createElement('div');
+        m.id = 'pmh-meta-delete-modal';
+        m.className = 'pmh-db-modal pmh-stacked-modal pmh-prompt pmh-delete-prompt';
+        m.style.zIndex = window._pmh_top_z_index;
+        m.style.display = 'flex';
+        m.setAttribute('role', 'dialog');
+        m.setAttribute('aria-modal', 'true');
+        m.setAttribute('aria-labelledby', 'pmh-meta-delete-title');
+        m.innerHTML = `
+            <div class="pmh-db-card pmh-prompt-card">
+                <div class="pmh-db-header pmh-prompt-header">
+                    <div class="pmh-prompt-heading">
+                        <i class="fas fa-trash-alt" aria-hidden="true"></i>
+                        <div><strong id="pmh-meta-delete-title">메타 DB 삭제</strong><div class="pmh-prompt-subtitle">삭제할 데이터와 연결 파일을 확인하세요.</div></div>
+                    </div>
+                </div>
+                <div class="pmh-db-body">
+                    <p class="pmh-prompt-status" data-delete-status role="status" aria-live="polite">관련 파일 목록을 불러오는 중…</p>
+                    <div class="pmh-prompt-summary" data-delete-records></div>
+                    <div class="pmh-prompt-notice"><strong>DB만 삭제</strong> — 연결 파일 유지<br><strong>전체 삭제</strong> — DB와 연결된 사용자 이미지·트레일러·프리뷰 삭제<br><span class="pmh-prompt-info">원본 영상과 외부 사이트·GDS 이미지는 유지됩니다.</span></div>
+                    <div class="pmh-prompt-error" data-delete-error role="alert"></div>
+                    <div data-delete-files></div>
+                </div>
+                <div class="pmh-db-footer pmh-prompt-footer">
+                    <button type="button" class="pmh-crop-btn" data-delete-cancel>취소</button>
+                    <button type="button" class="pmh-crop-btn pmh-prompt-button-warning" data-delete-db disabled>DB만 삭제</button>
+                    <button type="button" class="pmh-crop-btn pmh-prompt-button-danger" data-delete-all disabled>전체 삭제</button>
+                </div>
+            </div>`;
+        document.body.appendChild(m);
+        const status = m.querySelector('[data-delete-status]');
+        const error = m.querySelector('[data-delete-error]');
+        const cancel = m.querySelector('[data-delete-cancel]');
+        const dbButton = m.querySelector('[data-delete-db]');
+        const allButton = m.querySelector('[data-delete-all]');
+        let plan = null, busy = false;
+        m.pmhClose = () => { if (!busy) m.remove(); };
+        cancel.onclick = m.pmhClose;
+        m.onclick = event => event.stopPropagation();
+        cancel.focus();
+        const appendText = (parent, text, color = '') => {
+            const line = document.createElement('div');
+            line.textContent = text;
+            line.style.overflowWrap = 'anywhere';
+            if (color) line.style.color = color;
+            parent.appendChild(line);
+            return line;
+        };
+        const loadPlan = async () => {
+            plan = null;
+            dbButton.disabled = allButton.disabled = true;
+            status.textContent = '관련 파일 목록을 불러오는 중…';
+            try {
+                const response = await PmhFfBridge.callMetaApi(srvConfig, 'db_delete_preview', payload);
+                if (!m.isConnected) return;
+                if (response?.ret !== 'success') throw new Error(response?.msg || '삭제 목록 조회 실패');
+                const next = response.data;
+                if (!next || !Array.isArray(next.records) || next.records.length !== 1 || !Array.isArray(next.files) ||
+                    typeof next.token !== 'string' || !next.token || next.records[0].kind !== 'item' ||
+                    next.records[0].code !== context.code || next.records[0].category !== context.category) {
+                    throw new Error('FF 삭제 대상 정보가 요청한 작품과 일치하지 않습니다.');
+                }
+                const records = m.querySelector('[data-delete-records]');
+                const files = m.querySelector('[data-delete-files]');
+                records.textContent = files.textContent = '';
+                for (const record of next.records) appendText(records, `${record.title || ''} [${record.code}] · ${record.category}`);
+                const labels = { poster: '포스터', landscape: '가로 커버', fanart: '팬아트', trailer: '트레일러', preview: '프리뷰', person: '인물 이미지' };
+                if (!next.files.length) appendText(files, '개인 저장소에 기록된 미디어가 없습니다.', '#aaa');
+                for (const file of next.files) {
+                    const entry = document.createElement('div');
+                    entry.className = 'pmh-delete-file';
+                    const heading = document.createElement('div');
+                    heading.className = 'pmh-delete-file-head';
+                    const storage = appendText(heading, file.storage === 'gdrive' ? 'GDrive' : '로컬');
+                    storage.className = `pmh-prompt-badge ${file.storage === 'gdrive' ? 'pmh-delete-storage-drive' : 'pmh-delete-storage-local'}`;
+                    appendText(heading, labels[file.media_type] || file.media_type || '미디어').className = 'pmh-prompt-badge';
+                    if (file.is_user) appendText(heading, '사용자 미디어').className = 'pmh-prompt-badge';
+                    appendText(heading, (file.owners || []).join(', '));
+                    entry.appendChild(heading);
+                    appendText(entry, file.path || file.relative_path || '경로 정보 없음').className = 'pmh-delete-path';
+                    if (file.file_id) appendText(entry, `파일 ID: ${file.file_id}`, '#aaa');
+                    if (file.retained) appendText(entry, `유지: ${file.retained}`, '#6bbcd0').className = 'pmh-delete-file-note';
+                    else if (file.blocked) appendText(entry, `삭제 불가: ${file.blocked}`, '#ff8585').className = 'pmh-delete-file-note';
+                    files.appendChild(entry);
+                }
+                plan = next;
+                status.textContent = `DB ${plan.records.length}건 · 관련 미디어 ${plan.files.length}개`;
+                dbButton.disabled = false;
+                allButton.disabled = plan.files.some(file => file.blocked && !file.retained);
+            } catch (err) {
+                if (!m.isConnected) return;
+                status.textContent = '삭제 목록을 불러오지 못했습니다.';
+                error.textContent = err.message || String(err);
+            }
+        };
+        const executeDelete = async mode => {
+            if (busy || !plan || !m.isConnected || (mode === 'all' && allButton.disabled)) return;
+            busy = true;
+            cancel.disabled = dbButton.disabled = allButton.disabled = true;
+            error.textContent = '';
+            status.textContent = mode === 'all' ? '관련 미디어와 DB를 삭제하는 중…' : 'DB만 삭제하는 중…';
+            let response;
+            try {
+                response = await PmhFfBridge.callMetaApi(srvConfig, 'db_delete_confirm', payload, mode, plan.token);
+            } catch (err) {
+                response = { ret: 'error', uncertain: true, msg: '삭제 응답을 받지 못했습니다. 처리가 진행 중이거나 완료되었을 수 있으므로 목록을 새로 고쳐 확인하세요.' };
+            }
+            busy = false;
+            if (!m.isConnected) return;
+            cancel.disabled = false;
+            if (response?.ret === 'success') {
+                invalidateFfItemCache(serverId, data.itemId);
+                m.remove();
+                toastr.success(response.msg || '메타 DB 삭제가 완료되었습니다.');
+                processDetail(true);
+                return;
+            }
+            const failures = Array.isArray(response?.files) ? response.files.map(file =>
+                `${file.path || file.file_id || ''}: ${file.error || file.blocked || ''}`) : [];
+            error.textContent = [response?.msg || '삭제 처리 실패', ...failures].join('\n');
+            if (!response || response.uncertain) {
+                plan = null;
+                status.textContent = '삭제 결과 확인이 필요합니다. 창을 닫고 현재 DB 상태를 확인하세요.';
+            } else {
+                await loadPlan();
+            }
+        };
+        dbButton.onclick = () => executeDelete('db');
+        allButton.onclick = () => executeDelete('all');
+        await loadPlan();
+        return m;
     }
 
     // 범용 텍스트 클립보드 복사 헬퍼
@@ -10664,27 +11307,49 @@ GM_addStyle(`
 
                         if (!isMaster) {
                             subRow.querySelector('.pmh-btn-sub-master').onclick = async () => {
-                                if (!confirm(`[${sId}] 인물을 이 레코드의 새로운 대표 ID 및 프로필로 지정하시겠습니까?`)) return;
-                                toastr.info("대표 인물 전환 요청 중...");
-                                const sRes = await PmhFfBridge.callPersonApi(srvConfig, 'person_sub_set_master', String(p.id || p.person_idx), sId);
-                                if (sRes && sRes.ret === 'success') {
-                                    toastr.success(sRes.msg || "대표 지정 성공");
-                                    await loadPersonDataInPlace();
-                                } else {
-                                    toastr.warning(sRes?.msg || "대표 지정 실패");
-                                }
+                                if (m.pmhPersonActionPending) return;
+                                const stamp = pmhServerStamp([srvConfig]);
+                                const current = () => !m.pmhPersonActionPending && m.isConnected && subRow.isConnected && rawPersonData === p && revision === loadRevision && pmhServerStamp([srvConfig]) === stamp;
+                                if (!await pmhConfirmAction({ severity:'warning', title:'대표 인물 변경', owner:m, isCurrent:current,
+                                    subject:`${subItem.name_ko || subItem.name_org || sId} (${sId})`,
+                                    details:[{label:'현재 대표',value:`${p.name_ko || p.name_org || p.person_idx} (${p.person_idx})`},{label:'새 대표 ID',value:sId},{label:'도메인',value:p.domain}],
+                                    consequences:['선택한 인물을 대표 ID 및 프로필로 지정하며 그룹의 대표 관계가 변경됩니다.'], confirmLabel:'대표 인물 변경' }) || !current()) return;
+                                const actionButton = subRow.querySelector('.pmh-btn-sub-master');
+                                m.pmhPersonActionPending = true; actionButton.disabled = true;
+                                try {
+                                    toastr.info("대표 인물 전환 요청 중...");
+                                    const sRes = await PmhFfBridge.callPersonApi(srvConfig, 'person_sub_set_master', String(p.id || p.person_idx), sId, '', { fields: { domain: p.domain } });
+                                    if (sRes && sRes.ret === 'success') {
+                                        toastr.success(sRes.msg || "대표 지정 성공");
+                                        await loadPersonDataInPlace();
+                                    } else {
+                                        toastr.warning(sRes?.msg || "대표 지정 실패");
+                                    }
+                                } catch (err) { toastr.error(err.message || String(err)); }
+                                finally { m.pmhPersonActionPending = false; actionButton.disabled = false; }
                             };
 
                             subRow.querySelector('.pmh-btn-sub-split').onclick = async () => {
-                                if (!confirm(`[${sId}] 인물을 현재 그룹에서 분리하여 독립된 별도의 레코드로 분리하시겠습니까?\n(분리 후 재동기화 시에도 다시 합쳐지지 않습니다)`)) return;
-                                toastr.info("그룹 분리 요청 중...");
-                                const spRes = await PmhFfBridge.callPersonApi(srvConfig, 'person_sub_split', String(p.id || p.person_idx), sId);
-                                if (spRes && spRes.ret === 'success') {
-                                    toastr.success(spRes.msg || "그룹 분리 성공");
-                                    await loadPersonDataInPlace();
-                                } else {
-                                    toastr.warning(spRes?.msg || "그룹 분리 실패");
-                                }
+                                if (m.pmhPersonActionPending) return;
+                                const stamp = pmhServerStamp([srvConfig]);
+                                const current = () => !m.pmhPersonActionPending && m.isConnected && subRow.isConnected && rawPersonData === p && revision === loadRevision && pmhServerStamp([srvConfig]) === stamp;
+                                if (!await pmhConfirmAction({ severity:'danger', title:'서브 인물 그룹 분리', owner:m, isCurrent:current,
+                                    subject:`${subItem.name_ko || subItem.name_org || sId} (${sId})`,
+                                    details:[{label:'현재 대표',value:`${p.name_ko || p.name_org || p.person_idx} (${p.person_idx})`},{label:'분리 대상 ID',value:sId},{label:'도메인',value:p.domain}],
+                                    consequences:['분리 대상은 독립된 DB 레코드가 됩니다.','분리 후 재동기화 시에도 다시 병합되지 않습니다.'], confirmLabel:'인물 분리' }) || !current()) return;
+                                const actionButton = subRow.querySelector('.pmh-btn-sub-split');
+                                m.pmhPersonActionPending = true; actionButton.disabled = true;
+                                try {
+                                    toastr.info("그룹 분리 요청 중...");
+                                    const spRes = await PmhFfBridge.callPersonApi(srvConfig, 'person_sub_split', String(p.id || p.person_idx), sId, '', { fields: { domain: p.domain } });
+                                    if (spRes && spRes.ret === 'success') {
+                                        toastr.success(spRes.msg || "그룹 분리 성공");
+                                        await loadPersonDataInPlace();
+                                    } else {
+                                        toastr.warning(spRes?.msg || "그룹 분리 실패");
+                                    }
+                                } catch (err) { toastr.error(err.message || String(err)); }
+                                finally { m.pmhPersonActionPending = false; actionButton.disabled = false; }
                             };
                         }
                         tbody.appendChild(subRow);
@@ -10828,7 +11493,7 @@ GM_addStyle(`
                     customUploadPayload = null;
 
                     document.getElementById('pmh-crop-title').innerText = `[${pNameKo || pNameOrg || pIdx}] 프로필 사진 크롭 에디터`;
-                    pmhCropModal.style.display = 'flex';
+                    showCropModal();
                     updateCropTargetUI();
                     setCropAspectRatio(3 / 4, 'pmh-crop-ratio-portrait');
                     loadCropImage(getFfMediaProxyUrl(srvConfig, activeThumb, '', 'image', pDomain));
@@ -10851,16 +11516,24 @@ GM_addStyle(`
         m.querySelectorAll('[data-reset]').forEach(button => {
             button.onclick = async () => {
                 closeResetMenu();
-                if (isReadOnly || !rawPersonData) return;
+                if (isReadOnly || !rawPersonData || m.pmhPersonActionPending) return;
                 const type = button.dataset.reset;
-                if (!confirm(type === 'text' ? '수동 텍스트 편집을 초기화하시겠습니까?' : '사용자 이미지 파일 삭제를 포함하여 선택한 데이터를 초기화하시겠습니까?')) return;
-                button.disabled = true;
+                if (!['text','image','all'].includes(type)) return;
+                const person = rawPersonData, revision = loadRevision, stamp = pmhServerStamp([srvConfig]);
+                const current = () => !m.pmhPersonActionPending && m.isConnected && rawPersonData === person && revision === loadRevision && !isReadOnly && pmhServerStamp([srvConfig]) === stamp;
+                const scope = type === 'text' ? '수동 텍스트 편집' : type === 'image' ? '사용자 이미지 파일·참조' : '수동 텍스트 및 사용자 이미지 전체';
+                if (!await pmhConfirmAction({ severity:'danger', title:'인물 사용자 데이터 초기화', owner:m, isCurrent:current,
+                    subject:person.name_ko || person.name_org || person.person_idx,
+                    details:[{label:'인물 ID / 도메인',value:`${person.person_idx} / ${person.domain}`},{label:'초기화 범위',value:scope}],
+                    consequences:[type === 'text' ? '수동 텍스트 편집을 지웁니다. 사용자 이미지는 유지됩니다.' : '선택한 사용자 데이터와 사용자 이미지 파일을 삭제합니다.',
+                        '이 화면에서 자동 복원할 수 없습니다. 공식·사이트 데이터와 인물 레코드는 유지됩니다.'], confirmLabel:'선택 데이터 초기화' }) || !current()) return;
+                m.pmhPersonActionPending = true; button.disabled = true;
                 try {
-                    const res = await PmhFfBridge.callPersonApi(srvConfig, 'person_reset_user_data', String(rawPersonData.id), JSON.stringify({ reset_type: type }));
+                    const res = await PmhFfBridge.callPersonApi(srvConfig, 'person_reset_user_data', String(person.id), JSON.stringify({ reset_type: type }), '', { fields: { domain: person.domain } });
                     if (res?.ret !== 'success') throw new Error(res?.msg || '초기화 실패');
                     await loadPersonDataInPlace();
                 } catch (err) { toastr.error(err.message || String(err)); }
-                finally { button.disabled = false; }
+                finally { m.pmhPersonActionPending = false; button.disabled = false; }
             };
         });
         await loadPersonDataInPlace();
@@ -11124,7 +11797,7 @@ GM_addStyle(`
                     url: rawUrl
                 };
 
-                infoLog(`[Crop Modal] 💾 FF direct_save 요청 전송:`, payload);
+                infoLog('[Crop Modal] FF direct_save 요청 전송');
 
                 const saveRes = await makeRequest(
                     `${srvConfig.relayUrl}/ff_metadata/api/${module}/direct_save`,
@@ -11135,7 +11808,7 @@ GM_addStyle(`
                     180000
                 );
 
-                infoLog(`[Crop Modal] ✅ FF direct_save 응답 수신:`, saveRes);
+                infoLog('[Crop Modal] FF direct_save 응답 수신');
 
                 if (saveRes && saveRes.ret === 'success') {
                     toastr.success(`[${code}] ${typeLabel} 저장 및 DB 업데이트 완료!`);
@@ -11271,10 +11944,10 @@ GM_addStyle(`
                 }
 
                 const payload = buildFfCropPayload(context, cropData, upload);
-                infoLog(`[Crop Modal] 💾 FF crop_save 요청 전송:`, payload);
+                infoLog('[Crop Modal] FF crop_save 요청 전송');
 
                 const saveRes = await makeRequest(`${srvConfig.relayUrl}/ff_metadata/api/${module}/crop_save`, 'POST', payload, ClientSettings.masterApiKey, null, 180000);
-                infoLog(`[Crop Modal] ✅ FF crop_save 응답:`, saveRes);
+                infoLog('[Crop Modal] FF crop_save 응답 수신');
                 
                 if (saveRes.ret !== 'success') {
                     throw new Error(saveRes.msg || "FF 포스터 저장 실패");
@@ -11306,60 +11979,12 @@ GM_addStyle(`
     // PMH 팝업 모달 및 드롭다운 ESC 단축키 최상위 레이어 우선 닫기 핸들러
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' || e.keyCode === 27) {
-            // 1순위: 라이트박스가 최상위에 열려 있으면 라이트박스만 단독 닫기 (배경 모달 절대 보호)
-            const lightbox = document.getElementById('pmh-lightbox-modal');
-            if (lightbox) {
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                lightbox.remove();
-                return;
-            }
-
-            // 2순위: 동영상 재생 모달 닫기
-            const videoModal = document.getElementById('pmh-video-modal');
-            if (videoModal) {
-                e.preventDefault();
-                e.stopPropagation();
-                if (videoModal.pmhClose) videoModal.pmhClose();
-                else videoModal.remove();
-                return;
-            }
-
-            // 3순위: 포스터 크롭 에디터 모달 닫기
-            const cropModal = document.getElementById('pmh-crop-modal');
-            if (cropModal && cropModal.style.display === 'flex') {
-                e.preventDefault();
-                e.stopPropagation();
-                closeCropModal();
-                return;
-            }
-
-            // 4순위: 배우 검색 모달 닫기
-            const actorSearchModal = document.getElementById('pmh-actor-search-modal');
-            if (actorSearchModal && actorSearchModal.style.display === 'flex') {
-                e.preventDefault();
-                e.stopPropagation();
-                actorSearchModal.remove();
-                return;
-            }
-
-            // 5순위: 다중 스택 모달 중 가장 상위에 있는 단일 모달만 닫기 (아래층 모달 보호)
-            const stackedModals = document.querySelectorAll('.pmh-stacked-modal');
-            if (stackedModals.length > 0) {
-                e.preventDefault();
-                e.stopPropagation();
-                const topModal = stackedModals[stackedModals.length - 1];
-                topModal.remove();
-                return;
-            }
-
-            // 6순위: 프론트엔드 전역 설정 모달 닫기
-            const settingsModal = document.getElementById('pmh-client-settings-modal');
-            if (settingsModal) {
-                e.preventDefault();
-                e.stopPropagation();
-                settingsModal.remove();
+            const top = pmhTopModal();
+            if (top) {
+                e.preventDefault(); e.stopImmediatePropagation();
+                if (top.pmhClose) top.pmhClose();
+                else if (top.id === 'pmh-crop-modal') closeCropModal();
+                else top.remove();
                 return;
             }
 
@@ -11476,7 +12101,7 @@ GM_addStyle(`
             let cachedCss = GM_getValue('pmh_ui_core_css_cache', null);
             let cachedJs = GM_getValue('pmh_ui_core_js_cache', null);
 
-            if (!cachedCss || !cachedJs || savedVer !== CURRENT_VERSION || ClientSettings.devMode) {
+            if (!cachedCss || !cachedJs || !cachedJs.includes('confirmationModals: true') || savedVer !== CURRENT_VERSION || ClientSettings.devMode) {
                 infoLog(`[PMH Boot] 로컬 마스터 서버(${ClientSettings.masterUrl})에서 UI Core 동기화 중...`);
 
                 cachedCss = await new Promise((resolve, reject) => {
@@ -11512,6 +12137,10 @@ GM_addStyle(`
             styleEl.textContent = cachedCss;
             document.head.appendChild(styleEl);
 
+            if (window.PmhUICore && !window.PmhUICore.confirmationModals) {
+                window.PmhUICore.destroyActiveInstance?.();
+                delete window.PmhUICore;
+            }
             if (typeof window.PmhUICore === 'undefined') {
                 await new Promise((resolve, reject) => {
                     try {

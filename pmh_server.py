@@ -452,7 +452,7 @@ def check_api_key():
     allowed_paths = ['/', '/favicon.ico']
     if request.path in allowed_paths or request.path.startswith('/api/client/'): return
     
-    allowed_restart_paths = ['/api/admin/update', '/favicon.ico', '/']
+    allowed_restart_paths = ['/api/admin/update', '/api/admin/update_status', '/favicon.ico', '/']
     if request.path not in allowed_restart_paths and is_server_restart_required():
         return jsonify({"error": "SERVER_RESTART_REQUIRED", "message": "서버 수동 재시작 필요"}), 426
         
@@ -503,6 +503,8 @@ def safe_download_and_replace(url, target_filepath):
                 code_content = raw_data.decode('utf-8')
                 if is_python and (len(code_content) < 100 or "def " not in code_content):
                     raise Exception("다운로드된 파이썬 코드 비정상.")
+                if is_python:
+                    compile(code_content, target_filepath, 'exec')
                 with open(target_filepath, 'w', encoding='utf-8') as f:
                     f.write(code_content)
             
@@ -514,17 +516,57 @@ def safe_download_and_replace(url, target_filepath):
         pmh_logger.error(f"❌ 업데이트 실패 ({os.path.basename(target_filepath)}): {e}")
         raise e
 
+_CORE_RELOAD_FAILED = False
+CORE_UPDATE_STATUS = {'state': 'idle', 'message': ''}
+
+
+def reload_core_checked():
+    global _CORE_RELOAD_FAILED
+    with open(CORE_FILE_PATH, 'r', encoding='utf-8') as source:
+        compile(source.read(), CORE_FILE_PATH, 'exec')
+    _CORE_RELOAD_FAILED = True
+    importlib.reload(pmh_core)
+    _CORE_RELOAD_FAILED = False
+
+
 def background_update_task():
+    CORE_UPDATE_STATUS.update(state='running', message='업데이트 진행 중')
+    stop_requested = stopped = False
+    try:
+        ready, _, message = pmh_core.check_update_readiness(BASE_DIR)
+        if not ready:
+            raise RuntimeError(message)
+        stop_requested = True
+        stopped = pmh_core.stop_scheduler_daemon()
+        if not stopped:
+            raise RuntimeError('데몬 종료를 확인하지 못했습니다. 코어를 교체하지 않습니다.')
+        pmh_core.UniversalPlexDatabaseEngine.close_pool()
+        pmh_core.UniversalMetaDatabaseEngine.close_pool()
+        _background_update_task()
+        CORE_UPDATE_STATUS.update(state='completed', message='업데이트 완료')
+    except Exception:
+        CORE_UPDATE_STATUS.update(state='error', message='업데이트가 중단되었습니다. 서버 로그를 확인하세요.')
+        pmh_logger.exception('업데이트가 중단되었습니다.')
+    finally:
+        if not _CORE_RELOAD_FAILED and (not stop_requested or stopped):
+            if stopped: pmh_core.start_scheduler_daemon(global_conf)
+            pmh_core.end_maintenance()
+        else:
+            pmh_logger.critical('부분 리로드 실패: 유지보수 상태를 유지합니다. 수동 재시작이 필요합니다.')
+
+
+def _background_update_task():
     pmh_logger.info("워커 스레드 종료 대기 및 코어 업데이트 시작...")
     
     if DEV_MODE:
         pmh_logger.info("🛠️ DEV_MODE: GitHub 다운로드를 생략하고 로컬 모듈만 리로드합니다.")
         try:
-            importlib.reload(pmh_core)
+            reload_core_checked()
             pmh_core.start_scheduler_daemon(global_conf)
             pmh_logger.info(f"코어 모듈 리로드 완료! (v{pmh_core.get_version()})")
         except Exception as e:
             pmh_logger.error(f"모듈 리로드 실패: {e}")
+            raise
         return
 
     try:
@@ -538,7 +580,7 @@ def background_update_task():
             active_workers = [t for t in threading.enumerate() if t.name.startswith("Worker_")]
         
         if active_workers:
-            pmh_logger.warning(f"⚠️ {waited}초 대기 초과! {len(active_workers)}개의 워커를 무시하고 강제 업데이트 진행.")
+            raise RuntimeError('종료되지 않은 워커가 있어 업데이트를 중단합니다.')
 
         # 1. 코어 파일 업데이트
         safe_download_and_replace(CORE_URL, CORE_FILE_PATH)
@@ -549,7 +591,7 @@ def background_update_task():
             try: safe_download_and_replace(asset['url'], os.path.join(BASE_DIR, asset['name']))
             except Exception as e: pmh_logger.warning(f"에셋 건너뜀({asset['name']}): {e}")
             
-        importlib.reload(pmh_core)
+        reload_core_checked()
         pmh_core.start_scheduler_daemon(global_conf)
         pmh_logger.info(f"🎉 코어 핫-리로드 완료! (v{pmh_core.get_version()})")
 
@@ -575,6 +617,12 @@ def background_update_task():
 
     except Exception as e:
         pmh_logger.critical(f"업데이트 중 치명적 오류:\n{traceback.format_exc()}")
+        raise
+
+@app.route('/api/admin/update_status', methods=['GET'])
+def api_admin_update_status():
+    return jsonify(dict(CORE_UPDATE_STATUS, restart_required=is_server_restart_required()))
+
 
 @app.route('/api/admin/update', methods=['POST'])
 def api_admin_update():
@@ -582,7 +630,7 @@ def api_admin_update():
     force_update = req_data.get('force', False)
     
     try:
-        is_ready, running_count, msg = pmh_core.check_update_readiness(BASE_DIR, force_update)
+        is_ready, running_count, msg = pmh_core.begin_maintenance(BASE_DIR, force_update)
         if not is_ready:
             pmh_logger.info(f"업데이트 거부됨: {msg}")
             return jsonify({"status": "busy", "running_count": running_count, "message": msg}), 200
@@ -593,11 +641,31 @@ def api_admin_update():
     import threading
     t = threading.Thread(target=background_update_task, name="PMH_Updater")
     t.daemon = True
-    t.start()
+    try:
+        t.start()
+    except Exception:
+        pmh_core.end_maintenance()
+        raise
     return jsonify({"status": "success", "message": "Update started in background.", "version": pmh_core.get_version()})
 
 @app.route('/api/admin/reload_core', methods=['POST'])
 def api_admin_reload_core():
+    ready, count, message = pmh_core.begin_maintenance(BASE_DIR)
+    if not ready:
+        return jsonify({'status': 'busy', 'running_count': count, 'message': message}), 409
+    stopped = False
+    try:
+        stopped = pmh_core.stop_scheduler_daemon()
+        if not stopped:
+            return jsonify({'status': 'error', 'message': '데몬 종료를 확인하지 못해 리로드하지 않았습니다.'}), 409
+        return _api_admin_reload_core()
+    finally:
+        if not _CORE_RELOAD_FAILED and stopped:
+            pmh_core.start_scheduler_daemon(global_conf)
+            pmh_core.end_maintenance()
+
+
+def _api_admin_reload_core():
     global cfg, BASE_CFG, MASTER_CFG, IS_MASTER, DEV_MODE, API_KEY
     global ENABLE_FAIL2BAN, FAIL2BAN_WHITELIST, TRUSTED_PROXIES, TOKEN_EXPIRE_SECONDS, global_conf, NODE_INFO_CACHE
     global PUID, PGID
@@ -609,54 +677,71 @@ def api_admin_reload_core():
             
         pmh_logger.info("1. 설정 재로드 및 로거 적용...")
         try:
-            cfg = load_config()
-            BASE_CFG = cfg.get("BASE", {})
-            MASTER_CFG = cfg.get("MASTER", None)
-            IS_MASTER = MASTER_CFG is not None
-            DEV_MODE = BASE_CFG.get("DEV_MODE", False)
-            API_KEY = BASE_CFG.get("APIKEY", "")
+            candidate_global_conf = global_conf.copy()
+            candidate_cfg = load_config()
+            candidate_BASE_CFG = candidate_cfg.get("BASE", {})
+            candidate_MASTER_CFG = candidate_cfg.get("MASTER", None)
+            candidate_IS_MASTER = candidate_MASTER_CFG is not None
+            candidate_DEV_MODE = candidate_BASE_CFG.get("DEV_MODE", False)
+            candidate_API_KEY = candidate_BASE_CFG.get("APIKEY", "")
             
-            PUID = int(BASE_CFG.get("PUID", -1))
-            PGID = int(BASE_CFG.get("PGID", -1))
-            setup_logger()
+            candidate_PUID = int(candidate_BASE_CFG.get("PUID", -1))
+            candidate_PGID = int(candidate_BASE_CFG.get("PGID", -1))
 
-            ENABLE_FAIL2BAN = BASE_CFG.get("ENABLE_FAIL2BAN", True)
-            FAIL2BAN_WHITELIST = BASE_CFG.get("FAIL2BAN_WHITELIST", [])
-            if not isinstance(FAIL2BAN_WHITELIST, list): FAIL2BAN_WHITELIST = [FAIL2BAN_WHITELIST]
+            candidate_ENABLE_FAIL2BAN = candidate_BASE_CFG.get("ENABLE_FAIL2BAN", True)
+            candidate_FAIL2BAN_WHITELIST = candidate_BASE_CFG.get("FAIL2BAN_WHITELIST", [])
+            if not isinstance(candidate_FAIL2BAN_WHITELIST, list): candidate_FAIL2BAN_WHITELIST = [candidate_FAIL2BAN_WHITELIST]
 
-            TRUSTED_PROXIES = BASE_CFG.get("TRUSTED_PROXIES", [])
-            if not isinstance(TRUSTED_PROXIES, list): TRUSTED_PROXIES = [TRUSTED_PROXIES]
+            candidate_TRUSTED_PROXIES = candidate_BASE_CFG.get("TRUSTED_PROXIES", [])
+            if not isinstance(candidate_TRUSTED_PROXIES, list): candidate_TRUSTED_PROXIES = [candidate_TRUSTED_PROXIES]
 
-            TOKEN_EXPIRE_SECONDS = int(BASE_CFG.get("TOKEN_EXPIRE_SECONDS", 60))
+            candidate_TOKEN_EXPIRE_SECONDS = int(candidate_BASE_CFG.get("TOKEN_EXPIRE_SECONDS", 60))
 
-            global_conf.update({
-                "puid": PUID, "pgid": PGID,
-                "plex_db_type": str(BASE_CFG.get("PLEX_DB_TYPE", "sqlite3")).lower(),
-                "plex_db_path": BASE_CFG.get("PLEX_DB_PATH", ""),
-                "plex_sqlite_bin": BASE_CFG.get("PLEX_SQLITE_BIN", ""),
-                "plex_pg_config": BASE_CFG.get("PLEX_PG_CONFIG", {}),
-                "plex_url": BASE_CFG.get("PLEX_URL", ""),
-                "plex_token": BASE_CFG.get("PLEX_TOKEN", ""),
-                "mate_apikey": BASE_CFG.get("FF_APIKEY", ""),
-                "mate_url": BASE_CFG.get("FF_URL", ""),
-                "FF_DDNS": str(BASE_CFG.get("FF_DDNS", "")).strip().rstrip('/'),
-                "meta_db_type": str(BASE_CFG.get("META_DB_TYPE", "none")).lower(),
-                "meta_pg_config": BASE_CFG.get("META_PG_CONFIG", {}),
-                "discord_webhook": BASE_CFG.get("DISCORD_WEBHOOK", ""),
-                "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
-                "DELETE_JSON_SECTION": str(BASE_CFG.get("DELETE_JSON_SECTION", "")),
-                "IGNORE_RES_SECTION": str(BASE_CFG.get("IGNORE_RES_SECTION", "")),
-                "JAV_SECTION": str(BASE_CFG.get("JAV_SECTION", "")),
-                "WESTERN_AV_SECTION": str(BASE_CFG.get("WESTERN_AV_SECTION", "")),
-                "AV_IMAGE_SERVER_USE": bool(BASE_CFG.get("AV_IMAGE_SERVER_USE", False)),
-                "AV_IMAGE_SERVER_URL": str(BASE_CFG.get("AV_IMAGE_SERVER_URL", "")).strip().rstrip('/'),
-                "JAV_PARSING_RULES": BASE_CFG.get("JAV_PARSING_RULES", {}),
-                "FF_METADB_USE": bool(BASE_CFG.get("FF_METADB_USE", False)),
-                "is_master": IS_MASTER
+            candidate_global_conf.update({
+                "puid": candidate_PUID, "pgid": candidate_PGID,
+                "plex_db_type": str(candidate_BASE_CFG.get("PLEX_DB_TYPE", "sqlite3")).lower(),
+                "plex_db_path": candidate_BASE_CFG.get("PLEX_DB_PATH", ""),
+                "plex_sqlite_bin": candidate_BASE_CFG.get("PLEX_SQLITE_BIN", ""),
+                "plex_pg_config": candidate_BASE_CFG.get("PLEX_PG_CONFIG", {}),
+                "plex_url": candidate_BASE_CFG.get("PLEX_URL", ""),
+                "plex_token": candidate_BASE_CFG.get("PLEX_TOKEN", ""),
+                "mate_apikey": candidate_BASE_CFG.get("FF_APIKEY", ""),
+                "mate_url": candidate_BASE_CFG.get("FF_URL", ""),
+                "FF_DDNS": str(candidate_BASE_CFG.get("FF_DDNS", "")).strip().rstrip('/'),
+                "meta_db_type": str(candidate_BASE_CFG.get("META_DB_TYPE", "none")).lower(),
+                "meta_pg_config": candidate_BASE_CFG.get("META_PG_CONFIG", {}),
+                "discord_webhook": candidate_BASE_CFG.get("DISCORD_WEBHOOK", ""),
+                "machine_id": candidate_BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
+                "DELETE_JSON_SECTION": str(candidate_BASE_CFG.get("DELETE_JSON_SECTION", "")),
+                "IGNORE_RES_SECTION": str(candidate_BASE_CFG.get("IGNORE_RES_SECTION", "")),
+                "JAV_SECTION": str(candidate_BASE_CFG.get("JAV_SECTION", "")),
+                "WESTERN_AV_SECTION": str(candidate_BASE_CFG.get("WESTERN_AV_SECTION", "")),
+                "AV_IMAGE_SERVER_USE": bool(candidate_BASE_CFG.get("AV_IMAGE_SERVER_USE", False)),
+                "AV_IMAGE_SERVER_URL": str(candidate_BASE_CFG.get("AV_IMAGE_SERVER_URL", "")).strip().rstrip('/'),
+                "JAV_PARSING_RULES": candidate_BASE_CFG.get("JAV_PARSING_RULES", {}),
+                "FF_METADB_USE": bool(candidate_BASE_CFG.get("FF_METADB_USE", False)),
+                "is_master": candidate_IS_MASTER
             })
-            NODE_INFO_CACHE.clear()
         except Exception as cfg_err:
-            pmh_logger.warning(f"설정 갱신 실패 (기존 유지): {cfg_err}")
+            pmh_logger.warning(f"설정 검증 실패 (기존 유지): {cfg_err}")
+            raise
+        globals().update({
+            'cfg': candidate_cfg,
+            'BASE_CFG': candidate_BASE_CFG,
+            'MASTER_CFG': candidate_MASTER_CFG,
+            'IS_MASTER': candidate_IS_MASTER,
+            'DEV_MODE': candidate_DEV_MODE,
+            'API_KEY': candidate_API_KEY,
+            'PUID': candidate_PUID,
+            'PGID': candidate_PGID,
+            'ENABLE_FAIL2BAN': candidate_ENABLE_FAIL2BAN,
+            'FAIL2BAN_WHITELIST': candidate_FAIL2BAN_WHITELIST,
+            'TRUSTED_PROXIES': candidate_TRUSTED_PROXIES,
+            'TOKEN_EXPIRE_SECONDS': candidate_TOKEN_EXPIRE_SECONDS,
+            'global_conf': candidate_global_conf,
+        })
+        setup_logger()
+        NODE_INFO_CACHE.clear()
 
         pmh_logger.info("2. 모듈 리로드 시작...")
         if hasattr(pmh_core, 'UniversalPlexDatabaseEngine'):
@@ -666,10 +751,10 @@ def api_admin_reload_core():
             pmh_core.UniversalMetaDatabaseEngine.close_pool()
 
         if hasattr(pmh_core, 'stop_scheduler_daemon'):
-            pmh_core.stop_scheduler_daemon()
-            time.sleep(1.0)
+            if not pmh_core.stop_scheduler_daemon():
+                raise RuntimeError('데몬 종료를 확인하지 못했습니다.')
             
-        importlib.reload(pmh_core)
+        reload_core_checked()
         pmh_core.start_scheduler_daemon(global_conf)
         
         if global_conf.get("meta_db_type") == "postgres":
