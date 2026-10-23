@@ -72,8 +72,8 @@ def get_ui(core_api):
                 {"value": "title", "text": "제목 (Title)"},
                 {"value": "path", "text": "파일/폴더 경로 (Path)"}
             ], "default": ["guid"], "show_if": {"mode": ["refresh", "rematch"]}},
-            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: marvel 또는 regex||^\[sod\]"},
-            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\.mp4$"},
+            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식은 regex|| 사용)", "placeholder": r"예: marvel 또는 regex||^\[sod\]"},
+            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식은 regex|| 사용)", "placeholder": r"예: sjva_agent:// 또는 regex||\.mp4$"},
 
             {"id": "scan_depth", "type": "number", "label": "경로 스캔 Depth (기본: 3)", "default": 3, "layout": "plain", "width": "60px", "show_if": {"mode": "path_scan"}}
         ],
@@ -210,7 +210,7 @@ def get_target_items(req_data, core_api, task=None):
         target_libs = core_api['query'](sec_query, tuple(sec_params))
     except Exception as e:
         if task: task.log(f"❌ 라이브러리 섹션 조회 실패: {e}")
-        return items, total_scanned
+        raise
 
     if not target_libs:
         if task: task.log("⚠️ 선택한 라이브러리를 찾을 수 없습니다.")
@@ -235,7 +235,7 @@ def get_target_items(req_data, core_api, task=None):
             locations = core_api['query'](loc_q)
         except Exception as e:
             if task: task.log(f"❌ 섹션 경로 조회 실패: {e}")
-            locations = []
+            raise
 
         for loc in locations:
             if task and task.is_cancelled(): return items, total_scanned
@@ -427,6 +427,7 @@ def get_target_items(req_data, core_api, task=None):
 
     except Exception as e:
         if task: task.log(f"❌ 쿼리 실행 중 오류 발생: {e}")
+        raise
 
     for rk in list(targets.keys()): 
         if not targets[rk]['title'] or targets[rk]['title'].strip() == "":
@@ -465,11 +466,12 @@ def run(data, core_api):
 
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
-            if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
+            if pmh_core.cache_resume_allowed(core_api['cache'], task_state, data, scheduled=True):
                 cached_page = core_api['cache'].load_page(1, 99999999)
                 if cached_page and cached_page.get('data'):
                     items = [{'id': str(row.get('rating_key', row.get('id'))), 'title': row['title'], 'section_id': row.get('section_id')} for row in cached_page['data']]
-                    task_data = {"mode": current_mode, "opt_vfs": vfs_opt, "target_items": items, "total": len(items)}
+                    task_data = dict(data, mode=current_mode, opt_vfs=vfs_opt, target_items=items, total=len(items),
+                                     _cache_revision=task_state['task_data']['_cache_revision'])
                     task_data['_resume_start_index'] = task_state.get('progress', 0)
                     task_data['_is_cron'] = True
                     return {"status": "success", "type": "async_task", "task_data": task_data}, 200
@@ -589,6 +591,7 @@ def worker(task_data, core_api, start_index):
                 return
             
             action = 'execute'
+            task_data['action_type'] = 'execute'
             task_data['_use_cache_db'] = True
             task_data['total'] = len(items)
             start_index = 0
