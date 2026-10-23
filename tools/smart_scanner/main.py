@@ -235,8 +235,8 @@ def get_ui(core_api):
                 {"value": "title", "text": "제목 (Title)"},
                 {"value": "path", "text": "파일/폴더 경로 (Path)"}
             ], "default": ["guid", "title"]},
-            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: marvel 또는 regex||^\[sod\]"},
-            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\.mp4$"}
+            {"id": "filter_include", "type": "text", "label": "포함 키워드 (정규표현식은 regex|| 사용)", "placeholder": r"예: marvel 또는 regex||^\[sod\]"},
+            {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (정규표현식은 regex|| 사용)", "placeholder": r"예: sjva_agent:// 또는 regex||\.mp4$"}
         ],
         "execute_inputs": [
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": True, "show_if": {"opt_match": True}},
@@ -804,10 +804,11 @@ def run(data, core_api):
     if action == 'execute':
         if data.get('_is_cron'):
             task_state = core_api['task'].load()
-            if task_state and task_state.get('state') in ['cancelled', 'error'] and task_state.get('progress', 0) < task_state.get('total', 0):
+            if pmh_core.cache_resume_allowed(core_api['cache'], task_state, data, scheduled=True):
                 cached_page = core_api['cache'].load_page(1, 1)
                 if cached_page and cached_page.get('total_items', 0) > 0:
                     task_data = data.copy()
+                    task_data['_cache_revision'] = task_state['task_data']['_cache_revision']
                     task_data['_use_cache_db'] = True
                     task_data['total'] = cached_page.get('total_items')
                     task_data['_resume_start_index'] = task_state.get('progress', 0)
@@ -957,6 +958,7 @@ def worker(task_data, core_api, start_index):
                 return
             
             action = 'execute'
+            task_data['action_type'] = 'execute'
             task_data['_use_cache_db'] = True
             task_data['total'] = total_issues
             start_index = 0
