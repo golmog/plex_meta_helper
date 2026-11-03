@@ -1009,6 +1009,11 @@ def worker(task_data, core_api, start_index):
     mate_apikey = core_api['config'].get('mate_apikey', '')
     path_mappings = core_api['config'].get('path_mappings', [])
 
+    def manual_refresh_summary(result):
+        ret, msg = result.get('ret'), result.get('msg')
+        summary = f"ret={ret if isinstance(ret, str) else '없음'}, msg={msg if isinstance(msg, str) else ''}"
+        return summary.replace(mate_apikey, '[redacted]') if mate_apikey else summary
+
     # Plex 서버 연결
     try:
         plex = core_api['get_plex']()
@@ -1141,10 +1146,12 @@ def worker(task_data, core_api, start_index):
                                 )
 
                         try:
-                            if pmh_core.execute_plexmate_action('manual_refresh', int(rk), core_api['config']):
-                                task.log("         ➔ 🟢 Plex Mate YAML/TMDB 반영 성공!")
+                            result = pmh_core.execute_plexmate_action('manual_refresh', int(rk), core_api['config'], return_detail=True)
+                            summary = manual_refresh_summary(result)
+                            if result['success']:
+                                task.log(f"         ➔ 🟢 Plex Mate YAML/TMDB 반영 성공! ({summary})")
                             else:
-                                task.log("         ➔ 🔴 Plex Mate 반영 실패")
+                                task.log(f"         ➔ 🔴 Plex Mate 반영 실패 ({summary})")
                                 item_has_error = True
                         except Exception as mr_err:
                             task.log(f"         ➔ 🔴 연동 실패: {mr_err}")
@@ -1209,12 +1216,16 @@ def worker(task_data, core_api, start_index):
                                 if has_3digit:
                                     task.log("      [후속 작업] 쇼 내부에 3자리 특수 시즌이 감지되었으므로, Plex Mate YAML 적용을 실행합니다.")
                                     try:
-                                        if pmh_core.execute_plexmate_action('manual_refresh', int(show_rk), core_api['config']):
-                                            task.log("         ➔ 🟢 Plex Mate YAML/TMDB 반영 성공!")
+                                        result = pmh_core.execute_plexmate_action('manual_refresh', int(show_rk), core_api['config'], return_detail=True)
+                                        summary = manual_refresh_summary(result)
+                                        if result['success']:
+                                            task.log(f"         ➔ 🟢 Plex Mate YAML/TMDB 반영 성공! ({summary})")
                                         else:
-                                            task.log("         ➔ 🔴 Plex Mate 반영 실패")
+                                            task.log(f"         ➔ 🔴 Plex 본작업 성공, 특수 시즌 후처리 실패 ({summary})")
+                                            item_has_error = True
                                     except Exception as mr_err:
-                                        task.log(f"         ➔ 🔴 연동 실패: {mr_err}")
+                                        task.log(f"         ➔ 🔴 Plex 본작업 성공, 특수 시즌 후처리 연동 실패: {mr_err}")
+                                        item_has_error = True
 
                         if fix_type == 'analyze':
                             plex_item = plex.fetchItem(int(rk))
