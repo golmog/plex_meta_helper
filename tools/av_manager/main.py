@@ -16,56 +16,13 @@ import pmh_core
 from collections import defaultdict
 from pmh_core import compile_jav_rules, extract_jav_pid, normalize_pid_for_comparison
 
+SCAN_MODES = frozenset(('mismatch', 'dupes', 'llm_translation', 'file_error', 'preview_clip', 'json_diff'))
+
 def normalize_pid(pid_str):
     return normalize_pid_for_comparison(pid_str)
 
 def find_local_meta_json(dir_name, base_name, raw_pid=None, files_in_dir=None, cfg=None, compiled_rules=None):
-    """DB 품번(1MOON-009), 숫자 접두사 제거(moon-009), 파일명 추출 품번을 순차 대조하여 로컬 JSON 탐색"""
-    candidates = []
-
-    # DB 제목 내 품번 원본 (예: 1moon-009.json)
-    if raw_pid:
-        p_clean = str(raw_pid).strip().lower()
-        candidates.append(f"{p_clean}.json")
-
-        # 라벨 분류용 숫자 접두사 제거 폴백 (예: 1MOON-009 -> moon-009.json, 298GOOD-026 -> good-026.json)
-        stripped_pid = re.sub(r'^\d+', '', p_clean)
-        if stripped_pid and stripped_pid != p_clean:
-            candidates.append(f"{stripped_pid}.json")
-
-    # 실제 비디오 파일명에서 정규식으로 추출한 품번 (예: 파일명이 [M-Team] moon-009-C 1080p.mp4 인 경우 moon-009.json)
-    if base_name:
-        if cfg and compiled_rules:
-            try:
-                f_pids = extract_jav_pid(base_name, cfg, compiled_rules)
-                for f_l, f_n in f_pids:
-                    candidates.append(f"{f_l.lower()}-{f_n.lower()}.json")
-                    candidates.append(f"{f_l.lower()}{f_n.lower()}.json")
-            except Exception: pass
-
-        # 파일명 자체 (예: moon-009.json)
-        b_clean = base_name.lower().strip()
-        candidates.append(f"{b_clean}.json")
-
-    # 중복 제거 (우선순위 순서 보존)
-    seen = set()
-    unique_candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
-
-    # 디렉터리 파일 캐시(files_in_dir)가 제공된 경우 O(1) 메모리 검색
-    if files_in_dir is not None:
-        for c_name in unique_candidates:
-            if c_name in files_in_dir:
-                actual = files_in_dir[c_name] if isinstance(files_in_dir, dict) else c_name
-                return os.path.join(dir_name, actual), [os.path.join(dir_name, c) for c in unique_candidates]
-        return None, [os.path.join(dir_name, c) for c in unique_candidates]
-
-    # 디스크 실존 검사 (os.path.exists)
-    for c_name in unique_candidates:
-        target_path = os.path.join(dir_name, c_name)
-        if os.path.exists(target_path):
-            return target_path, [os.path.join(dir_name, c) for c in unique_candidates]
-
-    return None, [os.path.join(dir_name, c) for c in unique_candidates]
+    return pmh_core.find_local_meta_json(dir_name, base_name, raw_pid, files_in_dir, cfg, compiled_rules)
 
 # =====================================================================
 # 디스코드 알림 기본 템플릿
@@ -99,7 +56,7 @@ def get_ui(core_api=None):
     return {
         "title": "AV 매니저",
         "icon": "fas fa-heart",
-        "description": "Plex 등록 AV 영상을 기준으로 오류를 검사하고 FF 최신 메타데이터·대표 영상을 반영합니다. FF 누락 정보 보완은 선택된 작품에만 실행합니다.",
+        "description": "Plex 등록 AV 영상을 기준으로 오류를 검사하고 FF 최신 메타데이터·대표 영상을 반영합니다.",
         "inputs": [
             {
                 "id": "target_sections",
@@ -116,16 +73,14 @@ def get_ui(core_api=None):
                 "options": [
                     {"value": "mismatch", "label": "품번 불일치 및 오매칭 검출"},
                     {"value": "dupes", "label": "품번 기준 분리/중복 등록 검출"},
-                    {"value": "meta_sync", "label": "FF 최신 메타데이터의 Plex 반영 누락 검사"},
-                    {"value": "ff_heal", "label": "Plex 등록 작품의 FF 누락 정보 보완 및 반영"},
-                    {"value": "ff_media_sync", "label": "Plex 등록 작품의 FF 미디어 저장소 동기화 및 반영"},
-                    {"value": "ff_person_sync", "label": "Plex 등록 작품 출연자의 FF 이미지 저장소 동기화 및 반영"},
+                    {"value": "json_diff", "label": "메타 DB 기준 불일치(JSON) 검출"},
                     {"value": "llm_translation", "label": "LLM (Ollama) 번역 미적용 항목 검출 및 리매칭"},
                     {"value": "file_error", "label": "파일명 처리 오류 (기본/원본 품번 불일치) 검출"},
-                    {"value": "preview_clip", "label": "Plex 영상 누락 복구 (FF 기존 영상 반영 / 없으면 프리뷰 생성)"}
+                    {"value": "preview_clip", "label": "트레일러 누락 영상 프리뷰 생성"}
                 ]
             },
             
+            {"id": "preview_try_trailer", "type": "checkbox", "label": "트레일러 다운로드 시도", "default": False, "show_if": {"scan_mode": "preview_clip"}},
             {"id": "filter_fields", "type": "multi_select", "label": "임시 검색 필터 적용 필드", "options": [
                 {"value": "guid", "text": "에이전트 (GUID)"},
                 {"value": "title", "text": "제목 (Title)"},
@@ -135,15 +90,9 @@ def get_ui(core_api=None):
             {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (1회성, 정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\\.mp4$"}
         ],
         "execute_inputs": [
-            {"id": "ff_sync_skip_existing", "type": "checkbox", "label": "기존 공식 미디어 유지 (해제 시 교체)",
-             "default": True, "show_if": {"scan_mode": ["ff_media_sync", "ff_person_sync"]}},
-            *[{"id": "ff_sync_" + key, "type": "checkbox", "label": label, "default": True,
-               "show_if": {"scan_mode": "ff_media_sync"}} for key, label in
-              [('poster', '포스터 동기화'), ('landscape', '가로커버 동기화'),
-               ('fanart', '팬아트 동기화'), ('trailer', '공식 트레일러 동기화')]],
             {"id": "ff_apply_method", "type": "select", "label": "FF 메타데이터의 Plex 반영 방식",
              "options": [{"value": "refresh", "text": "현재 GUID 유지 · 메타 새로고침"}, {"value": "match", "text": "클린 리매칭 (매칭 옵션 적용)"}],
-             "default": "refresh", "show_if": {"scan_mode": ["meta_sync", "preview_clip", "ff_heal", "ff_media_sync", "ff_person_sync"]}},
+             "default": "refresh", "show_if": {"scan_mode": ["json_diff", "preview_clip"]}},
             {
                 "id": "opt_unmatch_first", 
                 "type": "checkbox", 
@@ -231,6 +180,8 @@ def get_ui(core_api=None):
 # 메인 실행 로직 (라우터)
 # ==============================================================================
 def run(data, core_api):
+    if data.get('scan_mode', 'mismatch') not in SCAN_MODES:
+        return {'status':'error', 'message':'사용할 수 없는 검사 모드입니다. 검사 모드를 다시 선택하고 조회하세요.'}, 400
     action = data.get('action_type', 'preview')
 
     if action == 'preview':
@@ -298,38 +249,16 @@ def run(data, core_api):
 # 프리뷰 클립 생성을 위한 헬퍼
 # =====================================================================
 def extract_sjva_code_and_cat(guid):
-    if not guid: return None, None
-    s = str(guid).strip()
-    if '://' in s: s = s.split('://', 1)[1]
-    if '?' in s: s = s.split('?', 1)[0]
-    s = s.strip()
-    if not s or s == '-' or s.startswith('local') or s.startswith('none'):
-        return None, None
-    
-    prefix = s[0].upper()
-    if prefix == 'C': return s, 'JAV_CEN'
-    elif prefix == 'E': return s, 'JAV_UNCEN'
-    elif prefix == 'W': return s, 'WESTERN'
-    return None, None
+    return pmh_core.extract_sjva_code_and_cat(guid)
 
 def find_best_video_file(file_list):
-    if not file_list: return ""
-    clean_files = [f.strip() for f in file_list if f.strip()]
-    if not clean_files: return ""
-    if len(clean_files) == 1: return clean_files[0]
-
-    part1_pattern = re.compile(r'[-_. ]?(cd|part|pt|disc|dvd)[\s._-]*0*1\b|[-_. ]0*1\.[a-zA-Z0-9]+$', re.IGNORECASE)
-    for f in clean_files:
-        if part1_pattern.search(os.path.basename(f)):
-            return f
-
-    sorted_files = sorted(clean_files, key=lambda x: [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', os.path.basename(x))])
-    return sorted_files[0]
+    return pmh_core.find_best_video_file(file_list)
 
 def make_ff_preview_clip(global_config, code, cat, video_path):
     try:
         result = ff_request(global_config, 'api/meta_db/make_preview_clip',
                             {'code': code, 'cat': cat, 'video_path': video_path}, timeout=300)
+        require_ff_media_result(result)
         return True, result.get('msg', '프리뷰 생성 완료')
     except FfApiError as exc:
         return False, str(exc)
@@ -436,37 +365,11 @@ def check_ff_schema(global_config, categories, writable=True):
 
 
 def validate_ff_entity(entity, code, category):
-    if not isinstance(entity, dict):
-        raise FfApiError('FF 메타데이터 응답 형식 오류')
-    if str(entity.get('code') or '') != str(code) or entity.get('category') != category:
-        raise FfApiError(f'FF 응답 작품 식별자가 Plex GUID와 다릅니다: {code} ({category})')
-    schema = entity.get('schema') or {}
-    if schema.get('db_schema_version') != 1 or schema.get('json_format_version') != 1:
-        raise FfApiError('FF 메타 DB 스키마/JSON 버전이 지원 범위와 다릅니다.')
-    return entity
+    return pmh_core.validate_ff_entity(entity, code, category, error_class=FfApiError)
 
 
 def fetch_ff_meta_batch(global_config, category, codes_list):
-    if not codes_list:
-        return {}
-    cat = {'jav_censored': 'JAV_CEN', 'jav_uncensored': 'JAV_UNCEN',
-           'c': 'JAV_CEN', 'e': 'JAV_UNCEN', 'w': 'WESTERN'}.get(str(category).lower(), str(category).upper())
-    if cat not in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
-        raise FfApiError('지원하지 않는 AV 카테고리입니다.')
-    codes = list(dict.fromkeys(str(code).strip() for code in codes_list if str(code).strip()))
-    found = {}
-    for start in range(0, len(codes), 100):
-        requested = codes[start:start + 100]
-        response = ff_request(global_config, 'api/meta_db/info_batch', {'category': cat, 'codes': requested}, timeout=60)
-        data = response.get('data')
-        if not isinstance(data, dict):
-            raise FfApiError('FF 일괄 조회 응답에 data 객체가 없습니다.')
-        lookup = {str(key).casefold(): value for key, value in data.items()}
-        for code in requested:
-            entity = lookup.get(code.casefold())
-            if entity is not None:
-                found[code] = validate_ff_entity(entity, code, cat)
-    return found
+    return pmh_core.fetch_ff_meta_batch(global_config, category, codes_list, request_fn=ff_request, error_class=FfApiError)
 
 
 def iter_ff_plex_entities(items, global_config, cancel_checker):
@@ -488,108 +391,83 @@ def iter_ff_plex_entities(items, global_config, cancel_checker):
 
 
 def media_identity(value):
-    """Ignore presentation hosts and proxy nesting, retain actual file identity."""
-    clean = str(value or '').strip()
-    if not clean:
-        return ''
-    for _ in range(8):
-        parsed = urllib.parse.urlsplit(clean)
-        query = urllib.parse.parse_qs(parsed.query)
-        if '/metadata/normal/' in parsed.path and query.get('url'):
-            clean = query['url'][0]
-            continue
-        host = (parsed.hostname or '').lower()
-        if host == 'drive.google.com' or host == 'googleusercontent.com' or host.endswith('.googleusercontent.com'):
-            fileid = (query.get('id') or [''])[0]
-            match = re.search(r'/d/([^/=]+)', parsed.path)
-            if fileid or match:
-                return 'gdrive:' + (fileid or match.group(1))
-        if query.get('mode') == ['preview_gdrive']:
-            return 'gdrive-video:' + (query.get('fileid') or [''])[0]
-        if query.get('mode') == ['preview_local']:
-            return 'local-video:' + (query.get('path') or [''])[0].replace('\\', '/')
-        query.pop('_t', None)
-        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
-                                       urllib.parse.urlencode(sorted((k, v) for k, values in query.items() for v in values)), ''))
-    return clean
+    return pmh_core.media_identity(value)
 
 
 def ff_has_video(entity):
-    return any(isinstance(extra, dict) and extra.get('content_type') == 'trailer' and extra.get('content_url')
-               for extra in entity.get('extras') or [])
+    def stored(asset):
+        return isinstance(asset, dict) and any(isinstance(asset.get(key),str) and asset[key].strip() and
+            asset[key].strip().lower() not in ('null','none','unknown path')
+            for key in ('google_fileid','gdrive_fileid','local_path','relative_path'))
+    extra = entity.get('extra_info') or {}
+    return any(stored(extra.get(kind)) for kind in ('trailer_video','preview_clip')) or any(
+        asset.get('media_type') in ('trailer','preview') and stored(asset)
+        for asset in entity.get('media') or [] if isinstance(asset, dict))
+
+
+def original_trailer_url(entity):
+    original = entity.get('original') or {}
+    return next((extra['content_url'] for extra in original.get('extras') or []
+                 if isinstance(extra, dict) and extra.get('content_type') == 'trailer' and extra.get('content_url')),
+                original.get('trailer') if isinstance(original.get('trailer'), str) else '')
+
+
+def read_preview_settings(config, category):
+    result = ff_request(config, 'settings_api', {'category': category}, timeout=60)
+    media = result.get('media')
+    if (category not in ('JAV_CEN','JAV_UNCEN','WESTERN') or result.get('ret') != 'success' or
+            result.get('uncertain') or result.get('commit_unknown') or result.get('status') in ('partial','unknown','error') or
+            result.get('commit_state') == 'unknown' or
+            result.get('category') != category or not isinstance(media, dict) or
+            any(type(media.get(key)) is not bool for key in ('enabled','auto_download_trailer','auto_create_preview'))):
+        raise FfApiError('FF 카테고리별 영상 설정 응답을 확인할 수 없습니다.')
+    return media
+
+
+def require_ff_media_result(result):
+    if (not isinstance(result, dict) or result.get('ret') != 'success' or
+            result.get('status') in ('partial','unknown','error') or result.get('uncertain') or result.get('commit_unknown') or
+            result.get('commit_state') == 'unknown' or result.get('committed') is False or
+            any(result.get(key) for key in ('cleanup_pending','failures','warnings','media_warning','person_works_pending','maintenance_warnings'))):
+        raise FfApiError('FF 미디어 작업이 부분 반영되었거나 결과가 불명확합니다. 연속 생성하지 않습니다.', payload=result)
+
+
+def create_missing_ff_video(config, plex_item, entity, gate, options, task):
+    if not gate['enabled'] or not gate['auto_download_trailer']:
+        task.log('  -> FF 영상/트레일러 설정 OFF: 쓰기 없음.'); return None
+    code, category = entity['code'], entity['category']
+    try_trailer = options.get('preview_try_trailer', False) and bool(original_trailer_url(entity))
+    if not gate['auto_create_preview'] and not try_trailer:
+        task.log('  -> 프리뷰 설정 OFF이며 다운로드할 트레일러가 없어 스킵합니다.'); return None
+    if task.is_cancelled(): return None
+    if try_trailer:
+        result = ff_request(config, 'api/meta_db/media_sync', {'category':category, 'code':code,
+            'options':{'skip_existing':True,'poster':False,'landscape':False,'fanart':False,'trailer':True}})
+        require_ff_media_result(result)
+        if task.is_cancelled(): return None
+        entity = fetch_ff_meta_batch(config, category, [code]).get(code)
+        if entity is None: raise FfApiError('트레일러 시도 후 최신 FF 메타데이터 조회 실패')
+        if ff_has_video(entity): return entity
+        noop = result.get('is_updated') is False and not result.get('changes') and (
+            result.get('skipped') is True or result.get('commit_state') == 'committed')
+        if not noop: raise FfApiError('트레일러 미등록 상태에서 쓰기 미반영을 확정하지 못했습니다. 프리뷰를 연속 생성하지 않습니다.')
+    if not gate['auto_create_preview']:
+        task.log('  -> 트레일러 미등록, 프리뷰 설정 OFF: 추가 생성 없음.'); return None
+    if task.is_cancelled(): return None
+    current_files = [part.file for media in getattr(plex_item,'media',[]) for part in media.parts if getattr(part,'file',None)]
+    video_path = find_best_video_file([path for path in current_files if path.strip() and path.strip().lower() != 'unknown path'])
+    if not video_path: raise FfApiError('현재 Plex 원본 영상 경로가 없습니다.')
+    success, message = make_ff_preview_clip(config, code, category, video_path)
+    if not success: raise FfApiError(message)
+    if task.is_cancelled(): return None
+    latest = fetch_ff_meta_batch(config, category, [code]).get(code)
+    if latest is None or not ff_has_video(latest): raise FfApiError('FF 생성 후 실제 저장 영상 등록을 확인하지 못했습니다.')
+    return latest
 
 
 def ff_poster_url(entity):
     return next((thumb.get('value', '') for thumb in entity.get('thumb') or []
                  if isinstance(thumb, dict) and thumb.get('aspect') == 'poster' and thumb.get('value')), '')
-
-
-def log_ff_sync_result(task, label, result):
-    task.log(f"  -> {label}: 변경={result.get('is_updated', False)}, 생략={result.get('skipped', False)}"
-             f", 사유={result.get('reason') or '-'}, 변경 내역={result.get('changes') or []}"
-             f", 실패={result.get('failures') or []}")
-
-
-def sync_ff_storage(config, entity, mode, task_data, task, completed, delay=0):
-    """Synchronous, Plex-scoped requests. Cache aliases and failures within this run."""
-    category, code = entity['category'], entity['code']
-    if mode == 'ff_media_sync':
-        options = {key: task_data.get('ff_sync_' + key, True)
-                   for key in ('skip_existing', 'poster', 'landscape', 'fanart', 'trailer')}
-        requests = [((category, code), 'api/meta_db/media_sync',
-                     {'category': category, 'code': code, 'options': options})]
-    else:
-        domain = 'WESTERN' if category == 'WESTERN' else 'JAV'
-        requests, seen = [], set()
-        for actor in entity.get('actor') or []:
-            person_idx = str(actor.get('actor_idx') or '').strip() if isinstance(actor, dict) else ''
-            if not person_idx:
-                task.log('  -> 인물 코드 없는 출연자 제외 (이름 대체 요청 없음)')
-                continue
-            identity = (domain, person_idx.casefold())
-            if identity not in seen:
-                seen.add(identity)
-                requests.append((identity, 'api/meta_db/person_image_sync', {'domain': domain,
-                    'person_idx': person_idx, 'options': {'skip_existing': task_data.get('ff_sync_skip_existing', True)}}))
-    errors = []
-    sent = False
-    for identity, endpoint, payload in requests:
-        if task.is_cancelled():
-            return False
-        if identity not in completed:
-            if sent and delay > 0:
-                deadline = time.monotonic() + delay
-                while not task.is_cancelled() and time.monotonic() < deadline:
-                    time.sleep(min(0.5, max(0, deadline - time.monotonic())))
-            if task.is_cancelled():
-                return False
-            try:
-                result = ff_request(config, endpoint, payload, timeout=300)
-                if mode == 'ff_media_sync':
-                    valid = result.get('category') == category and str(result.get('code') or '') == code
-                else:
-                    valid = (result.get('domain') == payload['domain'] and
-                             (str(result.get('requested_person_idx') or '').casefold() == identity[1] or
-                              str(result.get('_pmh_reused_for') or '').casefold() == identity[1]) and
-                             bool(result.get('person_idx')))
-                if not valid:
-                    raise FfApiError('FF 저장소 동기화 응답 식별자가 요청과 다릅니다.')
-                completed[identity] = result
-                if mode == 'ff_person_sync':
-                    completed[(payload['domain'], result['person_idx'].casefold())] = result
-            except FfApiError as exc:
-                completed[identity] = exc
-            sent = True
-        outcome = completed[identity]
-        if isinstance(outcome, FfApiError):
-            log_ff_sync_result(task, str(identity), outcome.payload)
-            errors.append(outcome)
-        else:
-            log_ff_sync_result(task, str(identity), redact_ff_value(outcome, config.get('mate_apikey')))
-    if errors:
-        raise FfApiError('FF 저장소 동기화 실패: ' + '; '.join(dict.fromkeys(str(error) for error in errors)),
-                         status=errors[0].status, payload=errors[0].payload)
-    return not task.is_cancelled()
 
 
 def ff_snapshot_targets(plex_item, config):
@@ -651,6 +529,8 @@ def apply_ff_to_plex(plex, plex_item, entity, task_data, core_api):
     if method not in ('refresh', 'match'):
         raise FfApiError('지원하지 않는 Plex 반영 방식입니다.')
     updated = refresh_existing_ff_json(plex_item, entity, core_api['config'], core_api['task'].is_cancelled)
+    if core_api['task'].is_cancelled(): return False, '사용자 취소', 0
+    if not updated: core_api['task'].log('  -> 로컬 JSON 없음: 새 파일을 만들지 않습니다. 에이전트가 생성하지 않으면 다음 조회에도 표시될 수 있습니다.')
     core_api['task'].log(f'  -> 기존 JSON 캐시 {updated}개 갱신. FF 최종 메타데이터를 Plex에 반영합니다.')
     return pmh_core.perform_smart_media_action(
         plex_url=plex._baseurl, plex_token=plex._token, rating_key=str(plex_item.ratingKey),
@@ -666,75 +546,8 @@ def apply_ff_to_plex(plex, plex_item, entity, task_data, core_api):
 
 
 
-def detect_plex_text_diff(item, entity):
-    """Inspect current Plex fields too: a fresh sidecar alone does not prove Plex is current."""
-    clean = lambda value: re.sub(r'\s+', ' ', str(value or '')).strip()
-    fields = [('title', 'title', '제목'), ('plex_plot', 'plot', '줄거리'),
-              ('plex_tagline', 'tagline', '부제'), ('plex_studio', 'studio', '제작사'), ('plex_year', 'year', '연도')]
-    return [f'Plex {label} 차이' for source, target, label in fields
-            if source in item and clean(item.get(source)) != clean(entity.get(target))]
-
-
 def detect_meta_diff(local_json, ff_json):
-    """Compare effective FF metadata and stable asset identities, not storage URL spelling."""
-    reasons = []
-    clean = lambda value: re.sub(r'\s+', ' ', str(value or '')).strip()
-    for key, label in [('title', '제목'), ('plot', '줄거리'), ('tagline', '부제'), ('studio', '제작사'),
-                       ('series', '시리즈'), ('director', '감독'), ('premiered', '출시일'), ('mpaa', '등급')]:
-        if clean(local_json.get(key)) != clean(ff_json.get(key)):
-            reasons.append(f'{label} 갱신')
-    for key, label in [('year', '연도'), ('runtime', '재생시간'), ('rating', '평점')]:
-        if str(local_json.get(key) or 0) != str(ff_json.get(key) or 0):
-            try:
-                equal = float(local_json.get(key) or 0) == float(ff_json.get(key) or 0)
-            except (ValueError, TypeError):
-                equal = False
-            if not equal:
-                reasons.append(f'{label} 갱신')
-    if {clean(v) for v in local_json.get('genre') or []} != {clean(v) for v in ff_json.get('genre') or []}:
-        reasons.append('장르 갱신')
-
-    local_actors = [actor for actor in local_json.get('actor') or [] if isinstance(actor, dict)]
-    ff_actors = [actor for actor in ff_json.get('actor') or [] if isinstance(actor, dict)]
-    names = lambda actor: {clean(actor.get(key)).casefold() for key in ('name', 'name_org', 'name_ko', 'name_en') if clean(actor.get(key))}
-    identity = lambda actor: clean(actor.get('actor_idx') or actor.get('person_idx')).casefold()
-    used = set()
-    actor_changed = len(local_actors) != len(ff_actors)
-    for actor in ff_actors:
-        matched = next((i for i, old in enumerate(local_actors) if i not in used and identity(actor) and identity(actor) == identity(old)), None)
-        if matched is None:
-            matched = next((i for i, old in enumerate(local_actors) if i not in used and names(actor) & names(old)), None)
-        if matched is None:
-            actor_changed = True
-            continue
-        used.add(matched)
-        old = local_actors[matched]
-        display_name = lambda value: clean(value.get('name_ko') or value.get('name') or value.get('name_org') or value.get('name_en'))
-        if (identity(actor) != identity(old) or display_name(actor) != display_name(old)
-                or clean(actor.get('role')) != clean(old.get('role'))
-                or media_identity(actor.get('thumb')) != media_identity(old.get('thumb'))):
-            actor_changed = True
-    if actor_changed:
-        reasons.append('인물 구성/이름/대표 사진 갱신')
-
-    def thumbs(entity):
-        return {(thumb.get('aspect'), media_identity(thumb.get('value'))) for thumb in entity.get('thumb') or []
-                if isinstance(thumb, dict) and thumb.get('value')}
-    if thumbs(local_json) != thumbs(ff_json):
-        reasons.append('포스터/커버 갱신')
-    if {media_identity(url) for url in local_json.get('fanart') or []} != {media_identity(url) for url in ff_json.get('fanart') or []}:
-        reasons.append('팬아트 갱신')
-    videos = lambda entity: {media_identity(extra.get('content_url')) for extra in entity.get('extras') or []
-                             if isinstance(extra, dict) and extra.get('content_type') == 'trailer' and extra.get('content_url')}
-    if videos(local_json) != videos(ff_json):
-        reasons.append('대표 트레일러/프리뷰 갱신')
-    def assets(entity):
-        return {(asset.get('media_type'), asset.get('gdrive_fileid') or media_identity(asset.get('url')),
-                 asset.get('relative_path') or '', bool(asset.get('is_user')), asset.get('checksum') or '')
-                for asset in entity.get('media') or [] if isinstance(asset, dict)}
-    if assets(local_json) != assets(ff_json):
-        reasons.append('미디어 저장소 정보 갱신')
-    return reasons
+    return pmh_core.detect_meta_diff(local_json, ff_json)
 
 
 # ==============================================================================
@@ -744,6 +557,10 @@ def worker(task_data, core_api, start_index):
     task = core_api['task']
     action = task_data.get('action_type')
     mode = task_data.get('scan_mode', 'mismatch')
+    if mode not in SCAN_MODES:
+        task.log('❌ 사용할 수 없는 검사 모드입니다. 검사 모드를 다시 선택하고 조회하세요.')
+        task.update_state('error')
+        return
     
     # ----------------------------------------------------------------------
     # 1. Preview / Cron_Run 모드 (조회 및 검출)
@@ -769,8 +586,7 @@ def worker(task_data, core_api, start_index):
             q = f"""
                 SELECT mi.id, mi.title, mi.guid, ls.id AS section_id, ls.name AS section_name,
                        mi.summary AS plex_plot, mi.tagline AS plex_tagline, mi.studio AS plex_studio, mi.year AS plex_year,
-                       {group_fn}(mp.file, '|||') AS all_files,
-                       {pmh_core._plex_trailer_id_sql()} AS plex_trailer_id
+                       {group_fn}(mp.file, '|||') AS all_files
                 FROM metadata_items mi
                 JOIN library_sections ls ON mi.library_section_id = ls.id
                 LEFT JOIN media_items mpi ON mpi.metadata_item_id = mi.id
@@ -891,12 +707,12 @@ def worker(task_data, core_api, start_index):
         task.update_state('running', progress=10, total=100)
         
         cfg = core_api['config']
-        if mode in ('meta_sync', 'preview_clip', 'ff_heal', 'ff_media_sync', 'ff_person_sync'):
+        if mode == 'json_diff':
             categories = {extract_sjva_code_and_cat(item.get('guid'))[1] for item in all_items}
             categories.discard(None)
             if categories:
                 try:
-                    check_ff_schema(cfg, categories, mode != 'meta_sync')
+                    check_ff_schema(cfg, categories, mode != 'json_diff')
                 except FfApiError as exc:
                     task.log(f'❌ FF 작업 사전 확인 실패: {exc}')
                     task.update_state('error')
@@ -1034,10 +850,10 @@ def worker(task_data, core_api, start_index):
                         })
 
         # FF 메타 DB 동기화 모드
-        elif mode == "meta_sync":
+        elif mode == "json_diff":
             try:
                 web_url_root = task_data.get('image_web_url', '').rstrip('/')
-                meta_sync_stats = defaultdict(int)
+                json_diff_stats = defaultdict(int)
                 skipped_ff = [0]
                 batch_buckets = defaultdict(list)
                 dir_cache = {}
@@ -1050,7 +866,7 @@ def worker(task_data, core_api, start_index):
                             dir_cache[d_path] = set()
                     return dir_cache[d_path]
 
-                def flush_meta_sync_batch(cat, items_chunk):
+                def flush_json_diff_batch(cat, items_chunk):
                     if not items_chunk or task.is_cancelled(): return
                     codes_to_query = [it['target_code'] for it in items_chunk if it.get('target_code')]
                     if not codes_to_query: return
@@ -1078,21 +894,19 @@ def worker(task_data, core_api, start_index):
                         # 매칭된 항목에 대해서만 로컬 JSON을 지연 로딩(Lazy Load)하여 메모리 및 파일 I/O 절약
                         target_json_path = it.get('target_json_path')
                         local_json = {}
+                        reasons = []
                         if target_json_path and os.path.exists(target_json_path):
                             try:
                                 with open(target_json_path, 'r', encoding='utf-8') as jf:
-                                    local_json = json.load(jf) or {}
-                            except Exception:
-                                local_json = {}
-
-                        reasons = detect_plex_text_diff(it.get('plex_fields') or {}, ff_json)
-                        if ff_has_video(ff_json) and not it.get('plex_trailer_id'):
-                            reasons.append('Plex 트레일러 미반영')
+                                    local_json = json.load(jf)
+                                if not isinstance(local_json, dict): raise ValueError('JSON object required')
+                            except (OSError, ValueError, TypeError):
+                                reasons.append('로컬 JSON 파싱 오류')
 
                         # 로컬 JSON 유무 및 FF 메타 DB 정밀 Diff 대조
                         if not target_json_path:
                             reasons.append("로컬 JSON 없음")
-                        else:
+                        elif not reasons:
                             diff_res = detect_meta_diff(local_json, ff_json)
                             for r in diff_res:
                                 if r not in reasons:
@@ -1102,7 +916,7 @@ def worker(task_data, core_api, start_index):
                             for r in reasons:
                                 # 세부 인원수(N명)를 정규화하여 통계 카테고리로 집계
                                 base_stat_key = re.sub(r'\s*\d+명$', '', r)
-                                meta_sync_stats[base_stat_key] += 1
+                                json_diff_stats[base_stat_key] += 1
 
                             reason_label = " ".join([f"[{r}]" for r in reasons])
 
@@ -1189,8 +1003,6 @@ def worker(task_data, core_api, start_index):
                         'db_title': db_title or item.get('title', ''),
                         'target_code': target_code,
                         'raw_path': fpath,
-                        'plex_trailer_id': item.get('plex_trailer_id'),
-                        'plex_fields': {key: item[key] for key in ('title', 'plex_plot', 'plex_tagline', 'plex_studio', 'plex_year') if key in item},
                         'target_json_path': target_json_path,
                         'json_candidates': json_candidates,
                         '_raw_db_pid': db_pid_key,
@@ -1201,12 +1013,12 @@ def worker(task_data, core_api, start_index):
 
                     # FF API 최적 배치 크기(100건) 도달 시 일괄 요청
                     if len(batch_buckets[cat]) >= 100:
-                        flush_meta_sync_batch(cat, batch_buckets[cat])
+                        flush_json_diff_batch(cat, batch_buckets[cat])
                         batch_buckets[cat].clear()
 
                 for cat, queued_items in batch_buckets.items():
                     if queued_items:
-                        flush_meta_sync_batch(cat, queued_items)
+                        flush_json_diff_batch(cat, queued_items)
                 batch_buckets.clear()
                 dir_cache.clear()
                 if skipped_ff[0]:
@@ -1341,32 +1153,46 @@ def worker(task_data, core_api, start_index):
                         "raw_path": matched_fpath
                     })
 
-        # Plex 영상 누락 복구 (FF 기존 영상 반영 / 없으면 프리뷰 생성)
-        elif mode in ('preview_clip', 'ff_heal', 'ff_media_sync', 'ff_person_sync'):
-            absent = 0
+        elif mode == 'preview_clip':
+            excluded = defaultdict(int)
+            settings = {}
+            eligible = []
+            for item in all_items:
+                code, category = extract_sjva_code_and_cat(item.get('guid'))
+                if not code: continue
+                if category not in settings:
+                    try:
+                        settings[category] = read_preview_settings(cfg, category)
+                        if settings[category]['enabled'] and settings[category]['auto_download_trailer']:
+                            check_ff_schema(cfg, [category], True)
+                    except FfApiError as exc:
+                        settings[category] = None
+                        task.log(f'❌ {category} 영상 설정 조회 실패: {exc}')
+                gate = settings[category]
+                if not gate or not gate['enabled'] or not gate['auto_download_trailer']:
+                    excluded[category + ' 설정 OFF/불명'] += 1
+                    continue
+                if not gate['auto_create_preview'] and not task_data.get('preview_try_trailer', False):
+                    excluded[category + ' 허용된 작업 없음'] += 1
+                    continue
+                eligible.append(item)
             try:
-                for item, code, category, entity in iter_ff_plex_entities(all_items, cfg, task.is_cancelled):
+                for item, code, category, entity in iter_ff_plex_entities(eligible, cfg, task.is_cancelled):
                     if entity is None:
-                        absent += 1
-                        continue
-                    if mode == 'preview_clip' and item.get('plex_trailer_id'):
-                        continue
+                        excluded['FF 작품 없음'] += 1; continue
+                    if ff_has_video(entity):
+                        excluded['저장 영상 등록됨'] += 1; continue
                     video = find_best_video_file((item.get('all_files') or '').split('|||'))
-                    if mode == 'preview_clip' and not video:
-                        continue
-                    operation = mode if mode in ('ff_heal', 'ff_media_sync', 'ff_person_sync') else 'ff_apply' if ff_has_video(entity) else 'make_preview'
-                    reason = {'ff_media_sync': 'FF 작품 미디어 저장소 동기화 후 Plex 반영',
-                              'ff_person_sync': 'FF 출연자 이미지 저장소 동기화 후 Plex 반영', 'ff_heal': 'FF 누락 정보 보완 후 Plex 반영', 'ff_apply': 'FF 기존 영상의 Plex 등록 누락',
-                              'make_preview': 'FF/Plex 대표 영상 없음 · 프리뷰 생성'}[operation]
-                    result_data.append({'id': item['id'], 'section_name': item['section_name'], 'title': item['title'],
-                        'reason': reason, 'img_url': ff_poster_url(entity), 'op_action': operation,
-                        '_sjva_code': code, '_sjva_cat': category, 'raw_path': video})
+                    if not video or video.strip().lower() == 'unknown path':
+                        excluded['Plex 원본 경로 없음'] += 1; continue
+                    if not settings[category]['auto_create_preview'] and not original_trailer_url(entity):
+                        excluded['허용된 트레일러 원본 없음'] += 1; continue
+                    result_data.append({'id':item['id'], 'section_name':item['section_name'], 'title':item['title'],
+                        'reason':'FF 저장 트레일러/프리뷰 없음', 'img_url':ff_poster_url(entity), 'op_action':'make_preview',
+                        '_sjva_code':code, '_sjva_cat':category, 'raw_path':video})
             except FfApiError as exc:
-                task.log(f'❌ FF 조회 실패: {exc}')
-                task.update_state('error')
-                return
-            if absent:
-                task.log(f'ℹ️ FF 조회 결과가 없는 Plex 항목 {absent}건은 제외했습니다. 외부 사이트 수집은 실행하지 않습니다.')
+                task.log(f'❌ FF 조회 실패: {exc}'); task.update_state('error'); return
+            for reason, count in excluded.items(): task.log(f'ℹ️ 제외 {count}건: {reason}')
 
 
         if task.is_cancelled():
@@ -1378,10 +1204,8 @@ def worker(task_data, core_api, start_index):
         btn_label = "일괄 리매칭 시작"
         if mode == "file_error": btn_label = "수동 확인 필요"
         
-        elif mode == "preview_clip": btn_label = "FF 기존 영상 반영 / 프리뷰 생성 시작"
-        elif mode in ("ff_media_sync", "ff_person_sync"): btn_label = "FF 저장소 동기화 및 Plex 반영"
-        elif mode == "ff_heal": btn_label = "FF 누락 정보 보완 및 Plex 반영"
-        elif mode == "meta_sync": btn_label = "FF 최신 메타데이터 Plex 반영"
+        elif mode == "preview_clip": btn_label = "트레일러 누락 영상 프리뷰 생성"
+        elif mode == "json_diff": btn_label = "JSON 최신화 및 Plex 반영"
 
         if mode == "file_error":
             columns[-1] = {"key": "raw_path", "label": "폴더", "align": "center", "header_align": "center", "type": "folder_link"}
@@ -1403,8 +1227,8 @@ def worker(task_data, core_api, start_index):
             task.update_state('completed', 100, 100)
             if len(result_data) > 0:
                 stats_summary = []
-                if mode == "meta_sync" and meta_sync_stats:
-                    top_stats = sorted(meta_sync_stats.items(), key=lambda x: x[1], reverse=True)[:5]
+                if mode == "json_diff" and json_diff_stats:
+                    top_stats = sorted(json_diff_stats.items(), key=lambda x: x[1], reverse=True)[:5]
                     stats_summary = [f"{k}: {v:,}건" for k, v in top_stats]
 
                 detail_log_suffix = f" (세부: {', '.join(stats_summary)})" if stats_summary else ""
@@ -1464,13 +1288,12 @@ def worker(task_data, core_api, start_index):
         return
 
     processed_pids = set()
-    healed_codes = set()
-    storage_results = {}
-    if mode in ('meta_sync', 'preview_clip', 'ff_heal', 'ff_media_sync', 'ff_person_sync'):
+    preview_settings = {}
+    if mode == 'json_diff':
         categories = {item.get('_sjva_cat') for item in pending_items if item.get('_sjva_cat')}
         if categories:
             try:
-                check_ff_schema(core_api['config'], categories, mode != 'meta_sync')
+                check_ff_schema(core_api['config'], categories, mode != 'json_diff')
             except FfApiError as exc:
                 task.log(f'❌ FF 작업 사전 확인 실패: {exc}')
                 task.update_state('error')
@@ -1500,6 +1323,10 @@ def worker(task_data, core_api, start_index):
             item_has_error = False
 
             try:
+                if op_action not in ('match','split','open_folder','ff_apply','make_preview') or (mode not in ('json_diff','preview_clip') and op_action in ('ff_apply','make_preview')):
+                    raise FfApiError('캐시된 동작을 지원하지 않습니다. 검사 모드를 다시 선택하고 조회하세요.')
+                if (mode == 'json_diff' and op_action not in ('ff_apply','match')) or (mode == 'preview_clip' and op_action != 'make_preview'):
+                    raise FfApiError('캐시된 작업이 현재 검사 모드와 다릅니다. 다시 조회하세요.')
                 if op_action == 'open_folder':
                     task.log(f"  -> 📂 수동 폴더 열기 전용 항목입니다. 시스템 자동 처리를 스킵합니다.")
                     continue
@@ -1526,51 +1353,40 @@ def worker(task_data, core_api, start_index):
                         task.log("  -> ⚠️ 분리 불가: 단일 미디어 파일입니다. 분리 대신 매칭(Match)으로 우회합니다.")
                         op_action = 'match'
 
-                if op_action == 'match' and mode == 'meta_sync':
-                    op_action = 'ff_apply'
-
-                if op_action in ('ff_apply', 'ff_heal', 'make_preview', 'ff_media_sync', 'ff_person_sync'):
+                if mode == 'json_diff': op_action = 'ff_apply'
+                if mode == 'preview_clip': op_action = 'make_preview'
+                if op_action in ('ff_apply', 'make_preview'):
+                    if getattr(plex_item, 'type', None) != 'movie': raise FfApiError('현재 Plex 항목이 AV 영화가 아닙니다.')
                     code, category = extract_sjva_code_and_cat(getattr(plex_item, 'guid', ''))
                     expected_code = item.get('_sjva_code') or code
                     expected_category = item.get('_sjva_cat') or category
-                    if not code or str(code) != str(expected_code) or category != expected_category:
+                    if not code or code != expected_code or category != expected_category:
                         raise FfApiError('검사 이후 Plex GUID가 변경되어 FF 작업을 중단합니다. 목록을 다시 조회하세요.')
+                    if op_action == 'make_preview':
+                        if category not in preview_settings:
+                            try:
+                                preview_settings[category] = read_preview_settings(core_api['config'], category)
+                                if preview_settings[category]['enabled'] and preview_settings[category]['auto_download_trailer']:
+                                    check_ff_schema(core_api['config'], [category], True)
+                            except FfApiError as exc: preview_settings[category] = str(exc)
+                        gate = preview_settings[category]
+                        if not isinstance(gate, dict): raise FfApiError(gate)
+                        if not gate['enabled'] or not gate['auto_download_trailer']:
+                            task.log('  -> 설정 OFF: 트레일러/프리뷰 및 Plex 반영을 건너뜁니다.')
+                            core_api['cache'].mark_keys_as_done('id', [item_id]); continue
                     ff_snapshot_targets(plex_item, core_api['config'])
                     if task.is_cancelled(): break
-                    if op_action == 'ff_heal' and (category, code) not in healed_codes:
-                        ff_command(core_api['config'], 'db_refresh_missing_in_place', code, category)
-                        healed_codes.add((category, code))
-                    if task.is_cancelled():
-                        break
                     latest = fetch_ff_meta_batch(core_api['config'], category, [code]).get(code)
-                    if latest is None:
-                        raise FfApiError(f'FF 메타 DB에 {code} 작품이 없습니다.')
-                    if op_action in ('ff_media_sync', 'ff_person_sync'):
-                        if not sync_ff_storage(core_api['config'], latest, op_action, task_data, task,
-                                               storage_results, sleep_time):
-                            break
-                        if task.is_cancelled():
-                            break
-                        latest = fetch_ff_meta_batch(core_api['config'], category, [code]).get(code)
+                    if latest is None: raise FfApiError(f'FF 메타 DB에 {code} 작품이 없습니다.')
+                    if op_action == 'make_preview':
+                        if ff_has_video(latest):
+                            task.log('  -> FF 저장 영상이 이미 등록되어 생성/반영을 건너뜁니다.')
+                            core_api['cache'].mark_keys_as_done('id', [item_id]); continue
+                        latest = create_missing_ff_video(core_api['config'], plex_item, latest, gate, task_data, task)
                         if latest is None:
-                            raise FfApiError('FF 동기화 후 최종 메타데이터를 확인하지 못했습니다.')
-                    if op_action == 'make_preview' and not ff_has_video(latest):
-                        current_files = [part.file for media in plex_item.media for part in media.parts if getattr(part, 'file', None)]
-                        requested_path = item.get('raw_path')
-                        video_path = requested_path if requested_path in current_files else find_best_video_file(current_files)
-                        if not video_path:
-                            raise FfApiError('현재 Plex 영상 파일 경로를 찾지 못했습니다.')
-                        task.log(f'  -> FF 프리뷰 생성 요청: {code} ({category})')
-                        ff_ok, ff_msg = make_ff_preview_clip(core_api['config'], code, category, video_path)
-                        if not ff_ok:
-                            raise FfApiError(ff_msg)
-                        latest = fetch_ff_meta_batch(core_api['config'], category, [code]).get(code)
-                        if latest is None or not ff_has_video(latest):
-                            raise FfApiError('FF 프리뷰 생성 후 최종 재생 정보를 확인하지 못했습니다.')
-                    elif op_action == 'make_preview':
-                        task.log('  -> FF에 기존 대표 영상이 있어 재생성 없이 Plex에 반영합니다.')
-                    if task.is_cancelled():
-                        break
+                            if task.is_cancelled(): break
+                            core_api['cache'].mark_keys_as_done('id', [item_id]); continue
+                    if task.is_cancelled(): break
                     phase = pmh_core.FfWriteJournal(core_api['config'])
                     phase_args = {'plex_id': str(plex_item.ratingKey), 'persons': [
                         ('WESTERN' if category == 'WESTERN' else 'JAV', str(actor['actor_idx']))
@@ -1581,6 +1397,9 @@ def worker(task_data, core_api, start_index):
                     except Exception:
                         phase.plex_phase(category, code, 'failed', **phase_args)
                         raise
+                    if task.is_cancelled():
+                        phase.plex_phase(category, code, 'failed', **phase_args)
+                        break
                     phase.plex_phase(category, code, 'accepted' if success else 'failed', **phase_args)
                     task.log(f'  -> {"✅" if success else "❌"} Plex 반영: {msg}')
                     item_has_error = not success
@@ -1668,11 +1487,9 @@ def worker(task_data, core_api, start_index):
                 task.log(f"✅ 단일 실행 작업 완료! (소요시간: {elapsed_str})")
             else:
                 task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
-                mode_label = "품번 불일치/오매칭 복구" if mode == "mismatch" else "중복 아이템 재매칭" if mode == "dupes" else "FF 메타 DB 동기화" if mode == "meta_sync" else "LLM 미적용 항목 검출 및 리매칭" if mode == "llm_translation" else "배우 정보 업데이트" if mode == "actor" else "유저 포스터 일괄 갱신"
-                if mode == "file_error": mode_label = "파일명 오류 항목(수동 확인/작업 필요)"
-                if mode in ("ff_media_sync", "ff_person_sync"): mode_label = "FF 저장소 동기화 및 Plex 반영"
-                if mode == "ff_heal": mode_label = "FF 누락 정보 보완 및 Plex 반영"
-                if mode == "preview_clip": mode_label = "Plex 영상 누락 복구 (FF 기존 영상 반영 / 없으면 프리뷰 생성)"
+                mode_label = {'mismatch':'품번 불일치/오매칭 복구', 'dupes':'중복 아이템 재매칭',
+                    'json_diff':'메타 DB 기준 불일치(JSON) 반영', 'llm_translation':'LLM 미적용 항목 검출 및 리매칭',
+                    'file_error':'파일명 오류 항목(수동 확인/작업 필요)', 'preview_clip':'트레일러 누락 영상 프리뷰 생성'}[mode]
 
                 reason_counter = defaultdict(int)
                 for it in pending_items:
