@@ -210,6 +210,7 @@ BASE:
 # MASTER 설정이 활성화되어 있으면 이 서버는 마스터(Gateway) 역할을 수행합니다.
 # 워커 노드로만 사용할 경우 아래 MASTER 블록 전체를 삭제하거나 주석 처리하세요.
 MASTER:
+  NAME: "MASTER"  # 프론트엔드에 표시되는 마스터 노드 이름 (미설정 시 MASTER)
   # 자동 업데이트 체크(24h)를 활성화합니다.
   AUTO_UPDATE_CHECK: true
 

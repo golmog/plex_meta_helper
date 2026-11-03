@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import sqlite3
+import urllib.parse
 import os
 import sys
 import time
@@ -37,7 +38,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.133"
+__version__ = "0.9.134"
 
 logger = logging.getLogger("PMH")
 
@@ -1356,7 +1357,7 @@ def ff_safe_summary(value, secrets=()):
 def ff_route_kind(endpoint, method, payload):
     """Classify the actual FF handler before interpreting any command or intent."""
     command_routes = {'meta_api', 'person_api'}
-    read_apis = {'api/meta_db/info_batch', 'api/meta_db/batch_info'}
+    read_apis = {'api/meta_db/info_batch', 'api/meta_db/batch_info', 'settings_api'}
     write_apis = {'api/meta_db/' + action for action in (
         'media_sync', 'person_image_sync', 'make_preview_clip', 'delete_preview_clip')}
     write_apis.update('api/' + module + '/' + action
@@ -1365,7 +1366,7 @@ def ff_route_kind(endpoint, method, payload):
     display_routes = {'normal/' + action for action in (
         'jav_image', 'jav_image_un', 'jav_video', 'jav_video_un',
         'image_proxy', 'discord_proxy', 'image_process.jpg', 'stream')}
-    if method != 'POST' and endpoint in write_apis | command_routes:
+    if method != 'POST' and endpoint in write_apis | command_routes | {'settings_api'}:
         raise FfWriteBlocked('relay_method_not_allowed', status=405)
     if not isinstance(payload, dict):
         raise FfWriteBlocked('relay_input_rejected', status=400)
@@ -2837,6 +2838,299 @@ def end_maintenance():
         _RUNTIME['maintenance'] = False
 
 
+# Shared AV sidecar discovery and semantic comparison (also used by AV Manager).
+def find_local_meta_json(dir_name, base_name, raw_pid=None, files_in_dir=None, cfg=None, compiled_rules=None):
+    """DB 품번(1MOON-009), 숫자 접두사 제거(moon-009), 파일명 추출 품번을 순차 대조하여 로컬 JSON 탐색"""
+    candidates = []
+
+    # DB 제목 내 품번 원본 (예: 1moon-009.json)
+    if raw_pid:
+        p_clean = str(raw_pid).strip().lower()
+        candidates.append(f"{p_clean}.json")
+
+        # 라벨 분류용 숫자 접두사 제거 폴백 (예: 1MOON-009 -> moon-009.json, 298GOOD-026 -> good-026.json)
+        stripped_pid = re.sub(r'^\d+', '', p_clean)
+        if stripped_pid and stripped_pid != p_clean:
+            candidates.append(f"{stripped_pid}.json")
+
+    # 실제 비디오 파일명에서 정규식으로 추출한 품번 (예: 파일명이 [M-Team] moon-009-C 1080p.mp4 인 경우 moon-009.json)
+    if base_name:
+        if cfg and compiled_rules:
+            try:
+                f_pids = extract_jav_pid(base_name, cfg, compiled_rules)
+                for f_l, f_n in f_pids:
+                    candidates.append(f"{f_l.lower()}-{f_n.lower()}.json")
+                    candidates.append(f"{f_l.lower()}{f_n.lower()}.json")
+            except Exception: pass
+
+        # 파일명 자체 (예: moon-009.json)
+        b_clean = base_name.lower().strip()
+        candidates.append(f"{b_clean}.json")
+
+    # 중복 제거 (우선순위 순서 보존)
+    seen = set()
+    unique_candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+
+    # 디렉터리 파일 캐시(files_in_dir)가 제공된 경우 O(1) 메모리 검색
+    if files_in_dir is not None:
+        for c_name in unique_candidates:
+            if c_name in files_in_dir:
+                actual = files_in_dir[c_name] if isinstance(files_in_dir, dict) else c_name
+                return os.path.join(dir_name, actual), [os.path.join(dir_name, c) for c in unique_candidates]
+        return None, [os.path.join(dir_name, c) for c in unique_candidates]
+
+    # 디스크 실존 검사 (os.path.exists)
+    for c_name in unique_candidates:
+        target_path = os.path.join(dir_name, c_name)
+        if os.path.exists(target_path):
+            return target_path, [os.path.join(dir_name, c) for c in unique_candidates]
+
+    return None, [os.path.join(dir_name, c) for c in unique_candidates]
+
+def extract_sjva_code_and_cat(guid):
+    if not guid: return None, None
+    s = str(guid).strip()
+    if '://' in s: s = s.split('://', 1)[1]
+    if '?' in s: s = s.split('?', 1)[0]
+    s = s.strip()
+    if not s or s == '-' or s.startswith('local') or s.startswith('none'):
+        return None, None
+    prefix = s[0].upper()
+    if prefix == 'C': return s, 'JAV_CEN'
+    elif prefix == 'E': return s, 'JAV_UNCEN'
+    elif prefix == 'W': return s, 'WESTERN'
+    return None, None
+
+def find_best_video_file(file_list):
+    if not file_list: return ""
+    clean_files = [f.strip() for f in file_list if f.strip()]
+    if not clean_files: return ""
+    if len(clean_files) == 1: return clean_files[0]
+
+    part1_pattern = re.compile(r'[-_. ]?(cd|part|pt|disc|dvd)[\s._-]*0*1\b|[-_. ]0*1\.[a-zA-Z0-9]+$', re.IGNORECASE)
+    for f in clean_files:
+        if part1_pattern.search(os.path.basename(f)):
+            return f
+
+    sorted_files = sorted(clean_files, key=lambda x: [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', os.path.basename(x))])
+    return sorted_files[0]
+
+def media_identity(value):
+    """Ignore presentation hosts and proxy nesting, retain actual file identity."""
+    clean = str(value or '').strip()
+    if not clean:
+        return ''
+    for _ in range(8):
+        parsed = urllib.parse.urlsplit(clean)
+        query = urllib.parse.parse_qs(parsed.query)
+        if '/metadata/normal/' in parsed.path and query.get('url'):
+            clean = query['url'][0]
+            continue
+        host = (parsed.hostname or '').lower()
+        if host == 'drive.google.com' or host == 'googleusercontent.com' or host.endswith('.googleusercontent.com'):
+            fileid = (query.get('id') or [''])[0]
+            match = re.search(r'/d/([^/=]+)', parsed.path)
+            if fileid or match:
+                return 'gdrive:' + (fileid or match.group(1))
+        if query.get('mode') == ['preview_gdrive']:
+            return 'gdrive-video:' + (query.get('fileid') or [''])[0]
+        if query.get('mode') == ['preview_local']:
+            return 'local-video:' + (query.get('path') or [''])[0].replace('\\', '/')
+        if '/images/' in parsed.path:
+            return 'image:' + parsed.path[parsed.path.index('/images/'):]
+        query.pop('_t', None)
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                                       urllib.parse.urlencode(sorted((k, v) for k, values in query.items() for v in values)), ''))
+    return clean
+
+def detect_meta_diff(local_json, ff_json):
+    """Compare effective FF metadata and stable asset identities, not storage URL spelling."""
+    reasons = []
+    clean = lambda value: re.sub(r'\s+', ' ', str(value or '')).strip()
+    for key, label in [('title', '제목'), ('plot', '줄거리'), ('tagline', '부제'), ('studio', '제작사'),
+                       ('series', '시리즈'), ('director', '감독'), ('premiered', '출시일'), ('mpaa', '등급'), ('ui_code', '표시 품번'), ('originaltitle', '원제')]:
+        if clean(local_json.get(key)) != clean(ff_json.get(key)):
+            reasons.append(f'{label} 갱신')
+    for key, label in [('year', '연도'), ('runtime', '재생시간'), ('rating', '평점')]:
+        if str(local_json.get(key) or 0) != str(ff_json.get(key) or 0):
+            try:
+                equal = float(local_json.get(key) or 0) == float(ff_json.get(key) or 0)
+            except (ValueError, TypeError):
+                equal = False
+            if not equal:
+                reasons.append(f'{label} 갱신')
+    if {clean(v) for v in local_json.get('genre') or []} != {clean(v) for v in ff_json.get('genre') or []}:
+        reasons.append('장르 갱신')
+
+    if {clean(v) for v in local_json.get('tag') or []} != {clean(v) for v in ff_json.get('tag') or []}:
+        reasons.append('태그 갱신')
+
+    local_actors = [actor for actor in local_json.get('actor') or [] if isinstance(actor, dict)]
+    ff_actors = [actor for actor in ff_json.get('actor') or [] if isinstance(actor, dict)]
+    names = lambda actor: {clean(actor.get(key)).casefold() for key in ('name', 'name_org', 'name_ko', 'name_en') if clean(actor.get(key))}
+    identity = lambda actor: clean(actor.get('actor_idx') or actor.get('person_idx')).casefold()
+    used = set()
+    actor_changed = len(local_actors) != len(ff_actors)
+    for actor in ff_actors:
+        matched = next((i for i, old in enumerate(local_actors) if i not in used and identity(actor) and identity(actor) == identity(old)), None)
+        if matched is None:
+            matched = next((i for i, old in enumerate(local_actors) if i not in used and names(actor) & names(old)), None)
+        if matched is None:
+            actor_changed = True
+            continue
+        used.add(matched)
+        old = local_actors[matched]
+        display_name = lambda value: clean(value.get('name_ko') or value.get('name') or value.get('name_org') or value.get('name_en'))
+        if (identity(actor) != identity(old) or display_name(actor) != display_name(old)
+                or clean(actor.get('role')) != clean(old.get('role'))
+                or media_identity(actor.get('thumb')) != media_identity(old.get('thumb'))):
+            actor_changed = True
+    if actor_changed:
+        reasons.append('인물 구성/이름/대표 사진 갱신')
+
+    def thumbs(entity):
+        return {(thumb.get('aspect'), media_identity(thumb.get('value'))) for thumb in entity.get('thumb') or []
+                if isinstance(thumb, dict) and thumb.get('value')}
+    if thumbs(local_json) != thumbs(ff_json):
+        reasons.append('포스터/커버 갱신')
+    if {media_identity(url) for url in local_json.get('fanart') or []} != {media_identity(url) for url in ff_json.get('fanart') or []}:
+        reasons.append('팬아트 갱신')
+    videos = lambda entity: {media_identity(extra.get('content_url')) for extra in entity.get('extras') or []
+                             if isinstance(extra, dict) and extra.get('content_type') == 'trailer' and extra.get('content_url')}
+    if videos(local_json) != videos(ff_json):
+        reasons.append('대표 트레일러/프리뷰 갱신')
+    def stored_videos(entity):
+        extra = entity.get('extra_info') or {}
+        return {(kind, asset.get('google_fileid') or asset.get('local_path') or asset.get('relative_path') or '')
+                for kind in ('trailer_video','preview_clip') for asset in [extra.get(kind)] if isinstance(asset,dict)}
+    if stored_videos(local_json) != stored_videos(ff_json):
+        reasons.append('저장 영상 정보 갱신')
+    def assets(entity):
+        return {(asset.get('media_type'), asset.get('gdrive_fileid') or asset.get('relative_path') or media_identity(asset.get('url')),
+                 asset.get('relative_path') or '', bool(asset.get('is_user')), asset.get('checksum') or '')
+                for asset in entity.get('media') or [] if isinstance(asset, dict)}
+    if assets(local_json) != assets(ff_json):
+        reasons.append('미디어 저장소 정보 갱신')
+    return reasons
+
+def validate_ff_entity(entity, code, category, error_class=ValueError):
+    if not isinstance(entity, dict):
+        raise error_class('FF 메타데이터 응답 형식 오류')
+    if str(entity.get('code') or '') != str(code) or entity.get('category') != category:
+        raise error_class(f'FF 응답 작품 식별자가 Plex GUID와 다릅니다: {code} ({category})')
+    schema = entity.get('schema') or {}
+    if schema.get('db_schema_version') != 1 or schema.get('json_format_version') != 1:
+        raise error_class('FF 메타 DB 스키마/JSON 버전이 지원 범위와 다릅니다.')
+    return entity
+
+def fetch_ff_meta_batch(global_config, category, codes_list, request_fn=None, error_class=ValueError):
+    request_fn = request_fn or _read_ff_meta_batch
+    if not codes_list:
+        return {}
+    cat = {'jav_censored': 'JAV_CEN', 'jav_uncensored': 'JAV_UNCEN',
+           'c': 'JAV_CEN', 'e': 'JAV_UNCEN', 'w': 'WESTERN'}.get(str(category).lower(), str(category).upper())
+    if cat not in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
+        raise error_class('지원하지 않는 AV 카테고리입니다.')
+    codes = list(dict.fromkeys(str(code).strip() for code in codes_list if str(code).strip()))
+    found = {}
+    for start in range(0, len(codes), 100):
+        requested = codes[start:start + 100]
+        response = request_fn(global_config, 'api/meta_db/info_batch', {'category': cat, 'codes': requested}, timeout=60)
+        if (response.get('ret') != 'success' or response.get('uncertain') or response.get('commit_unknown') or
+                response.get('commit_state') == 'unknown' or response.get('status') in ('partial','unknown','error')):
+            raise error_class('FF 최신 메타데이터 조회 결과가 불확실합니다.')
+        data = response.get('data')
+        if not isinstance(data, dict):
+            raise error_class('FF 일괄 조회 응답에 data 객체가 없습니다.')
+        lookup = {str(key).casefold(): value for key, value in data.items()}
+        for code in requested:
+            entity = lookup.get(code.casefold())
+            if entity is not None:
+                found[code] = validate_ff_entity(entity, code, cat, error_class)
+    return found
+
+
+def _read_ff_meta_batch(config, endpoint, payload, timeout=60):
+    """Read the existing FF batch API without entering any write/journal path."""
+    if endpoint != 'api/meta_db/info_batch' or ff_route_kind(endpoint, 'POST', payload) != 'read':
+        raise ValueError('invalid metadata read')
+    base, key = str(config.get('mate_url') or '').rstrip('/'), config.get('mate_apikey')
+    if not base or not key:
+        raise ValueError('FF connection unavailable')
+    request = Request(base + '/metadata/' + endpoint,
+        data=json.dumps(dict(payload, apikey=key)).encode('utf-8'), method='POST',
+        headers={'Accept': 'application/json', 'Content-Type': 'application/json', 'X-API-Key': str(key)})
+    with urlopen(request, timeout=timeout) as response:
+        result = json.loads(response.read().decode('utf-8'))
+        if response.status != 200 or not isinstance(result, dict):
+            raise ValueError('FF read unavailable')
+        return result
+
+
+def compare_item_meta_json(config, item_id, db_engine=None):
+    """Compare one current Plex movie's saved sidecar with its exact FF entity."""
+    result = {'ret': 'success', 'status': 'unavailable', 'differences': []}
+    if not re.fullmatch(r'[1-9][0-9]*', str(item_id or '')):
+        return dict(result, ret='error'), 400
+    query = """SELECT mi.guid, mi.metadata_type, mi.title, mp.file
+        FROM metadata_items mi
+        LEFT JOIN media_items media ON media.metadata_item_id = mi.id
+        LEFT JOIN media_parts mp ON mp.media_item_id = media.id
+        WHERE mi.id = ? ORDER BY mp.id"""
+    try:
+        engine = db_engine or UniversalPlexDatabaseEngine(config)
+        rows = engine.query(query, (int(item_id),))
+        if not rows or rows[0]['metadata_type'] != 1:
+            raise ValueError('Plex movie unavailable')
+        code, category = extract_sjva_code_and_cat(rows[0]['guid'])
+        if not code or not category:
+            raise ValueError('AV GUID unavailable')
+        result.update(code=code, category=category)
+        video = find_best_video_file([row['file'] for row in rows if row.get('file') and
+                                     str(row['file']).strip().lower() != 'unknown path'])
+        directory, filename = os.path.split(video)
+        if not video or not directory:
+            raise ValueError('media directory unavailable')
+        # Listing must succeed: an inaccessible mount is not a missing sidecar.
+        files = {name.lower(): name for name in os.listdir(directory)}
+        stem = os.path.splitext(filename)[0]
+        title_pid = re.match(r'^\[([A-Za-z0-9\-_]+)\]', str(rows[0]['title'] or '').strip())
+        path, candidates = find_local_meta_json(directory, stem,
+            raw_pid=title_pid.group(1) if title_pid else '', files_in_dir=files,
+            cfg=config, compiled_rules=compile_jav_rules(config))
+        # Same manual sidecar precedence used by AV Manager's FF apply path.
+        yaml_stems = {os.path.splitext(os.path.basename(candidate))[0] for candidate in candidates} | {'movie'}
+        if any(f'{name}.{ext}' in files for name in yaml_stems for ext in ('yaml', 'yml')):
+            return dict(result, status='manual_yaml'), 200
+        if not path:
+            return dict(result, status='missing_json'), 200
+        try:
+            with open(path, 'r', encoding='utf-8') as stream:
+                local = json.load(stream)
+        except (OSError, ValueError, UnicodeError):
+            return dict(result, status='invalid_json'), 200
+
+        def comparable(entity):
+            return (isinstance(entity, dict) and
+                all(entity.get(key) is None or isinstance(entity[key], list)
+                    for key in ('actor', 'thumb', 'fanart', 'extras', 'media', 'genre', 'tag')) and
+                (entity.get('extra_info') is None or isinstance(entity['extra_info'], dict)))
+
+        if not comparable(local):
+            return dict(result, status='invalid_json'), 200
+        entity = fetch_ff_meta_batch(config, category, [code]).get(code)
+        if not comparable(entity):
+            raise ValueError('FF entity unavailable')
+        # A GUID/path change during the read cannot verify the originally selected movie.
+        if engine.query(query, (int(item_id),)) != rows:
+            raise ValueError('Plex identity changed')
+        differences = list(dict.fromkeys(re.sub(r' 갱신$', '', reason) for reason in detect_meta_diff(local, entity)))
+        return dict(result, status='mismatch' if differences else 'match', differences=differences), 200
+    except Exception:
+        # Never return sidecar paths, FF bodies/keys, or transport exception text.
+        return dict(result, ret='error'), 503
+
+
 def dispatch_request(subpath, method, args, data, global_config):
     # Monitoring and cancellation remain available during maintenance.
     observing = (subpath.endswith(('/status', '/stream', '/cancel')) or
@@ -2855,6 +3149,12 @@ def dispatch_request(subpath, method, args, data, global_config):
 
 
 def _dispatch_request(subpath, method, args, data, global_config):
+    if subpath == 'meta_db/json_compare' and method == 'GET':
+        if (set(args) - {'item_id', 'apikey', 'sig', '_sig'} or data or
+                (hasattr(args, 'getlist') and any(len(args.getlist(key)) != 1 for key in args))):
+            return {'ret': 'error', 'status': 'unavailable', 'differences': []}, 400
+        return compare_item_meta_json(global_config, args.get('item_id'))
+
     base_dir = global_config.get("base_dir")
     db_path = global_config.get("plex_db_path")
     max_batch_size = global_config.get("max_batch_size", 1000)
@@ -2950,7 +3250,7 @@ def _dispatch_request(subpath, method, args, data, global_config):
             found_tasks = []
             if target_task_id and target_task_id in MEDIA_ACTION_STATUS:
                 found_tasks.append((target_task_id, MEDIA_ACTION_STATUS[target_task_id]))
-            elif target_item_id:
+            elif target_item_id and not target_task_id:
                 for tid, st in list(MEDIA_ACTION_STATUS.items()):
                     if str(st.get('item_id', '')) == target_item_id and st.get('state') in ['queued', 'processing']:
                         found_tasks.append((tid, st))
@@ -2958,20 +3258,23 @@ def _dispatch_request(subpath, method, args, data, global_config):
             if not found_tasks:
                 return {"status": "error", "msg": "취소할 유효한 대기/진행 작업을 찾을 수 없습니다."}, 404
 
-            cancelled_count = 0
+            results = []
             for tid, st in found_tasks:
-                st['state'] = 'cancelled'
-                st['msg'] = '사용자 취소'
+                if st.get('state') == 'queued':
+                    st.update(state='cancelled', cancel_requested=True, msg='사용자 취소')
+                elif st.get('state') == 'processing':
+                    st.update(cancel_requested=True, msg='취소 요청 접수 (처리 종료 대기)')
                 broadcast_media_event({
                     'task_id': tid,
                     'item_id': str(st.get('item_id', '')),
-                    'state': 'cancelled',
-                    'msg': '사용자 취소'
+                    'state': st.get('state'),
+                    'msg': st.get('msg', ''),
+                    'cancel_requested': st.get('cancel_requested', False)
                 })
-                cancelled_count += 1
-                logger.info(f"🛑 작업 취소 완료 (Task: {tid}, Item: {st.get('item_id')})")
+                results.append(dict(st, task_id=tid))
 
-            return {"status": "success", "msg": f"{cancelled_count}개 작업이 안전하게 취소되었습니다."}, 200
+            return {"status": "success", "msg": "취소 요청을 확인했습니다. 진행 중인 Plex 요청은 즉시 되돌릴 수 없습니다.",
+                    "tasks": results}, 200
 
         # 미디어 액션 큐 전용 실시간 SSE 스트리밍 엔드포인트
         elif subpath == 'media/queue_stream' and method == 'GET':
@@ -3124,7 +3427,8 @@ def _dispatch_request(subpath, method, args, data, global_config):
                 req = Request(target_url, data=encoded_data, method='POST')
                 req.add_header('Content-Type', 'application/x-www-form-urlencoded')
                 
-                with urlopen(req, timeout=60) as response:
+                timeout = 3600 if subpath == 'mate/scan/vfs_refresh' else 360 if subpath == 'mate/scan/manual_refresh' else 60
+                with urlopen(req, timeout=timeout) as response:
                     resp_data = response.read().decode('utf-8')
                     try:
                         result_json = json.loads(resp_data)
@@ -3191,15 +3495,18 @@ def _dispatch_request(subpath, method, args, data, global_config):
             
             logger.info('[FF Relay] %s request', method)
 
+            ff_reply = None
             def transport():
+                nonlocal ff_reply
                 req = Request(target_url, data=req_data, headers=headers, method=method)
                 ff_timeout = 300 if ('make_preview_clip' in str(req_data) or 'preview' in sub_endpoint) else 180
                 try:
                     with urlopen(req, timeout=ff_timeout) as response:
-                        return response.status, json.loads(response.read().decode('utf-8'))
+                        ff_reply = response.status, json.loads(response.read().decode('utf-8'))
                 except HTTPError as exc:
-                    try: return exc.code, json.loads(exc.read(1024 * 1024).decode('utf-8'))
+                    try: ff_reply = exc.code, json.loads(exc.read(1024 * 1024).decode('utf-8'))
                     finally: exc.close()
+                return ff_reply
             try:
                 if method == 'POST':
                     status, result = guarded_ff_write(global_config, sub_endpoint, data, transport)
@@ -3207,6 +3514,11 @@ def _dispatch_request(subpath, method, args, data, global_config):
                     status, result = transport()
                 return result, status
             except FfWriteBlocked as exc:
+                if ff_reply and isinstance(ff_reply[1], dict):
+                    # Preserve this attempt's FF receipt without accepting or retrying the guarded write.
+                    return dict(ff_reply[1], _pmh_ff_receipt=True,
+                                _pmh_ff_http_status=ff_reply[0],
+                                _pmh_write_state=exc.state, attempt_id=exc.attempt_id), 409
                 return {'ret': 'error', 'error_code': exc.state, 'attempt_id': exc.attempt_id,
                         'msg': str(exc)}, 409
             except Exception:
@@ -3887,8 +4199,10 @@ def normalize_pid_for_comparison(pid_str):
 # ==============================================================================
 
 def execute_plexmate_action(action_type, target, global_config, **kwargs):
+    return_detail = action_type == 'manual_refresh' and kwargs.get('return_detail', False)
     task = getattr(_FF_WRITE_CONTEXT, 'task', None)
-    if task and task.is_cancelled(): return False
+    if task and task.is_cancelled():
+        return {'success': False, 'ret': None, 'msg': '작업 취소'} if return_detail else False
     mate_url = global_config.get('mate_url', '')
     mate_apikey = global_config.get('mate_apikey', '')
     if not mate_url or not mate_apikey:
@@ -3929,7 +4243,7 @@ def execute_plexmate_action(action_type, target, global_config, **kwargs):
         payload.update({
             'metadata_item_id': target
         })
-        timeout = 120
+        timeout = 360
         
     else:
         raise ValueError(f"지원하지 않는 Plex Mate 액션입니다: {action_type}")
@@ -3940,6 +4254,8 @@ def execute_plexmate_action(action_type, target, global_config, **kwargs):
     
     with urlopen(req, timeout=timeout) as response:
         res = json.loads(response.read().decode('utf-8'))
+        if return_detail:
+            return {'success': res.get('ret') == 'success', 'ret': res.get('ret'), 'msg': res.get('msg', '')}
         return res.get('ret') == 'success'
 
 
@@ -3996,6 +4312,10 @@ def media_action_worker_loop(global_config):
             })
             
             try:
+                if MEDIA_ACTION_STATUS[task_id].get('cancel_requested'):
+                    MEDIA_ACTION_STATUS[task_id].update(state='cancelled', msg='사용자 취소')
+                    broadcast_media_event(dict(MEDIA_ACTION_STATUS[task_id], task_id=task_id))
+                    continue
                 from plexapi.server import PlexServer
                 plex = PlexServer(plex_url, plex_token, timeout=120)
                 ekey = int(item_id) if str(item_id).isdigit() else f"/library/metadata/{item_id}"
@@ -4049,7 +4369,7 @@ def media_action_worker_loop(global_config):
                         manual_match=manual_m,
                         global_config=global_config, 
                         task_logger=lambda x: logger.info(f"[Queue] {x}"),
-                        cancel_checker=lambda: MEDIA_ACTION_STATUS.get(task_id, {}).get('state') == 'cancelled'
+                        cancel_checker=lambda: bool(MEDIA_ACTION_STATUS.get(task_id, {}).get('cancel_requested'))
                     )
 
                     if success:
@@ -4085,12 +4405,13 @@ def media_action_worker_loop(global_config):
                             'msg': msg
                         })
                     else:
-                        MEDIA_ACTION_STATUS[task_id].update({'state': 'error', 'msg': msg, 'item_id': item_id, 'action': action})
+                        final_state = 'cancelled' if MEDIA_ACTION_STATUS[task_id].get('cancel_requested') and msg in ('작업이 사용자에 의해 취소되었습니다.', '작업 취소됨', '사용자 취소', 'Cancelled') else 'error'
+                        MEDIA_ACTION_STATUS[task_id].update({'state': final_state, 'msg': msg, 'item_id': item_id, 'action': action})
                         
                         broadcast_media_event({
                             'task_id': task_id,
                             'item_id': str(item_id),
-                            'state': 'error',
+                            'state': final_state,
                             'action': action,
                             'msg': msg
                         })

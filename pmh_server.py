@@ -826,7 +826,7 @@ def get_client_config():
 
     servers = [{
         "id": "master_node", 
-        "name": "1.MAIN (Master)", 
+        "name": MASTER_CFG.get("NAME", "MASTER"),
         "machine_id": BASE_CFG.get("PLEX_MACHINE_IDENTIFIER", ""),
         "db_type": master_db_type,
         "is_postgres": master_db_type == "postgres",
