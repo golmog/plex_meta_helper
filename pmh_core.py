@@ -38,7 +38,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.134"
+__version__ = "0.9.135"
 
 logger = logging.getLogger("PMH")
 
@@ -715,7 +715,7 @@ def handle_library_batch(data, max_batch_size, db_engine):
                 (SELECT {group_fn}(ms.codec || '|' || COALESCE(ms.extra_data, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 1) as raw_stream_data,
                 (SELECT {group_fn}(ms.id || '|' || COALESCE(ms.language, 'und') || '|' || COALESCE(ms.codec, '') || '|' || COALESCE(ms.url, ''), ';;') FROM media_streams ms WHERE ms.media_item_id = m.id AND ms.stream_type_id = 3) as sub_data,
                 mi.guid, mp.file, mp.id,
-                {_plex_trailer_id_sql()} as trailer_id
+                {_plex_trailer_id_sql()} as trailer_id, m.height
             FROM metadata_items mi
             LEFT JOIN media_items m ON m.metadata_item_id = mi.id
             LEFT JOIN media_parts mp ON mp.media_item_id = m.id
@@ -726,6 +726,7 @@ def handle_library_batch(data, max_batch_size, db_engine):
             for row in cursor.fetchall():
                 rk = str(row[0])
                 width, raw_data, sub_data, guid, filepath, part_id, trailer_id = row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+                height = row[8] or 0
                 if filepath: filepath = unicodedata.normalize('NFC', filepath)
                 
                 path_count = 1
@@ -742,7 +743,21 @@ def handle_library_batch(data, max_batch_size, db_engine):
                     width = width if width else 0
                     
                     if width > 0:
-                        if width >= 7000: res_tag = "8K"
+                        if height > 0:
+                            long_side, short_side = max(width, height), min(width, height)
+                            res_tag = "SD"
+                            for tag, min_long, min_short, alt_short in (
+                                ("8K", 7680, 2880, 4320),
+                                ("6K", 5760, 2160, 3240),
+                                ("4K", 3840, 1440, 2160),
+                                ("FHD", 1920, 720, 1080),
+                                ("HD", 1280, 480, 720),
+                            ):
+                                if (long_side >= math.ceil(min_long * 0.98) and
+                                        short_side >= math.ceil(min_short * 0.98)) or short_side >= math.ceil(alt_short * 0.98):
+                                    res_tag = tag
+                                    break
+                        elif width >= 7000: res_tag = "8K"
                         elif width >= 5000: res_tag = "6K"
                         elif width >= 3400: res_tag = "4K"
                         elif width >= 1900: res_tag = "FHD"
@@ -1039,7 +1054,7 @@ def handle_media_detail(rating_key, db_engine):
                 subs = [{"id": s[0], "languageCode": (s[1] or "und").lower()[:3], "codec": s[2] or "unknown", "key": s[3], "format": s[2] or "unknown"} for s in cursor.fetchall()]
                 
                 versions.append({
-                    "part_id": part_id, "file": file_path, "width": width or 0, "v_bitrate": v_bitrate or 0, 
+                    "part_id": part_id, "file": file_path, "width": width or 0, "height": height or 0, "v_bitrate": v_bitrate or 0,
                     "video_extra": video_extra, "v_codec": v_codec or "", "a_codec": a_codec or "", 
                     "a_ch": a_ch or "", "a_bitrate": a_bitrate or 0, "subs": subs, "parts": [{"id": part_id, "path": file_path}],
                     "m_type": m_type

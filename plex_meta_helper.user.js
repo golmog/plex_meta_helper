@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.134
+// @version      0.9.135
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -2360,6 +2360,7 @@ GM_addStyle(`
             maxCacheSize: 5000,
             devMode: false,
             pathMappings: [],
+            streamPreferredDomains: '',
             enableCatiaMapping: false,
             matchTryRefreshFirst: false,
             matchDoUnmatchFirst: false,
@@ -2630,6 +2631,70 @@ GM_addStyle(`
         return null;
     }
 
+    function getPlexStreamResources() {
+        try {
+            const users = JSON.parse(localStorage.getItem('users'));
+            const resources = new Map();
+            for (const user of users?.users || []) {
+                for (const server of user.servers || []) {
+                    if (server?.machineIdentifier && !resources.has(server.machineIdentifier)) resources.set(server.machineIdentifier, server);
+                }
+            }
+            return [...resources.values()];
+        } catch (_) { return []; }
+    }
+
+    function parsePlexStreamDomains(value) {
+        const rules = String(value || '').split(/[,\n]/).map(rule => rule.trim().toLowerCase()).filter(Boolean);
+        for (const rule of rules) {
+            const host = rule.startsWith('*.') ? rule.slice(2) : rule;
+            if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(host)) {
+                throw new Error('우선 도메인은 URL·포트 없이 호스트 또는 *.도메인 형식으로 입력하세요.');
+            }
+        }
+        return rules;
+    }
+
+    function parsePlexStreamUrl(value) {
+        if (typeof value !== 'string') return null;
+        const clean = value.trim();
+        if (!/^https?:\/\//i.test(clean) || /[\s\\?#]/.test(clean) || /^https?:\/\/[^/]*@/i.test(clean)) return null;
+        try {
+            const parsed = new URL(clean);
+            if (!['https:','http:'].includes(parsed.protocol) || !parsed.hostname || parsed.hostname.includes('*') ||
+                parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+            return {url:clean.replace(/\/+$/, ''), hostname:parsed.hostname.toLowerCase(), protocol:parsed.protocol, origin:parsed.origin};
+        } catch (_) { return null; }
+    }
+
+    function extractPlexStreamServerInfo(machineIdentifier) {
+        if (!machineIdentifier) return null;
+        const server = getPlexStreamResources().find(resource => resource.machineIdentifier === machineIdentifier);
+        if (!server || typeof server.accessToken !== 'string' || !server.accessToken.trim()) return null;
+        let selected, method;
+        const candidates = (Array.isArray(server.connections) ? server.connections : []).map(connection => {
+            const parsed = parsePlexStreamUrl(connection?.uri);
+            return parsed ? {...parsed, relay:[true,1,'1','true'].includes(connection.relay)} : null;
+        }).filter(Boolean);
+        const https = candidates.filter(candidate => candidate.protocol === 'https:' && !candidate.relay);
+        let rules;
+        try { rules = parsePlexStreamDomains(ClientSettings.streamPreferredDomains); }
+        catch (_) { return null; }
+        for (const rule of rules) {
+            selected = https.find(candidate => rule.startsWith('*.') ? candidate.hostname.endsWith(rule.slice(1)) : candidate.hostname === rule);
+            if (selected) break;
+        }
+        if (selected) method = 'domain-rule';
+        else {
+            selected = https.find(candidate => candidate.hostname !== 'plex.direct' && !candidate.hostname.endsWith('.plex.direct'));
+            if (selected) method = 'auto-https';
+            else { selected = candidates[0]; method = 'legacy'; }
+        }
+        if (!selected) return null;
+        log('[PlexStream]',method,selected.origin);
+        return {url:selected.url, token:server.accessToken};
+    }
+
     async function makeRequest(url, method = "GET", data = null, apiKey = null, cancelToken = null, timeoutMs = 10000) {
         log(`[API Req] [${method}] ${url} (Timeout: ${timeoutMs / 1000}s)`);
 
@@ -2796,6 +2861,24 @@ GM_addStyle(`
         }
     }
 
+    function getVideoResolutionBadge(width, height) {
+        if (!(width > 0)) return null;
+        if (height > 0) {
+            const longSide = Math.max(width,height), shortSide = Math.min(width,height);
+            for (const [tag,minLong,minShort,altShort] of [
+                ['8K',7680,2880,4320],
+                ['6K',5760,2160,3240],
+                ['4K',3840,1440,2160],
+                ['FHD',1920,720,1080],
+                ['HD',1280,480,720],
+            ]) {
+                if ((longSide >= Math.ceil(minLong * 0.98) && shortSide >= Math.ceil(minShort * 0.98)) || shortSide >= Math.ceil(altShort * 0.98)) return tag;
+            }
+            return 'SD';
+        }
+        return width >= 7000 ? '8K' : width >= 5000 ? '6K' : width >= 3400 ? '4K' : width >= 1900 ? 'FHD' : width >= 1200 ? 'HD' : 'SD';
+    }
+
     function parsePlexFallbackTags(meta) {
         let tags = [];
         if (!meta || !meta.Media || meta.Media.length === 0) return tags;
@@ -2803,15 +2886,19 @@ GM_addStyle(`
         const media = sortedMedia[0];
 
         const w = media.width || 0;
+        const h = media.height || 0;
         const vRes = (media.videoResolution || "").toString().toLowerCase();
         let res = null;
 
-        if (w >= 7000 || vRes === '8k') res = "8K";
-        else if (w >= 5000 || vRes === '6k') res = "6K";
-        else if (w >= 3400 || vRes === '4k') res = "4K";
-        else if (w >= 1900 || vRes === '1080') res = "FHD";
-        else if (w >= 1200 || vRes === '720') res = "HD";
-        else if ((w > 0 && w < 1200) || vRes === 'sd' || vRes === '480' || vRes === '576') res = "SD";
+        if (!['track','album','artist','audio'].includes(meta.type)) {
+            if (w > 0 && h > 0) res = getVideoResolutionBadge(w,h);
+            else if (w >= 7000 || vRes === '8k') res = "8K";
+            else if (w >= 5000 || vRes === '6k') res = "6K";
+            else if (w >= 3400 || vRes === '4k') res = "4K";
+            else if (w >= 1900 || vRes === '1080') res = "FHD";
+            else if (w >= 1200 || vRes === '720') res = "HD";
+            else if ((w > 0 && w < 1200) || vRes === 'sd' || vRes === '480' || vRes === '576') res = "SD";
+        }
 
         let hdrBadges = new Set();
         let hasSub = false;
@@ -2895,7 +2982,7 @@ GM_addStyle(`
         if (meta.Media) {
             meta.Media.forEach(m => {
                 let v = {
-                    width: m.width || 0, v_codec: m.videoCodec || "", a_codec: m.audioCodec || "",
+                    width: m.width || 0, height: m.height || 0, v_codec: m.videoCodec || "", a_codec: m.audioCodec || "",
                     a_ch: m.audioChannels || "", v_bitrate: m.bitrate ? m.bitrate * 1000 : 0,
                     file: (m.Part && m.Part[0]) ? m.Part[0].file : "Unknown Path",
                     part_id: (m.Part && m.Part[0]) ? m.Part[0].id : "", video_extra: "", subs: []
@@ -4751,7 +4838,7 @@ GM_addStyle(`
 
             if (info.part_id) {
                 const targetServerId = srvConfig ? srvConfig.machineIdentifier : link?.getAttribute('href')?.match(/\/server\/([a-f0-9]+)\//)?.[1];
-                const plexSrv = extractPlexServerInfo(targetServerId);
+                const plexSrv = extractPlexStreamServerInfo(targetServerId);
 
                 if (plexSrv) {
                     const vUrl = `${plexSrv.url}/library/parts/${info.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${id}`;
@@ -6641,6 +6728,7 @@ GM_addStyle(`
                             if (!m) return;
 
                             v.width = m.width || v.width;
+                            v.height = m.height || v.height;
                             v.v_codec = m.videoCodec || v.v_codec;
                             v.a_codec = m.audioCodec || v.a_codec;
                             v.a_ch = m.audioChannels || v.a_ch;
@@ -6803,8 +6891,9 @@ GM_addStyle(`
 
                         playExtBtn = `<a href="plexplay://${ePath}" class="plex-guid-action plex-play-external" style="${btnStyle} color:#2f96b4;" title="로컬 재생" data-filename="${t.file.split(/[\\/]/).pop() || t.file}" onmouseover="this.style.background='rgba(47,150,180,0.2)'" onmouseout="this.style.background='rgba(0,0,0,0.2)'"><i class="fas fa-play"></i></a>`;
 
-                        if (t.part_id && plexSrv) {
-                            const vUrl = `${plexSrv.url}/library/parts/${t.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${data.itemId}`;
+                        const streamSrv = t.part_id ? extractPlexStreamServerInfo(serverId) : null;
+                        if (streamSrv) {
+                            const vUrl = `${streamSrv.url}/library/parts/${t.part_id}/0/file?X-Plex-Token=${streamSrv.token}&ratingKey=${data.itemId}`;
                             let justFileName = "Unknown_Audio.mp3";
                             const pathParts = t.file.split(/[\\/]/);
                             justFileName = pathParts[pathParts.length - 1];
@@ -6852,10 +6941,7 @@ GM_addStyle(`
             `;
 
             versionsHtml += data.versions.map((v) => {
-                let vRes = mediaInfoPlaceholder;
-                if (v.width && v.width > 0) {
-                    vRes = v.width >= 7000 ? '8K' : v.width >= 5000 ? '6K' : v.width >= 3400 ? '4K' : v.width >= 1900 ? 'FHD' : v.width >= 1200 ? 'HD' : 'SD';
-                }
+                let vRes = getVideoResolutionBadge(v.width,v.height) || mediaInfoPlaceholder;
 
                 const vbTxt = formatBitrate(v.v_bitrate);
                 const abTxt = formatBitrate(v.a_bitrate);
@@ -6904,16 +6990,17 @@ GM_addStyle(`
                     subHtml = `자체/하드섭`;
                 }
 
-                let streamHtml = `<a href="#" class="plex-guid-action plex-play-stream"><i class="fas fa-wifi"></i></a>`;
-                if (plexSrv && v.part_id) {
-                    const vUrl = `${plexSrv.url}/library/parts/${v.part_id}/0/file?X-Plex-Token=${plexSrv.token}&ratingKey=${data.itemId}`;
+                let streamHtml = `<span style="color:#555;" title="스트리밍 연결 정보가 없습니다."><i class="fas fa-wifi"></i></span>`;
+                const streamSrv = v.part_id ? extractPlexStreamServerInfo(serverId) : null;
+                if (streamSrv) {
+                    const vUrl = `${streamSrv.url}/library/parts/${v.part_id}/0/file?X-Plex-Token=${streamSrv.token}&ratingKey=${data.itemId}`;
                     let sUrl = '';
 
                     if (bestSub && bestSub.key && bestSub.key.trim() !== '') {
                         if (bestSub.key.startsWith('/library/streams/')) {
-                            sUrl = `${plexSrv.url}${bestSub.key}?X-Plex-Token=${plexSrv.token}`;
+                            sUrl = `${streamSrv.url}${bestSub.key}?X-Plex-Token=${streamSrv.token}`;
                         } else {
-                            sUrl = `${plexSrv.url}/library/streams/${bestSub.id}?X-Plex-Token=${plexSrv.token}`;
+                            sUrl = `${streamSrv.url}/library/streams/${bestSub.id}?X-Plex-Token=${streamSrv.token}`;
                         }
                     }
 
@@ -8619,6 +8706,11 @@ GM_addStyle(`
     history.replaceState = function(...a) { replaceState.apply(this, a); setTimeout(() => checkUrlChange(), 50); };
     window.addEventListener('popstate', () => setTimeout(() => checkUrlChange(), 50));
 
+    function collectPlexStreamSettings(modal) {
+        const rules = parsePlexStreamDomains(modal.querySelector('#pmh-set-stream-domains').value);
+        return {streamPreferredDomains:rules.join('\n')};
+    }
+
     function openClientSettingsModal() {
         if (document.getElementById('pmh-client-settings-modal')) return;
 
@@ -8679,6 +8771,15 @@ GM_addStyle(`
                                 <label class="pmh-form-label"><i class="fas fa-database"></i> 브라우저 캐시 한도</label>
                                 <input type="number" id="pmh-set-cache-size" class="pmh-input-text" value="${ClientSettings.maxCacheSize || 5000}" placeholder="5000">
                             </div>
+                        </div>
+
+                        <div class="pmh-form-group" style="margin:20px 0; border:1px solid #444; padding:10px; border-radius:4px;">
+                            <label class="pmh-form-label"><i class="fas fa-wifi"></i> 사용자 서버 접속 도메인(선택)</label>
+                            <label class="pmh-form-label" for="pmh-set-stream-domains">우선 도메인 (쉼표 또는 줄바꿈, 비우면 자동)</label>
+                            <textarea id="pmh-set-stream-domains" class="pmh-input-text" rows="2" placeholder="*.example.com, plex.example.org"></textarea>
+                            <div class="pmh-form-label" style="margin-top:6px;">Plex 연결에 외부 접속 도메인 주소 제공이 필요한 경우 사용됩니다(리버스 프록시 환경에서 plex.direct:32400으로 연결되는 경우 등).<br>
+                            해당 주소가 Plex 설정의 '사용자 서버 접속 URL' 목록에 게시되어 있어야 합니다.<br>
+                            입력한 순서대로 각 Plex 서버가 제공한 연결 주소에서 일치하는 도메인 주소를 찾습니다.</div>
                         </div>
 
                         <div class="pmh-form-header" style="display:flex; margin-top:0; justify-content:space-between; align-items:center;">
@@ -8768,6 +8869,7 @@ GM_addStyle(`
 
         document.body.insertAdjacentHTML('beforeend', modalHtml);
         const settingsModal = document.getElementById('pmh-client-settings-modal');
+        settingsModal.querySelector('#pmh-set-stream-domains').value = ClientSettings.streamPreferredDomains || '';
         const settingsCloseBtn = document.getElementById('pmh-settings-close');
 
         const closeSettingsModal = () => {
@@ -9186,6 +9288,9 @@ GM_addStyle(`
         };
 
         document.getElementById('pmh-settings-save').onclick = () => {
+            let streamSettings;
+            try { streamSettings = collectPlexStreamSettings(settingsModal); }
+            catch (error) { toastr.error(error.message); return; }
             const newMaps = [];
             document.querySelectorAll('.pmh-path-mapping-row').forEach(row => {
                 const s = row.querySelector('.pmh-map-srv').value.trim();
@@ -9200,6 +9305,7 @@ GM_addStyle(`
                 maxCacheSize: parseInt(document.getElementById('pmh-set-cache-size').value, 10) || 5000,
                 devMode: document.getElementById('pmh-set-dev-mode').checked,
                 pathMappings: newMaps,
+                ...streamSettings,
                 enableCatiaMapping: document.getElementById('pmh-set-catia-mapping').checked,
                 matchTryRefreshFirst: document.getElementById('pmh-set-match-refresh').checked,
                 manualMatch: document.getElementById('pmh-set-manual-match').checked,
