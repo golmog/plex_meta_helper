@@ -9,8 +9,8 @@ import os
 import re
 import sqlite3
 import json
+import html
 import time
-import tempfile
 import urllib.request, urllib.parse, urllib.error
 import pmh_core
 from collections import defaultdict
@@ -21,8 +21,9 @@ SCAN_MODES = frozenset(('mismatch', 'dupes', 'llm_translation', 'file_error', 'p
 def normalize_pid(pid_str):
     return normalize_pid_for_comparison(pid_str)
 
-def find_local_meta_json(dir_name, base_name, raw_pid=None, files_in_dir=None, cfg=None, compiled_rules=None):
-    return pmh_core.find_local_meta_json(dir_name, base_name, raw_pid, files_in_dir, cfg, compiled_rules)
+def find_local_meta_json(dir_name, base_name, raw_pid=None, files_in_dir=None, cfg=None, compiled_rules=None, **identity):
+    return pmh_core.find_local_meta_json(dir_name, base_name, raw_pid, files_in_dir, cfg, compiled_rules, **identity)
+
 
 # =====================================================================
 # 디스코드 알림 기본 템플릿
@@ -90,20 +91,17 @@ def get_ui(core_api=None):
             {"id": "filter_exclude", "type": "text", "label": "제외 키워드 (1회성, 정규표현식은 regex|| 사용)", "placeholder": "예: sjva_agent:// 또는 regex||\\.mp4$"}
         ],
         "execute_inputs": [
-            {"id": "ff_apply_method", "type": "select", "label": "FF 메타데이터의 Plex 반영 방식",
-             "options": [{"value": "refresh", "text": "현재 GUID 유지 · 메타 새로고침"}, {"value": "match", "text": "클린 리매칭 (매칭 옵션 적용)"}],
-             "default": "refresh", "show_if": {"scan_mode": ["json_diff", "preview_clip"]}},
             {
                 "id": "opt_unmatch_first", 
                 "type": "checkbox", 
-                "label": "매칭 전 언매치 우선 실행", 
+                "label": "클린 리매칭 실행",
                 "default": True, 
-                "hide_if": {"scan_mode": "file_error"}
+                "hide_if": {"scan_mode": ["file_error", "json_diff"]}
             },
-            {"id": "opt_manual_match", "type": "checkbox", "label": "수동 매칭 모드 사용 (모든 사이트 강제 검색)", "default": False, "hide_if": {"scan_mode": "file_error"}},
             {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭 시 제목/연도 검증 스킵 (모든 에이전트 적용)", "default": False, "hide_if": {"scan_mode": "file_error"}},
+            {"id": "opt_manual_match", "type": "checkbox", "label": "수동 매칭 모드 사용 (모든 사이트 강제 검색)", "default": False, "hide_if": {"scan_mode": "file_error"}},
             {"id": "opt_use_custom_score", "type": "checkbox", "label": "에이전트 매칭 통과 점수 직접 지정", "default": False, "hide_if": {"scan_mode": "file_error"}},
-            {"id": "opt_custom_agent_score", "type": "number", "label": "매칭 통과 최소 점수", "default": 95, "width": "60px", "layout": "plain", "show_if": {"opt_use_custom_score": True}},
+            {"id": "opt_custom_agent_score", "type": "number", "label": "매칭 통과 최소 점수", "default": 95, "width": "60px", "layout": "plain", "show_if": {"scan_mode": ["mismatch", "dupes", "llm_translation", "json_diff", "preview_clip"], "opt_use_custom_score": True}},
             {"id": "opt_search_priority", "type": "select", "label": "매칭 검색어 우선순위", "options": [
                 {"value": "auto", "text": "자동 (AV 등 커스텀은 파일, 일반은 폴더)"},
                 {"value": "folder", "text": "폴더명 우선 (일반 영화/쇼 강제)"},
@@ -180,6 +178,8 @@ def get_ui(core_api=None):
 # 메인 실행 로직 (라우터)
 # ==============================================================================
 def run(data, core_api):
+    if data.get('scan_mode') == 'json_diff':
+        data = dict(data, opt_unmatch_first=True)
     if data.get('scan_mode', 'mismatch') not in SCAN_MODES:
         return {'status':'error', 'message':'사용할 수 없는 검사 모드입니다. 검사 모드를 다시 선택하고 조회하세요.'}, 400
     action = data.get('action_type', 'preview')
@@ -226,6 +226,7 @@ def run(data, core_api):
                 '_poster_files': data.get('_poster_files', ''),
                 '_sjva_code': data.get('_sjva_code', ''),
                 '_sjva_cat': data.get('_sjva_cat', ''),
+                '_scan_guid': data.get('_scan_guid', ''),
                 'raw_path': data.get('raw_path', ''),
             }]
             task_data = data.copy()
@@ -268,42 +269,34 @@ class FfApiError(RuntimeError):
     """FF is unavailable or its response cannot safely identify the Plex item."""
 
     def __init__(self, message, status=None, payload=None):
-        super().__init__(message)
         self.status = status
         self.payload = payload if isinstance(payload, dict) else {}
         self.error_code = self.payload.get('error_code')
+        details = ([f'HTTP {status}'] if status is not None else [])
+        if self.error_code: details.append(str(self.error_code))
+        details.append(str(message))
+        super().__init__(' · '.join(details))
         self.retryable = False  # Remote delivery/commit cannot be inferred from HTTP failure.
 
 
 def redact_ff_value(value, key):
     if isinstance(value, dict):
-        return {name: ('****' if str(name).lower() in ('apikey', 'api_key', 'x-api-key') else redact_ff_value(item, key))
+        return {name: ('****' if re.search(r'(?i)apikey|api_key|token|password|authorization|cookie|signature', str(name)) else redact_ff_value(item, key))
                 for name, item in value.items()}
     if isinstance(value, list):
         return [redact_ff_value(item, key) for item in value]
     if isinstance(value, str):
         value = value.replace(str(key), '****') if key else value
-        return re.sub(r'https?://[^\s<>]+', '[FF URL]', value)
+        value = re.sub(r'https?://[^\s<>]+', '[FF URL]', value)
+        return re.sub(r'(?i)(apikey|api_key|token|password|authorization|cookie|signature)\s*[:=]\s*\S+', '[redacted]', value)
     return value
 
 
 def ff_request(global_config, endpoint, payload, timeout=180, form=False):
-    def transport():
-        try:
-            return 200, _ff_request_raw(global_config, endpoint, payload, timeout, form)
-        except FfApiError as exc:
-            if exc.status is None: raise
-            return exc.status, exc.payload
-    task = global_config.get('_ff_task')
-    try:
-        status, result = pmh_core.guarded_ff_write(
-            global_config, endpoint, payload, transport,
-            run_id=getattr(task, 'run_id', None), cancelled=task.is_cancelled if task else None)
-    except pmh_core.FfWriteBlocked as exc:
-        raise FfApiError(str(exc), status=exc.status, payload=exc.payload or {'error_code': exc.state}) from None
-    if status != 200 or not isinstance(result, dict) or result.get('ret') != 'success':
-        raise FfApiError('FF 요청 실패', status=status, payload=redact_ff_value(result, global_config.get('mate_apikey')))
-    return result
+    task = global_config.get('_ff_task') or getattr(getattr(pmh_core, '_FF_WRITE_CONTEXT', None), 'task', None)
+    if task and task.is_cancelled():
+        raise FfApiError('FF 요청이 취소되었습니다.')
+    return _ff_request_raw(global_config, endpoint, payload, timeout, form)
 
 
 def _ff_request_raw(global_config, endpoint, payload, timeout=180, form=False):
@@ -321,22 +314,24 @@ def _ff_request_raw(global_config, endpoint, payload, timeout=180, form=False):
             result = json.loads(response.read().decode('utf-8'))
             status = response.getcode()
     except urllib.error.HTTPError as exc:
+        parse_failed = False
         try:
             error = json.loads(exc.read(1024 * 1024).decode('utf-8'))
         except (ValueError, UnicodeError, OSError):
             error = {}
+            parse_failed = True
         finally:
             exc.close()
         error = redact_ff_value(error, key)
         if not isinstance(error, dict):
             error = {}
-        message = error.get('msg') or 'FF 요청 실패'
-        raise FfApiError(f"{message} (HTTP {exc.code}, {error.get('error_code', 'http_error')})",
-                         status=exc.code, payload=error) from None
+        message = error.get('msg') or ('FF 응답 파싱 실패' if parse_failed else 'FF 요청 실패')
+        raise FfApiError(message, status=exc.code, payload=error) from None
+    except (ValueError, UnicodeError):
+        raise FfApiError('FF 응답 파싱 실패. 최종 원격 반영 여부를 알 수 없습니다.') from None
     except Exception as exc:
         # Do not include an authenticated URL, response body or exception text in task logs.
-        raise FfApiError(f'FF 통신 실패 ({type(exc).__name__}). FF에서 처리가 계속될 수 있습니다. '
-                         '재시도 전 상태를 조회하거나 기존 미디어 유지 옵션을 사용하세요.') from None
+        raise FfApiError(f'FF 통신 실패 ({type(exc).__name__}). 최종 원격 반영 여부를 알 수 없습니다.') from None
     result = redact_ff_value(result, key) if not isinstance(result, dict) or result.get('ret') != 'success' else result
     if status != 200 or not isinstance(result, dict) or result.get('ret') != 'success':
         message = result.get('msg', 'FF 요청 실패') if isinstance(result, dict) else 'FF 응답 형식 오류'
@@ -354,8 +349,8 @@ def ff_command(global_config, command, code='', category='', options=None):
 def check_ff_schema(global_config, categories, writable=True):
     result = ff_command(global_config, 'meta_db_schema_status')
     target = result.get('target_version')
-    if result.get('schema_name') != 'meta_db' or target != 1:
-        raise FfApiError('지원하는 FF 메타 DB 스키마(v1)가 아닙니다.')
+    if result.get('schema_name') != 'meta_db' or not isinstance(target, int) or target < 1:
+        raise FfApiError('지원하는 FF 메타 DB 스키마(v1 이상)가 아닙니다.')
     statuses = {str(key).lower(): value for key, value in (result.get('data') or {}).items()}
     for category in set(categories) | {'PERSON'}:
         status = statuses.get(category.lower(), {})
@@ -470,50 +465,29 @@ def ff_poster_url(entity):
                  if isinstance(thumb, dict) and thumb.get('aspect') == 'poster' and thumb.get('value')), '')
 
 
-def ff_snapshot_targets(plex_item, config):
-    """Resolve only current Plex sidecars and respect manual YAML precedence."""
-    paths = {part.file for media in getattr(plex_item, 'media', []) for part in media.parts if getattr(part, 'file', None)}
-    title_pid = re.match(r'^\[([^\]]+)\]', str(plex_item.title or ''))
-    raw_pid = title_pid.group(1) if title_pid else None
-    targets = set()
-    for video_path in paths:
-        directory, filename = os.path.split(video_path)
-        stem = os.path.splitext(filename)[0]
-        if not os.path.isdir(directory):
-            continue
-        files = {name.lower(): name for name in os.listdir(directory)}
-        candidate, candidates = find_local_meta_json(directory, stem, raw_pid=raw_pid,
-            files_in_dir=files, cfg=config, compiled_rules=compile_jav_rules(config))
-        stems = {os.path.splitext(os.path.basename(path))[0] for path in candidates} | {'movie'}
-        if any(f'{stem}.{ext}' in files for stem in stems for ext in ('yaml', 'yml')):
-            raise FfApiError('수동 YAML이 우선 적용되는 Plex 항목은 FF 자동 반영에서 제외합니다.')
-        if candidate and os.path.isfile(candidate):
-            if os.path.islink(candidate):
-                raise FfApiError('심볼릭 링크 JSON은 자동 갱신하지 않습니다.')
-            targets.add(candidate)
-    return targets
-
-
-def refresh_existing_ff_json(plex_item, entity, config, cancel_checker=None):
-    """Update existing caches atomically; FF remains the metadata authority."""
-    targets = ff_snapshot_targets(plex_item, config)
-    updated = 0
-    for target in sorted(targets):
-        if cancel_checker and cancel_checker(): break
-        # Same-directory replacement keeps readers from observing a partial JSON.
-        descriptor, temporary = tempfile.mkstemp(prefix='.pmh-meta-', dir=os.path.dirname(target))
-        try:
-            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
-                json.dump(entity, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(temporary, os.stat(target).st_mode & 0o777)
-            os.replace(temporary, target)
-            updated += 1
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-    return updated
+def ff_snapshot_targets(plex_item, config, entity=None):
+    """Read-only existence lookup before the existing FF/Plex action."""
+    paths = [part.file for media in getattr(plex_item, 'media', [])
+             for part in media.parts if getattr(part, 'file', None)]
+    category = (entity or {}).get('category') or extract_sjva_code_and_cat(getattr(plex_item, 'guid', None))[1]
+    found = set()
+    listings = {}
+    try:
+        for video in paths if category == 'WESTERN' else paths[:1]:
+            directory = os.path.dirname(video)
+            if directory not in listings: listings[directory] = os.listdir(directory)
+            stem = os.path.splitext(os.path.basename(video))[0]
+            if category == 'WESTERN':
+                key = lambda value: re.sub(r'(?i)(?:\s+CD[0-9]+$|(?<!\w)CD[0-9]+(?!\w)\s?)', '', value).casefold()
+                found.update(os.path.join(directory, name) for name in listings[directory]
+                    if os.path.splitext(name)[1].lower() == '.json'
+                    and key(os.path.splitext(name)[0]) == key(stem))
+            else:
+                path, _ = find_local_meta_json(directory, stem, files_in_dir=listings[directory], category=category)
+                if path: found.add(path)
+    except OSError as exc:
+        raise FfApiError(str(exc)) from exc
+    return found
 
 
 def apply_ff_to_plex(plex, plex_item, entity, task_data, core_api):
@@ -525,24 +499,35 @@ def apply_ff_to_plex(plex, plex_item, entity, task_data, core_api):
         return False, '사용자 취소', 0
     if getattr(plex_item, 'type', None) != 'movie':
         raise FfApiError('AV 영화 항목만 FF 메타데이터를 반영할 수 있습니다.')
-    method = task_data.get('ff_apply_method', 'refresh')
-    if method not in ('refresh', 'match'):
-        raise FfApiError('지원하지 않는 Plex 반영 방식입니다.')
-    updated = refresh_existing_ff_json(plex_item, entity, core_api['config'], core_api['task'].is_cancelled)
+    config = core_api['config']
+    section = plex_item.section()
+    agent = section.agent or ''
+    clean_rematch = task_data.get('opt_unmatch_first', True)
+    local_agent = any(name in agent.lower() for name in ('yaml', 'nfo', 'xbmc'))
+    deletes_json = clean_rematch and not local_agent and pmh_core.match_section_ids(
+        config.get('DELETE_JSON_SECTION'), getattr(plex_item, 'librarySectionID', None))
+    if deletes_json:
+        ff_snapshot_targets(plex_item, config, entity)
+        core_api['task'].log('  -> 클린 리매칭: 사전 JSON 덮어쓰기 없이 공통 코어에서 정리·매칭합니다.')
+    else:
+        reason = '클린 리매칭 OFF' if not clean_rematch else 'JSON 삭제 미허용/수동 에이전트'
+        core_api['task'].log(f'  -> {reason}: 로컬 JSON을 유지합니다. 최신 FF 메타/프리뷰의 Plex 반영은 확인되지 않았습니다.')
     if core_api['task'].is_cancelled(): return False, '사용자 취소', 0
-    if not updated: core_api['task'].log('  -> 로컬 JSON 없음: 새 파일을 만들지 않습니다. 에이전트가 생성하지 않으면 다음 조회에도 표시될 수 있습니다.')
-    core_api['task'].log(f'  -> 기존 JSON 캐시 {updated}개 갱신. FF 최종 메타데이터를 Plex에 반영합니다.')
-    return pmh_core.perform_smart_media_action(
+    success, message, score = pmh_core.perform_smart_media_action(
         plex_url=plex._baseurl, plex_token=plex._token, rating_key=str(plex_item.ratingKey),
-        action_type=method, item_title=plex_item.title, item_year=plex_item.year,
-        target_agent=plex_item.section().agent, plex_inst=plex,
-        do_unmatch_first=method == 'match' and task_data.get('opt_unmatch_first', True),
+        action_type='match', item_title=plex_item.title, item_year=plex_item.year,
+        target_agent=agent, plex_inst=plex, try_refresh_first=False,
+        do_unmatch_first=clean_rematch,
         skip_sim_check=task_data.get('opt_skip_sim_check', False),
         use_custom_score=task_data.get('opt_use_custom_score', False),
         custom_agent_score=task_data.get('opt_custom_agent_score', 95),
         search_priority=task_data.get('opt_search_priority', 'auto'),
         manual_match=task_data.get('opt_manual_match', False), global_config=core_api['config'],
+        meta_json_entity=entity,
         task_logger=core_api['task'].log, cancel_checker=core_api['task'].is_cancelled)
+    if success and not deletes_json:
+        message += ' · 로컬 JSON 미갱신 / 최신 FF 메타·프리뷰 반영 미확인'
+    return success, message, score
 
 
 
@@ -557,6 +542,7 @@ def worker(task_data, core_api, start_index):
     task = core_api['task']
     action = task_data.get('action_type')
     mode = task_data.get('scan_mode', 'mismatch')
+    if mode == 'json_diff': task_data = dict(task_data, opt_unmatch_first=True)
     if mode not in SCAN_MODES:
         task.log('❌ 사용할 수 없는 검사 모드입니다. 검사 모드를 다시 선택하고 조회하세요.')
         task.update_state('error')
@@ -567,15 +553,15 @@ def worker(task_data, core_api, start_index):
     # ----------------------------------------------------------------------
     if action in ["preview", "cron_run"]:
         prefix = "[자동 실행] " if action == 'cron_run' else ""
-        task.log(f"{prefix}데이터베이스에서 아이템 목록을 쿼리하는 중입니다. 잠시만 기다려주세요...")
-        task.update_state('running', progress=0, total=100)
+        task.log(f"{prefix}AV DB 조회 중")
+        task.update_state('running', progress=0, total=0)
         
         section_ids = task_data.get('target_sections', [])
         clean_sec_ids = [int(x) for x in section_ids if str(x).isdigit()]
         
         if not clean_sec_ids:
             task.log("⚠️ 유효한 라이브러리가 선택되지 않았습니다. 설정을 확인하세요.")
-            task.update_state('completed', progress=100, total=100)
+            task.update_state('completed', progress=0, total=0)
             return
             
         try:
@@ -583,22 +569,23 @@ def worker(task_data, core_api, start_index):
             
             # PostgreSQL ANSI 규격 준수: SELECT의 비집계 컬럼을 GROUP BY에 전수 명시
             group_fn = "string_agg" if core_api['config'].get('plex_db_type') == 'postgres' else "GROUP_CONCAT"
+            section_agent_sql = ', ls.agent AS section_agent' if mode == 'json_diff' else ''
             q = f"""
                 SELECT mi.id, mi.title, mi.guid, ls.id AS section_id, ls.name AS section_name,
                        mi.summary AS plex_plot, mi.tagline AS plex_tagline, mi.studio AS plex_studio, mi.year AS plex_year,
-                       {group_fn}(mp.file, '|||') AS all_files
+                       {group_fn}(mp.file, '|||') AS all_files {section_agent_sql}
                 FROM metadata_items mi
                 JOIN library_sections ls ON mi.library_section_id = ls.id
                 LEFT JOIN media_items mpi ON mpi.metadata_item_id = mi.id
                 LEFT JOIN media_parts mp ON mp.media_item_id = mpi.id
                 WHERE mi.library_section_id IN ({placeholders}) AND mi.metadata_type = 1
-                GROUP BY mi.id, mi.title, mi.guid, ls.id, ls.name, mi.summary, mi.tagline, mi.studio, mi.year
+                GROUP BY mi.id, mi.title, mi.guid, ls.id, ls.name, mi.summary, mi.tagline, mi.studio, mi.year {', ls.agent' if mode == 'json_diff' else ''}
             """
             all_items = core_api['query'](q, tuple(clean_sec_ids))
             
             if not all_items:
                 task.log("선택한 라이브러리에 해당하는 항목(영화)이 없습니다.")
-                task.update_state('completed', 100, 100)
+                task.update_state('completed', 0, 0)
                 return
 
             # 1회성 임시 필터 (조회 탭)
@@ -694,7 +681,7 @@ def worker(task_data, core_api, start_index):
 
             if not all_items:
                 task.log("필터 적용 후 검사할 대상이 없습니다.")
-                task.update_state('completed', 100, 100)
+                task.update_state('completed', 0, 0)
                 return
 
         except Exception as e:
@@ -703,8 +690,26 @@ def worker(task_data, core_api, start_index):
             return
 
         total_items = len(all_items)
-        task.log(f"DB 쿼리 완료. 총 {total_items:,}개의 항목에 대해 '{mode}' 검사를 시작합니다.")
-        task.update_state('running', progress=10, total=100)
+        task.update_state('running', progress=0, total=total_items)
+        completed_items = 0
+        update_interval = max(1, min(100, (total_items + 19) // 20))
+        last_progress_log = time.monotonic()
+
+        def advance_scan():
+            nonlocal completed_items, last_progress_log
+            completed_items += 1
+            if completed_items % update_interval == 0 or completed_items == total_items:
+                task.update_state('running', progress=completed_items, total=total_items)
+            now = time.monotonic()
+            if mode not in ('json_diff', 'preview_clip') and completed_items < total_items and now - last_progress_log >= 3:
+                task.log(f"AV {mode} 검사 {completed_items:,}/{total_items:,} · 검출 {len(result_data):,}건")
+                last_progress_log = now
+
+        def inspected(rows):
+            # Advance after the caller finishes inspection, including continue paths.
+            for row in rows:
+                yield row
+                advance_scan()
         
         cfg = core_api['config']
         if mode == 'json_diff':
@@ -719,7 +724,27 @@ def worker(task_data, core_api, start_index):
                     return
         compiled_rules = compile_jav_rules(cfg)
         result_data = []
-        
+
+        def scan_sidecars(item, files_by_dir=None):
+            category = extract_sjva_code_and_cat(item.get('guid'))[1]
+            paths = []
+            listings = files_by_dir if files_by_dir is not None else {}
+            files = item['all_files'].split('|||')
+            for video in files if category == 'WESTERN' else files[:1]:
+                directory = os.path.dirname(video)
+                if directory not in listings: listings[directory] = os.listdir(directory)
+                stem = os.path.splitext(os.path.basename(video))[0]
+                if category == 'WESTERN':
+                    key = lambda value: re.sub(r'(?i)(?:\s+CD[0-9]+$|(?<!\w)CD[0-9]+(?!\w)\s?)', '', value).casefold()
+                    paths.extend(os.path.join(directory, name) for name in listings[directory]
+                        if os.path.splitext(name)[1].lower() == '.json'
+                        and key(os.path.splitext(name)[0]) == key(stem))
+                else:
+                    path, _ = find_local_meta_json(directory, stem, files_in_dir=listings[directory], category=category)
+                    if path: paths.append(path)
+            paths = list(dict.fromkeys(paths))
+            return {'paths': paths}
+
         def get_all_pids(text):
             extracted = []
             remaining = text
@@ -745,11 +770,8 @@ def worker(task_data, core_api, start_index):
 
         # 불일치/오매칭 검사
         if mode == "mismatch":
-            for idx, item in enumerate(all_items):
+            for item in inspected(all_items):
                 if task.is_cancelled(): break
-                if idx > 0 and idx % 1000 == 0: 
-                    task.log(f"  ...분석 및 파싱 중: {idx:,} / {total_items:,} 완료")
-                    task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
                 
                 files_raw = item.get('all_files')
                 if not files_raw: continue
@@ -806,11 +828,8 @@ def worker(task_data, core_api, start_index):
         # 분리된 중복 검사
         elif mode == "dupes":
             pid_item_map = defaultdict(list)
-            for idx, item in enumerate(all_items):
+            for item in inspected(all_items):
                 if task.is_cancelled(): break
-                if idx > 0 and idx % 1000 == 0: 
-                    task.log(f"  ...파싱 및 분류 중: {idx:,} / {total_items:,} 완료")
-                    task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
                 
                 files_raw = item.get('all_files')
                 if not files_raw: continue
@@ -854,19 +873,21 @@ def worker(task_data, core_api, start_index):
             try:
                 web_url_root = task_data.get('image_web_url', '').rstrip('/')
                 json_diff_stats = defaultdict(int)
-                skipped_ff = [0]
                 batch_buckets = defaultdict(list)
                 dir_cache = {}
 
                 def get_dir_files(d_path):
                     if d_path not in dir_cache:
                         try:
-                            dir_cache[d_path] = {f.lower(): f for f in os.listdir(d_path)}
-                        except Exception:
-                            dir_cache[d_path] = set()
+                            dir_cache[d_path] = os.listdir(d_path)
+                        except OSError as exc:
+                            raise pmh_core.JsonSidecarError('io_error', 'JSON 디렉터리 조회 실패', directory=d_path) from exc
                     return dir_cache[d_path]
 
+                json_chunks = 0
+
                 def flush_json_diff_batch(cat, items_chunk):
+                    nonlocal json_chunks, last_progress_log
                     if not items_chunk or task.is_cancelled(): return
                     codes_to_query = [it['target_code'] for it in items_chunk if it.get('target_code')]
                     if not codes_to_query: return
@@ -875,42 +896,54 @@ def worker(task_data, core_api, start_index):
                     batch_data = {}
                     for i in range(0, len(codes_to_query), HTTP_CHUNK_LIMIT):
                         sub_codes = codes_to_query[i:i + HTTP_CHUNK_LIMIT]
+                        json_chunks += 1
+                        task.update_state('running', progress=completed_items, total=total_items)
+                        if json_chunks == 1:
+                            task.log('AV JSON FF 조회 대기 중')
+                            last_progress_log = time.monotonic()
                         chunk_resp = fetch_ff_meta_batch(core_api['config'], cat, sub_codes)
                         if chunk_resp and isinstance(chunk_resp, dict):
                             batch_data.update(chunk_resp)
 
                     ff_lookup = {str(key).casefold(): value for key, value in batch_data.items()}
 
-                    for it in items_chunk:
+                    for it in inspected(items_chunk):
                         if task.is_cancelled(): return
                         req_code = (it.get('target_code') or '').lower()
                         ff_json = ff_lookup.get(req_code)
-
-                        # FF 메타 DB에 데이터가 존재하지 않는 항목은 스킵
-                        if not ff_json:
-                            skipped_ff[0] += 1
-                            continue
 
                         # 매칭된 항목에 대해서만 로컬 JSON을 지연 로딩(Lazy Load)하여 메모리 및 파일 I/O 절약
                         target_json_path = it.get('target_json_path')
                         local_json = {}
                         reasons = []
-                        if target_json_path and os.path.exists(target_json_path):
-                            try:
-                                with open(target_json_path, 'r', encoding='utf-8') as jf:
-                                    local_json = json.load(jf)
-                                if not isinstance(local_json, dict): raise ValueError('JSON object required')
-                            except (OSError, ValueError, TypeError):
-                                reasons.append('로컬 JSON 파싱 오류')
-
-                        # 로컬 JSON 유무 및 FF 메타 DB 정밀 Diff 대조
+                        local_error = None
+                        if not ff_json:
+                            reasons.append('FF DB 원본 없음')
                         if not target_json_path:
-                            reasons.append("로컬 JSON 없음")
-                        elif not reasons:
-                            diff_res = detect_meta_diff(local_json, ff_json)
-                            for r in diff_res:
-                                if r not in reasons:
-                                    reasons.append(r)
+                            reasons.append('로컬 JSON 없음')
+                        for path in it['target_json_paths'] if ff_json else []:
+                            try:
+                                with open(path, 'r', encoding='utf-8') as jf:
+                                    local_json = json.load(jf)
+                                if not isinstance(local_json, dict) or not local_json: raise ValueError('JSON object required')
+                            except (ValueError, TypeError, UnicodeError) as exc:
+                                reasons.append('JSON 손상/갱신 대상 (로컬 JSON 파싱 오류)')
+                                break
+                            except OSError as exc:
+                                local_error = pmh_core.JsonSidecarError('io_error', '검사 중 JSON 읽기 실패', json_paths=[path])
+                                break
+                            for key, label in (('code', '작품 코드'), ('category', '카테고리')):
+                                if local_json.get(key) != ff_json.get(key): reasons.append(f'{label} 갱신')
+                            try:
+                                for reason in detect_meta_diff(local_json, ff_json):
+                                    if reason not in reasons: reasons.append(reason)
+                            except (ValueError, TypeError, AttributeError):
+                                reasons = ['JSON 손상/갱신 대상 (잘못된 메타 구조)']
+                                break
+
+                        if local_error:
+                            task.log(f"❌ JSON 읽기 실패 · id={it['id']} · {local_error}")
+                            continue
 
                         if reasons:
                             for r in reasons:
@@ -920,7 +953,7 @@ def worker(task_data, core_api, start_index):
 
                             reason_label = " ".join([f"[{r}]" for r in reasons])
 
-                            preview_img = ff_poster_url(ff_json)
+                            preview_img = ff_poster_url(ff_json) if ff_json else ''
 
                             # 상대 경로로 등록된 이미지이고 웹 주소가 설정된 경우 전체 URL 조립
                             if preview_img and not preview_img.startswith('http') and web_url_root:
@@ -932,81 +965,66 @@ def worker(task_data, core_api, start_index):
                                 "title": it['db_title'] or it.get('title', ''),
                                 "reason": reason_label,
                                 "img_url": preview_img,
-                                "op_action": "ff_apply",
-                                "_sjva_code": ff_json["code"], "_sjva_cat": cat,
-                                "_target_json": target_json_path or (it['json_candidates'][0] if it['json_candidates'] else ""),
+                                "op_action": "match",
+                                "_sjva_code": it['target_code'], "_sjva_cat": cat,
+                                "_target_json": target_json_path or '',
+                                '_scan_guid': it['guid'],
                                 "_raw_db_pid": it.get('_raw_db_pid', ''),
                                 "_raw_sec_id": it.get('_raw_sec_id', ''),
                                 "raw_path": it['raw_path']
                             })
 
-                for idx, item in enumerate(all_items):
-                    if task.is_cancelled(): break
-                    if idx > 0 and idx % 500 == 0:
-                        task.log(f"  ...메타데이터 및 DB 대조 중: {idx:,} / {total_items:,} 완료 (검출: {len(result_data):,}건)")
-                        task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
+                    task.update_state('running', progress=completed_items, total=total_items)
+                    now = time.monotonic()
+                    if now - last_progress_log >= 3:
+                        task.log(f'AV JSON 검사 {completed_items:,}/{total_items:,} · FF {json_chunks}청크 · 검출 {len(result_data):,}건')
+                        last_progress_log = now
 
-                    # 메모리 누수 방지를 위해 캐시가 3,000개 폴더를 초과하면 주기적으로 리셋
-                    if len(dir_cache) > 3000:
-                        dir_cache.clear()
+                for item in all_items:
+                    if task.is_cancelled(): break
 
                     files_raw = item.get('all_files')
-                    if not files_raw: continue
+                    if not files_raw:
+                        advance_scan()
+                        continue
                 
-                    fpath = find_best_video_file(files_raw.split('|||'))
-                    dir_name = os.path.dirname(fpath)
-                    fname = os.path.basename(fpath)
-                    base_name = os.path.splitext(fname)[0]
-
+                    files = files_raw.split('|||')
+                    fpath = files[0]
                     db_title = item.get('title', '').strip()
-                    match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
-                    raw_pid = match.group(1) if match else ""
-                
-                    # 메모리 상의 디렉터리 파일 목록으로 YAML 존재 여부 O(1) 초고속 확인
-                    files_in_dir = get_dir_files(dir_name)
-                    base_lower = base_name.lower()
-                    pid_lower = raw_pid.lower() if raw_pid else ""
-
-                    if f"{base_lower}.yaml" in files_in_dir or f"{base_lower}.yml" in files_in_dir:
-                        continue
-                    if pid_lower and (f"{pid_lower}.yaml" in files_in_dir or f"{pid_lower}.yml" in files_in_dir):
-                        continue
-
-                    # YAML 후보에도 접두사 숫자 제거 품번 추가 확인 (예: 1MOON-009 -> moon-009.yaml)
-                    if raw_pid:
-                        stripped_pid = re.sub(r'^\d+', '', pid_lower)
-                        if stripped_pid and stripped_pid != pid_lower:
-                            if f"{stripped_pid}.yaml" in files_in_dir or f"{stripped_pid}.yml" in files_in_dir:
-                                continue
-
-                    # DB 품번(1MOON-009), 접두사 숫자 제거(moon-009), 파일명 추출 품번을 순차 대조하여 JSON 탐색
-                    target_json_path, json_candidates = find_local_meta_json(
-                        dir_name, base_name, raw_pid=raw_pid, files_in_dir=files_in_dir, cfg=cfg, compiled_rules=compiled_rules
-                    )
-
-                    # 정확한 DB 매칭을 위해 고유 식별 코드(code) 1순위 추출
                     guid = str(item.get('guid') or '').strip()
-                    sjva_code, sjva_cat = extract_sjva_code_and_cat(guid)
-
-                    target_code = sjva_code
+                    target_code, cat = extract_sjva_code_and_cat(guid)
                     if not target_code:
+                        advance_scan()
                         continue
-
-                    cat = sjva_cat or ('JAV_UNCEN' if target_code.upper().startswith('E') else ('WESTERN' if target_code.upper().startswith('W') else 'JAV_CEN'))
-
-                    sec_id = str(item.get('section_id', ''))
-                    db_pid_key = pid_lower if pid_lower else target_code.lower()
-
+                    paths = []
+                    try:
+                        for video in files if cat == 'WESTERN' else files[:1]:
+                            directory = os.path.dirname(video)
+                            names = get_dir_files(directory)
+                            stem = os.path.splitext(os.path.basename(video))[0]
+                            if cat == 'WESTERN':
+                                key = lambda value: re.sub(r'(?i)(?:\s+CD[0-9]+$|(?<!\w)CD[0-9]+(?!\w)\s?)', '', value).casefold()
+                                paths.extend(os.path.join(directory, name) for name in names
+                                    if os.path.splitext(name)[1].lower() == '.json'
+                                    and key(os.path.splitext(name)[0]) == key(stem))
+                            else:
+                                token = stem.split(' ', 1)[0]
+                                if len(token) >= 3 and token[-3:-1] == 'cd':
+                                    token = token[:-3].strip(' .-')
+                                path = next((os.path.join(directory, name) for name in names
+                                    if name.casefold() == (token + '.json').casefold()), None)
+                                if path: paths.append(path)
+                    except pmh_core.JsonSidecarError as exc:
+                        task.log(f"❌ JSON 디렉터리 조회 실패 · id={item['id']} · {exc}")
+                        advance_scan()
+                        continue
+                    paths = list(dict.fromkeys(paths))
+                    target_json_path = paths[0] if paths else None
                     queue_entry = {
-                        'id': item['id'],
-                        'section_name': item['section_name'],
-                        'db_title': db_title or item.get('title', ''),
-                        'target_code': target_code,
-                        'raw_path': fpath,
-                        'target_json_path': target_json_path,
-                        'json_candidates': json_candidates,
-                        '_raw_db_pid': db_pid_key,
-                        '_raw_sec_id': sec_id
+                        'id': item['id'], 'section_name': item['section_name'], 'db_title': db_title,
+                        'target_code': target_code, 'raw_path': fpath, 'guid': guid,
+                        'target_json_path': target_json_path, 'target_json_paths': paths,
+                        '_raw_db_pid': target_code.lower(), '_raw_sec_id': str(item.get('section_id', ''))
                     }
 
                     batch_buckets[cat].append(queue_entry)
@@ -1021,21 +1039,16 @@ def worker(task_data, core_api, start_index):
                         flush_json_diff_batch(cat, queued_items)
                 batch_buckets.clear()
                 dir_cache.clear()
-                if skipped_ff[0]:
-                    task.log(f'ℹ️ FF 조회 결과가 없는 Plex 항목 {skipped_ff[0]}건은 제외했습니다.')
 
-            except FfApiError as exc:
-                task.log(f'❌ FF 조회 실패: {exc}')
+            except (FfApiError, pmh_core.JsonSidecarError) as exc:
+                task.log(f'❌ 메타데이터 검사 실패: {exc}')
                 task.update_state('error')
                 return
 
         # LLM (Ollama) 번역 메타데이터 검증
         elif mode == "llm_translation":
-            for idx, item in enumerate(all_items):
+            for item in inspected(all_items):
                 if task.is_cancelled(): break
-                if idx > 0 and idx % 1000 == 0: 
-                    task.log(f"  ...JSON 메타데이터 검증 중: {idx:,} / {total_items:,} 완료")
-                    task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
                 
                 files_raw = item.get('all_files')
                 if not files_raw: continue
@@ -1046,74 +1059,37 @@ def worker(task_data, core_api, start_index):
                 db_title = item.get('title', '').strip()
                 match = re.match(r'^\[([A-Za-z0-9\-_]+)\]', db_title)
                 
-                base_name = os.path.splitext(os.path.basename(fpath))[0]
-                yaml_candidates = [
-                    os.path.join(dir_name, f"{base_name}.yaml"),
-                    os.path.join(dir_name, f"{base_name}.yml")
-                ]
-                if match:
-                    raw_pid = match.group(1)
-                    db_pid_lower = raw_pid.lower()
-                    yaml_candidates.extend([
-                        os.path.join(dir_name, f"{db_pid_lower}.yaml"),
-                        os.path.join(dir_name, f"{db_pid_lower}.yml"),
-                        os.path.join(dir_name, f"{raw_pid}.yaml"),
-                        os.path.join(dir_name, f"{raw_pid}.yml")
-                    ])
-                    # 접두사 숫자 제거 YAML 후보 추가
-                    stripped_pid = re.sub(r'^\d+', '', db_pid_lower)
-                    if stripped_pid and stripped_pid != db_pid_lower:
-                        yaml_candidates.extend([
-                            os.path.join(dir_name, f"{stripped_pid}.yaml"),
-                            os.path.join(dir_name, f"{stripped_pid}.yml")
-                        ])
-
-                # sjva 에이전트 최우선 참조 대상인 YAML 파일이 존재하면 수동 관리 대상이므로 스킵
-                if any(os.path.exists(y) for y in set(yaml_candidates)):
-                    continue
-
-                # DB 품번(1MOON-009), 접두사 숫자 제거(moon-009), 파일명 추출 품번을 순차 대조하여 JSON 탐색
-                target_json, _ = find_local_meta_json(
-                    dir_name, base_name, raw_pid=raw_pid, files_in_dir=None, cfg=cfg, compiled_rules=compiled_rules
-                )
-
-                reason = ""
-                if not target_json or not os.path.exists(target_json):
-                    reason = "JSON 메타 파일 없음"
-                else:
-                    try:
-                        with open(target_json, 'r', encoding='utf-8') as f:
-                            json_data = json.load(f)
-                        
-                        extra_info = json_data.get("extra_info") or {}
-                        ai_trans = str(extra_info.get("ai_translator", ""))
-                        
-                        if "ollama" not in ai_trans.lower():
+                path = None
+                resolved = {'paths': []}
+                try:
+                    resolved = scan_sidecars(item)
+                    if not extract_sjva_code_and_cat(item.get('guid'))[0]:
+                        continue
+                    target_json = None
+                    reason = 'JSON 메타 파일 없음' if not resolved['paths'] else ''
+                    for path in resolved['paths']:
+                        target_json = path
+                        with open(path, 'r', encoding='utf-8') as stream: json_data = json.load(stream)
+                        if not isinstance(json_data, dict): raise ValueError('JSON 객체가 아닙니다.')
+                        extra = json_data.get('extra_info') or {}
+                        if not isinstance(extra, dict): raise ValueError('extra_info 객체가 아닙니다.')
+                        ai_trans = str(extra.get('ai_translator', ''))
+                        if 'ollama' not in ai_trans.lower():
                             reason = f"구버전/일반 번역 ({ai_trans or '기본값'})"
-                        else:
-                            continue
-                            
-                    except Exception:
-                        reason = "JSON 파싱 오류 (구조 손상)"
-
-                if reason:
-                    result_data.append({
-                        "id": item['id'], 
-                        "section_name": item['section_name'], 
-                        "title": db_title, 
-                        "reason": reason, 
-                        "op_action": "match",
-                        "_target_json": target_json,
-                        "raw_path": fpath
-                    })
+                            break
+                    if reason:
+                        result_data.append(dict(id=item['id'], section_name=item['section_name'], title=db_title,
+                            reason=reason, op_action='match', _target_json=target_json, raw_path=fpath))
+                except (ValueError, TypeError, UnicodeError):
+                    result_data.append(dict(id=item['id'], section_name=item['section_name'], title=db_title,
+                        reason='JSON 파싱 오류 (구조 손상)', op_action='match', _target_json=path, raw_path=fpath))
+                except OSError as exc:
+                    task.log(f"❌ JSON 읽기 실패 · id={item['id']} · {exc}")
 
         # 파일명 처리 오류 (Prefix vs 대괄호 속성 불일치)
         elif mode == "file_error":
-            for idx, item in enumerate(all_items):
+            for item in inspected(all_items):
                 if task.is_cancelled(): break
-                if idx > 0 and idx % 1000 == 0: 
-                    task.log(f"  ...오류 검출 및 파싱 중: {idx:,} / {total_items:,} 완료")
-                    task.update_state('running', progress=10 + int((idx/total_items)*80), total=100)
                 
                 files_raw = item.get('all_files')
                 if not files_raw: continue
@@ -1157,9 +1133,17 @@ def worker(task_data, core_api, start_index):
             excluded = defaultdict(int)
             settings = {}
             eligible = []
-            for item in all_items:
+            last_settings_log = time.monotonic()
+            for candidate_index, item in enumerate(all_items, 1):
+                if task.is_cancelled(): break
+                now = time.monotonic()
+                if now - last_settings_log >= 3:
+                    task.log(f'AV 프리뷰 설정 {candidate_index - 1:,}/{total_items:,} · 검사 {completed_items:,}/{total_items:,} · FF 대기 {len(eligible):,}건')
+                    last_settings_log = now
                 code, category = extract_sjva_code_and_cat(item.get('guid'))
-                if not code: continue
+                if not code:
+                    advance_scan()
+                    continue
                 if category not in settings:
                     try:
                         settings[category] = read_preview_settings(cfg, category)
@@ -1171,13 +1155,44 @@ def worker(task_data, core_api, start_index):
                 gate = settings[category]
                 if not gate or not gate['enabled'] or not gate['auto_download_trailer']:
                     excluded[category + ' 설정 OFF/불명'] += 1
+                    advance_scan()
                     continue
                 if not gate['auto_create_preview'] and not task_data.get('preview_try_trailer', False):
                     excluded[category + ' 허용된 작업 없음'] += 1
+                    advance_scan()
                     continue
                 eligible.append(item)
+            # Observe the existing iterator's category/100-row boundaries without changing requests.
+            category_counts = defaultdict(int)
+            for item in eligible:
+                category_counts[extract_sjva_code_and_cat(item.get('guid'))[1]] += 1
+            chunk_sizes = [min(100, count - start) for count in category_counts.values()
+                           for start in range(0, count, 100)]
+
+            def preview_entities():
+                nonlocal last_progress_log
+                entities = iter_ff_plex_entities(eligible, cfg, task.is_cancelled)
+                for chunk_index, chunk_size in enumerate(chunk_sizes, 1):
+                    if task.is_cancelled(): return
+                    task.update_state('running', progress=completed_items, total=total_items)
+                    if chunk_index == 1:
+                        task.log('AV 프리뷰 FF 조회 대기 중')
+                        last_progress_log = time.monotonic()
+                    for _ in range(chunk_size):
+                        try:
+                            entity_row = next(entities)
+                        except StopIteration:
+                            return
+                        yield entity_row
+                    task.update_state('running', progress=completed_items, total=total_items)
+                    now = time.monotonic()
+                    if now - last_progress_log >= 3:
+                        task.log(f'AV 프리뷰 검사 {completed_items:,}/{total_items:,} · FF {chunk_index}/{len(chunk_sizes)}청크 · 검출 {len(result_data):,}건')
+                        last_progress_log = now
+
             try:
-                for item, code, category, entity in iter_ff_plex_entities(eligible, cfg, task.is_cancelled):
+                for item, code, category, entity in inspected(preview_entities()):
+                    if task.is_cancelled(): break
                     if entity is None:
                         excluded['FF 작품 없음'] += 1; continue
                     if ff_has_video(entity):
@@ -1192,7 +1207,6 @@ def worker(task_data, core_api, start_index):
                         '_sjva_code':code, '_sjva_cat':category, 'raw_path':video})
             except FfApiError as exc:
                 task.log(f'❌ FF 조회 실패: {exc}'); task.update_state('error'); return
-            for reason, count in excluded.items(): task.log(f'ℹ️ 제외 {count}건: {reason}')
 
 
         if task.is_cancelled():
@@ -1217,14 +1231,16 @@ def worker(task_data, core_api, start_index):
             {"label": "전체 검사 항목", "value": f"{len(all_items):,}개", "icon": "fas fa-search", "color": "#2f96b4"},
             {"label": "검출된 대상 항목", "value": f"{len(result_data):,}개", "icon": "fas fa-exclamation-triangle", "color": "#bd362f"}
         ]
-
         core_api['cache'].save({
             "type": "datatable", "summary_cards": cards, "action_button": action_btn,
             "columns": columns, "data": result_data
         })
+        exclusion_suffix = ''
+        if mode == 'preview_clip' and excluded:
+            exclusion_suffix = ' · 제외 ' + ', '.join(f'{reason} {count}건' for reason, count in excluded.items())
 
         if action == 'preview':
-            task.update_state('completed', 100, 100)
+            task.update_state('completed', total_items, total_items)
             if len(result_data) > 0:
                 stats_summary = []
                 if mode == "json_diff" and json_diff_stats:
@@ -1232,14 +1248,14 @@ def worker(task_data, core_api, start_index):
                     stats_summary = [f"{k}: {v:,}건" for k, v in top_stats]
 
                 detail_log_suffix = f" (세부: {', '.join(stats_summary)})" if stats_summary else ""
-                task.log(f"✅ 검사 완료! 총 {len(result_data):,}개의 항목이 검출되었습니다.{detail_log_suffix}")
+                task.log(f"✅ 조회 완료 · 검출 {len(result_data):,}건{detail_log_suffix}{exclusion_suffix}")
             else:
-                task.log("✅ 라이브러리 검사 완료. 모든 항목이 정상입니다! (조치할 대상 없음)")
+                task.log(f"✅ 조회 완료 · 검출 0건 (조치할 대상 없음){exclusion_suffix}")
             return
         else:
             if len(result_data) == 0:
-                task.update_state('completed', progress=100, total=100)
-                task.log("✅ [자동 실행] 조치(복구)가 필요한 항목이 없어 작업을 종료합니다.")
+                task.update_state('completed', progress=total_items, total=total_items)
+                task.log(f"✅ [자동 실행] 조치(복구)가 필요한 항목이 없어 작업을 종료합니다.{exclusion_suffix}")
                 return
             
             action = 'execute'
@@ -1247,7 +1263,7 @@ def worker(task_data, core_api, start_index):
             task_data['_use_cache_db'] = True
             task_data['total'] = len(result_data)
             task_data['_resume_start_index'] = 0
-            task.log(f"✅ [자동 실행] 조회 완료. 생성된 목록(총 {len(result_data):,}건)을 바탕으로 즉시 복구 작업을 시작합니다.")
+            task.log(f"✅ [자동 실행] 조회 {total_items:,}건 완료 → 실행 대상 {len(result_data):,}건. 복구 작업을 시작합니다.{exclusion_suffix}")
 
 
     # ----------------------------------------------------------------------
@@ -1289,16 +1305,8 @@ def worker(task_data, core_api, start_index):
 
     processed_pids = set()
     preview_settings = {}
-    if mode == 'json_diff':
-        categories = {item.get('_sjva_cat') for item in pending_items if item.get('_sjva_cat')}
-        if categories:
-            try:
-                check_ff_schema(core_api['config'], categories, mode != 'json_diff')
-            except FfApiError as exc:
-                task.log(f'❌ FF 작업 사전 확인 실패: {exc}')
-                task.update_state('error')
-                return
 
+    failed_items = 0
     try:
         for item in pending_items:
             if task.is_cancelled():
@@ -1353,7 +1361,7 @@ def worker(task_data, core_api, start_index):
                         task.log("  -> ⚠️ 분리 불가: 단일 미디어 파일입니다. 분리 대신 매칭(Match)으로 우회합니다.")
                         op_action = 'match'
 
-                if mode == 'json_diff': op_action = 'ff_apply'
+                if mode == 'json_diff': op_action = 'match'
                 if mode == 'preview_clip': op_action = 'make_preview'
                 if op_action in ('ff_apply', 'make_preview'):
                     if getattr(plex_item, 'type', None) != 'movie': raise FfApiError('현재 Plex 항목이 AV 영화가 아닙니다.')
@@ -1374,7 +1382,7 @@ def worker(task_data, core_api, start_index):
                         if not gate['enabled'] or not gate['auto_download_trailer']:
                             task.log('  -> 설정 OFF: 트레일러/프리뷰 및 Plex 반영을 건너뜁니다.')
                             core_api['cache'].mark_keys_as_done('id', [item_id]); continue
-                    ff_snapshot_targets(plex_item, core_api['config'])
+                    if op_action == 'make_preview': ff_snapshot_targets(plex_item, core_api['config'])
                     if task.is_cancelled(): break
                     latest = fetch_ff_meta_batch(core_api['config'], category, [code]).get(code)
                     if latest is None: raise FfApiError(f'FF 메타 DB에 {code} 작품이 없습니다.')
@@ -1387,40 +1395,19 @@ def worker(task_data, core_api, start_index):
                             if task.is_cancelled(): break
                             core_api['cache'].mark_keys_as_done('id', [item_id]); continue
                     if task.is_cancelled(): break
-                    phase = pmh_core.FfWriteJournal(core_api['config'])
-                    phase_args = {'plex_id': str(plex_item.ratingKey), 'persons': [
-                        ('WESTERN' if category == 'WESTERN' else 'JAV', str(actor['actor_idx']))
-                        for actor in latest.get('actor') or [] if isinstance(actor, dict) and actor.get('actor_idx')]}
-                    phase.plex_phase(category, code, 'applying', **phase_args)
-                    try:
-                        success, msg, score = apply_ff_to_plex(plex, plex_item, latest, task_data, core_api)
-                    except Exception:
-                        phase.plex_phase(category, code, 'failed', **phase_args)
-                        raise
+                    success, msg, score = apply_ff_to_plex(plex, plex_item, latest, task_data, core_api)
                     if task.is_cancelled():
-                        phase.plex_phase(category, code, 'failed', **phase_args)
                         break
-                    phase.plex_phase(category, code, 'accepted' if success else 'failed', **phase_args)
                     task.log(f'  -> {"✅" if success else "❌"} Plex 반영: {msg}')
                     item_has_error = not success
 
                 if op_action == 'match':
-                    # 메타 동기화 모드 시 최신 메타 반영을 위해 구버전 로컬 JSON 파일 자동 삭제
-                    if mode == "llm_translation":
-                        target_json = item.get('_target_json')
-                        if target_json and os.path.exists(target_json):
-                            if task.is_cancelled(): break
-                            try:
-                                os.remove(target_json)
-                                task.log(f"  -> 🗑️ 메타데이터 갱신을 위해 기존 JSON 삭제 완료: {os.path.basename(target_json)}")
-                            except Exception as e:
-                                task.log(f"  -> ⚠️ 기존 JSON 삭제 실패: {e}")
-
+                    if mode == 'llm_translation': ff_snapshot_targets(plex_item, core_api['config'])
                     do_unm = task_data.get('opt_unmatch_first', True)
                     skip_sim = task_data.get('opt_skip_sim_check', False)
                     manual_m = task_data.get('opt_manual_match', False)
                     use_custom = task_data.get('opt_use_custom_score', False)
-                    custom_score = task_data.get('opt_custom_agent_score', 90)
+                    custom_score = task_data.get('opt_custom_agent_score', 95)
                     search_pri = task_data.get('opt_search_priority', 'auto')
 
                     if mode == 'dupes':
@@ -1456,7 +1443,8 @@ def worker(task_data, core_api, start_index):
                         manual_match=manual_m,
                         global_config=core_api['config'],
                         task_logger=task.log,
-                        cancel_checker=task.is_cancelled
+                        cancel_checker=task.is_cancelled,
+                        require_json_cleanup=(mode == 'json_diff')
                     )
                     
                     if success:
@@ -1465,10 +1453,18 @@ def worker(task_data, core_api, start_index):
                         task.log(f"  -> ❌ 매칭 실패/반려: {msg}")
                         item_has_error = True
 
-                if item_has_error: core_api['cache'].mark_as_error('id', item_id)
+                if item_has_error:
+                    failed_items += 1
+                    core_api['cache'].mark_as_error('id', item_id)
                 else: core_api['cache'].mark_keys_as_done('id', [item_id])
 
+            except FfApiError as e:
+                failed_items += 1
+                detail = redact_ff_value(str(e), core_api['config'].get('mate_apikey'))
+                task.log(f"  -> ❌ FF/API 오류: {' '.join(detail.split())}")
+                core_api['cache'].mark_as_error('id', item_id)
             except Exception as e:
+                failed_items += 1
                 task.log(f"  -> ❌ Plex 제어 에러: {e}")
                 core_api['cache'].mark_as_error('id', item_id)
                 
@@ -1484,7 +1480,10 @@ def worker(task_data, core_api, start_index):
             elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
             
             if task_data.get('_is_single'):
-                task.log(f"✅ 단일 실행 작업 완료! (소요시간: {elapsed_str})")
+                if failed_items:
+                    task.log(f"단일 실행 종료 · 실패 {failed_items}건 (소요시간: {elapsed_str})")
+                else:
+                    task.log(f"✅ 단일 실행 작업 완료! (소요시간: {elapsed_str})")
             else:
                 task.log(f"✅ {prefix}총 {total:,}건의 작업 완료! (소요시간: {elapsed_str})")
                 mode_label = {'mismatch':'품번 불일치/오매칭 복구', 'dupes':'중복 아이템 재매칭',
