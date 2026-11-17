@@ -80,7 +80,7 @@ def get_ui(core_api):
         "execute_inputs": [
             {"id": "opt_vfs", "type": "checkbox", "label": "스캔 전 vfs/refresh 수행 (Plex Mate 연동)", "default": True, "show_if": {"mode": "path_scan"}},
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 Refresh(자동 매칭) 우선 시도", "default": True, "show_if": {"mode": "rematch"}},
-            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"mode": "rematch"}},
+            {"id": "opt_unmatch_first", "type": "checkbox", "label": "클린 리매칭 실행", "default": True, "show_if": {"mode": "rematch"}},
             {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭 시 제목/연도 검증 스킵", "default": False, "show_if": {"mode": "rematch"}},
             {"id": "opt_manual_match", "type": "checkbox", "label": "수동 매칭 모드 사용 (모든 사이트 강제 검색)", "default": False, "show_if": {"mode": "rematch"}},
             {"id": "opt_use_custom_score", "type": "checkbox", "label": "에이전트 매칭 통과 점수 직접 지정", "default": False, "show_if": {"mode": "rematch"}},
@@ -224,7 +224,7 @@ def get_target_items(req_data, core_api, task=None):
     # -------------------------------------------------------------
     if mode == 'path_scan':
         if task:
-            task.log(f"디렉토리 계층 구조에서 Depth {scan_depth} 경로들을 수집 중입니다...")
+            task.log(f"경로 조회 중 · 깊이 {scan_depth}")
             task.update_state('running', progress=10, total=100)
 
         path_set = set()
@@ -237,8 +237,27 @@ def get_target_items(req_data, core_api, task=None):
             if task: task.log(f"❌ 섹션 경로 조회 실패: {e}")
             raise
 
-        for loc in locations:
+        visited_dirs = 0
+        completed_roots = 0
+        root_finished = True
+        last_path_log = time.monotonic()
+
+        def inspected_roots():
+            nonlocal completed_roots, last_path_log
+            for root_index, loc in enumerate(locations, 1):
+                yield loc
+                if root_finished:
+                    completed_roots += 1
+                if task:
+                    task.update_state('running', progress=10 + int(completed_roots / len(locations) * 80), total=100)
+                    now = time.monotonic()
+                    if now - last_path_log >= 3:
+                        task.log(f"경로 {completed_roots}/{len(locations)}루트 · 발견 {len(path_set):,}개 · 방문 {visited_dirs:,}개")
+                        last_path_log = now
+
+        for root_index, loc in enumerate(inspected_roots(), 1):
             if task and task.is_cancelled(): return items, total_scanned
+            root_finished = True
             root = loc['root_path']
             sec_id = loc['library_section_id']
             sec_name = lib_map.get(str(sec_id), 'Unknown')
@@ -251,6 +270,11 @@ def get_target_items(req_data, core_api, task=None):
             else:
                 try:
                     for dirpath, dirnames, filenames in os.walk(root):
+                        visited_dirs += 1
+                        now = time.monotonic()
+                        if task and now - last_path_log >= 3:
+                            task.log(f"경로 {completed_roots}/{len(locations)}루트 · 발견 {len(path_set):,}개 · 방문 {visited_dirs:,}개")
+                            last_path_log = now
                         rel_path = os.path.relpath(dirpath, root)
                         current_depth = 0 if rel_path == '.' else len(rel_path.replace('\\', '/').split('/'))
 
@@ -260,13 +284,15 @@ def get_target_items(req_data, core_api, task=None):
                             dirnames.clear()
                         elif current_depth > scan_depth:
                             dirnames.clear()
-                except Exception: pass
+                except Exception:
+                    root_finished = False
 
         tmp_list = [{'id': p, 'section_id': sid, 'section': sname, 'title': p, 'guid': '-'} for p, sid, sname in list(path_set)]
         items = core_api['sort'](tmp_list, [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}])
 
         total_scanned = len(items)
-        if task: task.update_state('running', progress=90, total=100)
+        if task and not task.is_cancelled() and completed_roots == len(locations):
+            task.update_state('running', progress=90, total=100)
         return items, total_scanned
 
     # -------------------------------------------------------------
@@ -329,7 +355,7 @@ def get_target_items(req_data, core_api, task=None):
 
     if task:
         filter_msg = "(지능형 필터 적용)" if (opt_smart_refresh and mode=='refresh') or (opt_smart_match and mode=='rematch') else "(전체 딥스캔)"
-        task.log(f"데이터베이스에서 '{mode}' 작업을 수행할 개별 미디어 대상 {filter_msg}을(를) 조회 및 부모 병합 중입니다...")
+        task.log(f"{mode} DB 조회 중 {filter_msg}")
         task.update_state('running', progress=10, total=100)
 
     targets = {}
@@ -355,7 +381,20 @@ def get_target_items(req_data, core_api, task=None):
     try:
         rows = core_api['query'](base_select)
 
-        for r in rows:
+        def inspected_rows():
+            interval = max(1, min(100, (len(rows) + 19) // 20))
+            last_log = time.monotonic()
+            for index, row in enumerate(rows, 1):
+                yield row
+                if task:
+                    if index % interval == 0 or index == len(rows):
+                        task.update_state('running', progress=10 + int(index / len(rows) * 80), total=100)
+                    now = time.monotonic()
+                    if now - last_log >= 3 and index < len(rows):
+                        task.log(f"검사 {index:,}/{len(rows):,} · 검출 {len(targets):,}건")
+                        last_log = now
+
+        for r in inspected_rows():
             if task and task.is_cancelled(): break
 
             rk = r.get('id')
@@ -441,7 +480,7 @@ def get_target_items(req_data, core_api, task=None):
     items = list(targets.values())
     items = core_api['sort'](items, [{"key": "section", "dir": "asc"}, {"key": "title", "dir": "asc"}])
 
-    if task: task.update_state('running', progress=90, total=100)
+    if task and not task.is_cancelled(): task.update_state('running', progress=90, total=100)
 
     return items, total_scanned
 
@@ -528,7 +567,6 @@ def worker(task_data, core_api, start_index):
     # -----------------------------------------------------------------
     if action in ['preview', 'cron_run']:
         prefix = "[자동 실행] " if action == 'cron_run' else ""
-        task.log(f"🔍 {prefix}조회 대상을 찾기 위해 라이브러리를 검사합니다...")
         task.update_state('running', progress=0, total=100)
         items, total_scanned = get_target_items(task_data, core_api, task)
 
@@ -536,7 +574,6 @@ def worker(task_data, core_api, start_index):
             task.log("🛑 조회 작업이 사용자에 의해 취소되었습니다.")
             return
 
-        task.log("📊 검색된 데이터를 바탕으로 결과 테이블을 생성합니다...")
         task.update_state('running', progress=95, total=100)
 
         summary_cards = [
