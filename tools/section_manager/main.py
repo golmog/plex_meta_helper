@@ -11,6 +11,8 @@ import time
 import json
 import shutil
 import socket
+import subprocess
+import tempfile
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -20,16 +22,20 @@ from datetime import datetime
 # 유틸리티 함수
 # =====================================================================
 def check_plex_running(plex_url):
-    """Plex 서버가 응답하는지 (실행 중인지) 소켓 레벨에서 확인합니다."""
+    """TCP 접속 성공만 실행 중으로 판정합니다. 접속 실패가 종료를 확정하지는 않습니다."""
     try:
         parsed = urllib.parse.urlparse(plex_url)
-        host = parsed.hostname or 'localhost'
+        host = parsed.hostname
         port = parsed.port or 32400
+        if parsed.scheme not in ('http', 'https') or not host or parsed.port == 0:
+            raise ValueError()
+    except (TypeError, ValueError) as exc:
+        raise ValueError('Plex URL 형식이 올바르지 않습니다.') from exc
+    try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(2.0)
-            result = s.connect_ex((host, port))
-            return result == 0
-    except:
+            return s.connect_ex((host, port)) == 0
+    except Exception:
         return False
 
 def get_plex_tv_shares(machine_id, token):
@@ -317,26 +323,46 @@ def run(data, core_api):
     # 서브 액션 1: 안전 검사 (check_safety)
     # -----------------------------------------------------------------
     if action == 'check_safety':
-        print(f"[Section Manager] 🛡️ Plex 안전 검사 시작 (모드: {'PostgreSQL' if is_postgres else 'SQLite3'})")
-        
-        if check_plex_running(plex_url):
-            return {"status": "error", "message": "❌ Plex 포트가 응답합니다. 서버가 완전히 종료되지 않았습니다."}, 200
+        task = core_api['task']
+        safe_plex_url = '(잘못된 URL)'
+        try:
+            parsed = urllib.parse.urlparse(plex_url)
+            if parsed.hostname:
+                host = f'[{parsed.hostname}]' if ':' in parsed.hostname else parsed.hostname
+                safe_plex_url = f'{parsed.scheme}://{host}:{parsed.port or 32400}'
+        except (TypeError, ValueError): pass
+        task.log(f"[Section Manager] 🛡️ Plex 안전 검사 시작 · DB={'PostgreSQL' if is_postgres else 'SQLite3'} · Plex={safe_plex_url}")
+        def finish(result, log_reason=None):
+            task.log(f"[Section Manager] 안전 검사 {'성공' if result['status'] == 'success' else '실패'} · {log_reason or result['message']}")
+            return result, 200
+
+        try:
+            if check_plex_running(plex_url):
+                return finish({"status": "error", "message": "❌ Plex 포트가 응답합니다. 서버가 완전히 종료되지 않았습니다."})
+        except Exception as exc:
+            return finish({"status": "error", "message": f"❌ Plex 상태 검사 실패: {exc}"})
 
         if is_postgres:
             try:
                 core_api['query']("SELECT 1")
-                return {"status": "success", "message": "✅ 통과 (Plex 종료 및 PostgreSQL 연결 확인됨)", "value": "passed"}, 200
+                return finish({"status": "success", "message": "✅ 통과 (Plex 종료 및 PostgreSQL 연결 확인됨)", "value": "passed"})
             except Exception as pg_e:
-                return {"status": "error", "message": f"❌ PostgreSQL DB 연결 실패: {pg_e}"}, 200
+                return finish({"status": "error", "message": f"❌ PostgreSQL DB 연결 실패: {pg_e}"}, f'PostgreSQL DB 연결 실패 ({type(pg_e).__name__})')
         else:
             if not os.path.exists(db_path):
-                return {"status": "error", "message": "DB 파일이 존재하지 않습니다. 경로를 확인하세요."}, 200
+                return finish({"status": "error", "message": "DB 파일이 존재하지 않습니다. 경로를 확인하세요."})
                 
             wal_path = f"{db_path}-wal"
-            if os.path.exists(wal_path):
-                return {"status": "error", "message": "❌ .wal 파일이 감지되었습니다. (Plex가 켜져 있거나 비정상 종료됨)"}, 200
+            try:
+                wal_size = os.path.getsize(wal_path)
+            except FileNotFoundError:
+                wal_size = 0
+            except OSError as exc:
+                return finish({"status": "error", "message": f"❌ WAL 파일 확인 실패: {exc}"})
+            if wal_size > 0:
+                return finish({"status": "success", "message": f"⚠️ WAL 파일 {wal_size:,} bytes 존재, DB 백업 전에 Plex SQLite로 병합합니다.", "value": "passed"})
                 
-            return {"status": "success", "message": "✅ 통과 (Plex 종료 및 SQLite DB 안전 확인됨)", "value": "passed"}, 200
+            return finish({"status": "success", "message": "✅ 통과 (Plex 종료 및 SQLite DB 안전 확인됨)", "value": "passed"})
 
     # -----------------------------------------------------------------
     # 서브 액션 2: DB 백업 (backup_db)
@@ -363,16 +389,58 @@ def run(data, core_api):
             except Exception as e:
                 return {"status": "error", "message": f"❌ PG 스냅샷 백업 실패: {e}"}, 200
         else:
-            if not os.path.exists(db_path):
-                return {"status": "error", "message": "DB 파일이 없습니다."}, 200
-                
+            task = core_api['task']
+            task.log('[Section Manager] SQLite DB 체크포인트 및 백업 시작')
             backup_path = f"{db_path}.pmh_backup_{stamp}"
+            temp_path = None
             try:
-                shutil.copy2(db_path, backup_path)
-                size_mb = os.path.getsize(backup_path) / (1024 * 1024)
-                return {"status": "success", "message": f"✅ DB 파일 백업 성공 ({size_mb:.1f}MB)", "value": backup_path}, 200
+                if check_plex_running(plex_url):
+                    raise RuntimeError('Plex 포트가 응답합니다. 서버가 완전히 종료되지 않았습니다.')
+                if not os.path.isfile(db_path):
+                    raise FileNotFoundError('DB 파일이 없습니다.')
+                sqlite_bin = opts.get('sqlite_bin') or cfg.get('plex_sqlite_bin') or '/usr/lib/plexmediaserver/Plex SQLite'
+                if not os.path.isfile(sqlite_bin) or not os.access(sqlite_bin, os.X_OK):
+                    raise RuntimeError('Plex SQLite 바이너리를 찾을 수 없거나 실행할 수 없습니다.')
+                try:
+                    result = subprocess.run(
+                        [sqlite_bin, '-noinit', '-batch', '-bail', '-ifexists', '-json', db_path],
+                        input='PRAGMA wal_checkpoint(TRUNCATE);\n',
+                        capture_output=True, text=True, timeout=60)
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError('Plex SQLite 체크포인트 실행 시간이 초과되었습니다.') from exc
+                if result.returncode != 0:
+                    raise RuntimeError(f'Plex SQLite 체크포인트 실패 (종료 코드 {result.returncode}): {result.stderr.strip()}')
+                try:
+                    rows = json.loads(result.stdout)
+                except (ValueError, TypeError) as exc:
+                    raise RuntimeError('Plex SQLite 체크포인트 결과 JSON을 확인할 수 없습니다.') from exc
+                if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict) or type(rows[0].get('busy')) is not int:
+                    raise RuntimeError('Plex SQLite 체크포인트 결과가 올바른 단일 행이 아닙니다.')
+                if rows[0]['busy'] != 0:
+                    raise RuntimeError(f"Plex SQLite 체크포인트를 완료하지 못했습니다 (busy={rows[0]['busy']}).")
+                try:
+                    wal_size = os.path.getsize(f'{db_path}-wal')
+                except FileNotFoundError:
+                    wal_size = 0
+                if wal_size > 0:
+                    raise RuntimeError(f'체크포인트 후에도 WAL 파일 {wal_size:,} bytes가 남아 있습니다.')
+                fd, temp_path = tempfile.mkstemp(prefix='.pmh_section_copy_', suffix='.tmp', dir=os.path.dirname(os.path.abspath(db_path)))
+                os.close(fd)
+                shutil.copy2(db_path, temp_path)
+                size_mb = os.path.getsize(temp_path) / (1024 * 1024)
+                os.replace(temp_path, backup_path)
+                temp_path = None
+                message = f"✅ DB 파일 백업 성공 ({size_mb:.1f}MB)"
+                task.log(f'[Section Manager] {message}')
+                return {"status": "success", "message": message, "value": backup_path}, 200
             except Exception as e:
-                return {"status": "error", "message": f"❌ 백업 실패: {e}"}, 200
+                message = f"❌ 백업 실패: {e}"
+                task.log(f'[Section Manager] {message}')
+                return {"status": "error", "message": message}, 200
+            finally:
+                if temp_path:
+                    try: os.remove(temp_path)
+                    except OSError as exc: task.log(f'[Section Manager] 임시 백업 파일 정리 실패: {exc}')
 
     # -----------------------------------------------------------------
     # 서브 액션 3: 공유 권한 백업 (backup_shares)
@@ -491,15 +559,19 @@ def worker(task_data, core_api, start_progress):
             tables_info = core_api['query'](tables_query)
             target_tables = [t['name'] for t in tables_info if t['name'] != 'library_sections']
         else:
-            tables_query = "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-            tables_info = core_api['query'](tables_query)
-            target_tables = []
-            for t in tables_info:
-                if t['name'] == 'library_sections': continue
-                # SQL whitespace/quoting is not a reliable column inventory.
-                columns = core_api['query']("SELECT name FROM pragma_table_info(?) WHERE name = 'library_section_id'", (t['name'],))
-                if columns:
-                    target_tables.append(t['name'])
+            tables_query = """
+                SELECT m.name AS name
+                FROM sqlite_master AS m
+                JOIN pragma_table_info(m.name) AS col
+                WHERE m.type = 'table'
+                  AND m.name NOT LIKE 'sqlite_%'
+                  AND m.name <> 'library_sections'
+                  AND UPPER(LTRIM(COALESCE(m.sql, ''))) NOT LIKE 'CREATE VIRTUAL TABLE%'
+                  AND col.name = 'library_section_id'
+                ORDER BY m.name
+            """
+            tables_info = core_api['query_plex'](tables_query)
+            target_tables = [t['name'] for t in tables_info]
     except Exception as e:
         task.log(f"❌ 연관 테이블 분석 실패: {e}")
         task.update_state('error'); return
@@ -517,8 +589,13 @@ def worker(task_data, core_api, start_progress):
         
         # 1. 안전 검사 (Plex 프로세스 종료 확인)
         plex_url = task_data.get('plex_url', '')
-        if plex_url and check_plex_running(plex_url):
-            task.log(f"❌ 치명적 오류: Plex 서버({plex_url})가 아직 실행 중입니다. 안전을 위해 Plex를 먼저 종료해 주세요.")
+        try:
+            plex_running = check_plex_running(plex_url)
+        except Exception as exc:
+            task.log(f"❌ Plex 상태 검사 실패: {exc} 안전을 위해 복원을 중지합니다.")
+            task.update_state('error'); return
+        if plex_running:
+            task.log("❌ 치명적 오류: Plex 서버가 아직 실행 중입니다. 안전을 위해 Plex를 먼저 종료해 주세요.")
             task.update_state('error'); return
 
         if is_postgres:
@@ -741,8 +818,13 @@ def worker(task_data, core_api, start_progress):
         
         # 4-1. 더블 체크 (Plex 프로세스 종료 확인)
         plex_url = task_data.get('plex_url', '')
-        if plex_url and check_plex_running(plex_url):
-            task.log(f"❌ 치명적 오류: Plex 서버({plex_url})가 아직 응답하고 있습니다. DB 보호를 위해 작업을 강제 중지합니다.")
+        try:
+            plex_running = check_plex_running(plex_url)
+        except Exception as exc:
+            task.log(f"❌ Plex 상태 검사 실패: {exc} DB 보호를 위해 작업을 중지합니다.")
+            task.update_state('error'); return
+        if plex_running:
+            task.log("❌ 치명적 오류: Plex 서버가 아직 응답하고 있습니다. DB 보호를 위해 작업을 강제 중지합니다.")
             task.update_state('error'); return
             
         task.log("   -> ✅ 더블 체크 통과: Plex 프로세스 종료 확인 완료.")
