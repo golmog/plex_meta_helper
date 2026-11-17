@@ -129,8 +129,21 @@ def worker(task_data, core_api, start_index):
     work_start_time = time.time()
     
     prefix = "[자동 실행] " if is_cron else ""
-    task.log(f"🔍 {prefix}다중 경로(병합 오류 의심) 검색을 시작합니다...")
+    task.log(f"{prefix}다중 경로 DB 조회 중")
     task.update_state('running', progress=0, total=100)
+
+    def inspected_rows(rows, label, base, span):
+        interval = max(1, min(100, (len(rows) + 19) // 20))
+        last_log = time.monotonic()
+        for index, row in enumerate(rows, 1):
+            yield row
+            if index % interval == 0 or index == len(rows):
+                task.update_state('running', progress=base + int(index / len(rows) * span), total=100)
+            now = time.monotonic()
+            if now - last_log >= 3 and index < len(rows):
+                task.log(f"{label} {index:,}/{len(rows):,}")
+                last_log = now
+
     
     paths_map = defaultdict(set)
     title_map = {}
@@ -174,7 +187,6 @@ def worker(task_data, core_api, start_index):
         # STEP 2: 단일 쿼리로 영화 라이브러리 일괄 조회
         # -----------------------------------------------------------------
         if movie_lib_ids:
-            task.log("🎬 영화 라이브러리 파일 경로를 분석 중입니다...")
             task.update_state('running', progress=30, total=100)
             
             m_ids_str = ",".join(movie_lib_ids)
@@ -185,7 +197,8 @@ def worker(task_data, core_api, start_index):
                 JOIN media_parts mp ON mp.media_item_id = m.id
                 WHERE mi.library_section_id IN ({m_ids_str}) AND mi.metadata_type = 1 AND mp.file IS NOT NULL
             """
-            for row in core_api['query'](m_query):
+            movie_rows = core_api['query'](m_query)
+            for row in inspected_rows(movie_rows, '영화 경로 검사', 30, 30):
                 if task.is_cancelled(): return
                 
                 rk = row.get('id')
@@ -200,7 +213,6 @@ def worker(task_data, core_api, start_index):
         # STEP 3: 가벼운 쿼리로 TV 쇼 라이브러리 일괄 조회 (COALESCE 적용)
         # -----------------------------------------------------------------
         if show_lib_ids:
-            task.log("📺 TV 쇼 라이브러리 파일 경로를 분석 중입니다...")
             task.update_state('running', progress=60, total=100)
             
             s_ids_str = ",".join(show_lib_ids)
@@ -216,7 +228,8 @@ def worker(task_data, core_api, start_index):
                 JOIN media_parts mp ON mp.media_item_id = m.id
                 WHERE ep.library_section_id IN ({s_ids_str}) AND ep.metadata_type = 4 AND mp.file IS NOT NULL
             """
-            for row in core_api['query'](s_query):
+            show_rows = core_api['query'](s_query)
+            for row in inspected_rows(show_rows, 'TV 경로 검사', 60, 20):
                 if task.is_cancelled(): return
                 
                 show_id = row.get('show_id')
@@ -228,12 +241,12 @@ def worker(task_data, core_api, start_index):
         # STEP 4: 다중 경로 항목 필터링 및 부족한 정보(TV 쇼) 획득
         # -----------------------------------------------------------------
         task.update_state('running', progress=80, total=100)
-        task.log("📊 데이터 수집 완료. 병합 오류 의심 항목을 필터링합니다...")
 
         results = []
         error_show_ids = []
         
-        for rk_id, paths_set in paths_map.items():
+        for rk_id, paths_set in inspected_rows(paths_map.items(), '병합 의심 항목 필터', 80, 10):
+            if task.is_cancelled(): return
             path_count = len(paths_set)
             if path_count > 1:
                 if rk_id in title_map:
@@ -248,8 +261,9 @@ def worker(task_data, core_api, start_index):
                     error_show_ids.append(rk_id)
 
         if error_show_ids:
-            task.log("🔍 의심되는 TV 쇼 항목의 상세 정보를 가져옵니다...")
+            detail_chunks = (len(error_show_ids) + 499) // 500
             for i in range(0, len(error_show_ids), 500):
+                if task.is_cancelled(): return
                 chunk = error_show_ids[i:i+500]
                 int_chunk = tuple(int(x) for x in chunk if str(x).isdigit())
                 if int_chunk:
@@ -269,14 +283,15 @@ def worker(task_data, core_api, start_index):
                             "raw_count": path_count
                         })
 
+                task.update_state('running', progress=90 + int((i // 500 + 1) / detail_chunks * 5), total=100)
+                task.log(f"TV 상세 {i // 500 + 1}/{detail_chunks}청크 · 검출 {len(results):,}건")
+
         sort_rules = [
             {"key": "section", "dir": "asc"},
             {"key": "raw_count", "dir": "desc"},
             {"key": "title", "dir": "asc"}
         ]
 
-        task.update_state('completed', progress=100, total=100)
-        
         elapsed_sec = int(time.time() - work_start_time)
         elapsed_str = f"{elapsed_sec // 60}분 {elapsed_sec % 60}초" if elapsed_sec >= 60 else f"{elapsed_sec}초"
         
@@ -321,6 +336,7 @@ def worker(task_data, core_api, start_index):
         }
         
         core_api['cache'].save(res_payload)
+        task.update_state('completed', progress=100, total=100)
         
     except Exception as e:
         task.log(f"❌ 처리 중 오류 발생: {str(e)}")
