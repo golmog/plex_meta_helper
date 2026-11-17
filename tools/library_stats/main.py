@@ -149,7 +149,7 @@ def worker(task_data, core_api, start_index):
         task.update_state('error'); return
 
     prefix = "[자동 실행] " if is_cron else ""
-    task.log(f"📊 {prefix}통계 추출을 시작합니다.")
+    task.log(f"{prefix}통계 DB 조회 중")
     task.update_state('running', progress=0, total=100)
 
     # 타겟 섹션 필터링
@@ -191,7 +191,6 @@ def worker(task_data, core_api, start_index):
         # STEP 1: 개수, 용량, 재생시간, 해상도 계산
         # -----------------------------------------------------------------
         task.update_state('running', progress=20, total=100)
-        task.log("📂 기본 미디어 통계(개수, 용량, 해상도)를 분석 중입니다...")
         
         q_basic = f"""
             SELECT 
@@ -203,7 +202,21 @@ def worker(task_data, core_api, start_index):
             {base_where}
         """
         
-        for row in core_api['query'](q_basic):
+        basic_rows = core_api['query'](q_basic)
+
+        def inspected_rows():
+            interval = max(1, min(100, (len(basic_rows) + 19) // 20))
+            last_log = time.monotonic()
+            for index, row in enumerate(basic_rows, 1):
+                yield row
+                if index % interval == 0 or index == len(basic_rows):
+                    task.update_state('running', progress=20 + int(index / len(basic_rows) * 40), total=100)
+                now = time.monotonic()
+                if now - last_log >= 3 and index < len(basic_rows):
+                    task.log(f"통계 집계 {index:,}/{len(basic_rows):,}")
+                    last_log = now
+
+        for row in inspected_rows():
             if task.is_cancelled(): return
             
             m_type = row.get('metadata_type')
@@ -233,7 +246,6 @@ def worker(task_data, core_api, start_index):
         # STEP 2: 오디오/비디오 코덱 추출
         # -----------------------------------------------------------------
         task.update_state('running', progress=60, total=100)
-        task.log("🎵 스트림 코덱 통계를 분석 중입니다...")
         
         q_codec = f"""
             SELECT ms.stream_type_id, ms.codec, COUNT(*) as cnt 
@@ -262,7 +274,6 @@ def worker(task_data, core_api, start_index):
                 total_a += cnt
 
         task.update_state('running', progress=90, total=100)
-        task.log("✅ 데이터 추출 완료. 대시보드 UI를 구성합니다...")
         
         movie_count, episode_count = counts_map[1], counts_map[4]
         music_count, photo_count = counts_map[10], counts_map[13]
