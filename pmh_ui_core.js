@@ -532,21 +532,27 @@ window.PmhUICore = {
             const toggleBtn = e.target.closest(`#pmh_btn_toggle_form_${config.toolId}`);
             if (toggleBtn) {
                 e.preventDefault();
+                if (ctx.formSavePending) return;
                 const body = ctx.c.querySelector(`#pmh_form_body_${config.toolId}`);
                 if (body) {
-                    const isHidden = body.style.display === 'none';
-                    body.style.display = isHidden ? 'block' : 'none';
-
-                    if (isHidden) toggleBtn.classList.remove('collapsed');
-                    else toggleBtn.classList.add('collapsed');
-
-                    ctx.opts._form_collapsed = !isHidden;
-
-                    const req = getFormData();
-                    req.action_type = 'save_options';
-                    req._form_collapsed = ctx.opts._form_collapsed;
-                    req._server_name = ctx.srvName;
-                    config.apiAdapter.run(req).catch(()=>{});
+                    const previousCollapsed = body.style.display === 'none';
+                    const setCollapsed = value => {
+                        body.style.display = value ? 'none' : 'block';
+                        toggleBtn.classList.toggle('collapsed', value);
+                        ctx.opts._form_collapsed = value;
+                    };
+                    setCollapsed(!previousCollapsed);
+                    ctx.formSavePending = true;
+                    toggleBtn.disabled = true;
+                    const req = { action_type: 'save_options', _form_collapsed: ctx.opts._form_collapsed, _server_id: ctx.srvId };
+                    Promise.resolve().then(() => config.apiAdapter.run(req)).catch(error => {
+                        if (ctx.isDestroyed) return;
+                        setCollapsed(previousCollapsed);
+                        config.toast.error('조회 패널 상태 저장 실패: ' + (error?.message || '서버 응답을 확인하세요.'));
+                    }).finally(() => {
+                        ctx.formSavePending = false;
+                        if (!ctx.isDestroyed) toggleBtn.disabled = false;
+                    });
                 }
                 return;
             }
@@ -601,15 +607,24 @@ window.PmhUICore = {
                     subBtn.disabled = false;
                     if (overlay) overlay.style.display = 'none';
                     if (res.status === 'success') {
-                        if (msgSpan) msgSpan.innerHTML = `<span style="color:#51a351; font-weight:bold;"><i class="fas fa-check"></i> ${res.message || '완료되었습니다.'}</span>`;
+                        if (msgSpan) {
+                            msgSpan.innerHTML = '<span style="color:#51a351; font-weight:bold;"><i class="fas fa-check"></i> </span>';
+                            msgSpan.firstElementChild.appendChild(document.createTextNode(res.message || '완료되었습니다.'));
+                        }
                         if (hiddenInput && res.value !== undefined) hiddenInput.value = res.value;
                     } else {
-                        if (msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-times"></i> ${res.message || '실패했습니다.'}</span>`;
+                        if (msgSpan) {
+                            msgSpan.innerHTML = '<span style="color:#bd362f;"><i class="fas fa-times"></i> </span>';
+                            msgSpan.firstElementChild.appendChild(document.createTextNode(res.message || '실패했습니다.'));
+                        }
                     }
                 }).catch(err => {
                     subBtn.disabled = false;
                     if (overlay) overlay.style.display = 'none';
-                    if (msgSpan) msgSpan.innerHTML = `<span style="color:#bd362f;"><i class="fas fa-wifi"></i> 통신 실패</span>`;
+                    if (msgSpan) {
+                        msgSpan.innerHTML = '<span style="color:#bd362f;"><i class="fas fa-exclamation-triangle"></i> </span>';
+                        msgSpan.firstElementChild.appendChild(document.createTextNode(err?.message || (typeof err === 'string' && err) || '요청 실패'));
+                    }
                 });
                 return;
             }

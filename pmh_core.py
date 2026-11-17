@@ -38,7 +38,7 @@ from logging.handlers import RotatingFileHandler
 # [코어 모듈 버전]
 # ==============================================================================
 
-__version__ = "0.9.135"
+__version__ = "0.9.136"
 
 logger = logging.getLogger("PMH")
 
@@ -544,6 +544,7 @@ def _execute_scheduled_tasks_impl(global_config, now):
                     
                 core_api = {
                     "query": db_api["query"],
+                    "query_plex": db_api["query_plex"],
                     "execute": db_api["execute"],
                     "get_plex": get_plex_instance,
                     "task": task_mgr, "config": run_config,
@@ -1333,40 +1334,9 @@ _FF_WRITE_CONTEXT = threading.local()
 
 
 class FfWriteBlocked(RuntimeError):
-    def __init__(self, state, attempt_id=None, status=None, payload=None):
-        self.state, self.attempt_id = state, attempt_id
-        self.status, self.payload = status, payload or {}
-        super().__init__(f'FF 쓰기 {state}: 원격 쓰기 원장에서 확인하세요. (시도 {attempt_id or "-"})')
-
-
-def ff_safe_summary(value, secrets=()):
-    """A bounded, allowlisted receipt, never a raw response or authenticated URL."""
-    fields = {'ret', 'error_code', 'commit_state', 'is_updated', 'skipped', 'changes',
-              'failures', 'failure_details', 'warnings', 'cleanup_pending', 'category',
-              'code', 'domain', 'person_idx', 'requested_person_idx'}
-    budget = {'nodes': 256, 'chars': 8192}
-    def clean(v, depth=0):
-        budget['nodes'] -= 1
-        if budget['nodes'] < 0: return '[bounded]'
-        if depth > 4: return '[bounded]'
-        if type(v) is float and not math.isfinite(v): return '[nonfinite]'
-        if v is None or type(v) in (bool, int, float): return v
-        if isinstance(v, str):
-            for secret in secrets:
-                if secret: v = v.replace(str(secret), '[redacted]')
-            v = re.sub(r'https?://[^\s<>"\']+', '[URL]', v)
-            v = re.sub(r'(?i)(apikey|api_key|token|password|signature)\s*[:=]\s*\S+', '[redacted]', v)
-            limit = min(256, max(0, budget['chars']))
-            budget['chars'] -= limit
-            return v[:limit]
-        if isinstance(v, list): return [clean(x, depth + 1) for x in v[:30]]
-        if isinstance(v, dict):
-            return {str(k): clean(x, depth + 1) for k, x in list(v.items())[:30]
-                    if re.fullmatch(r'[\w.-]{1,64}', str(k)) and
-                    not re.search(r'(?i)key|token|password|signature|url|path', str(k)) and
-                    str(k) not in secrets}
-        return '[unsupported]'
-    return {k: clean(value[k]) for k in fields if k in value} if isinstance(value, dict) else {}
+    def __init__(self, state, status=None):
+        self.state, self.status = state, status
+        super().__init__(f'FF 릴레이 입력 거부: {state}')
 
 
 def ff_route_kind(endpoint, method, payload):
@@ -1410,429 +1380,6 @@ def ff_route_kind(endpoint, method, payload):
         return 'read' if command in reads else 'write'
     # Unknown paths, aliases, traversal and unverified AJAX routers fail closed.
     raise FfWriteBlocked('relay_endpoint_not_allowed', status=405 if method == 'GET' else 400)
-
-
-def ff_write_descriptor(endpoint, payload):
-    """Explicit route contracts; None means a verified read, never rejected input."""
-    kind = ff_route_kind(endpoint, 'POST', payload)
-    if kind == 'read': return None
-    payload = payload or {}
-    command = str(payload.get('command') or '')
-    def parsed(v):
-        if isinstance(v, dict): return v
-        try:
-            result = json.loads(v) if v else {}
-            if isinstance(result, list) and len(result) == 1: result = result[0]
-            return result if isinstance(result, dict) else {}
-        except (ValueError, TypeError): return {}
-    if command in ('db_sync_media', 'person_sync_image'):
-        try:
-            options = json.loads(payload.get('arg3') or '{}')
-        except (TypeError, ValueError): raise FfWriteBlocked('invalid_request') from None
-        if command == 'db_sync_media':
-            canonical_payload = {'category': payload.get('arg2'), 'code': payload.get('arg1'), 'options': options}
-            canonical_endpoint = 'api/meta_db/media_sync'
-        else:
-            canonical_payload = {'domain': payload.get('arg2'), 'person_idx': payload.get('arg1'), 'options': options}
-            canonical_endpoint = 'api/meta_db/person_image_sync'
-        canonical_payload['_pmh_review_tokens'] = payload.get('_pmh_review_tokens', [])
-        return ff_write_descriptor(canonical_endpoint, canonical_payload)
-    modern = endpoint in ('api/meta_db/media_sync', 'api/meta_db/person_image_sync')
-    person = endpoint.endswith('person_image_sync') or endpoint == 'person_api' or command.startswith('person_')
-    details = parsed(payload.get('arg1'))
-    if person:
-        domain = payload.get('domain') or details.get('domain') or payload.get('arg2')
-        if domain not in ('JAV', 'WESTERN'):
-            # Legacy commands sometimes use DB row IDs. Keep a conservative shared domain.
-            domain = 'UNRESOLVED'
-        code = payload.get('person_idx') or details.get('person_idx') or details.get('id') or payload.get('arg1')
-        category = domain
-    else:
-        category = payload.get('category') or payload.get('cat') or payload.get('arg2')
-        code = payload.get('code') or details.get('code') or payload.get('arg1')
-        category = details.get('category') or category
-        if isinstance(code, (dict, list)) or str(code).startswith(('{', '[')):
-            category, code = 'UNRESOLVED', 'shared-target'
-        aliases = {'jav_censored': 'JAV_CEN', 'jav_uncensored': 'JAV_UNCEN',
-                   'jav': 'JAV_CEN', 'western': 'WESTERN'}
-        module = endpoint.split('/')[1] if endpoint.startswith('api/') else ''
-        category = aliases.get(str(category).lower(), category)
-        if category not in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
-            category = aliases.get(module) or {'C': 'JAV_CEN', 'E': 'JAV_UNCEN', 'W': 'WESTERN'}.get(str(code)[:1], 'UNRESOLVED')
-    if modern:
-        allowed = {'skip_existing'} if person else {'skip_existing', 'poster', 'landscape', 'fanart', 'trailer'}
-        options = payload.get('options', {})
-        if (not isinstance(options, dict) or set(options) - allowed or
-                any(type(v) is not bool for v in options.values()) or
-                (not person and payload.get('category') != category) or
-                category not in (('JAV', 'WESTERN') if person else ('JAV_CEN', 'JAV_UNCEN', 'WESTERN')) or
-                not isinstance(code, str) or not code.strip()):
-            raise FfWriteBlocked('invalid_request')
-    code = str(code or '').strip()
-    if not re.fullmatch(r'[\w.:-]{1,160}', code):
-        category, code = 'UNRESOLVED', 'shared-target'
-    # Sensitive values affect equality through a one-way digest only; never persist them.
-    filtered = {k: v for k, v in payload.items()
-                if not re.search(r'(?i)apikey|api_key|token|signature|^_pmh', k)}
-    if endpoint.endswith('person_image_sync'):
-        filtered['person_idx'] = code.casefold()
-    if command == 'db_delete_confirm':
-        filtered.pop('arg3', None)  # FF preview token changes on each fresh delete plan.
-    summary_options = {k: v for k, v in (payload.get('options') or {}).items() if type(v) is bool} if isinstance(payload.get('options', {}), dict) else {}
-    if modern:
-        summary_options = {key: options.get(key, True) for key in sorted(allowed)}
-        filtered = {'operation': endpoint, 'category': category,
-                    'code': code.casefold() if person else code, 'options': summary_options}
-    elif command == 'db_refresh_image_only' and payload.get('arg3') in ('reuse', 'replace'):
-        summary_options['media_policy'] = payload['arg3']
-    fingerprint = hashlib.sha256(json.dumps(filtered, sort_keys=True, ensure_ascii=True,
-                                          separators=(',', ':')).encode()).hexdigest()
-    return {'kind': 'person' if person else 'item', 'category': category, 'code': code,
-            'operation': command or endpoint, 'fingerprint': fingerprint,
-            'options': summary_options}
-
-
-def ff_outcome(status, result, descriptor):
-    if not isinstance(result, dict): return 'unknown'
-    error = result.get('error_code')
-    if result.get('commit_state') == 'unknown' or error == 'commit_outcome_unknown': return 'unknown'
-    operation = descriptor['operation']
-    success = status == 200 and result.get('ret') == 'success'
-    if operation == 'api/meta_db/media_sync' and (success or 'category' in result or 'code' in result):
-        if result.get('category') != descriptor['category'] or result.get('code') != descriptor['code']: return 'unknown'
-    if operation == 'api/meta_db/person_image_sync' and (success or 'domain' in result or 'requested_person_idx' in result):
-        if (result.get('domain') != descriptor['category'] or
-                str(result.get('requested_person_idx', '')).casefold() != descriptor['code'].casefold() or
-                (success and (not isinstance(result.get('person_idx'), str) or not result['person_idx']))): return 'unknown'
-    if error in ('media_sync_incomplete', 'storage_asset_incomplete', 'storage_lookup_failed'): return 'partial'
-    if error == 'storage_conflict': return 'blocked_conflict'
-    if error in ('schema_not_writable', 'invalid_request', 'ambiguous_person', 'not_found'): return 'blocked_config'
-    if status != 200 or result.get('ret') != 'success': return 'unknown'
-    if result.get('failures'): return 'partial'
-    if result.get('skipped') is True and result.get('is_updated') is False:
-        return 'partial' if result.get('changes') else 'confirmed_noop'
-    if result.get('commit_state') == 'committed': return 'confirmed_changed'
-    if operation not in ('api/meta_db/media_sync', 'api/meta_db/person_image_sync'):
-        # Existing legacy commands define ret=success as their receipt; no invented commit field.
-        return 'confirmed_legacy'
-    return 'needs_review'
-
-
-def ff_read_contract(config, command, arg1='', arg2=''):
-    key = config.get('mate_apikey')
-    endpoint = 'person_api' if command.startswith('person_') else 'meta_api'
-    req = Request(str(config.get('mate_url', '')).rstrip('/') + '/metadata/' + endpoint,
-                  data=urlencode({'command': command, 'arg1': arg1, 'arg2': arg2, 'apikey': key}).encode(),
-                  headers={'X-API-Key': str(key), 'Content-Type': 'application/x-www-form-urlencoded'})
-    try:
-        with urlopen(req, timeout=60) as response:
-            result = json.loads(response.read().decode())
-            if response.status != 200 or not isinstance(result, dict) or result.get('ret') != 'success':
-                raise ValueError('invalid read receipt')
-            return result
-    except Exception:
-        raise FfWriteBlocked('read_verification_failed') from None
-
-
-def ff_require_writable(config, descriptor):
-    result = ff_read_contract(config, 'meta_db_schema_status')
-    statuses = {str(k).upper(): v for k, v in (result.get('data') or {}).items()}
-    categories = {'PERSON'}
-    if descriptor['kind'] == 'item':
-        categories.update(('JAV_CEN', 'JAV_UNCEN', 'WESTERN') if descriptor['category'] == 'UNRESOLVED'
-                          else (descriptor['category'],))
-    if (result.get('schema_name') != 'meta_db' or result.get('target_version') != 1 or
-            any(not isinstance(statuses.get(cat), dict) or statuses[cat].get('schema_version') != 1 or
-                statuses[cat].get('migration_state') != 'complete' for cat in categories)):
-        raise FfWriteBlocked('schema_not_writable')
-
-
-def ff_find_person(config, identifier, domain):
-    # person_get_detailed can commit FF self-healing. Verification must use the
-    # existing pure search path instead of causing another unjournaled mutation.
-    result = ff_read_contract(config, 'person_search', identifier, domain).get('data')
-    if not isinstance(result, list): raise FfWriteBlocked('person_read_failed')
-    matches = [p for p in result if isinstance(p, dict) and p.get('domain') == domain and (
-        str(p.get('person_idx') or '').casefold() == str(identifier).casefold() or
-        (str(identifier).isdigit() and str(p.get('id')) == str(identifier)) or
-        any(str(alias).casefold() == str(identifier).casefold() for alias in (p.get('alt_indices') or [])))]
-    if len(matches) != 1 or not re.fullmatch(r'[\w.:-]{1,160}', str(matches[0].get('person_idx') or '')):
-        raise FfWriteBlocked('ambiguous_person_reference')
-    return matches[0]
-
-
-def ff_review_context(config, row, db_engine=None):
-    """The same current-reference evidence at review, approval and approved retry."""
-    if row['category'] == 'UNRESOLVED':
-        raise FfWriteBlocked('identity_requires_manual_correction', row['id'])
-    ff_require_writable(config, row)
-    if row['kind'] == 'person':
-        person = ff_find_person(config, row['code'], row['category'])
-        reference = {'ret': 'success', 'data': person}
-        context = {'domain': person['domain'], 'requested': row['code'], 'canonical': person['person_idx']}
-    else:
-        reference = ff_read_contract(config, 'get_meta_by_code', row['code'], row['category'])
-        entity = reference.get('data') or {}
-        if not isinstance(entity, dict) or entity.get('code') != row['code'] or entity.get('category') != row['category']:
-            raise FfWriteBlocked('item_identity_changed', row['id'])
-        engine = db_engine or UniversalPlexDatabaseEngine(config)
-        plex_rows = engine.query('SELECT id, guid FROM metadata_items WHERE guid LIKE ?', ('%' + row['code'] + '%',))
-        plex_ids = sorted(str(x['id']) for x in plex_rows
-                          if str(x.get('guid') or '').split('://')[-1].split('?')[0] == row['code'])
-        if not plex_ids: raise FfWriteBlocked('plex_identity_not_found', row['id'])
-        context = {'category': row['category'], 'code': row['code'], 'plex_ids': plex_ids}
-    context['reference_hash'] = hashlib.sha256(json.dumps(reference, sort_keys=True).encode()).hexdigest()
-    context['fingerprint'] = row['fingerprint']
-    return context
-
-
-class FfWriteJournal:
-    """Single filesystem ledger shared by tools, relays and nodes. Not a distributed lock."""
-    confirmed = ('confirmed_changed', 'confirmed_noop', 'confirmed_legacy')
-
-    def __init__(self, config):
-        base = config.get('base_dir')
-        if not base: raise FfWriteBlocked('missing_journal_directory')
-        self.config = config
-        self.path = os.path.join(base, 'ff_write_journal.sqlite3')
-        address = urlsplit(str(config.get('mate_url') or ''))
-        if address.scheme not in ('http', 'https') or not address.hostname:
-            raise FfWriteBlocked('invalid_ff_service')
-        service = f'{address.scheme.lower()}://{address.hostname.lower()}:{address.port or (443 if address.scheme == "https" else 80)}{address.path.rstrip("/")}'
-        self.service = hashlib.sha256(service.encode()).hexdigest()
-        self.node = str(config.get('machine_id') or config.get('_server_id') or 'local')[:160]
-        with self.connection() as conn:
-            conn.execute('''CREATE TABLE IF NOT EXISTS attempts (
-                id TEXT PRIMARY KEY, service TEXT NOT NULL, node TEXT NOT NULL,
-                kind TEXT NOT NULL, category TEXT NOT NULL, code TEXT NOT NULL,
-                operation TEXT NOT NULL, fingerprint TEXT NOT NULL, options TEXT NOT NULL,
-                run_id TEXT, state TEXT NOT NULL, created REAL, updated REAL,
-                http INTEGER, receipt TEXT, canonical TEXT, plex_state TEXT DEFAULT 'pending',
-                parent TEXT, review_token TEXT, review_until REAL, review_context TEXT,
-                approved REAL, approval_used INTEGER DEFAULT 0)''')
-            conn.execute('CREATE INDEX IF NOT EXISTS ff_target ON attempts(service, kind, category, code)')
-            conn.execute('''CREATE TABLE IF NOT EXISTS review_audit (
-                id INTEGER PRIMARY KEY, attempt TEXT, action TEXT, at REAL, context_digest TEXT)''')
-            conn.execute('''CREATE TABLE IF NOT EXISTS plex_phases (
-                service TEXT, node TEXT, plex_id TEXT, kind TEXT, category TEXT, code TEXT,
-                state TEXT, updated REAL, PRIMARY KEY(service,node,plex_id,kind,category,code))''')
-        apply_permissions(self.path, config)
-
-    @contextmanager
-    def connection(self):
-        conn = sqlite3.connect(self.path, timeout=15)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute('BEGIN IMMEDIATE')
-            yield conn
-            conn.commit()
-        except BaseException:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    def records(self, attempt_id=None, unresolved_first=False):
-        with self.connection() as conn:
-            rows = conn.execute('SELECT * FROM attempts WHERE service=?' + (' AND id=?' if attempt_id else '') +
-                                (' ORDER BY CASE WHEN state IN (\'confirmed_changed\',\'confirmed_noop\',\'confirmed_legacy\') THEN 1 ELSE 0 END, created DESC LIMIT 200'
-                                 if unresolved_first else ' ORDER BY created DESC LIMIT 200'),
-                                (self.service, attempt_id) if attempt_id else (self.service,)).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            for key in ('review_token', 'review_context', 'review_until'): item.pop(key, None)
-            item['receipt'] = json.loads(item['receipt'] or '{}')
-            item['options'] = json.loads(item['options'])
-            with self.connection() as conn:
-                item['review_history'] = [dict(x) for x in conn.execute(
-                    'SELECT action,at FROM review_audit WHERE attempt=? ORDER BY id', (item['id'],))]
-                item['plex_phases'] = [dict(x) for x in conn.execute(
-                    'SELECT node,plex_id,state,updated FROM plex_phases WHERE service=? AND kind=? AND category=? AND code=?',
-                    (self.service, item['kind'], item['category'], item['code']))]
-            result.append(item)
-        return result
-
-    def claim(self, descriptor, run_id, approval_tokens=()):
-        d = descriptor
-        with self.connection() as conn:
-            # Unresolved person aliases cannot safely be assumed to be different persons.
-            rows = conn.execute('SELECT * FROM attempts WHERE service=? AND kind=? AND '
-                                '(category=? OR category=\'UNRESOLVED\' OR ?=\'UNRESOLVED\') ORDER BY created DESC',
-                                (self.service, d['kind'], d['category'], d['category'])).fetchall()
-            parent = None
-            for row in rows:
-                if row['category'] == 'UNRESOLVED' and row['state'] not in self.confirmed:
-                    raise FfWriteBlocked(row['state'], row['id'])
-            # A confirmed identical receipt needs no network; another person's uncertainty
-            # must not prevent reusing it before reaching that person's own review gate.
-            exact = [row for row in rows if row['code'].casefold() == d['code'].casefold()
-                     and (d['kind'] == 'person' or row['code'] == d['code'])]
-            if d['operation'] != 'person_get_detailed' and exact and exact[0]['state'] in self.confirmed and exact[0]['operation'] == d['operation'] and exact[0]['fingerprint'] == d['fingerprint']:
-                row = exact[0]
-                has_approval = row['approved'] and any(row['review_token'] == hashlib.sha256(str(t).encode()).hexdigest() for t in approval_tokens)
-                if has_approval and row['review_until'] < time.time(): raise FfWriteBlocked('stale_approval', row['id'])
-                if not has_approval: return dict(row), True
-            for row in rows:
-                same = (row['code'] == d['code'] if d['kind'] == 'item' else
-                        d['code'].casefold() in (row['code'].casefold(), (row['canonical'] or '').casefold()))
-                same = same or row['category'] == 'UNRESOLVED' or d['category'] == 'UNRESOLVED'
-                unresolved = row['state'] not in self.confirmed
-                approved = (same and row['approved'] and not row['approval_used'] and
-                            row['node'] == self.node and
-                            row['review_until'] > time.time() and row['fingerprint'] == d['fingerprint'] and
-                            any(row['review_token'] == hashlib.sha256(str(token).encode()).hexdigest()
-                                for token in approval_tokens))
-                if approved:
-                    parent = row['id']
-                    conn.execute('UPDATE attempts SET approval_used=1 WHERE id=?', (parent,))
-                    conn.execute('INSERT INTO review_audit(attempt,action,at) VALUES (?,?,?)', (parent, 'consumed', time.time()))
-                    continue
-                if (same and d['kind'] == 'person' and row['code'].casefold() != d['code'].casefold()
-                        and row['canonical'] and row['state'] in self.confirmed):
-                    if d['operation'] == 'person_get_detailed': continue
-                    if row['operation'] == d['operation'] and json.loads(row['options']) == d['options']:
-                        return dict(row), True
-                    raise FfWriteBlocked('canonical_alias_requires_review', row['id'])
-                if unresolved and (same or d['kind'] == 'person'):
-                    # An older attempt explicitly superseded by an approved successor stays evidence.
-                    if conn.execute('SELECT 1 FROM attempts WHERE parent=?', (row['id'],)).fetchone(): continue
-                    raise FfWriteBlocked(row['state'], row['id'])
-                if same and row['operation'] == d['operation'] and row['fingerprint'] == d['fingerprint']:
-                    if row['state'] in self.confirmed and not parent and d['operation'] != 'person_get_detailed': return dict(row), True
-            now = time.time()
-            attempt = uuid.uuid4().hex
-            conn.execute('''INSERT INTO attempts
-                (id,service,node,kind,category,code,operation,fingerprint,options,run_id,state,created,updated,parent)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                (attempt, self.service, self.node, d['kind'], d['category'], d['code'], d['operation'],
-                 d['fingerprint'], json.dumps(d['options']), str(run_id or '')[:80], 'prepared', now, now, parent))
-            return {'id': attempt, 'parent': parent}, False
-
-    def revalidate_retry(self, attempt):
-        # claim has already consumed the approval and committed the linked intent.
-        # Release the journal lock before current FF/Plex reads.
-        with self.connection() as conn:
-            parent = conn.execute('SELECT * FROM attempts WHERE id=? AND service=?',
-                                  (attempt['parent'], self.service)).fetchone()
-            parent = dict(parent) if parent else None
-        try:
-            if parent is None: raise FfWriteBlocked('stale_approval_context')
-            context = ff_review_context(self.config, parent)
-            digest = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
-            if digest != parent['review_context'] or parent['review_until'] < time.time():
-                raise FfWriteBlocked('stale_approval_context')
-        except Exception:
-            with self.connection() as conn:
-                conn.execute('INSERT INTO review_audit(attempt,action,at) VALUES (?,?,?)',
-                             (attempt['parent'], 'revalidation_failed', time.time()))
-            raise FfWriteBlocked('stale_approval_context', attempt['id']) from None
-
-    def finish(self, attempt, state, status=None, receipt=None):
-        safe = ff_safe_summary(receipt, (self.config.get('mate_apikey'), self.config.get('plex_token')))
-        canonical = safe.get('person_idx')
-        if not isinstance(canonical, str) or not re.fullmatch(r'[\w.:-]{1,160}', canonical): canonical = None
-        with self.connection() as conn:
-            conn.execute('UPDATE attempts SET state=?,http=?,receipt=?,canonical=?,updated=? WHERE id=? AND service=?',
-                         (state, status, json.dumps(safe), canonical, time.time(), attempt, self.service))
-
-    def plex_phase(self, category, code, state, plex_id='', persons=()):
-        with self.connection() as conn:
-            conn.execute('UPDATE attempts SET plex_state=?,updated=? WHERE service=? AND kind=\'item\' AND category=? AND code=?',
-                         (state, time.time(), self.service, category, code))
-            targets = [('item', category, code)] + [('person', domain, person) for domain, person in persons]
-            for kind, cat, target in targets:
-                conn.execute('INSERT OR REPLACE INTO plex_phases VALUES (?,?,?,?,?,?,?,?)',
-                             (self.service, self.node, plex_id, kind, cat, target, state, time.time()))
-
-    def review(self, attempt, context, token=None):
-        """A short-lived approval bound to the latest immutable request and fresh read context."""
-        digest = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
-        with self.connection() as conn:
-            row = conn.execute('SELECT * FROM attempts WHERE service=? AND id=?', (self.service, attempt)).fetchone()
-            if not row: raise FfWriteBlocked('not_found')
-            if row['node'] != self.node: raise FfWriteBlocked('review_on_original_node', attempt)
-            latest = conn.execute('SELECT id FROM attempts WHERE service=? AND kind=? AND category=? AND code=? ORDER BY created DESC LIMIT 1',
-                                  (self.service, row['kind'], row['category'], row['code'])).fetchone()
-            if latest['id'] != attempt: raise FfWriteBlocked('stale_review', attempt)
-            if token is None:
-                challenge = uuid.uuid4().hex
-                conn.execute('UPDATE attempts SET review_token=?,review_until=?,review_context=?,approved=NULL WHERE id=?',
-                             (hashlib.sha256(challenge.encode()).hexdigest(), time.time() + 120, digest, attempt))
-                conn.execute('INSERT INTO review_audit(attempt,action,at,context_digest) VALUES (?,?,?,?)',
-                             (attempt, 'reviewed', time.time(), digest))
-                return challenge
-            if (not row['review_token'] or row['review_token'] != hashlib.sha256(str(token).encode()).hexdigest() or
-                    row['review_until'] < time.time() or row['review_context'] != digest or row['approved']):
-                raise FfWriteBlocked('stale_review', attempt)
-            conn.execute('UPDATE attempts SET approved=? WHERE id=?', (time.time(), attempt))
-            conn.execute('INSERT INTO review_audit(attempt,action,at,context_digest) VALUES (?,?,?,?)',
-                         (attempt, 'approved', time.time(), digest))
-            return True
-
-
-def guarded_ff_write(config, endpoint, payload, transport, run_id=None, cancelled=None):
-    descriptor = ff_write_descriptor(endpoint, payload)
-    if descriptor is None: return transport()
-    if descriptor['kind'] == 'person' and endpoint != 'api/meta_db/person_image_sync' and (
-            descriptor['category'] == 'UNRESOLVED' or descriptor['code'].isdigit()):
-        # Legacy modal commands use numeric row IDs. Resolve their actual person target
-        # through the existing read API rather than mixing those IDs with person_idx.
-        domains = ('JAV', 'WESTERN') if descriptor['category'] == 'UNRESOLVED' else (descriptor['category'],)
-        matches = []
-        for domain in domains:
-            try:
-                person = ff_find_person(config, descriptor['code'], domain)
-                if (isinstance(person, dict) and person.get('domain') == domain and
-                        isinstance(person.get('person_idx'), str) and person['person_idx']):
-                    matches.append(person)
-            except FfWriteBlocked: pass
-        if len(matches) != 1: raise FfWriteBlocked('ambiguous_legacy_person')
-        descriptor['category'], descriptor['code'] = matches[0]['domain'], matches[0]['person_idx']
-    if descriptor['category'] == 'UNRESOLVED':
-        raise FfWriteBlocked('unresolved_target')
-    task = getattr(_FF_WRITE_CONTEXT, 'task', None)
-    if task:
-        cancelled = cancelled or task.is_cancelled
-        run_id = run_id or task.run_id
-    if cancelled and cancelled(): raise FfWriteBlocked('cancelled')
-    journal = FfWriteJournal(config)
-    tokens = payload.get('_pmh_review_tokens', [])
-    if task:
-        saved = task.load().get('task_data') or {}
-        # Cron must never consume a human's one-shot manual retry approval.
-        tokens = [] if saved.get('_is_cron') and not getattr(_FF_WRITE_CONTEXT, 'manual_request', False) else saved.get('_ff_review_tokens', [])
-    if not isinstance(tokens, list): tokens = []
-    attempt, reused = journal.claim(descriptor, run_id, tokens[:20])
-    if reused:
-        result = json.loads(attempt['receipt'] or '{}')
-        if descriptor['kind'] == 'person':
-            result['_pmh_reused_for'] = descriptor['code']
-        return attempt['http'], result
-    try:
-        if attempt.get('parent'):
-            journal.revalidate_retry(attempt)
-        else:
-            ff_require_writable(config, descriptor)
-    except FfWriteBlocked as exc:
-        journal.finish(attempt['id'], 'blocked_config', receipt={'error_code': exc.state})
-        raise FfWriteBlocked(exc.state, attempt['id']) from None
-    # Both commits must succeed before the transport can be invoked.
-    journal.finish(attempt['id'], 'sending')
-    try:
-        if cancelled and cancelled():
-            journal.finish(attempt['id'], 'needs_review')
-            raise FfWriteBlocked('cancelled', attempt['id'])
-        status, result = transport()
-    except FfWriteBlocked: raise
-    except Exception:
-        journal.finish(attempt['id'], 'unknown')
-        raise FfWriteBlocked('unknown', attempt['id']) from None
-    state = ff_outcome(status, result, descriptor)
-    journal.finish(attempt['id'], state, status, result)
-    if state not in journal.confirmed:
-        raise FfWriteBlocked(state, attempt['id'], status, ff_safe_summary(result, (config.get('mate_apikey'),)))
-    return status, result
 
 
 def cache_query_context(tool_id, values):
@@ -2270,14 +1817,13 @@ class CoreOptionsManager:
                 CoreOptionsManager._OPTIONS_MEMORY_CACHE.pop(self.task_key, None)
 
 
-def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, server_id="default", manual_request=False):
+def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, server_id="default"):
     threading.current_thread().name = f"Worker_{tool_id}_{server_id}"
     
     tool_lock = get_tool_lock(tool_id, server_id)
     
     failed = False
     _FF_WRITE_CONTEXT.task = core_api['task']
-    _FF_WRITE_CONTEXT.manual_request = manual_request
     try:
         if hasattr(module, 'worker'): 
             module.worker(task_data, core_api, start_progress)
@@ -2292,7 +1838,6 @@ def _core_worker_runner(module, task_data, core_api, start_progress, tool_id, se
         core_api['task'].update_state('error')
     finally:
         _FF_WRITE_CONTEXT.task = None
-        _FF_WRITE_CONTEXT.manual_request = False
         core_api['task'].finish(failed)
         try:
             tool_lock.release()
@@ -2518,6 +2063,15 @@ class UniversalPlexDatabaseEngine:
                 return self._run_sqlite_cli(query, params, is_select=True)
 
 
+    def query_plex(self, query, params=()):
+        """Plex 호환 SELECT를 명시적으로 SQLite CLI 읽기 전용 경로에서 실행합니다."""
+        if self.db_type != 'sqlite3':
+            raise NotImplementedError("'query_plex' API는 SQLite3에서만 사용할 수 있습니다.")
+        if not query.strip().upper().startswith('SELECT'):
+            raise ValueError("Security Error: 'query_plex' API는 SELECT 문만 허용합니다.")
+        return self._run_sqlite_cli(query, params, is_select=True)
+
+
     def execute(self, query, params=()):
         """UPDATE / INSERT / DELETE 전용 쓰기 인터페이스"""
         if self.db_type == "postgres":
@@ -2741,7 +2295,8 @@ def lookup_meta_db_cast(global_config, code, category):
             cursor.execute("SET LOCAL lock_timeout = '250ms'")
             cursor.execute("SELECT schema_version, migration_state FROM meta_schema_version WHERE schema_name = %s", ('meta_db',))
             status = cursor.fetchone()
-            if not status or status['schema_version'] != 1 or status['migration_state'] not in ('complete', 'backfilling'):
+            schema_ver = status['schema_version'] if status else None
+            if not status or not isinstance(schema_ver, int) or schema_ver < 1 or status['migration_state'] not in ('complete', 'backfilling'):
                 return dict(unavailable, reason='schema_not_ready'), 200
             cursor.execute("""
                 SELECT p.person_idx AS actor_idx, p.name_ko, p.name_org, p.name_en
@@ -2773,6 +2328,7 @@ def create_db_api(global_config_or_path, sqlite_bin=None):
 
     return {
         "query": engine.query,
+        "query_plex": engine.query_plex,
         "execute": engine.execute,
         "engine": engine
     }
@@ -2853,62 +2409,65 @@ def end_maintenance():
         _RUNTIME['maintenance'] = False
 
 
-# Shared AV sidecar discovery and semantic comparison (also used by AV Manager).
-def find_local_meta_json(dir_name, base_name, raw_pid=None, files_in_dir=None, cfg=None, compiled_rules=None):
-    """DB 품번(1MOON-009), 숫자 접두사 제거(moon-009), 파일명 추출 품번을 순차 대조하여 로컬 JSON 탐색"""
-    candidates = []
+# Local JSON read errors and filename lookup.
+class JsonSidecarError(ValueError):
+    def __init__(self, status, message, **details):
+        super().__init__(message)
+        self.status = status
+        self.details = details
 
-    # DB 제목 내 품번 원본 (예: 1moon-009.json)
-    if raw_pid:
-        p_clean = str(raw_pid).strip().lower()
-        candidates.append(f"{p_clean}.json")
 
-        # 라벨 분류용 숫자 접두사 제거 폴백 (예: 1MOON-009 -> moon-009.json, 298GOOD-026 -> good-026.json)
-        stripped_pid = re.sub(r'^\d+', '', p_clean)
-        if stripped_pid and stripped_pid != p_clean:
-            candidates.append(f"{stripped_pid}.json")
+def get_sjva_filename_json(config):
+    """Read the existing SJVA preference beside the configured Plex database."""
+    from xml.etree import ElementTree
+    db_path = config.get('plex_db_path')
+    if not db_path: return ''  # SJVA DefaultPrefs.json defaults to info.json.
+    path = os.path.join(os.path.dirname(os.path.dirname(db_path)), 'Preferences',
+                        'com.plexapp.agents.sjva_agent.xml')
+    if not os.path.exists(path): return ''
+    try:
+        return ElementTree.parse(path).getroot().findtext('filename_json') or ''
+    except (OSError, ElementTree.ParseError) as exc:
+        raise JsonSidecarError('io_error', 'SJVA filename_json 설정 읽기 실패', preferences_path=path) from exc
 
-    # 실제 비디오 파일명에서 정규식으로 추출한 품번 (예: 파일명이 [M-Team] moon-009-C 1080p.mp4 인 경우 moon-009.json)
-    if base_name:
-        if cfg and compiled_rules:
-            try:
-                f_pids = extract_jav_pid(base_name, cfg, compiled_rules)
-                for f_l, f_n in f_pids:
-                    candidates.append(f"{f_l.lower()}-{f_n.lower()}.json")
-                    candidates.append(f"{f_l.lower()}{f_n.lower()}.json")
-            except Exception: pass
 
-        # 파일명 자체 (예: moon-009.json)
-        b_clean = base_name.lower().strip()
-        candidates.append(f"{b_clean}.json")
+def find_local_meta_json(dir_name, base_name, raw_pid=None, files_in_dir=None, cfg=None,
+                         compiled_rules=None, *, category=None, code=None, guid=None,
+                         title=None, ui_code=None):
+    """Look up a sidecar by video filename in an existing directory listing."""
+    category = category or extract_sjva_code_and_cat(guid or code)[1]
+    names = files_in_dir if files_in_dir is not None else os.listdir(dir_name)
+    if isinstance(names, dict): names = names.values()
+    if category in ('JAV_CEN', 'JAV_UNCEN'):
+        token = base_name.split(' ', 1)[0]
+        if len(token) >= 3 and token[-3:-1] == 'cd':
+            token = token[:-3].strip(' .-')
+        candidates = [os.path.join(dir_name, token + '.json')]
+        found = next((os.path.join(dir_name, name) for name in names
+                      if name.casefold() == (token + '.json').casefold()), None)
+    elif category == 'WESTERN':
+        key = lambda value: re.sub(r'(?i)(?:\s+CD[0-9]+$|(?<!\w)CD[0-9]+(?!\w)\s?)', '', value).casefold()
+        found = next((os.path.join(dir_name, name) for name in names
+                      if os.path.splitext(name)[1].lower() == '.json'
+                      and key(os.path.splitext(name)[0]) == key(base_name)), None)
+        candidates = [found or os.path.join(dir_name, base_name + '.json')]
+    else:
+        candidates = [os.path.join(dir_name, 'info.json'), os.path.join(dir_name, base_name + '.json')]
+        found = next((os.path.join(dir_name, name) for candidate in candidates for name in names
+                      if name.casefold() == os.path.basename(candidate).casefold()), None)
+    return found, candidates
 
-    # 중복 제거 (우선순위 순서 보존)
-    seen = set()
-    unique_candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
-
-    # 디렉터리 파일 캐시(files_in_dir)가 제공된 경우 O(1) 메모리 검색
-    if files_in_dir is not None:
-        for c_name in unique_candidates:
-            if c_name in files_in_dir:
-                actual = files_in_dir[c_name] if isinstance(files_in_dir, dict) else c_name
-                return os.path.join(dir_name, actual), [os.path.join(dir_name, c) for c in unique_candidates]
-        return None, [os.path.join(dir_name, c) for c in unique_candidates]
-
-    # 디스크 실존 검사 (os.path.exists)
-    for c_name in unique_candidates:
-        target_path = os.path.join(dir_name, c_name)
-        if os.path.exists(target_path):
-            return target_path, [os.path.join(dir_name, c) for c in unique_candidates]
-
-    return None, [os.path.join(dir_name, c) for c in unique_candidates]
 
 def extract_sjva_code_and_cat(guid):
     if not guid: return None, None
     s = str(guid).strip()
-    if '://' in s: s = s.split('://', 1)[1]
+    if '://' in s:
+        scheme, s = s.split('://', 1)
+        if scheme.lower() not in ('com.plexapp.agents.sjva_agent', 'sjva_agent'):
+            return None, None
     if '?' in s: s = s.split('?', 1)[0]
     s = s.strip()
-    if not s or s == '-' or s.startswith('local') or s.startswith('none'):
+    if not re.fullmatch(r'[CEWcew][A-Za-z0-9_.-]+', s):
         return None, None
     prefix = s[0].upper()
     if prefix == 'C': return s, 'JAV_CEN'
@@ -3034,7 +2593,8 @@ def validate_ff_entity(entity, code, category, error_class=ValueError):
     if str(entity.get('code') or '') != str(code) or entity.get('category') != category:
         raise error_class(f'FF 응답 작품 식별자가 Plex GUID와 다릅니다: {code} ({category})')
     schema = entity.get('schema') or {}
-    if schema.get('db_schema_version') != 1 or schema.get('json_format_version') != 1:
+    db_version = schema.get('db_schema_version')
+    if not isinstance(db_version, int) or db_version < 1 or schema.get('json_format_version') != 1:
         raise error_class('FF 메타 DB 스키마/JSON 버전이 지원 범위와 다릅니다.')
     return entity
 
@@ -3101,29 +2661,31 @@ def compare_item_meta_json(config, item_id, db_engine=None):
         if not code or not category:
             raise ValueError('AV GUID unavailable')
         result.update(code=code, category=category)
-        video = find_best_video_file([row['file'] for row in rows if row.get('file') and
-                                     str(row['file']).strip().lower() != 'unknown path'])
-        directory, filename = os.path.split(video)
-        if not video or not directory:
-            raise ValueError('media directory unavailable')
-        # Listing must succeed: an inaccessible mount is not a missing sidecar.
-        files = {name.lower(): name for name in os.listdir(directory)}
-        stem = os.path.splitext(filename)[0]
-        title_pid = re.match(r'^\[([A-Za-z0-9\-_]+)\]', str(rows[0]['title'] or '').strip())
-        path, candidates = find_local_meta_json(directory, stem,
-            raw_pid=title_pid.group(1) if title_pid else '', files_in_dir=files,
-            cfg=config, compiled_rules=compile_jav_rules(config))
-        # Same manual sidecar precedence used by AV Manager's FF apply path.
-        yaml_stems = {os.path.splitext(os.path.basename(candidate))[0] for candidate in candidates} | {'movie'}
-        if any(f'{name}.{ext}' in files for name in yaml_stems for ext in ('yaml', 'yml')):
-            return dict(result, status='manual_yaml'), 200
-        if not path:
+        paths = []
+        listings = {}
+        videos = list(dict.fromkeys(row['file'] for row in rows if row.get('file') and
+                                   str(row['file']).strip().lower() != 'unknown path'))
+        for video in videos if category == 'WESTERN' else videos[:1]:
+            directory = os.path.dirname(video)
+            if directory not in listings: listings[directory] = os.listdir(directory)
+            stem = os.path.splitext(os.path.basename(video))[0]
+            if category == 'WESTERN':
+                key = lambda value: re.sub(r'(?i)(?:\s+CD[0-9]+$|(?<!\w)CD[0-9]+(?!\w)\s?)', '', value).casefold()
+                paths.extend(os.path.join(directory, name) for name in listings[directory]
+                             if os.path.splitext(name)[1].lower() == '.json'
+                             and key(os.path.splitext(name)[0]) == key(stem))
+            else:
+                path, _ = find_local_meta_json(directory, stem, files_in_dir=listings[directory], category=category)
+                if path: paths.append(path)
+        if not paths:
             return dict(result, status='missing_json'), 200
-        try:
-            with open(path, 'r', encoding='utf-8') as stream:
-                local = json.load(stream)
-        except (OSError, ValueError, UnicodeError):
-            return dict(result, status='invalid_json'), 200
+        local_values = []
+        for path in dict.fromkeys(paths):
+            try:
+                with open(path, 'r', encoding='utf-8') as stream:
+                    local_values.append(json.load(stream))
+            except (ValueError, UnicodeError):
+                return dict(result, status='invalid_json'), 200
 
         def comparable(entity):
             return (isinstance(entity, dict) and
@@ -3131,15 +2693,23 @@ def compare_item_meta_json(config, item_id, db_engine=None):
                     for key in ('actor', 'thumb', 'fanart', 'extras', 'media', 'genre', 'tag')) and
                 (entity.get('extra_info') is None or isinstance(entity['extra_info'], dict)))
 
-        if not comparable(local):
+        if not all(comparable(local) for local in local_values):
             return dict(result, status='invalid_json'), 200
-        entity = fetch_ff_meta_batch(config, category, [code]).get(code)
-        if not comparable(entity):
+        ff_entities = fetch_ff_meta_batch(config, category, [code])
+        entity = ff_entities.get(code)
+        if code in ff_entities and not comparable(entity):
             raise ValueError('FF entity unavailable')
         # A GUID/path change during the read cannot verify the originally selected movie.
         if engine.query(query, (int(item_id),)) != rows:
             raise ValueError('Plex identity changed')
-        differences = list(dict.fromkeys(re.sub(r' 갱신$', '', reason) for reason in detect_meta_diff(local, entity)))
+        if code not in ff_entities:
+            return dict(result, status='mismatch', differences=['FF DB 원본 없음']), 200
+        differences = list(dict.fromkeys(re.sub(r' 갱신$', '', reason)
+            for local in local_values for reason in detect_meta_diff(local, entity)))
+        for local in local_values:
+            for key, label in (('code', '작품 코드'), ('category', '카테고리')):
+                if local.get(key) != entity.get(key) and label not in differences:
+                    differences.append(label)
         return dict(result, status='mismatch' if differences else 'match', differences=differences), 200
     except Exception:
         # Never return sidecar paths, FF bodies/keys, or transport exception text.
@@ -3180,29 +2750,7 @@ def _dispatch_request(subpath, method, args, data, global_config):
     db_engine = UniversalPlexDatabaseEngine(global_config)
 
     try:
-        if subpath == 'ff_write_journal' and method == 'GET':
-            return {'ret': 'success', 'data': FfWriteJournal(global_config).records(args.get('attempt_id'), unresolved_first=True)}, 200
-
-        elif subpath in ('ff_write_journal/review', 'ff_write_journal/approve') and method == 'POST':
-            journal = FfWriteJournal(global_config)
-            rows = journal.records((data or {}).get('attempt_id'))
-            if not rows or not (data or {}).get('attempt_id'):
-                return {'ret': 'error', 'msg': '원장 시도를 찾을 수 없습니다.'}, 404
-            row = rows[0]
-            try:
-                context = ff_review_context(global_config, row, db_engine)
-                if subpath.endswith('/review'):
-                    token = journal.review(row['id'], context)
-                    return {'ret': 'success', 'token': token, 'attempt': row, 'context': context,
-                            'msg': '현재 참조 조회는 이전 요청의 반영 증명이 아닙니다. 승인 후 동일한 작업을 직접 다시 실행하세요.'}, 200
-                if data.get('confirmed') is not True or data.get('fingerprint') != row['fingerprint']:
-                    raise FfWriteBlocked('explicit_confirmation_required', row['id'])
-                journal.review(row['id'], context, data.get('token') or '')
-                return {'ret': 'success', 'msg': '동일 대상·옵션의 다음 수동 실행 1회를 승인했습니다.'}, 200
-            except FfWriteBlocked as exc:
-                return {'ret': 'error', 'error_code': exc.state, 'msg': str(exc)}, 409
-
-        elif subpath == 'ping' and method == 'GET':
+        if subpath == 'ping' and method == 'GET':
             machine_id = global_config.get("machine_id", "")
             ignore_res = global_config.get("IGNORE_RES_SECTION", "")
             av_img_use = bool(global_config.get("AV_IMAGE_SERVER_USE", False))
@@ -3471,7 +3019,7 @@ def _dispatch_request(subpath, method, args, data, global_config):
             
             sub_endpoint = subpath.replace('ff_metadata/', '', 1)
             try:
-                ff_route_kind(sub_endpoint, method, data if method == 'POST' else args)
+                route_kind = ff_route_kind(sub_endpoint, method, data if method == 'POST' else args)
                 # FF form/value handlers may prefer query values to the guarded body.
                 # Normal PMH POSTs use body fields; only PMH auth query fields coexist.
                 if method == 'POST' and set(args) - {'apikey', 'sig', '_sig'}:
@@ -3510,34 +3058,49 @@ def _dispatch_request(subpath, method, args, data, global_config):
             
             logger.info('[FF Relay] %s request', method)
 
-            ff_reply = None
-            def transport():
-                nonlocal ff_reply
+            def clean_error(value):
+                if isinstance(value, dict):
+                    return {k: ('****' if re.search(r'(?i)apikey|api_key|token|password|authorization|cookie|signature', str(k))
+                                else clean_error(v)) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [clean_error(v) for v in value]
+                if isinstance(value, str):
+                    for secret in (ff_apikey, global_config.get('plex_token')):
+                        if secret: value = value.replace(str(secret), '****')
+                    value = re.sub(r'https?://[^\s<>]+', '[FF URL]', value)
+                    return re.sub(r'(?i)(apikey|api_key|token|password|authorization|cookie|signature)\s*[:=]\s*\S+', '[redacted]', value)
+                return value
+
+            task = getattr(_FF_WRITE_CONTEXT, 'task', None)
+            if route_kind == 'write' and task and task.is_cancelled():
+                return {'ret': 'error', 'error_code': 'cancelled', 'msg': 'FF 요청이 취소되었습니다.'}, 409
+            try:
                 req = Request(target_url, data=req_data, headers=headers, method=method)
                 ff_timeout = 300 if ('make_preview_clip' in str(req_data) or 'preview' in sub_endpoint) else 180
                 try:
                     with urlopen(req, timeout=ff_timeout) as response:
-                        ff_reply = response.status, json.loads(response.read().decode('utf-8'))
+                        status, result = response.status, json.loads(response.read().decode('utf-8'))
                 except HTTPError as exc:
-                    try: ff_reply = exc.code, json.loads(exc.read(1024 * 1024).decode('utf-8'))
-                    finally: exc.close()
-                return ff_reply
-            try:
-                if method == 'POST':
-                    status, result = guarded_ff_write(global_config, sub_endpoint, data, transport)
-                else:
-                    status, result = transport()
+                    try:
+                        status = exc.code
+                        try:
+                            result = json.loads(exc.read(1024 * 1024).decode('utf-8'))
+                        except (ValueError, UnicodeError):
+                            result = {'ret': 'error', 'error_code': 'ff_response_parse_failed',
+                                      'msg': f'FF 응답 파싱 실패 (HTTP {status}). 최종 원격 반영 여부를 알 수 없습니다.'}
+                    finally:
+                        exc.close()
+                if not isinstance(result, dict):
+                    raise ValueError('Invalid FF response shape')
+                if status != 200 or result.get('ret') != 'success':
+                    result = clean_error(result)
                 return result, status
-            except FfWriteBlocked as exc:
-                if ff_reply and isinstance(ff_reply[1], dict):
-                    # Preserve this attempt's FF receipt without accepting or retrying the guarded write.
-                    return dict(ff_reply[1], _pmh_ff_receipt=True,
-                                _pmh_ff_http_status=ff_reply[0],
-                                _pmh_write_state=exc.state, attempt_id=exc.attempt_id), 409
-                return {'ret': 'error', 'error_code': exc.state, 'attempt_id': exc.attempt_id,
-                        'msg': str(exc)}, 409
+            except (ValueError, UnicodeError):
+                return {'ret': 'error', 'error_code': 'ff_response_parse_failed',
+                        'msg': 'FF 응답 파싱 실패. 최종 원격 반영 여부를 알 수 없습니다.'}, 502
             except Exception:
-                return {'ret': 'error', 'msg': 'FF 통신 또는 원장 저장 실패. 원격 쓰기 원장을 확인하세요.'}, 502
+                return {'ret': 'error', 'error_code': 'ff_communication_failed',
+                        'msg': 'FF 통신 실패. 최종 원격 반영 여부를 알 수 없습니다.'}, 502
 
         elif subpath == 'tools' and method == 'GET':
             installed_tools = get_installed_tools(tools_dir)
@@ -3711,6 +3274,7 @@ def _dispatch_request(subpath, method, args, data, global_config):
 
             core_api = {
                 "query": db_api["query"],
+                "query_plex": db_api["query_plex"],
                 "execute": db_api["execute"],
                 "get_plex": get_plex_instance,
                 "task": task_mgr,
@@ -3827,10 +3391,7 @@ def _dispatch_request(subpath, method, args, data, global_config):
                             if k in allowed_resume_options and not k.startswith(('_', 'tmp_')) and k not in (
                                     'run_id', 'server_id', 'node_id', 'action_type', 'target_items', 'total'):
                                 saved_task['task_data'][k] = v
-                        # One-shot approval is intentionally supplied by the current manual request only.
-                        saved_task['task_data'].pop('_ff_review_tokens', None)
-                        if isinstance(data.get('_ff_review_tokens'), list):
-                            saved_task['task_data']['_ff_review_tokens'] = data['_ff_review_tokens'][:20]
+
 
 
                         try:
@@ -3841,7 +3402,6 @@ def _dispatch_request(subpath, method, args, data, global_config):
                             target_thread_name = f"Worker_{tool_id}_{server_id}"
                             t = threading.Thread(target=_core_worker_runner,
                                                  args=(module, saved_task['task_data'], core_api, saved_task.get('progress', 0), tool_id, server_id),
-                                                 kwargs={'manual_request': True},
                                                  name=target_thread_name)
                             t.daemon = True
                             t.start()
@@ -3879,7 +3439,11 @@ def _dispatch_request(subpath, method, args, data, global_config):
                         return cached, 200
 
                     elif action_type == 'save_options':
+                        if '_form_collapsed' in data and type(data['_form_collapsed']) is not bool:
+                            return {'status': 'error', 'message': '_form_collapsed must be a boolean'}, 400
                         updates = {k: v for k, v in data.items() if k not in ['action_type', 'run_id', 'server_id', 'node_id'] and not str(k).startswith(('_', 'tmp_'))}
+                        if '_form_collapsed' in data:
+                            updates['_form_collapsed'] = data['_form_collapsed']
                         current_opts = options_mgr.update(updates)
                         core_api['options'] = current_opts
 
@@ -3915,7 +3479,6 @@ def _dispatch_request(subpath, method, args, data, global_config):
                                 target_thread_name = f"Worker_{tool_id}_{server_id}"
                                 t = threading.Thread(target=_core_worker_runner,
                                                      args=(module, task_data, core_api, 0, tool_id, server_id),
-                                                     kwargs={'manual_request': True},
                                                      name=target_thread_name)
                                 t.daemon = True
                                 t.start()
@@ -4468,7 +4031,8 @@ def perform_smart_media_action(
     try_refresh_first=False, do_unmatch_first=False, skip_sim_check=False,
     use_custom_score=False, custom_agent_score=80, search_priority='auto',
     manual_match=False,
-    global_config=None, task_logger=None, cancel_checker=None
+    global_config=None, task_logger=None, cancel_checker=None, meta_json_entity=None,
+    require_json_cleanup=False
 ):
     if global_config is None: global_config = {}
     safe_item_title = str(item_title or '')
@@ -4497,6 +4061,14 @@ def perform_smart_media_action(
             if task_logger: task_logger(f"💡 하위 항목 감지됨. 최상위 쇼({target_item.title}) 기준으로 '{action_type}' 수행.")
         except Exception as e:
             if task_logger: task_logger(f"⚠️ 최상위 객체를 찾지 못했습니다. 기존 객체로 진행합니다: {e}")
+
+    if require_json_cleanup and meta_json_entity is not None:
+        try:
+            code, category = extract_sjva_code_and_cat(getattr(target_item, 'guid', None))
+            validate_ff_entity(meta_json_entity, code, category)
+        except ValueError as exc:
+            if task_logger: task_logger(f'❌ JSON 갱신 대상 확인 실패 · id={rating_key} · {exc}')
+            return False, str(exc), 0
 
     # ==========================================================================
     # [모드 0] YAML/TMDB 반영 (Plex Mate 연동: VFS 갱신 -> Manual Refresh)
@@ -4713,37 +4285,69 @@ def perform_smart_media_action(
         try:
             # --- 5. 언매치(Unmatch) 진행 ---
             if do_unmatch_first:
-                try:
-                    delete_section_cfg = str(global_config.get("DELETE_JSON_SECTION", "")).strip().lower()
-                    current_section_id = getattr(target_item, 'librarySectionID', None)
-                    is_delete_allowed = match_section_ids(global_config.get("DELETE_JSON_SECTION"), current_section_id)
-
-                    # YAML 또는 NFO 섹션은 로컬 메타데이터 보호를 위해 삭제 루틴 건너뜀
-                    if not is_delete_allowed or is_yaml_agent or is_nfo_agent:
-                        if task_logger and not is_delete_allowed: task_logger(f"💡 현재 섹션(ID: {current_section_id})은 JSON 삭제 미허용")
-                    else:
-                        files_to_delete = []
-                        video_dir = os.path.dirname(raw_file_path)
-
-                        if is_jav:
-                            files_to_delete.append(os.path.join(video_dir, f"{extracted_label}-{extracted_num}.json"))
-                            files_to_delete.append(os.path.join(video_dir, f"{extracted_label}{extracted_num}.json"))
-                        elif is_western_av or is_custom_agent:
-                            if raw_file_name:
-                                name_no_ext = os.path.splitext(raw_file_name)[0]
-                                files_to_delete.append(os.path.join(video_dir, f"{name_no_ext}.json"))
-                        elif target_item.type == 'movie':
-                            files_to_delete.append(os.path.join(video_dir, "info.json"))
-                        elif target_item.type == 'show':
-                            show_dir = target_item.locations[0] if hasattr(target_item, 'locations') and target_item.locations else os.path.dirname(os.path.dirname(raw_file_path))
-                            if show_dir: files_to_delete.append(os.path.join(show_dir, "info.json"))
-
-                        for fpath in set(files_to_delete):
-                            if os.path.exists(fpath):
-                                try: os.remove(fpath)
-                                except Exception: pass
-                except Exception as e:
-                    logger.warning(f"[Core] 파일 삭제 중 오류: {e}")
+                current_section_id = getattr(target_item, 'librarySectionID', None)
+                is_delete_allowed = match_section_ids(global_config.get('DELETE_JSON_SECTION'), current_section_id)
+                if is_yaml_agent or is_nfo_agent:
+                    if task_logger: task_logger('JSON 보호 · 삭제 미허용 섹션/수동 에이전트')
+                    if require_json_cleanup:
+                        return False, 'JSON 정리 중단 · 수동 메타 에이전트는 JSON 갱신 대상이 아닙니다.', 0
+                elif is_delete_allowed or require_json_cleanup:
+                    deleted = 0
+                    try:
+                        if target_item.type == 'show':
+                            media_paths = list(getattr(target_item, 'locations', []) or
+                                [os.path.dirname(os.path.dirname(raw_file_path))])
+                        else:
+                            media_paths = [part.file for media in getattr(target_item, 'media', [])
+                                for part in media.parts if getattr(part, 'file', None)] or [raw_file_path]
+                        category = (meta_json_entity or {}).get('category') or extract_sjva_code_and_cat(target_item.guid)[1]
+                        if not category and target_item.type == 'movie':
+                            agent_name = (target_agent or '').lower()
+                            category = ('WESTERN' if 'western' in agent_name else
+                                'JAV_UNCEN' if 'jav_uncensored' in agent_name else
+                                'JAV_CEN' if 'jav_censored' in agent_name else None)
+                            if not category and not is_plex_agent:
+                                category = 'WESTERN' if is_western_av else 'JAV_CEN' if is_jav_allowed else None
+                        json_paths = []
+                        listings = {}
+                        for video in media_paths[:1] if category in ('JAV_CEN', 'JAV_UNCEN') else media_paths:
+                            directory = video if target_item.type == 'show' else os.path.dirname(video)
+                            stem = os.path.splitext(os.path.basename(video))[0]
+                            if category in ('JAV_CEN', 'JAV_UNCEN'):
+                                token = stem.split(' ', 1)[0]
+                                if len(token) >= 3 and token[-3:-1] == 'cd':
+                                    token = token[:-3].strip(' .-')
+                                if directory not in listings: listings[directory] = os.listdir(directory)
+                                name = token + '.json'
+                                if name not in listings[directory]:
+                                    name = next((entry for entry in listings[directory]
+                                        if entry.casefold() == name.casefold()), name)
+                                json_paths.append(os.path.join(directory, name))
+                            elif category == 'WESTERN':
+                                key = lambda value: re.sub(r'(?i)(?:\s+CD[0-9]+$|(?<!\w)CD[0-9]+(?!\w)\s?)', '', value).casefold()
+                                if directory not in listings: listings[directory] = os.listdir(directory)
+                                json_paths.extend(os.path.join(directory, name) for name in listings[directory]
+                                    if os.path.splitext(name)[1].lower() == '.json'
+                                    and key(os.path.splitext(name)[0]) == key(stem))
+                            else:
+                                name = stem if is_custom_agent and target_item.type != 'show' else 'info'
+                                json_paths.append(os.path.join(directory, name + '.json'))
+                        for path in dict.fromkeys(json_paths):
+                            if cancel_checker and cancel_checker(): return False, '작업 취소됨', 0
+                            if not os.path.exists(path): continue
+                            if not is_delete_allowed:
+                                raise OSError('JSON 삭제 미허용 섹션이므로 기존 파일을 정리할 수 없습니다.')
+                            if task_logger: task_logger(f'JSON 정리 대상 · id={rating_key} · {path}')
+                            os.remove(path)
+                            deleted += 1
+                        if task_logger:
+                            task_logger(f'JSON 정리 · {deleted}개 삭제 (이후 에이전트가 재생성할 수 있음)' if deleted else '삭제할 JSON 없음')
+                    except OSError as exc:
+                        message = f'JSON 정리 중단 · id={rating_key} · 영상={raw_file_path} · 삭제 {deleted}개 · {exc}'
+                        if task_logger: task_logger(f'❌ {message}')
+                        return False, message, 0
+                elif task_logger:
+                    task_logger('JSON 보호 · 삭제 미허용 섹션/수동 에이전트')
 
                 temp_guid = (target_item.guid or '').lower()
                 if not temp_guid or 'local://' in temp_guid or 'none://' in temp_guid or temp_guid == '-':

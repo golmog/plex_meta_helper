@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex Meta Helper
 // @namespace    https://tampermonkey.net/
-// @version      0.9.135
+// @version      0.9.136
 // @description  Plex Web UI 관리 기능 개선 스크립트(Frontend)
 // @author       golmog
 // @supportURL   https://github.com/golmog/plex_meta_helper/issues
@@ -249,34 +249,60 @@ GM_addStyle(`
     .pmh-db-badge-del { color: #bd362f; margin-left: 4px; cursor: pointer; }
     .pmh-db-badge-del:hover { color: #ff6b6b; }
 
-    /* 공용 프롬프트: 기존 DB 모달 레이아웃과 조합하며 종류별 폭은 --pmh-prompt-width로 지정한다. */
+    /* 공용 프롬프트: 제목, 대상, 상세와 주의사항을 같은 시각 계층으로 표시한다. */
     .pmh-prompt .pmh-prompt-card { width:var(--pmh-prompt-width,760px); max-width:94vw; max-height:88vh; }
-    .pmh-prompt .pmh-prompt-header { cursor:default; border-bottom-color:rgba(229,160,13,.35); gap:12px; }
-    .pmh-prompt .pmh-prompt-heading { display:flex; align-items:center; gap:10px; color:#e5a00d; font-size:15px; }
-    .pmh-prompt .pmh-prompt-heading > i { padding:9px; border:1px solid rgba(229,160,13,.3); border-radius:6px; background:rgba(229,160,13,.1); }
-    .pmh-prompt .pmh-prompt-subtitle { color:#999; font-size:11px; font-weight:normal; margin-top:3px; }
+    .pmh-prompt .pmh-prompt-header { cursor:default; border-bottom-color:rgba(229,160,13,.35); gap:12px; padding:15px 18px; }
+    .pmh-prompt .pmh-prompt-heading { display:flex; align-items:center; gap:12px; color:#e5a00d; font-size:16px; font-weight:700; line-height:1.4; min-width:0; }
+    .pmh-prompt .pmh-prompt-heading > i, .pmh-prompt .pmh-prompt-heading > [data-icon] { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:36px; height:36px; box-sizing:border-box; border:1px solid rgba(229,160,13,.3); border-radius:8px; background:rgba(229,160,13,.1); }
+    .pmh-prompt .pmh-prompt-heading > div { min-width:0; overflow-wrap:anywhere; }
+    .pmh-prompt .pmh-prompt-subtitle { color:#a1a8b0; font-size:12px; font-weight:400; line-height:1.5; margin-top:4px; }
+    .pmh-prompt .pmh-db-body { overflow:auto; min-height:0; overflow-wrap:anywhere; }
     .pmh-prompt .pmh-prompt-status { margin:0 0 12px; padding:9px 12px; border-left:3px solid #e5a00d; background:rgba(229,160,13,.08); border-radius:0 4px 4px 0; color:#f0ca7c; font-weight:600; }
-    .pmh-prompt .pmh-prompt-summary { color:#eee; font-size:14px; font-weight:600; line-height:1.6; }
-    .pmh-prompt .pmh-prompt-notice { margin:14px 0; padding:10px 12px; background:#1a1d21; border:1px solid #343a40; border-radius:5px; color:#aeb5bd; font-size:12px; line-height:1.8; }
-    .pmh-prompt .pmh-prompt-notice strong { color:#ddd; }
+    .pmh-prompt .pmh-prompt-summary { color:#fff; font-size:14px; font-weight:700; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; padding:12px 14px; margin-bottom:14px; border-left:3px solid #e5a00d; border-radius:0 5px 5px 0; background:rgba(255,255,255,.04); }
+    .pmh-prompt .pmh-prompt-summary:empty, .pmh-prompt .pmh-prompt-notice:empty, .pmh-prompt .pmh-prompt-details:empty { display:none; }
+    .pmh-prompt .pmh-prompt-details { display:grid; grid-template-columns:minmax(75px,auto) minmax(0,1fr); margin:0; font-size:12px; line-height:1.65; }
+    .pmh-prompt .pmh-prompt-details dt, .pmh-prompt .pmh-prompt-details dd { padding:9px 0; border-bottom:1px solid rgba(255,255,255,.08); white-space:pre-wrap; overflow-wrap:anywhere; }
+    .pmh-prompt .pmh-prompt-details dt { color:#9ba5b0; padding-right:16px; }
+    .pmh-prompt .pmh-prompt-details dd { margin:0; color:#edf0f4; }
+    .pmh-prompt .pmh-prompt-notice { margin:14px 0 0; color:#b6bec8; font-size:12px; line-height:1.75; overflow-wrap:anywhere; }
+    .pmh-prompt .pmh-prompt-notice strong { color:#eee; }
+    .pmh-prompt .pmh-prompt-consequences { margin:0; padding-left:18px; }
+    .pmh-prompt .pmh-prompt-consequences li { padding-left:3px; margin:6px 0; white-space:pre-wrap; }
+    .pmh-prompt[data-severity="warning"] .pmh-prompt-consequences { color:#e3bc78; }
+    .pmh-prompt[data-severity="danger"] .pmh-prompt-heading, .pmh-prompt.pmh-delete-prompt .pmh-prompt-heading { color:#ff8585; }
+    .pmh-prompt[data-severity="danger"] .pmh-prompt-heading > [data-icon], .pmh-prompt.pmh-delete-prompt .pmh-prompt-heading > [data-icon] { border-color:rgba(255,133,133,.35); background:rgba(189,54,47,.12); }
     .pmh-prompt .pmh-prompt-info { color:#6bbcd0; }
     .pmh-prompt .pmh-prompt-error { color:#ff8585; white-space:pre-wrap; }
     .pmh-prompt .pmh-prompt-error:not(:empty) { padding:10px 12px; margin-bottom:12px; border:1px solid rgba(219,90,90,.4); border-radius:5px; background:rgba(189,54,47,.12); }
     .pmh-prompt .pmh-prompt-badge { display:inline-flex; padding:2px 7px; border:1px solid rgba(255,255,255,.2); border-radius:4px; color:#e0e6ed; background:rgba(0,0,0,.55); font-size:11px; font-weight:600; }
     .pmh-prompt .pmh-prompt-footer { justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+    .pmh-prompt .pmh-prompt-footer button { max-width:100%; white-space:normal !important; }
+    .pmh-prompt .pmh-prompt-button-confirm { color:#f6cd7b !important; border-color:#a87821 !important; background:rgba(229,160,13,.14) !important; font-weight:600 !important; }
+    .pmh-prompt .pmh-prompt-button-confirm:enabled:hover { background:rgba(229,160,13,.26) !important; }
     .pmh-prompt .pmh-prompt-button-warning { color:#e5a00d !important; border-color:#87621e !important; background:rgba(229,160,13,.1) !important; }
     .pmh-prompt .pmh-prompt-button-warning:enabled:hover { background:rgba(229,160,13,.22) !important; }
     .pmh-prompt .pmh-prompt-button-danger { color:#fff !important; border-color:#bd4545 !important; background:#a83737 !important; font-weight:600 !important; }
     .pmh-prompt .pmh-prompt-button-danger:enabled:hover { background:#c54646 !important; }
     .pmh-prompt button:disabled { opacity:.4; cursor:not-allowed !important; }
     .pmh-prompt button:focus-visible { outline:2px solid #e5a00d; outline-offset:3px; }
-    .pmh-action-prompt { overscroll-behavior:contain; }
-    .pmh-action-prompt .pmh-prompt-card { --pmh-prompt-width:580px; }
-    .pmh-action-prompt .pmh-db-body { overflow:auto; min-height:0; white-space:pre-wrap; overflow-wrap:anywhere; }
-    .pmh-action-prompt dl { display:grid; grid-template-columns:minmax(75px,auto) 1fr; gap:8px 14px; font-size:12px; }
-    .pmh-action-prompt dt { color:#999; }
-    .pmh-action-prompt dd { margin:0; color:#eee; }
-    .pmh-action-prompt[data-severity="danger"] .pmh-prompt-heading { color:#ff8585; }
+    .pmh-prompt.pmh-action-prompt { overscroll-behavior:contain; }
+    .pmh-prompt.pmh-action-prompt .pmh-prompt-card { --pmh-prompt-width:580px; }
+
+    .pmh-person-manage-wrapper { position:relative; max-width:100%; }
+    .pmh-person-manage-menu { display:none; position:absolute; bottom:calc(100% + 6px); left:0; width:max-content; min-width:max-content; max-width:calc(94vw - 40px); max-height:40vh; overflow:auto; padding:4px; background:#1a1d21; border:1px solid #444; border-radius:5px; box-shadow:0 6px 18px rgba(0,0,0,.7); z-index:25; }
+    .pmh-person-manage-menu .pmh-person-manage-item { display:flex; align-items:center; gap:8px; width:100%; box-sizing:border-box; padding:9px 12px; border:0; background:transparent; color:#ddd; text-align:left; white-space:nowrap; cursor:pointer; }
+    .pmh-person-manage-menu .pmh-person-manage-item i, .pmh-person-manage-menu .pmh-person-manage-item svg { width:14px; color:#e5a00d; font-size:12px; }
+    .pmh-person-manage-menu .pmh-person-manage-item:enabled:hover, .pmh-person-manage-menu .pmh-person-manage-item:focus-visible { background:rgba(229,160,13,.12); color:#fff; outline:1px solid #e5a00d; outline-offset:-1px; }
+    .pmh-person-manage-menu .pmh-person-manage-item:disabled { opacity:.4; cursor:not-allowed; }
+    .pmh-person-manage-footer { flex-wrap:wrap; gap:8px; }
+    .pmh-person-manage-footer .pmh-person-manage-actions { margin-left:auto; display:flex; gap:8px; }
+    @media (max-width:480px) {
+        .pmh-prompt .pmh-prompt-header { padding:12px; }
+        .pmh-prompt .pmh-prompt-details { grid-template-columns:minmax(65px,auto) minmax(0,1fr); }
+        .pmh-prompt .pmh-prompt-footer button { min-height:38px !important; height:auto !important; padding:8px 12px !important; line-height:1.4 !important; }
+        .pmh-person-manage-menu { min-width:0; }
+        .pmh-person-manage-menu .pmh-person-manage-item { white-space:normal; min-height:38px; }
+    }
 
     /* 삭제 전용: 연결 파일 목록, 저장소 구분, 파일별 유지/삭제 불가 사유. */
     .pmh-delete-prompt .pmh-delete-file { border:1px solid #343a40; border-radius:6px; padding:11px 12px; margin:8px 0; background:#191c20; }
@@ -608,8 +634,8 @@ GM_addStyle(`
                 // Static markup only. All contextual values are rendered as text below.
                 modal.innerHTML = `<div class="pmh-db-card pmh-prompt-card">
                     <div class="pmh-db-header pmh-prompt-header"><div class="pmh-prompt-heading"><span data-icon aria-hidden="true"></span><div><strong id="pmh-action-title"></strong><div class="pmh-prompt-subtitle"></div></div></div></div>
-                    <div class="pmh-db-body"><div id="pmh-action-summary" class="pmh-prompt-summary"></div><dl></dl><div class="pmh-prompt-notice"></div></div>
-                    <div class="pmh-db-footer pmh-prompt-footer"><button type="button" class="pmh-crop-btn" data-cancel></button><button type="button" class="pmh-crop-btn" data-accept></button></div></div>`;
+                    <div class="pmh-db-body"><div id="pmh-action-summary" class="pmh-prompt-summary"></div><dl class="pmh-prompt-details"></dl><div class="pmh-prompt-notice"></div></div>
+                    <div class="pmh-db-footer pmh-prompt-footer"><button type="button" class="pmh-crop-btn" data-cancel></button><button type="button" class="pmh-crop-btn pmh-prompt-button-confirm" data-accept></button></div></div>`;
                 modal.querySelector('[data-icon]').textContent = options.icon || (options.severity === 'danger' ? '⚠' : '◆');
                 modal.querySelector('#pmh-action-title').textContent = options.title || '작업 확인';
                 modal.querySelector('.pmh-prompt-subtitle').textContent = options.subtitle || '';
@@ -619,7 +645,16 @@ GM_addStyle(`
                     label.textContent = detail.label; value.textContent = String(detail.value ?? '확인되지 않음');
                     modal.querySelector('dl').append(label, value);
                 }
-                modal.querySelector('.pmh-prompt-notice').textContent = (options.consequences || []).join('\n');
+                if (options.consequences?.length) {
+                    const list = document.createElement('ul');
+                    list.className = 'pmh-prompt-consequences';
+                    for (const consequence of options.consequences) {
+                        const item = document.createElement('li');
+                        item.textContent = String(consequence);
+                        list.append(item);
+                    }
+                    modal.querySelector('.pmh-prompt-notice').append(list);
+                }
                 const accept = modal.querySelector('[data-accept]'), reject = modal.querySelector('[data-cancel]');
                 accept.textContent = options.confirmLabel || '계속'; reject.textContent = options.cancelLabel || '취소';
                 if (options.severity === 'danger' || options.severity === 'warning') accept.classList.add(`pmh-prompt-button-${options.severity}`);
@@ -1234,10 +1269,10 @@ GM_addStyle(`
     function buildPmhDetailActionMenus(data, srvConfig) {
         if (!srvConfig) return '';
         const menu = (id,label,items) => `<span id="pmh-detail-${id}-wrap" style="position:relative; display:inline-block;">
-            <a href="#" id="pmh-detail-${id}-menu" style="color:#adb5bd; text-decoration:none;">${label} ▾</a>
+            <a href="#" id="pmh-detail-${id}-menu" style="color:#adb5bd; text-decoration:none; padding:0 3px;">${label} ▾</a>
             <span id="pmh-detail-${id}-popup" class="pmh-detail-popup" style="display:none; position:absolute; top:100%; left:0; z-index:100; font-weight:normal; text-align:left;">${items}</span></span>`;
-        const separator = '<span style="opacity:0.3; color:#adb5bd; margin:0 4px;">|</span>';
-        let html = separator + menu('match','리매칭', `
+        const separator = '<span style="opacity:0.3; color:#adb5bd; margin:0 5px;">|</span>';
+        let html = separator + menu('match','<i class="fas fa-bolt" style="font-size: 10px; margin-right: 2px;"></i>메타 관리', `
             <a href="#" id="pmh-btn-refresh-meta" class="pmh-menu-item" style="text-decoration:none;" title="Plex에 메타 새로고침을 요청합니다."><span class="pmh-menu-icon-wrap"><i class="fas fa-bolt" style="color:#2f96b4;"></i></span>메타 새로고침</a>
             <a href="#" id="pmh-btn-rematch" class="pmh-menu-item" style="text-decoration:none;" title="언매칭 없이 일반 리매칭을 시도합니다."><span class="pmh-menu-icon-wrap"><i class="fas fa-link" style="color:#adb5bd;"></i></span>일반 리매칭</a>
             <a href="#" id="pmh-btn-clean-match" class="pmh-menu-item" style="text-decoration:none;" title="현재 메타데이터를 언매치 후 클린 리매칭합니다."><span class="pmh-menu-icon-wrap"><i class="fas fa-broom" style="color:#f89406;"></i></span>클린 리매칭</a>
@@ -1246,8 +1281,8 @@ GM_addStyle(`
         const context = isFfMetaDbEnabledForServer(srvConfig) && getAvTrailerContext(data,srvConfig);
         if (context) {
             const item = (id,label,icon,color,title='') => `<a href="#" id="pmh-detail-action-${id}" class="pmh-menu-item"${title ? ` title="${title}"` : ''} style="text-decoration:none;"><span class="pmh-menu-icon-wrap"><i class="fas ${icon}" style="color:${color};"></i></span>${label}</a>`;
-            html += separator + menu('img','이미지 관리', item('crop','포스터 크롭 에디터','fa-crop-alt','#2f96b4') + item('sync-img','이미지/미디어 동기화','fa-sync-alt','#2f96b4','기존 저장 미디어를 재사용하여 동기화') + item('reprocess-img','이미지/미디어 재처리','fa-redo-alt','#e5a00d','기존 미디어를 재사용하지 않고 다시 처리'));
-            html += separator + menu('meta','메타 갱신', item('json-verify','메타 DB 일치 검증','fa-check-double','#2f96b4') + item('inplace','현재 사이트 갱신','fa-thumbtack','#adb5bd') + (context.category !== 'JAV_UNCEN' ? item('autosearch','전체 사이트 재검색','fa-search','#51a351') : ''));
+            html += separator + menu('img','<i class="fas fa-crop-alt" style="font-size: 10px; margin-right: 2px;"></i>미디어 관리', item('crop','포스터 크롭 에디터','fa-crop-alt','#2f96b4') + item('sync-img','이미지/미디어 동기화','fa-sync-alt','#2f96b4','기존 저장 미디어를 재사용하여 동기화') + item('reprocess-img','이미지/미디어 재처리','fa-redo-alt','#e5a00d','기존 미디어를 재사용하지 않고 다시 처리'));
+            html += separator + menu('meta','<i class="fas fa-check-double" style="font-size: 10px; margin-right: 2px;"></i>DB 관리', item('json-verify','메타 DB 일치 검증','fa-check-double','#2f96b4') + item('inplace','현재 사이트 갱신','fa-thumbtack','#adb5bd') + (context.category !== 'JAV_UNCEN' ? item('autosearch','전체 사이트 재검색','fa-search','#51a351') : ''));
         }
         return html;
     }
@@ -2770,9 +2805,17 @@ GM_addStyle(`
         });
     }
 
-    function fetchPlexMetaFallback(itemId, plexSrv) {
+    function fetchPlexMetaFallback(itemId, plexSrv, retryOnce = false) {
+        const session = currentRenderSession;
         return new Promise((resolve) => {
             if (!plexSrv) return resolve(null);
+            const retry = () => {
+                if (!retryOnce) return resolve(null);
+                setTimeout(() => {
+                    if (session !== currentRenderSession) return resolve(null);
+                    resolve(fetchPlexMetaFallback(itemId, plexSrv));
+                }, 1000);
+            };
             const req = GM_xmlhttpRequest({
                 method: 'GET',
                 url: `${plexSrv.url}/library/metadata/${itemId}?includeMarkers=1&includeExtras=1&X-Plex-Token=${plexSrv.token}`,
@@ -2785,12 +2828,14 @@ GM_addStyle(`
                     } else if (r.status === 200) {
                         try { resolve(JSON.parse(r.responseText).MediaContainer.Metadata[0]); } 
                         catch(e) { resolve(null); }
+                    } else if ([502, 503, 504].includes(r.status)) {
+                        retry();
                     } else {
                         resolve(null);
                     }
                 },
-                onerror: () => { activeRequests.delete(req); resolve(null); },
-                ontimeout: () => { activeRequests.delete(req); resolve(null); },
+                onerror: () => { activeRequests.delete(req); retry(); },
+                ontimeout: () => { activeRequests.delete(req); retry(); },
                 onabort: () => { activeRequests.delete(req); resolve(null); }
             });
             activeRequests.add(req);
@@ -6619,7 +6664,7 @@ GM_addStyle(`
         container.insertAdjacentHTML('afterend', loadingHtml);
     }
 
-    async function processDetail(isManualRefresh = false) {
+    async function processDetail(isManualRefresh = false, identityRefresh = false) {
         if (!state.detailInfo) {
             document.getElementById('plex-guid-box')?.remove();
             return;
@@ -6642,11 +6687,27 @@ GM_addStyle(`
         if (!plexSrv) return;
 
         const srvConfig = getServerConfig(serverId);
+        if (isManualRefresh) {
+            clearTimeout(observer.detailTimer);
+            currentRenderSession++;
+        }
         const session = currentRenderSession;
+        const removeBox = () => {
+            const box = document.getElementById('plex-guid-box');
+            box?._pmhMenus?.destroy();
+            box?.remove();
+            document.getElementById('pmh-detail-poster-toolbar')?.remove();
+        };
         const cacheKey = srvConfig ? `D_${serverId}_${itemId}` : `F_${serverId}_${itemId}`;
         if (isManualRefresh) {
             injectDetailPersonButtons.current = null;
             document.querySelectorAll('.pmh-detail-person-btn').forEach(removeDetailPersonButton);
+        }
+
+        if (identityRefresh) {
+            invalidateFfItemCache(serverId, itemId);
+            removeBox();
+            renderLoadingBox(container);
         }
 
         isFetchingDetail = true;
@@ -6656,7 +6717,7 @@ GM_addStyle(`
             const cData = getMemoryCache(cacheKey);
             if (cData) {
                 const box = document.getElementById('plex-guid-box');
-                if (box) box.remove();
+                if (box) removeBox();
                 renderDetailHtml(cData, serverId, srvConfig, container);
                 currentDisplayedItemId = itemId;
                 hasDisplayedCache = true;
@@ -6667,22 +6728,31 @@ GM_addStyle(`
 
         try {
             if (!srvConfig) {
-                let meta = await fetchPlexMetaFallback(itemId, plexSrv);
-                if (meta && session === currentRenderSession) {
+                let meta = await fetchPlexMetaFallback(itemId, plexSrv, true);
+                if (meta && meta !== 'DELETED' && session === currentRenderSession) {
                     let friendData = convertPlexMetaToLocalData(meta, itemId);
 
                     const oldCache = getMemoryCache(cacheKey);
-                    if (!hasDisplayedCache || JSON.stringify(oldCache) !== JSON.stringify(friendData)) {
+                    if (isManualRefresh || !hasDisplayedCache || JSON.stringify(oldCache) !== JSON.stringify(friendData)) {
                         setMemoryCache(cacheKey, friendData);
-                        document.getElementById('plex-guid-box')?.remove();
+                        removeBox();
                         renderDetailHtml(friendData, serverId, null, container);
                         currentDisplayedItemId = itemId;
                     }
                 }
+                if (!meta || meta === 'DELETED') throw new Error('미디어 조회 실패');
                 return;
             }
 
-            let data = await makeRequest(`${srvConfig.relayUrl}/media/${itemId}`, "GET", null, ClientSettings.masterApiKey);
+            let data;
+            try {
+                data = await makeRequest(`${srvConfig.relayUrl}/media/${itemId}`, "GET", null, ClientSettings.masterApiKey);
+            } catch (err) {
+                if (!/^(?:Network Error:|Timeout:|서버 (?:오류|처리 실패) \(HTTP 50[234]\)$)/.test(err.message)) throw err;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                if (session !== currentRenderSession) return;
+                data = await makeRequest(`${srvConfig.relayUrl}/media/${itemId}`, "GET", null, ClientSettings.masterApiKey);
+            }
             if (session !== currentRenderSession) return;
 
             let hasMissingData = false;
@@ -6691,14 +6761,15 @@ GM_addStyle(`
             }
 
             if (hasMissingData || isManualRefresh) {
-                let meta = await fetchPlexMetaFallback(itemId, plexSrv);
+                let meta = await fetchPlexMetaFallback(itemId, plexSrv, true);
+                if (session !== currentRenderSession) return;
 
                 let stillMissing = false;
                 if (meta && meta !== 'DELETED' && meta.Media) {
                     stillMissing = meta.Media.some(m => !m.width || m.width === 0);
                 }
 
-                if (stillMissing) {
+                if (stillMissing && !identityRefresh) {
                     if (isManualRefresh && hasMissingData) {
                         toastr.info("미분석 파일이 발견되어 Plex에 분석을 요청합니다.", "분석 대기 중", {timeOut: 8000});
                     }
@@ -6764,9 +6835,9 @@ GM_addStyle(`
             const cData = getMemoryCache(cacheKey);
             const isChanged = !cData || JSON.stringify(cData) !== JSON.stringify(data);
 
-            if (isChanged || isManualRefresh) {
+            if (isChanged || isManualRefresh || hasDisplayedCache || !document.getElementById('plex-guid-box')) {
                 setMemoryCache(cacheKey, data);
-                document.getElementById('plex-guid-box')?.remove();
+                removeBox();
                 renderDetailHtml(data, serverId, srvConfig, container);
                 currentDisplayedItemId = itemId;
             } else {
@@ -6774,12 +6845,15 @@ GM_addStyle(`
                 injectDetailPersonButtons(data, serverId, srvConfig);
             }
         } catch (e) {
+            if (session !== currentRenderSession) return;
             const box = document.getElementById('plex-guid-box');
-            if (box && !getMemoryCache(cacheKey)) {
+            if (box && (identityRefresh || !getMemoryCache(cacheKey))) {
+                delete box.dataset.state;
                 box.innerHTML = `<div style="color:#bd362f; font-size:13px; padding:15px; background:rgba(0,0,0,0.2); border:1px dashed #333; text-align:center;"><i class="fas fa-exclamation-triangle"></i> 데이터를 불러오는 중 오류가 발생했습니다.</div>`;
+                currentDisplayedItemId = itemId;
             }
         } finally {
-            isFetchingDetail = false;
+            if (session === currentRenderSession) isFetchingDetail = false;
         }
     }
 
@@ -7492,7 +7566,7 @@ GM_addStyle(`
                         invalidateVisibleCaches(serverId);
                         deleteMemoryCache(`D_${serverId}_${targetItemId}`);
                         currentDisplayedItemId = null;
-                        processDetail(true);
+                        processDetail(true, true);
                         smartRefreshChildren();
                     }
                 }
@@ -7565,7 +7639,7 @@ GM_addStyle(`
                         invalidateVisibleCaches(serverId);
                         deleteMemoryCache(`D_${serverId}_${targetItemId}`);
                         currentDisplayedItemId = null;
-                        processDetail(true);
+                        processDetail(true, true);
                         smartRefreshChildren();
                     }
                 }
@@ -7876,7 +7950,15 @@ GM_addStyle(`
             }
         } catch (err) { /* Direct DB unavailable or older PMH backend: keep the existing FF path. */ }
         if (!isCurrent()) return null;
-        const response = await PmhFfBridge.callMetaApi(srvConfig, 'get_meta_by_code', av.code, av.category);
+        let response;
+        try {
+            response = await PmhFfBridge.callMetaApi(srvConfig, 'get_meta_by_code', av.code, av.category);
+        } catch (err) {
+            if (!/^(?:Network Error:|Timeout:|서버 (?:오류|처리 실패) \(HTTP 50[234]\)$)/.test(err.message)) throw err;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            if (!isCurrent()) return null;
+            response = await PmhFfBridge.callMetaApi(srvConfig, 'get_meta_by_code', av.code, av.category);
+        }
         if (!isCurrent()) return null;
         const row = response?.data;
         if (response?.ret !== 'success' || String(row?.code || '').toLowerCase() !== av.code.toLowerCase() || row?.category !== av.category) throw new Error('FF 작품 정보 불일치');
@@ -7956,7 +8038,10 @@ GM_addStyle(`
                     if (isCurrent()) openPmhPersonDbModal(personIdx, context.av.category === 'WESTERN' ? 'WESTERN' : 'JAV', context.srvConfig, context.serverId);
                 };
                 button.onkeydown = event => {
-                    if (event.key === 'Enter' || event.key === ' ') button.onclick(event);
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        button.click();
+                    }
                 };
             }
             active.add(button);
@@ -8151,15 +8236,19 @@ GM_addStyle(`
 
     // 상세페이지 Plex 포스터 카드 하단 전용 액션 툴바
     function injectDetailPosterToolbar(data, serverId, srvConfig) {
+        const session = currentRenderSession;
+        const isCurrent = () => session === currentRenderSession;
         const isCropAllowed = isAvMediaItem(data.guid, data.librarySectionID, serverId, data.type);
         const isMetaDbAllowed = isFfMetaDbActive(serverId, data.guid);
 
-        if (!isCropAllowed && !isMetaDbAllowed) {
+        if (!extractSjvaAgentCode(data.guid) || (!isCropAllowed && !isMetaDbAllowed)) {
+            document.getElementById('pmh-detail-poster-toolbar')?.remove();
             log(`[Detail UI] 크롭 및 FF Meta DB 비대상 미디어로 툴바 주입 스킵 (ID: ${data.itemId}, GUID: ${data.guid})`);
             return;
         }
 
         const attachToolbar = () => {
+            if (!isCurrent()) return true;
             const existingToolbar = document.getElementById('pmh-detail-poster-toolbar');
             if (existingToolbar && existingToolbar.dataset.itemId === String(data.itemId)) return true;
             if (existingToolbar) existingToolbar.remove();
@@ -8244,6 +8333,7 @@ GM_addStyle(`
             if (btnGallery) {
                 btnGallery.onclick = async (e) => {
                     e.preventDefault(); e.stopPropagation();
+                    if (!isCurrent()) return;
                     const cleanCode = extractSjvaAgentCode(data.guid);
                     const moduleName = getFfModuleFromCode(cleanCode);
                     const catMap = { 'jav_censored': 'JAV_CEN', 'jav_uncensored': 'JAV_UNCEN', 'western': 'WESTERN' };
@@ -8252,6 +8342,7 @@ GM_addStyle(`
                     toastr.info(`[${cleanCode}] 갤러리 이미지를 조회하고 있습니다...`);
                     try {
                         const res = await PmhFfBridge.callMetaApi(srvConfig, 'get_meta_by_code', cleanCode, cat);
+                        if (!isCurrent() || !toolbar.isConnected) return;
                         const resCode = res?.data?.code || '';
                         const isExactMatch = (resCode.toLowerCase() === cleanCode.toLowerCase());
 
@@ -8285,6 +8376,7 @@ GM_addStyle(`
             if (btnCrop) {
                 btnCrop.onclick = (e) => {
                     e.preventDefault(); e.stopPropagation();
+                    if (!isCurrent()) return;
                     const itemTitle = document.querySelector('h1[data-testid="metadata-title"], [class*="MetadataTitle"]')?.textContent?.trim() || '';
                     openPosterCropModal(data.itemId, serverId, data.guid, itemTitle);
                 };
@@ -8295,6 +8387,7 @@ GM_addStyle(`
             if (btnDb) {
                 btnDb.onclick = (e) => {
                     e.preventDefault(); e.stopPropagation();
+                    if (!isCurrent()) return;
                     const itemTitle = document.querySelector('h1[data-testid="metadata-title"], [class*="MetadataTitle"]')?.textContent?.trim() || '';
                     openPmhMetaDbModal(data.itemId, serverId, data.guid, itemTitle);
                 };
@@ -8509,6 +8602,8 @@ GM_addStyle(`
             isObserverLocked = true;
             globalAbortFlag = true;
 
+            clearTimeout(observer.detailTimer);
+            nativeMatchDialogOpen = false;
             currentRenderSession++;
             injectDetailPersonButtons.current = null;
             document.querySelectorAll('.pmh-detail-person-btn').forEach(removeDetailPersonButton);
@@ -8518,7 +8613,10 @@ GM_addStyle(`
             document.querySelectorAll('[data-pmh-observed]').forEach(e => e.removeAttribute('data-pmh-observed'));
             document.querySelectorAll('.pmh-render-marker, .pmh-top-right-wrapper, .plex-guid-list-box, .plex-list-multipath-badge, .pmh-guid-wrapper').forEach(e => e.remove());
 
+            document.getElementById('plex-guid-box')?._pmhMenus?.destroy();
             document.getElementById('plex-guid-box')?.remove();
+            document.getElementById('pmh-detail-poster-toolbar')?.remove();
+            isFetchingDetail = false;
             currentDisplayedItemId = null;
             currentDetailStateHash = '';
 
@@ -8541,12 +8639,14 @@ GM_addStyle(`
     let masterObserverTimer = null;
     let observerPending = false;
 
+    let nativeMatchDialogOpen = false;
     const observer = new MutationObserver(() => {
         if (isObserverLocked) return;
 
         checkAndInjectMultiSelectBar();
 
         if (window.location.hash.includes('/details?key=')) {
+            if (document.querySelector('.fix-incorrect-match-modal')) nativeMatchDialogOpen = true;
             injectTrailerHubButtons();
             injectDetailPersonButtons();
         }
@@ -8575,6 +8675,9 @@ GM_addStyle(`
                         const { serverId, itemId } = extractIds();
                         const currentHash = getDetailStateHash();
                         const guidBox = document.getElementById('plex-guid-box');
+                        const matchDialogOpen = !!document.querySelector('.fix-incorrect-match-modal');
+                        const matchDialogClosed = nativeMatchDialogOpen && !matchDialogOpen;
+                        nativeMatchDialogOpen = matchDialogOpen;
 
                         if (!guidBox && !isFetchingDetail && currentDisplayedItemId === itemId) {
                             infoLog(`[Detail-Observer] ⚠️ 미디어 패널 증발 감지! (Plex Native UI 리렌더링). 패널을 복구합니다.`);
@@ -8592,22 +8695,12 @@ GM_addStyle(`
                                 observer.detailTimer = setTimeout(() => { processDetail(); }, 100);
                             }
                         }
-                        else if (currentDisplayedItemId === itemId && currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash) {
+                        else if (currentDisplayedItemId === itemId && (matchDialogClosed || (currentDetailStateHash && currentHash && currentDetailStateHash !== currentHash))) {
                             infoLog(`[Detail-Observer] 🔄 Plex Native Action detected! Hash changed. Forcing update.`);
                             currentDetailStateHash = currentHash;
 
-                            if (serverId && itemId) {
-                                deleteMemoryCache(`D_${serverId}_${itemId}`);
-                                if (typeof sessionRevalidated !== 'undefined') sessionRevalidated.delete(itemId);
-                            }
-
-                            if (guidBox) {
-                                guidBox.style.opacity = '0.4';
-                                guidBox.innerHTML = '<div style="padding:20px; text-align:center; color:#e5a00d;"><i class="fas fa-spinner fa-spin"></i> 갱신 중...</div>';
-                            }
-
                             if(observer.detailTimer) clearTimeout(observer.detailTimer);
-                            observer.detailTimer = setTimeout(() => { processDetail(true); }, 300);
+                            observer.detailTimer = setTimeout(() => { processDetail(true, true); }, 300);
                         }
                         else if (!guidBox && !isFetchingDetail) {
                             const target = document.querySelector('div[data-testid="metadata-top-level-items"]')
@@ -9370,14 +9463,13 @@ GM_addStyle(`
     function extractSjvaAgentCode(rawGuid) {
         if (!rawGuid) return null;
         let str = String(rawGuid).trim();
-        if (str.includes('://')) str = str.split('://')[1];
-        if (str.includes('?')) str = str.split('?')[0];
-        str = str.trim();
-
-        if (!str || str === '-' || str.startsWith('local') || str.startsWith('none')) {
-            return null;
+        if (str.includes('://')) {
+            const split = str.indexOf('://');
+            if (!['com.plexapp.agents.sjva_agent', 'sjva_agent'].includes(str.slice(0, split).toLowerCase())) return null;
+            str = str.slice(split + 3);
         }
-        return str;
+        str = str.split('?')[0].trim();
+        return /^[CEWcew][A-Za-z0-9_.-]+$/.test(str) ? str : null;
     }
 
     // 첫 글자로 FF API 모듈 매핑 (C: 유모, E: 노모, W: 서양)
@@ -9824,6 +9916,7 @@ GM_addStyle(`
 
         try {
             const CropperConstructor = await ensureCropperLoaded();
+            if (currentCropItemData !== context) return;
             if (!CropperConstructor) {
                 throw new Error("Cropper.js 라이브러리를 초기화하지 못했습니다.");
             }
@@ -10167,7 +10260,7 @@ GM_addStyle(`
         }
         if (!srvConfig) return toastr.error("서버 설정을 찾을 수 없습니다.");
 
-        const cleanCode = extractSjvaAgentCode(rawGuid) || rawGuid;
+        const cleanCode = extractSjvaAgentCode(rawGuid);
         if (!cleanCode) return toastr.warning("식별 코드를 확인할 수 없습니다.");
 
         const moduleName = getFfModuleFromCode(cleanCode);
@@ -11062,7 +11155,7 @@ GM_addStyle(`
             <div class="pmh-db-card pmh-prompt-card">
                 <div class="pmh-db-header pmh-prompt-header">
                     <div class="pmh-prompt-heading">
-                        <i class="fas fa-trash-alt" aria-hidden="true"></i>
+                        <span data-icon aria-hidden="true"><i class="fas fa-trash-alt"></i></span>
                         <div><strong id="pmh-meta-delete-title">메타 DB 삭제</strong><div class="pmh-prompt-subtitle">삭제할 데이터와 연결 파일을 확인하세요.</div></div>
                     </div>
                 </div>
@@ -11535,9 +11628,6 @@ GM_addStyle(`
                         <div class="pmh-form-group" style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.08); padding:10px; border-radius:4px; margin-bottom:0;">
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                                 <label class="pmh-form-label" style="margin:0; color:#fff;">소장 출연작 목록 <span class="pmh-db-badge" style="background:#28a745; color:#fff;" id="${modalId}-works-count">0편</span></label>
-                                <div style="display:flex; gap:6px;">
-                                    <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="${modalId}-btn-sync-works" title="실제 소장 메타와 대조하여 오매칭을 정제하고 최신 제목으로 갱신"><i class="fas fa-sync-alt"></i> 출연작 검증/갱신</button>
-                                </div>
                             </div>
                             <div id="${modalId}-works-container" style="display:flex; flex-direction:column; gap:4px; width:100%;"></div>
                         </div>
@@ -11545,11 +11635,18 @@ GM_addStyle(`
                 </div>
 
                 <!-- 푸터 툴바 -->
-                <div class="pmh-db-footer" id="${modalId}-footer" style="flex-wrap:wrap; gap:8px;">
+                <div class="pmh-db-footer pmh-person-manage-footer" id="${modalId}-footer">
                     <div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px;">
                         <button type="button" class="pmh-crop-btn" id="${modalId}-btn-json"><i class="fas fa-code"></i> JSON 보기</button>
                         <button type="button" class="pmh-crop-btn pmh-crop-btn-primary" id="${modalId}-btn-crop-person"><i class="fas fa-crop-alt"></i> 사진 편집</button>
-                        <button type="button" class="pmh-crop-btn" id="${modalId}-btn-refresh-site" style="display:none;" title="서양 인물의 원본 사이트(StashDB, TPDB)에서 최신 정보를 조회합니다.">🔄 사이트 정보 갱신</button>
+                        <button type="button" class="pmh-crop-btn" id="${modalId}-btn-refresh-site" style="display:none !important;" title="서양 인물의 원본 사이트(StashDB, TPDB)에서 최신 정보를 조회합니다.">🔄 사이트 정보 갱신</button>
+                        <div class="pmh-person-manage-wrapper" id="${modalId}-manage-wrapper">
+                            <button type="button" class="pmh-crop-btn" id="${modalId}-btn-manage-menu" aria-expanded="false" aria-controls="${modalId}-manage-dropdown" disabled><i class="fas fa-cog"></i> 관리 ▾</button>
+                            <div class="pmh-person-manage-menu" id="${modalId}-manage-dropdown">
+                                <button type="button" class="pmh-person-manage-item" id="${modalId}-btn-sync-image" disabled title="공식 이미지를 개인 저장소와 동기화합니다. 기존 이미지는 유지합니다."><i class="fas fa-image"></i> 이미지 동기화</button>
+                                <button type="button" class="pmh-person-manage-item" id="${modalId}-btn-sync-works" disabled title="등록된 소장 출연작을 검증하고 갱신합니다."><i class="fas fa-film"></i> 출연작 동기화</button>
+                            </div>
+                        </div>
                         <div id="${modalId}-reset-wrapper" style="position:relative;">
                             <button type="button" class="pmh-crop-btn" id="${modalId}-btn-reset-menu" aria-expanded="false">사용자 데이터 초기화 ▾</button>
                             <div id="${modalId}-reset-dropdown" style="display:none; position:absolute; bottom:100%; left:0; margin-bottom:4px; min-width:190px; background:#1a1d21; border:1px solid #444; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.8); z-index:20;">
@@ -11559,7 +11656,7 @@ GM_addStyle(`
                             </div>
                         </div>
                     </div>
-                    <div style="display:flex; gap:8px;">
+                    <div class="pmh-person-manage-actions">
                         <button type="button" class="pmh-crop-btn pmh-person-modal-cancel">취소</button>
                         <button type="button" class="pmh-crop-btn pmh-crop-btn-active" id="${modalId}-btn-save"><i class="fas fa-save"></i> 인물 정보 저장</button>
                     </div>
@@ -11574,14 +11671,33 @@ GM_addStyle(`
             resetDropdown.style.display = 'none';
             resetToggle.setAttribute('aria-expanded', 'false');
         };
+        const manageDropdown = m.querySelector(`#${modalId}-manage-dropdown`);
+        const manageToggle = m.querySelector(`#${modalId}-btn-manage-menu`);
+        const closeManageMenu = () => {
+            manageDropdown.style.display = 'none';
+            manageToggle.setAttribute('aria-expanded', 'false');
+        };
+        const closePersonMenus = () => { closeResetMenu(); closeManageMenu(); };
+        manageToggle.onclick = event => {
+            event.preventDefault(); event.stopPropagation();
+            if (isReadOnly || manageToggle.disabled || m.pmhPersonActionPending) return;
+            const expanded = manageDropdown.style.display !== 'block';
+            closeResetMenu();
+            manageDropdown.style.display = expanded ? 'block' : 'none';
+            manageToggle.setAttribute('aria-expanded', String(expanded));
+        };
         resetToggle.onclick = event => {
             event.preventDefault(); event.stopPropagation();
-            if (isReadOnly) return;
+            if (isReadOnly || resetToggle.disabled || m.pmhPersonActionPending) return;
+            closeManageMenu();
             const expanded = resetDropdown.style.display !== 'block';
             resetDropdown.style.display = expanded ? 'block' : 'none';
             resetToggle.setAttribute('aria-expanded', String(expanded));
         };
-        m.onclick = closeResetMenu;
+        m.addEventListener('click', event => {
+            if (!m.querySelector(`#${modalId}-manage-wrapper`).contains(event.target) &&
+                !m.querySelector(`#${modalId}-reset-wrapper`).contains(event.target)) closePersonMenus();
+        }, true);
         const applyReadOnlyState = () => {
             if (!isReadOnly) return;
             const notice = m.querySelector(`#${modalId}-readonly-notice`);
@@ -11589,13 +11705,14 @@ GM_addStyle(`
             notice.style.display = 'block';
             m.querySelectorAll('input, textarea').forEach(field => { field.readOnly = true; });
             m.querySelectorAll('select').forEach(field => { field.disabled = true; });
-            for (const id of ['btn-save', 'btn-crop-person', 'btn-set-primary', 'btn-sync-works', 'btn-refresh-site', 'btn-reset-menu']) {
+            for (const id of ['btn-save', 'btn-crop-person', 'btn-set-primary', 'btn-sync-works', 'btn-sync-image', 'btn-manage-menu', 'btn-refresh-site', 'btn-reset-menu']) {
                 const button = m.querySelector(`#${modalId}-${id}`);
                 button.disabled = true;
                 button.style.display = 'none';
             }
             m.querySelector(`#${modalId}-reset-wrapper`).style.display = 'none';
-            closeResetMenu();
+            m.querySelector(`#${modalId}-manage-wrapper`).style.display = 'none';
+            closePersonMenus();
             m.querySelectorAll('[data-reset]').forEach(button => { button.disabled = true; button.style.display = 'none'; });
             m.querySelector('.pmh-person-modal-cancel').textContent = '닫기';
         };
@@ -11607,7 +11724,7 @@ GM_addStyle(`
         makeVideoCardDraggable(card, header);
         makeVideoCardResizable(card);
 
-        const closeThisModal = () => m.remove();
+        const closeThisModal = () => { closePersonMenus(); m.remove(); };
         m.querySelector('.pmh-person-modal-close').onclick = closeThisModal;
         m.querySelector('.pmh-person-modal-cancel').onclick = closeThisModal;
 
@@ -11627,6 +11744,14 @@ GM_addStyle(`
         };
 
         let rawPersonData = null;
+        const updateManageState = (loading = false) => {
+            const p = rawPersonData;
+            const disabled = loading || isReadOnly || Boolean(m.pmhPersonActionPending) || !p?.id || !['JAV', 'WESTERN'].includes(p.domain);
+            manageToggle.disabled = disabled;
+            m.querySelector(`#${modalId}-btn-sync-works`).disabled = disabled;
+            m.querySelector(`#${modalId}-btn-sync-image`).disabled = disabled || !p?.person_idx;
+            if (disabled) closeManageMenu();
+        };
         let photoList = [];
         let curPhotoIdx = 0;
         let shownCustomLocal = false;
@@ -11696,6 +11821,8 @@ GM_addStyle(`
 
         const loadPersonDataInPlace = async () => {
             if (!m.isConnected) return;
+            closePersonMenus();
+            updateManageState(true);
             const loadingDiv = m.querySelector(`#${modalId}-loading`);
             const formDiv = m.querySelector(`#${modalId}-form`);
             const revision = ++loadRevision;
@@ -11755,7 +11882,7 @@ GM_addStyle(`
 
                 const siteRefresh = m.querySelector(`#${modalId}-btn-refresh-site`);
                 const canRefreshSite = !isReadOnly && p.domain === 'WESTERN';
-                siteRefresh.style.display = canRefreshSite ? '' : 'none';
+                siteRefresh.style.setProperty('display', canRefreshSite ? '' : 'none', 'important');
                 siteRefresh.disabled = !canRefreshSite;
                 siteRefresh.onclick = async () => {
                     if (!canRefreshSite) return;
@@ -11954,11 +12081,41 @@ GM_addStyle(`
                     worksContainer.innerHTML = '<span style="color:#777; font-size:11px; padding:6px 0;">등록된 소장 출연작이 없습니다.</span>';
                 }
 
-                // 출연작 검증 갱신 핸들러 (실시간 인-플레이스 갱신)
+                m.querySelector(`#${modalId}-btn-sync-image`).onclick = async () => {
+                    closePersonMenus();
+                    const btn = m.querySelector(`#${modalId}-btn-sync-image`);
+                    if (isReadOnly || btn.disabled || m.pmhPersonActionPending || !p.id || !p.person_idx || !m.isConnected) return;
+                    const original = btn.innerHTML;
+                    m.pmhPersonActionPending = true;
+                    updateManageState();
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 동기화 중...';
+                    try {
+                        const ret = await PmhFfBridge.callPersonApi(srvConfig, 'person_sync_image', String(p.person_idx), p.domain, JSON.stringify({skip_existing:true}), {timeout:180000});
+                        if (!m.isConnected) return;
+                        if (ret?.ret === 'success') {
+                            if (ret.skipped || !ret.is_updated) toastr.info(ret.msg || '변경할 이미지가 없습니다.');
+                            else toastr.success(ret.msg || '인물 이미지 동기화 완료');
+                        } else toastr.warning(ret?.msg || '인물 이미지 동기화에 실패했습니다.');
+                        await loadPersonDataInPlace();
+                    } catch (err) {
+                        if (m.isConnected) {
+                            toastr.error(`오류 발생: ${err.message || err}`);
+                            await loadPersonDataInPlace();
+                        }
+                    } finally {
+                        m.pmhPersonActionPending = false;
+                        btn.innerHTML = original;
+                        updateManageState();
+                    }
+                };
+
+                // 출연작 동기화: 기존 검증 API와 제자리 갱신을 재사용한다.
                 m.querySelector(`#${modalId}-btn-sync-works`).onclick = async () => {
-                    if (isReadOnly) return;
+                    closePersonMenus();
                     const btn = m.querySelector(`#${modalId}-btn-sync-works`);
-                    btn.disabled = true;
+                    if (isReadOnly || btn.disabled || m.pmhPersonActionPending || !m.isConnected) return;
+                    m.pmhPersonActionPending = true;
+                    updateManageState();
                     btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 검증 중...`;
                     try {
                         const syncRet = await PmhFfBridge.callPersonApi(srvConfig, 'person_verify_works', String(targetIdentifier), domain);
@@ -11971,8 +12128,9 @@ GM_addStyle(`
                     } catch (e) {
                         toastr.error(`오류 발생: ${e.message || e}`);
                     } finally {
-                        btn.disabled = false;
-                        btn.innerHTML = `<i class="fas fa-sync-alt"></i> 출연작 검증/갱신`;
+                        m.pmhPersonActionPending = false;
+                        btn.innerHTML = `<i class="fas fa-film"></i> 출연작 동기화`;
+                        updateManageState();
                     }
                 };
 
@@ -12045,6 +12203,7 @@ GM_addStyle(`
                 formDiv.style.display = 'block';
                 m.querySelector(`#${modalId}-btn-save`).disabled = isReadOnly;
                 applyReadOnlyState();
+                updateManageState();
 
             } catch (err) {
                 if (!m.isConnected) return;
@@ -12057,7 +12216,7 @@ GM_addStyle(`
         m.pmhReload = loadPersonDataInPlace;
         m.querySelectorAll('[data-reset]').forEach(button => {
             button.onclick = async () => {
-                closeResetMenu();
+                closePersonMenus();
                 if (isReadOnly || !rawPersonData || m.pmhPersonActionPending) return;
                 const type = button.dataset.reset;
                 if (!['text','image','all'].includes(type)) return;
@@ -12070,12 +12229,13 @@ GM_addStyle(`
                     consequences:[type === 'text' ? '수동 텍스트 편집을 지웁니다. 사용자 이미지는 유지됩니다.' : '선택한 사용자 데이터와 사용자 이미지 파일을 삭제합니다.',
                         '이 화면에서 자동 복원할 수 없습니다. 공식·사이트 데이터와 인물 레코드는 유지됩니다.'], confirmLabel:'선택 데이터 초기화' }) || !current()) return;
                 m.pmhPersonActionPending = true; button.disabled = true;
+                updateManageState();
                 try {
                     const res = await PmhFfBridge.callPersonApi(srvConfig, 'person_reset_user_data', String(person.id), JSON.stringify({ reset_type: type }), '', { fields: { domain: person.domain } });
                     if (res?.ret !== 'success') throw new Error(res?.msg || '초기화 실패');
                     await loadPersonDataInPlace();
                 } catch (err) { toastr.error(err.message || String(err)); }
-                finally { m.pmhPersonActionPending = false; button.disabled = false; }
+                finally { m.pmhPersonActionPending = false; button.disabled = false; updateManageState(); }
             };
         });
         await loadPersonDataInPlace();

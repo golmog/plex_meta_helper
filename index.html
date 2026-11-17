@@ -72,6 +72,16 @@
         .badge-run { background: rgba(229,160,13,0.2); color: var(--primary); border: 1px solid var(--primary); }
         .badge-cron { background: rgba(81,163,81,0.2); color: var(--success); border: 1px solid var(--success); }
 
+        .badge-stale { color:#aaa; background:#333; border:1px solid #666; }
+        .badge-node { color:#aaa; }
+        #portal-node-status { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:15px; }
+        .portal-badges { display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
+        button.badge { cursor:pointer; font-family:inherit; }
+        .portal-tool-version { font-size:11px; color:#777; font-weight:normal; }
+        .portal-running { font-size:12px; color:var(--primary); }
+        .tool-title, .tool-desc { white-space:normal; line-height:1.4; flex-wrap:wrap; }
+        .portal-empty { text-align:center; color:#777; padding:20px; }
+
         .tab-item { flex: 1; padding: 12px 0; text-align: center; color: #666; font-size: 11px; font-weight: bold; cursor: pointer; transition: 0.2s; }
         .tab-item.active { color: var(--primary); }
         .tab-item.disabled { color: #333; cursor: not-allowed; opacity: 0.5; pointer-events: none; }
@@ -165,9 +175,10 @@
 
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                 <h3 style="margin:0; font-size:15px; color:#ddd;"><i class="fas fa-toolbox"></i> 내 툴박스</h3>
-                <button onclick="loadPortal()" style="background:none; border:none; color:var(--primary); font-size:16px; padding:5px;"><i class="fas fa-sync-alt"></i></button>
+                <button id="btn-portal-refresh" onclick="loadPortal()" style="background:none; border:none; color:var(--primary); font-size:16px; padding:5px;"><i class="fas fa-sync-alt"></i></button>
             </div>
             
+            <div id="portal-node-status" aria-live="polite"></div>
             <div id="tool-list"></div>
         </div>
 
@@ -250,6 +261,10 @@
                 }
             });
 
+            AppState.activeScreen = id;
+            if (id === 'screen-portal') startPortal();
+            else stopPortal();
+
             if (AppState.pollTimer && id !== 'screen-tool') {
                 clearTimeout(AppState.pollTimer);
                 AppState.pollTimer = null;
@@ -258,7 +273,6 @@
 
         document.querySelectorAll('.tab-item').forEach(t => {
             t.addEventListener('click', () => {
-                if (t.dataset.target === 'screen-portal' && AppState.servers.length > 0) loadPortal();
                 showScreen(t.dataset.target);
             });
         });
@@ -278,7 +292,7 @@
         }
 
         const PmhAPI = {
-            call: async function(endpoint, method="GET", data=null) {
+            call: async function(endpoint, method="GET", data=null, signal=null) {
                 if(!AppState.url || !AppState.key) throw new Error("서버 정보가 설정되지 않았습니다.");
                 
                 const secureToken = await generateSecureHeader(AppState.key);
@@ -287,6 +301,7 @@
                     method: method, 
                     headers: { "X-PMH-Signature": secureToken }
                 };
+                if (signal) options.signal = signal;
                 if (data) { 
                     options.headers["Content-Type"] = "application/json"; 
                     options.body = JSON.stringify(data); 
@@ -362,12 +377,15 @@
                     localStorage.setItem('pmh_url', url);
                     localStorage.setItem('pmh_key', key);
                     
+                    stopPortal();
                     AppState.servers = conf.SERVERS || [];
+                    PortalState.nodes.clear(); PortalState.cards.clear(); PortalState.tools.clear();
+                    PortalState.rendered = false;
+                    document.getElementById('tool-list').replaceChildren();
 
                     await loadSharedCoreModules();
                     
                     showToast("설정 저장 및 연결 완료!");
-                    loadPortal();
                     showScreen('screen-portal');
                 }
             } catch(e) {
@@ -410,74 +428,204 @@
             });
         }
 
-        async function loadPortal() {
-            document.getElementById('portal-loading').style.display = 'block';
-            document.getElementById('portal-content').style.display = 'none';
-            document.getElementById('portal-error').style.display = 'none';
+        const PortalState = { timer: null, inflight: null, generation: 0, active: false,
+            pendingRefresh: false, rendered: false, nodes: new Map(), cards: new Map(), tools: new Map() };
 
-            try {
-                const masterNodeId = AppState.servers[0].id || 'master_node';
-                const res = await PmhAPI.call(`/relay/${masterNodeId}/tools?t=${Date.now()}`);
-                
-                const runCnt = res.dashboard.running.length;
-                const cronCnt = res.dashboard.cron.length;
-                
-                document.getElementById('dash-run-cnt').innerText = `${runCnt}건`;
-                document.getElementById('dash-cron-cnt').innerText = `${cronCnt}건`;
-                
-                const cardRun = document.getElementById('dash-run');
-                const cardCron = document.getElementById('dash-cron');
-                runCnt > 0 ? cardRun.classList.add('active-run') : cardRun.classList.remove('active-run');
-                cronCnt > 0 ? cardCron.classList.add('active-cron') : cardCron.classList.remove('active-cron');
-                
-                document.getElementById('dash-run-cnt').style.color = runCnt > 0 ? 'var(--primary)' : '#777';
-                document.getElementById('dash-cron-cnt').style.color = cronCnt > 0 ? 'var(--success)' : '#777';
+        function portalVisible() {
+            return AppState.activeScreen === 'screen-portal' && document.visibilityState === 'visible' && AppState.servers.length > 0;
+        }
 
-                const listEl = document.getElementById('tool-list');
-                listEl.innerHTML = '';
-                
-                if (!res.tools || res.tools.length === 0) {
-                    listEl.innerHTML = '<div style="text-align:center; color:#777; padding:20px;">설치된 툴이 없습니다.</div>';
-                } else {
-                    res.tools.sort((a, b) => (a.name || a.id || "").toLowerCase().localeCompare((b.name || b.id || "").toLowerCase()));
+        function stopPortal() {
+            PortalState.active = false;
+            PortalState.generation++;
+            PortalState.pendingRefresh = false;
+            if (PortalState.timer !== null) clearInterval(PortalState.timer);
+            PortalState.timer = null;
+            PortalState.inflight?.controllers.forEach(controller => controller.abort());
+        }
 
-                    res.tools.forEach(t => {
-                        const myRun = res.dashboard.running.filter(r => r.tool_id === t.id);
-                        const myCron = res.dashboard.cron.filter(c => c.tool_id === t.id);
-                        const isRunning = myRun.length > 0;
-                        
-                        let badgeHtml = '';
-                        if (isRunning) badgeHtml += `<span class="badge badge-run"><i class="fas fa-running"></i> 진행중</span> `;
-                        if (myCron.length > 0) badgeHtml += `<span class="badge badge-cron"><i class="fas fa-clock"></i> 스케줄</span>`;
+        function startPortal() {
+            if (!portalVisible() || PortalState.active) return;
+            PortalState.active = true;
+            PortalState.timer = setInterval(() => loadPortal({ silent: true }), 10000);
+            loadPortal({ silent: PortalState.rendered });
+        }
 
-                        listEl.insertAdjacentHTML('beforeend', `
-                            <div class="tool-card ${isRunning ? 'running' : ''}" onclick="openTool('${t.id}')">
-                                <div class="tool-icon"><i class="${t.icon || 'fas fa-wrench'}"></i></div>
-                                <div class="tool-info">
-                                    <div class="tool-title" style="display:flex; align-items:center; flex-wrap:wrap; gap:6px; white-space:normal;">
-                                        ${t.name || t.id} 
-                                        <span style="font-size:11px; color:#777; font-weight:normal;">v${t.version || '1.0'}</span>
-                                        ${isRunning ? '<i class="fas fa-spinner fa-spin" style="font-size:12px; color:var(--primary);"></i>' : ''}
-                                    </div>
-                                    <div class="tool-desc" style="white-space:normal; line-height:1.4; margin-top:2px;">
-                                        ${t.description || ''}
-                                    </div>
-                                    <div style="margin-top:6px;">${badgeHtml}</div>
-                                </div>
-                                <i class="fas fa-chevron-right" style="color:#555; font-size:16px;"></i>
-                            </div>
-                        `);
-                    });
-                }
+        document.addEventListener('visibilitychange', () => portalVisible() ? startPortal() : stopPortal());
+        window.addEventListener('pagehide', stopPortal);
+        window.addEventListener('pageshow', event => { if (event.persisted) startPortal(); });
 
-                document.getElementById('portal-loading').style.display = 'none';
-                document.getElementById('portal-content').style.display = 'block';
-
-            } catch(e) {
-                document.getElementById('portal-loading').style.display = 'none';
-                document.getElementById('portal-error').style.display = 'block';
-                document.getElementById('portal-error-msg').innerText = "데이터 로드 실패: " + e.message;
+        function validatePortalResponse(data) {
+            if (!data || data.error || data.status === 'error' || !Array.isArray(data.tools) || !Array.isArray(data.dashboard?.running) || !Array.isArray(data.dashboard?.cron) ||
+                data.tools.some(tool => !tool || typeof tool.id !== 'string' || !tool.id ||
+                    ['name', 'icon', 'description'].some(key => tool[key] != null && typeof tool[key] !== 'string') ||
+                    (tool.version != null && !['string', 'number'].includes(typeof tool.version))) ||
+                [...data.dashboard.running, ...data.dashboard.cron].some(job => !job || typeof job.tool_id !== 'string' || !job.tool_id ||
+                    !['string', 'number'].includes(typeof job.server_id))) {
+                throw new Error('Invalid node response');
             }
+            return data;
+        }
+
+        async function readPortalNode(node, controller) {
+            let timer;
+            try {
+                return validatePortalResponse(await Promise.race([
+                    PmhAPI.call(`/relay/${encodeURIComponent(node.id)}/tools?t=${Date.now()}`, 'GET', null, controller.signal),
+                    new Promise((_, reject) => { timer = setTimeout(() => {
+                        controller.abort(); reject(new Error('Node timeout'));
+                    }, 8000); })
+                ]));
+            } finally { clearTimeout(timer); }
+        }
+
+        function openPortalTool(toolId) {
+            const tool = PortalState.tools.get(toolId);
+            if (!tool) return;
+            const running = [...new Set(tool.running.filter(job => !job.stale).map(job => job.serverIndex))];
+            if (running.length === 1) return openTool(toolId, running[0]);
+            if (running.length > 1) return showToast('여러 노드에서 실행 중입니다. 원하는 노드 배지를 선택하세요.');
+            let saved = {};
+            try { saved = JSON.parse(localStorage.getItem(`pmh_tool_cache_global_${toolId}`) || '{}'); } catch (error) {}
+            const preferred = Number(saved.target_server_idx ?? 0);
+            return openTool(toolId, tool.sources.includes(preferred) ? preferred : tool.sources[0]);
+        }
+
+        function renderPortal() {
+            const tools = new Map(), running = new Map(), cron = new Map();
+            let failed = 0;
+            const nodeStatus = document.getElementById('portal-node-status');
+            nodeStatus.replaceChildren();
+            for (const [nodeId, snapshot] of PortalState.nodes) {
+                const { node, data, stale, updated } = snapshot;
+                if (stale) failed++;
+                const status = document.createElement('span');
+                status.className = stale ? 'badge badge-stale' : 'badge badge-node';
+                status.textContent = `${node.name}: ${stale ? '연결 실패 · ' : ''}${updated ? '마지막 갱신 ' + new Date(updated).toLocaleTimeString() : '갱신 정보 없음'}`;
+                nodeStatus.appendChild(status);
+                if (!data) continue;
+                for (const metadata of data.tools) {
+                    if (!tools.has(metadata.id)) tools.set(metadata.id, { metadata, metadataStale: stale, sources: [], running: [], cron: [] });
+                    else if (tools.get(metadata.id).metadataStale && !stale) {
+                        tools.get(metadata.id).metadata = metadata;
+                        tools.get(metadata.id).metadataStale = false;
+                    }
+                    tools.get(metadata.id).sources.push(node.index);
+                }
+                for (const kind of ['running', 'cron']) {
+                    for (const job of data.dashboard[kind]) {
+                        const key = JSON.stringify([nodeId, job.tool_id, String(job.server_id)]);
+                        const list = kind === 'running' ? running : cron;
+                        if (list.has(key)) continue;
+                        const configuredIndex = AppState.servers.findIndex(server => server.id === nodeId &&
+                            String(server.machine_id || server.machineIdentifier || 'default') === String(job.server_id));
+                        const entry = { ...job, nodeId, nodeName: node.name,
+                            serverIndex: configuredIndex >= 0 ? configuredIndex : node.index, stale };
+                        list.set(key, entry);
+                        tools.get(job.tool_id)?.[kind].push(entry);
+                    }
+                }
+            }
+            PortalState.tools = tools;
+            for (const [kind, jobs] of [['run', running], ['cron', cron]]) {
+                const count = [...jobs.values()].filter(job => !job.stale).length;
+                const el = document.getElementById(`dash-${kind}-cnt`);
+                el.innerText = failed === PortalState.nodes.size ? '확인 불가' : `${count}건${failed ? ' · 일부 미확인' : ''}`;
+                el.style.color = count ? (kind === 'run' ? 'var(--primary)' : 'var(--success)') : '#777';
+                document.getElementById(`dash-${kind}`).classList.toggle(kind === 'run' ? 'active-run' : 'active-cron', count > 0);
+            }
+            const list = document.getElementById('tool-list');
+            list.querySelector('.portal-empty')?.remove();
+            for (const [id, card] of PortalState.cards) {
+                if (!tools.has(id)) { card.remove(); PortalState.cards.delete(id); }
+            }
+            const sorted = [...tools.values()].sort((a, b) => (a.metadata.name || a.metadata.id).toLowerCase().localeCompare((b.metadata.name || b.metadata.id).toLowerCase()));
+            for (const tool of sorted) {
+                const metadata = tool.metadata;
+                let card = PortalState.cards.get(metadata.id);
+                if (!card) {
+                    card = document.createElement('div'); card.className = 'tool-card';
+                    card.innerHTML = '<div class="tool-icon"><i></i></div><div class="tool-info"><div class="tool-title"><span class="portal-tool-name"></span><span class="portal-tool-version"></span><i class="portal-running fas fa-spinner fa-spin"></i></div><div class="tool-desc"></div><div class="portal-badges"></div></div><i class="fas fa-chevron-right" style="color:#555; font-size:16px;"></i>';
+                    card.onclick = () => openPortalTool(metadata.id);
+                    PortalState.cards.set(metadata.id, card);
+                }
+                const isRunning = tool.running.some(job => !job.stale);
+                card.classList.toggle('running', isRunning);
+                card.querySelector('.tool-icon i').className = metadata.icon || 'fas fa-wrench';
+                card.querySelector('.portal-tool-name').textContent = metadata.name || metadata.id;
+                card.querySelector('.portal-tool-version').textContent = `v${metadata.version || '1.0'}`;
+                card.querySelector('.portal-running').style.display = isRunning ? '' : 'none';
+                card.querySelector('.tool-desc').textContent = metadata.description || '';
+                const badges = card.querySelector('.portal-badges'); badges.replaceChildren();
+                for (const kind of ['running', 'cron']) {
+                    const groups = new Map();
+                    for (const job of tool[kind]) {
+                        const key = job.serverIndex;
+                        if (!groups.has(key)) groups.set(key, []);
+                        groups.get(key).push(job);
+                    }
+                    for (const jobs of groups.values()) {
+                        const job = jobs[0], button = document.createElement('button');
+                        button.className = `badge ${job.stale ? 'badge-stale' : kind === 'running' ? 'badge-run' : 'badge-cron'}`;
+                        button.textContent = `${job.nodeName} ${kind === 'running' ? '실행 중' : '크론'}${jobs.length > 1 ? ' ×' + jobs.length : ''}${job.stale ? ' · 마지막 상태' : ''}`;
+                        button.onclick = event => { event.stopPropagation(); openTool(metadata.id, job.serverIndex); };
+                        badges.appendChild(button);
+                    }
+                }
+                card.title = new Set(tool.running.filter(job => !job.stale).map(job => job.serverIndex)).size > 1 ? '실행 중인 노드 배지를 선택하세요.' : '';
+                // Keep existing cards in place on silent updates; only move when order changes.
+                const position = sorted.indexOf(tool);
+                if (list.children[position] !== card) list.insertBefore(card, list.children[position] || null);
+            }
+            if (!sorted.length) {
+                const empty = document.createElement('div'); empty.className = 'portal-empty';
+                empty.textContent = failed ? '툴 목록을 확인할 수 없습니다.' : '설치된 툴이 없습니다.';
+                list.appendChild(empty);
+            }
+            PortalState.rendered = true;
+            document.getElementById('portal-loading').style.display = 'none';
+            document.getElementById('portal-content').style.display = 'block';
+            document.getElementById('portal-error').style.display = 'none';
+        }
+
+        function loadPortal({ silent = false } = {}) {
+            if (!PortalState.active || !portalVisible()) return Promise.resolve();
+            if (PortalState.inflight) {
+                if (PortalState.inflight.generation !== PortalState.generation) PortalState.pendingRefresh = true;
+                return PortalState.inflight.promise;
+            }
+            if (!silent && !PortalState.rendered) {
+                document.getElementById('portal-loading').style.display = 'block';
+                document.getElementById('portal-content').style.display = 'none';
+            }
+            const nodes = [...new Map(AppState.servers.map((server, index) => [server.id || (index === 0 ? 'master_node' : `missing-${index}`),
+                { id: server.id || (index === 0 ? 'master_node' : `missing-${index}`), name: server.name || server.id || 'MASTER', index }])).values()];
+            const request = { generation: PortalState.generation, controllers: nodes.map(() => new AbortController()), promise: null };
+            PortalState.inflight = request;
+            document.getElementById('btn-portal-refresh').disabled = true;
+            request.promise = (async () => {
+                try {
+                    const responses = await Promise.allSettled(nodes.map((node, index) => readPortalNode(node, request.controllers[index])));
+                    if (request.generation !== PortalState.generation || !portalVisible()) return;
+                    nodes.forEach((node, index) => {
+                        const response = responses[index], previous = PortalState.nodes.get(node.id);
+                        PortalState.nodes.set(node.id, response.status === 'fulfilled' ?
+                            { node, data: response.value, stale: false, updated: Date.now() } :
+                            { node, data: previous?.data, stale: true, updated: previous?.updated });
+                    });
+                    renderPortal();
+                } finally {
+                    if (PortalState.inflight === request) {
+                        PortalState.inflight = null;
+                        document.getElementById('btn-portal-refresh').disabled = false;
+                        if (PortalState.pendingRefresh && PortalState.active && portalVisible()) {
+                            PortalState.pendingRefresh = false;
+                            loadPortal({ silent: PortalState.rendered });
+                        }
+                    }
+                }
+            })();
+            return request.promise;
         }
 
         async function openTool(toolId, forceSrvIdx = null) {
