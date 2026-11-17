@@ -240,7 +240,7 @@ def get_ui(core_api):
         ],
         "execute_inputs": [
             {"id": "opt_try_refresh", "type": "checkbox", "label": "매칭 전 리프레시 우선 시도<span style='color:#777;'>(Plex 기본 에이전트 전용)</span>", "default": True, "show_if": {"opt_match": True}},
-            {"id": "opt_unmatch_first", "type": "checkbox", "label": "매칭 전 언매치 우선 실행", "default": True, "show_if": {"opt_match": True}},
+            {"id": "opt_unmatch_first", "type": "checkbox", "label": "클린 리매칭 실행", "default": True, "show_if": {"opt_match": True}},
             {"id": "opt_skip_sim_check", "type": "checkbox", "label": "매칭 시 제목/연도 검증 스킵", "default": False, "show_if": {"opt_match": True}},
             {"id": "opt_manual_match", "type": "checkbox", "label": "수동 매칭 모드 사용 (모든 사이트 강제 검색)", "default": False, "show_if": {"opt_match": True}},
             {"id": "opt_use_custom_score", "type": "checkbox", "label": "에이전트 매칭 통과 점수 직접 지정", "default": False, "show_if": {"opt_match": True}},
@@ -493,7 +493,7 @@ def get_target_issues(req_data, core_api, task=None):
             step_span_pct = int((1 / total_steps) * 85)
 
             if task: 
-                task.log(f"⏳ [{step_idx}/{total_steps}] {msg}")
+                task.log(f"{fix_type} DB 조회 중 · 단계 {step_idx}/{total_steps}")
                 task.update_state('running', progress=step_base_pct, total=100)
 
             # 언바운드 방지를 위해 루프 시작 시점마다 기본값 초기화
@@ -517,18 +517,20 @@ def get_target_issues(req_data, core_api, task=None):
 
                         if root_dirs:
                             if task:
-                                task.log(f"📂 [VFS 일괄 갱신] 최신 YAML 확인을 위해 TV 쇼 라이브러리 경로 {len(root_dirs)}곳의 VFS를 미리 갱신합니다...")
-                                task.log(f"   (라이브러리 크기에 따라 장시간 소요될 수 있으며, 타임아웃 제한 없이 완료될 때까지 대기합니다)")
+                                task.log(f"VFS 갱신 대기 중 · {len(root_dirs)}루트 (시간 제한 없음)")
+                            last_vfs_log = time.monotonic()
 
-                            for r_dir in sorted(root_dirs):
+                            for root_index, r_dir in enumerate(sorted(root_dirs), 1):
                                 if task and task.is_cancelled(): break
-                                if task: task.log(f"   -> VFS 갱신 요청 중: '{r_dir}'")
                                 try:
                                     vfs_ok = pmh_core.execute_plexmate_action('vfs_refresh', r_dir, core_api['config'], timeout=None)
                                     if vfs_ok:
-                                        if task: task.log(f"      ✅ VFS 갱신 완료: '{os.path.basename(r_dir) or r_dir}'")
+                                        now = time.monotonic()
+                                        if task and now - last_vfs_log >= 3.5:
+                                            task.log(f"VFS {root_index}/{len(root_dirs)}루트 확인")
+                                            last_vfs_log = now
                                     else:
-                                        if task: task.log(f"      ⚠️ VFS 갱신 응답 실패: '{r_dir}'")
+                                        if task: task.log(f"      ⚠️ VFS 갱신 응답 실패 (루트 {root_index}/{len(root_dirs)})")
                                 except Exception as vfs_err:
                                     if task: task.log(f"      ⚠️ VFS 갱신 오류: {vfs_err}")
                     except Exception as loc_err:
@@ -620,26 +622,25 @@ def get_target_issues(req_data, core_api, task=None):
                 rows = core_api['query'](query)
                 row_count = len(rows)
 
-                if fix_type == 'yaml_marker':
-                    if task: task.log(f"   -> DB 1차 후보 {row_count:,}건을 검사합니다. (파일 및 YAML 대조 시작)")
-                elif task and row_count > 0:
-                    task.log(f"   -> DB 후보 {row_count:,}건 확인됨.")
-
-                last_progress_time = time.time()
                 step_initial_count = len(targets)
 
-                for r_idx, r in enumerate(rows, 1):
+                def inspected_rows():
+                    interval = max(1, min(100, (row_count + 19) // 20))
+                    last_log = time.monotonic()
+                    for index, row in enumerate(rows, 1):
+                        yield row
+                        if task:
+                            if index % interval == 0 or index == row_count:
+                                cur_pct = step_base_pct + int((index / row_count) * step_span_pct)
+                                task.update_state('running', progress=cur_pct, total=100)
+                            now = time.monotonic()
+                            if now - last_log >= 3.5 and index < row_count:
+                                found = len(targets) - step_initial_count
+                                task.log(f"{fix_type} 검사 {index:,}/{row_count:,} · 선별 {found:,}건")
+                                last_log = now
+
+                for r in inspected_rows():
                     if task and task.is_cancelled(): break
-
-                    if fix_type == 'yaml_marker' and row_count > 0:
-                        cur_pct = step_base_pct + int((r_idx / row_count) * step_span_pct)
-                        task.update_state('running', progress=cur_pct, total=100)
-
-                        now_t = time.time()
-                        if now_t - last_progress_time >= 3.5:
-                            last_progress_time = now_t
-                            found_so_far = len(targets) - step_initial_count
-                            task.log(f"      [검증 진행] {r_idx:,}/{row_count:,}건 확인 중... (선별됨: {found_so_far:,}건)")
 
                     rk = r.get('id')
                     m_type = r.get('metadata_type')
@@ -735,14 +736,10 @@ def get_target_issues(req_data, core_api, task=None):
                     # 복구 대상 맵에 추가
                     if m_type == 1:
                         display_title = format_title(r)
-                        if add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk):
-                            if task and fix_type == 'yaml_marker':
-                                task.log(f"      ✨ [마커 대상 선별] {display_title}")
+                        add_target(rk, 1, display_title, sec_name, fix_type, f_path, parent_rk=rk)
                     elif m_type in (2, 3, 8, 9):
                         display_title = format_title(r, is_parent=True)
-                        if add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk):
-                            if task and fix_type == 'yaml_marker':
-                                task.log(f"      ✨ [마커 대상 선별] {display_title}")
+                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=rk)
                     elif m_type in (4, 10): 
                         actual_parent = grandparent_id or parent_id
                         if fix_type in ['match', 'refresh', 'yaml_season', 'yaml_marker'] and actual_parent:
@@ -752,16 +749,8 @@ def get_target_issues(req_data, core_api, task=None):
                         else:
                             display_title = format_title(r, is_episode=True)
                             
-                        if add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent):
-                            if task and fix_type == 'yaml_marker':
-                                task.log(f"      ✨ [마커 대상 선별] {display_title}")
+                        add_target(rk, m_type, display_title, sec_name, fix_type, f_path, parent_rk=actual_parent)
                         
-            if task: 
-                if fix_type == 'yaml_marker':
-                    found_in_step = len(targets) - step_initial_count
-                    task.log(f"   ✓ 마커 검증 완료: 1차 후보 {row_count:,}건 중 복구 대상 {found_in_step:,}건 선별")
-                else:
-                    task.log(f"   ✓ {msg.replace(' 중...', ' 완료.')}")
 
     except Exception as e:
         if task: task.log(f"❌ Plex DB 연결 또는 쿼리 실패: {e}")
@@ -780,8 +769,7 @@ def get_target_issues(req_data, core_api, task=None):
         sorted_wrapped = core_api['sort'](tmp_wrapped, [{"key": "path", "dir": "asc"}])
         targets[rk]['files'] = [item["path"] for item in sorted_wrapped]
     
-    if task: 
-        task.log(f"✅ DB 쿼리 수집 완료.")
+    if task and not task.is_cancelled():
         task.update_state('running', progress=90, total=100)
         
     return targets, total_scanned
@@ -868,7 +856,6 @@ def worker(task_data, core_api, start_index):
     # -----------------------------------------------------------------
     if action in ['preview', 'cron_run']:
         prefix = "[자동 실행] " if action == 'cron_run' else ""
-        task.log(f"🔍 {prefix}복구 대상(이슈)을 찾기 위해 라이브러리 검사를 시작합니다...")
         task.update_state('running', progress=0, total=100)
         
         targets, total_scanned = get_target_issues(task_data, core_api, task)
@@ -877,7 +864,6 @@ def worker(task_data, core_api, start_index):
             task.log("🛑 조회 작업이 사용자에 의해 취소되었습니다.")
             return
 
-        task.log("📊 검색된 데이터를 기반으로 UI 테이블을 생성합니다...")
         task.update_state('running', progress=95, total=100)
 
         table_data = []
